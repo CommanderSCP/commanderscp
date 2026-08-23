@@ -1,0 +1,31 @@
+-- 0063 — `source_mappings.enabled`: the operator's PAUSE SWITCH on a source mapping (owner ask
+-- 2026-08-14, component pipeline view — "each [source] should have its own arrow so I can enable
+-- and disable each as needed").
+--
+-- ## What this is, and what it is not
+--
+-- A disabled mapping stays DECLARED — it keeps appearing in `GET .../mappings`, in a component's
+-- pipeline sources projection, and in an IaC plan's `noop`/`create` entries — but it routes
+-- nothing: `coordination/correlation.ts`'s `matchComponentForSource` skips it as the FIRST filter
+-- in its matching loop. That is the whole feature. It is NOT delete: delete forgets the rule
+-- existed at all (and, per `source-mappings-repo.ts`'s `deleteSourceMappingsMatching`, removes
+-- every row sharing the identity tuple). Disabling one mapping among several byte-identical rows
+-- pauses that one row only.
+--
+-- ## Unlike `classification` and `mirror_of_shared` beside it, this IS an enforcement input
+--
+-- Those two columns (0057/0062) are read-only UI/reporting labels that grant and withhold
+-- nothing — forging or removing either changes no routing outcome. `enabled` is the opposite: it
+-- is the one column on this table that the correlation matcher actually consults before deciding
+-- whether a push becomes a release. A toggle that the matcher never checked would be theatre — the
+-- operator flips it, the UI shows the change, and pushes keep routing exactly as before. Migration
+-- and matcher land together so that never happens.
+--
+-- `NOT NULL DEFAULT true`: every row that existed before this column did was already routing, so
+-- the default is the only value that leaves current behaviour unchanged for all of them — no
+-- backfill needed.
+--
+-- Idempotent (IF NOT EXISTS), per this repo's standing rule since the 2026-08-13 three-branch
+-- `when` collision: a migration re-run must be a no-op.
+
+ALTER TABLE "source_mappings" ADD COLUMN IF NOT EXISTS "enabled" boolean NOT NULL DEFAULT true;

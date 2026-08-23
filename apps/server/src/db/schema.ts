@@ -688,6 +688,48 @@ export const sourceMappings = pgTable(
     // federation peer never reaches `exportPromotionBundle`. Plain text (no pg enum / CHECK), like
     // `type` above: the closed value set is enforced in packages/schemas (Zod).
     classification: text("classification"),
+    // The operator's DECLARED provenance of this mapping's repo, migration 0062 / outpost-ui.md
+    // §9.3a (owner, 2026-08-14). A component spans domains and its ONE pipeline has inputs of two
+    // provenances: globally SHARED repos authored at the commander, and DOMAIN-SPECIFIC repos
+    // tracked only by this domain's outpost. Where a domain holds a COPY of a shared repo (the
+    // owner's row 2 — "IaC shared source → IaC repo, domain-B copy → component (domain B)"), that
+    // mapping is physically local but its provenance is the commander. `true` declares exactly
+    // that: "this repo mirrors a commander-shared source". NULL/false = domain-specific (the
+    // owner's row 3), which is also every pre-0062 row's meaning unchanged.
+    //
+    // DECLARED, never inferred — same discipline as `classification` above and for the same
+    // charter-6 reason: guessing "shared" from the repo host or a name pattern would label a
+    // domain's classified network repo as shared the moment it lived on the same Gitea. And
+    // NEVER an enforcement input: it grants and withholds nothing; the UI groups the source lane
+    // by it and reporting may read it, and that is all.
+    mirrorOfShared: boolean("mirror_of_shared").notNull().default(false),
+    // The operator's PAUSE SWITCH, migration 0063 (owner ask 2026-08-14, UI source-lane
+    // enable/disable). A mapping stays DECLARED but routes nothing while disabled — distinct from
+    // delete, which forgets the rule entirely. `correlation.ts`'s `matchComponentForSource` skips a
+    // disabled row as its first filter, so this is an ENFORCEMENT input (unlike `classification`
+    // and `mirrorOfShared` above): a caller flipping it changes what a push actually correlates to,
+    // not just how it renders. `NOT NULL DEFAULT true` — every pre-0063 row was already routing, so
+    // the default preserves that behaviour with no backfill.
+    enabled: boolean("enabled").notNull().default(true),
+    // TIMED CLOSE (owner, 2026-08-14: "disable for x period of time or until manually enabled
+    // again"), migration 0064. Read together with `enabled`, exactly the way a freeze window is
+    // read (governance/freezes-repo.ts): NO timer job re-opens anything — the correlation matcher
+    // evaluates `now()` at every push. Three states: enabled=true → open (this column ignored);
+    // enabled=false, disabled_until NULL → closed until an operator re-opens; enabled=false,
+    // disabled_until = T → closed while now() < T, then OPEN again automatically, on time, with
+    // zero moving parts. `enabled` stays the operator's declared intent; this column bounds it.
+    disabledUntil: timestamp("disabled_until", { withTimezone: true }),
+    // The operator's DECLARED reach of this mapping's repo, migration 0066 /
+    // pipeline-substrate-registry-scan.md §10.6 (owner, 2026-08-16): `global` = a cross-domain
+    // shared repo authored and tracked at the commander; `domain` = tracked only in one domain.
+    // NULL = NOT DECLARED → the pipeline renders NO label and NOTHING is inferred (not from the
+    // site's federation role, not from the repo host, not from a name pattern) — a pre-0066 row on
+    // the commander is not thereby global. Orthogonal to `mirrorOfShared` above (a `domain`-scope
+    // mapping may mirror a global one; the mirror wins the eyebrow). Like `classification` and
+    // `mirrorOfShared`, NEVER an enforcement input: `correlation.ts` does not read it (pinned by
+    // source-mapping-scope.integration.test.ts). Plain text with a CHECK on the two values — the
+    // value set is closed at both ends because a third value would render as no label, silently.
+    scope: text("scope"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]
@@ -845,8 +887,15 @@ export const changeWaveTargets = pgTable(
     // Last status() stateRef reconcile observed — the synced revision it previously computed and
     // discarded (ADR-0008 decision 1; docs/proposals/observe-enrichment.md signal 1). Additive/
     // nullable, null until the first successful observe; a status() with no stateRef never nulls a
-    // previously-captured value (updateWaveTargetObserved writes it only when defined). Stores the
-    // opaque revision as-is (jsonb); the strongly-typed digest/rollout object is a later increment.
+    // previously-captured value (updateWaveTargetObserved writes it only when defined).
+    //
+    // NOT AS-IS — the claim this comment made until M23.1g, and M23.1f made it false. Everything in
+    // this column is plugin-supplied and passes `boundPluginJson` on the way in: a string may be
+    // shortened, a list may lose its tail, U+0000 and lone surrogates become U+FFFD. What was
+    // removed is written into the SAME jsonb under `truncation`, per field, so a reader is never
+    // left to infer a cut from a suspiciously short value — and so `no rollout` and `we cut the
+    // rollout` stop being the same bytes (`ChangeWaveTargetSchema.observed.truncation`).
+    // `observedAt` is stamped here too and is deliberately NOT on the API.
     observedState: jsonb("observed_state"),
     // pending|triggering|triggered|observing|succeeded|failed|aborted|no_executor
     // `no_executor` (docs/adr/0006): fail-closed terminal — the target has real executor bindings
@@ -1133,11 +1182,11 @@ export const instanceCosignKeys = pgTable(
 );
 
 // -------------------------------------------------------------------------------------------
-// M5 Campaigns & Initiatives (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). Hand-authored
+// M5 Campaigns (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). Hand-authored
 // grants/RLS/seed data in drizzle/0011_campaigns.sql (same pattern as 0002/0005/0007/0010).
 //
 // KEY DESIGN DECISION (documented at length in 0011's own header): a Campaign is NOT a second
-// transition-guarded state machine. `campaign`/`initiative` are graph objects (pre-seeded
+// transition-guarded state machine. `campaign` is a graph object (pre-seeded
 // built-in types, 0002 §5); what they need beyond the generic object model is exactly what a
 // Change needed — a compiled plan -> waves -> wave_targets shape, over the SAME
 // `coordination/plan-compiler.ts` pure function `change_plans`/`change_waves`/
@@ -2359,6 +2408,64 @@ export const dependencyBumpAuthorships = pgTable(
     )
   ]
 );
+
+/**
+ * THE PER-OBJECT RUNGS OF THE `governance:move` LATTICE (drizzle/0083,
+ * docs/proposals/governance-reach-on-containment-move.md §9.2 — owner ruling 2026-08-18).
+ *
+ * One row per CONTAINER (org root, containment domain, service, assembly) under which a containment
+ * MOVE additionally requires `governance:move` at both ends. The lattice is monotone and top-down:
+ * enforcement applies iff the instance rung ({@link governanceMoveInstanceRung}) is enabled OR any
+ * object on the moved object's containment chain or on the destination's chain carries a row here.
+ * A rung enabled ABOVE therefore cannot be disabled below — the DELETE route answers 409 naming the
+ * upper rung rather than reporting a disable that leaves the state enforced anyway.
+ *
+ * EMPTY IS THE SHIPPED STATE and means no enforcement anywhere, which is why adding this table moved
+ * no existing authorization outcome.
+ */
+export const governanceMoveRungs = pgTable(
+  "governance_move_rungs",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** The container the rung sits on — PK, because a rung is enabled or it is not. */
+    subjectObjectId: uuid("subject_object_id")
+      .notNull()
+      .references(() => objects.id),
+    /** `org` | `containment_domain` | `service` | `assembly`, the literal AT WRITE TIME.
+     *  Explainability only, never re-derived on read — the convention
+     *  `dependencies/subscription-resolution.ts`'s `tierForObjectType` documents. */
+    tier: text("tier").notNull(),
+    /** Principle 6: WHO enabled it. Stamped from the authenticated subject, never the request body. */
+    enabledByObjectId: uuid("enabled_by_object_id")
+      .notNull()
+      .references(() => objects.id),
+    enabledAt: timestamp("enabled_at", { withTimezone: true }).notNull().defaultNow(),
+    /** The Decision the enablement recorded. Nullable for rows a future importer might write. */
+    decisionId: uuid("decision_id")
+  },
+  (table) => [
+    primaryKey({ name: "governance_move_rungs_pk", columns: [table.subjectObjectId] }),
+    index("governance_move_rungs_org").on(table.orgId)
+  ]
+);
+
+/**
+ * THE INSTANCE (COMMANDER) RUNG — the singleton that ACTIVATES the lattice deployment-wide
+ * (drizzle/0083 §2; owner decision Q1-A: "if enabled there, orgs can't disable it").
+ *
+ * Storage is byte-for-byte the `dependency_subscription_unlock` shape (0062): `CHECK id = 'default'`,
+ * tenant SELECT-only, FORCE RLS, no write policy, operator-token `PUT` through the raw admin pool.
+ * The MEANING differs — the unlock permits, this activates — but the authority question is the same:
+ * a deployment-wide switch no tenant role may flip.
+ *
+ * NO ROW MEANS DISABLED, decided in exactly one place (`governance/move-enforcement.ts`'s
+ * `readInstanceMoveRung`).
+ */
+export const governanceMoveInstanceRung = pgTable("governance_move_instance_rung", {
+  id: text("id").primaryKey().default("default"),
+  enabled: boolean("enabled").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+});
 
 /**
  * M22.1b (ADR-0033 §7/§7a, migration 0073) — the per-finding projection of ONE scan verdict.

@@ -272,11 +272,26 @@ function toChangeWaveTargetShape(row: typeof changeWaveTargets.$inferSelect): Ch
     // The snapshot reconcile persisted — the per-wave version (revision + deployed images) plus the
     // OBSERVE-ONLY rollout snapshot (P4D). The raw jsonb already carries all three once merged (P4B
     // revision + P4C images + P4D rollout); no query change.
+    // `truncation` (M23.1g) rides the same jsonb: `updateWaveTargetObserved` stamps it beside the
+    // bounded value, so it arrives here with no query change, exactly as `images` and `rollout`
+    // did. It is NAMED in this cast for the same reason the others are — the response serializer
+    // key-strips whatever `ChangeWaveTargetSchema.observed` does not declare, which is how
+    // `observedAt` stays internal, and a field left out of the cast would be a field the API
+    // silently drops.
     observed:
       (row.observedState as {
         revision?: string;
         images?: string[];
         rollout?: { phase?: string; step?: number; weight?: number; message?: string };
+        truncation?: Record<
+          string,
+          {
+            dropped: boolean;
+            droppedCharacters?: number;
+            droppedEntries?: number;
+            droppedFields?: number;
+          }
+        >;
       } | null) ?? null,
     status: row.status,
     attempt: row.attempt,

@@ -12,6 +12,7 @@ export * from "./registries.js";
 export * from "./iac.js";
 export * from "./changes.js";
 export * from "./governance.js";
+export * from "./governance-move.js";
 export * from "./supply-chain.js";
 export * from "./scan-db.js";
 export * from "./services.js";

@@ -83,6 +83,9 @@ export function toOutpostConfig(object: GraphObject, selfDomainId: string): Outp
   const trustTier = readTrustTier(properties);
   const peerDomainId = typeof properties.peerDomainId === "string" ? properties.peerDomainId : "";
   const originIsSelf = object.originDomainId === selfDomainId;
+  // §10.5 — the HQ outpost: this record is ABOUT this instance's own domain. Independent of
+  // `originIsSelf` (on an outpost site its own replica is commander-authored AND about self).
+  const peerIsSelf = peerDomainId === selfDomainId;
   const unknownFields: string[] = [];
   if (trustTier === null) unknownFields.push("trustTier");
   // An UNVERIFIED shadow's tier is not an assertion this instance can stand behind: it was typed in by
@@ -98,6 +101,7 @@ export function toOutpostConfig(object: GraphObject, selfDomainId: string): Outp
     trustTier,
     originDomainId: object.originDomainId,
     originIsSelf,
+    peerIsSelf,
     provenance: object.provenance ?? null,
     revision: object.revision,
     version: object.version,
@@ -117,13 +121,16 @@ export interface CreateOutpostConfigInput {
 }
 
 /**
- * Declares the config object for an already-paired outpost peer. The peer-binding guard
- * (`assertOutpostPeerBinding`, reached through `createObject`) refuses an unbound `peerDomainId`
- * (400), a peer whose role is not `outpost` (400), and a second object for the same peer (409).
+ * Declares the config object for an already-paired outpost peer — or, with `peerDomainId` = this
+ * instance's own trust domain, the HQ outpost (§10.5; accepted only when this instance's
+ * `federation_self.role` is `commander` — on an outpost that record is the commander's replica). The
+ * peer-binding guard (`assertOutpostPeerBinding`, reached through `createObject`) refuses an unbound
+ * `peerDomainId` (400), a peer whose role is not `outpost` (400), the self shape on a non-commander
+ * instance (400), and a second object for the same domain (409).
  *
  * The peer lookup here is NON-throwing (`findPeerByDomainId`) and is used ONLY to default the display
  * name. Validating the binding is the guard's job at the choke point — so an unpaired peer produces
- * the guard's own precise 400 ("not a paired federation peer") rather than a 404 from a name lookup,
+ * the guard's own precise 400 ("neither a paired federation peer nor…") rather than a 404 from a name lookup,
  * and a caller that bypasses this module gets the identical refusal.
  */
 export async function createOutpostConfig(
@@ -138,10 +145,14 @@ export async function createOutpostConfig(
     actorObjectId: input.actorObjectId,
     requestId: input.requestId,
     urn: outpostConfigUrn(input.orgId, input.peerDomainId),
-    // Falls back to the raw id when the peer does not exist — a name the guard is about to make
-    // irrelevant by refusing the write. `createObject` requires a name, so this keeps the ORDER of
-    // refusals in the guard's hands instead of the name default's.
-    name: input.name ?? peer?.name ?? input.peerDomainId,
+    // Falls back to this instance's own federation name for the HQ outpost (§10.5 — there
+    // is no peer row to take one from), and to the raw id when the peer does not exist — a name the
+    // guard is about to make irrelevant by refusing the write. `createObject` requires a name, so
+    // this keeps the ORDER of refusals in the guard's hands instead of the name default's.
+    name:
+      input.name ??
+      peer?.name ??
+      (input.peerDomainId === (self.domainId as string) ? self.name : input.peerDomainId),
     properties: {
       peerDomainId: input.peerDomainId,
       // Written ONLY when the operator supplied one — an omitted tier leaves the key absent, which
@@ -169,6 +180,65 @@ export async function listOutpostConfigs(tx: TenantTx, orgId: string): Promise<O
     )
     .orderBy(asc(objects.createdAt), asc(objects.id));
   return rows.map((row) => toOutpostConfig(toGraphObject(row), self.domainId));
+}
+
+/**
+ * EVERY LIVE `outpost` object, RESOLVED TO ONE PER PEER — the batched read a lane-level projection
+ * wants (pipeline-substrate-registry-scan.md §10.2: "one query over live `outpost` objects"), keyed
+ * on the object's own `properties.peerDomainId` (string-guarded; an object with no string binding is
+ * skipped — it names no peer, so no target's origin can match it).
+ *
+ * WHEN TWO ROWS CLAIM ONE PEER, this picks by `byAuthority` — the SAME rule `findOutpostConfigByPeer`
+ * applies for `GET/PATCH /v1/federation/outposts/{peer}`. It does NOT state "ambiguous": the binding
+ * is enforced 1:1 on every LOCAL create (`assertOutpostPeerBinding`, clause 4), and the duplicates a
+ * database can still hold (an unverified hand-filled shadow beside the authoritative row; a replica
+ * beside a local row) are exactly what `byAuthority` was written to rank — local origin, then
+ * verified replica, then `provenance:'manual'` shadow. A projection that said "ambiguous" where the
+ * outposts API itself resolves to one row would contradict the page the link on that projection
+ * opens; the recovery for a real duplicate is `reconcileOutpostConfig`, not a fifth state.
+ *
+ * `trustTier` reads through `readTrustTier` — an unrecognised or absent tier is null, never
+ * defaulted (see that function).
+ */
+export async function resolveOutpostObjectsByPeer(
+  tx: TenantTx,
+  orgId: string
+): Promise<Map<string, { id: string; name: string; trustTier: OutpostTrustTier | null }>> {
+  const self = await ensureFederationSelf(tx, orgId);
+  const rows = await tx
+    .select()
+    .from(objects)
+    .where(
+      and(
+        eq(objects.orgId, orgId),
+        eq(objects.typeId, OUTPOST_OBJECT_TYPE_ID),
+        isNull(objects.deletedAt)
+      )
+    )
+    .orderBy(asc(objects.createdAt), asc(objects.id));
+  const byPeer = new Map<string, GraphObject[]>();
+  for (const row of rows) {
+    const object = toGraphObject(row);
+    const peerDomainId = object.properties.peerDomainId;
+    if (typeof peerDomainId !== "string" || peerDomainId.length === 0) continue;
+    const list = byPeer.get(peerDomainId) ?? [];
+    list.push(object);
+    byPeer.set(peerDomainId, list);
+  }
+  const resolved = new Map<
+    string,
+    { id: string; name: string; trustTier: OutpostTrustTier | null }
+  >();
+  for (const [peerDomainId, list] of byPeer) {
+    const winner = byAuthority(list, self.domainId)[0];
+    if (!winner) continue;
+    resolved.set(peerDomainId, {
+      id: winner.id,
+      name: winner.name,
+      trustTier: readTrustTier(winner.properties)
+    });
+  }
+  return resolved;
 }
 
 /**

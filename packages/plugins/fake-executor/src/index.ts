@@ -94,6 +94,84 @@ interface FakeExecutorConfig {
     string,
     { phase?: string; step?: number; weight?: number; message?: string }
   >;
+  /**
+   * Per-target deterministic `status().detail`. Mirrors `forcePhase`, and exists for one reason
+   * `imagesByTarget` and `rolloutByTarget` do not cover: `ExecutionStatus.detail` is free-form
+   * `string` from ANY executor plugin, and `reconcile.ts` writes it into a `Decision`'s
+   * `inputContext` — permanent governed state, one row per failing poll. Proving that write is
+   * BOUNDED needs a plugin that returns an unbounded detail, and no in-repo plugin does: the three
+   * managed ones bound their own at composition (`@scp/runner-launcher`'s `boundDetail`, enforced
+   * by their stores' types), which is exactly why they cannot be the witness. A THIRD-PARTY plugin
+   * is the case the bound is for, and this is the only stand-in for one.
+   */
+  detailByTarget?: Record<string, string>;
+
+  /**
+   * A GENERATED per-target `detail`, for values too large to cross a spawn argv.
+   *
+   * `detailByTarget` carries its string literally, and the plugin host passes plugin config on the
+   * subprocess ARGV (`host.ts` `spawnInstance`). Linux caps a single argument at MAX_ARG_STRLEN
+   * (128 KiB) and answers `spawn E2BIG` past it; macOS does not, so a 432 KB literal passed locally
+   * and failed only on CI. The bound belongs to the transport, not to this plugin — so a test that
+   * needs a large detail sends the RECIPE and the plugin expands it here, in-process.
+   */
+  detailRepeatByTarget?: Record<
+    string,
+    { head: string; unit: string; times: number; tail: string }
+  >;
+
+  /** GENERATED image refs, for the same reason `detailRepeatByTarget` exists: a 100 KB+ literal
+   *  cannot cross the spawn argv on Linux. `count` refs, each `head` + `unit` repeated `times`. */
+  imagesRepeatByTarget?: Record<
+    string,
+    { head: string; unit: string; times: number; count: number }
+  >;
+  /**
+   * Per-target deterministic `status().stateRef` — the synced revision. Mirrors `imagesByTarget`
+   * and `rolloutByTarget`, and exists because of what their SHAPES could not reach.
+   *
+   * THE HARNESS HAD NO STRING SEAM INTO `observed_state`, and four consecutive verification rounds
+   * shipped a regression behind that gap (M23.0 pass 10). `observedStateFrom` builds
+   * `{revision, images, rollout}`: `revision` comes from `status().stateRef`, which this plugin
+   * HARDCODED to `v${target.version}`, and `detail` never enters `observed_state` at all. So the
+   * only free-form field an integration test could vary in that column was `imagesByTarget` — an
+   * ARRAY. `@scp/runner-launcher`'s persisted-JSON bound treats arrays and strings by different
+   * rules (an array is cut by dropping ENTRIES, a string by the per-string width bound), and every
+   * string-shaped defect in that allocator was therefore unreachable end to end BY CONSTRUCTION:
+   * a per-string bound that discarded half of every share was invisible to a green integration
+   * suite for three rounds.
+   *
+   * The DEFAULT is unchanged — absent this key, `status()` still reports `v${target.version}` and
+   * `coercePriorStateRef` still round-trips it — so this adds a seam without moving any existing
+   * assertion.
+   */
+  stateRefByTarget?: Record<string, unknown>;
+  /**
+   * Per-target extra fields the returned {@link ExternalRunRef} carries ALONGSIDE `externalId`,
+   * emitted BEFORE it — the seam `executor_ref` had none of (M23.0 verification pass 12).
+   *
+   * WHY THE COLUMN NEEDED ONE. `trigger()`'s whole return value is written to
+   * `change_wave_targets.executor_ref` by `markWaveTargetTriggered`, through the same
+   * `boundPluginJson` as `observed_state` — and EVERY end-to-end fixture in this repository drives
+   * `observed_state`. `PluginHost.executor()` types the JSON-RPC response with a BARE CAST, so at
+   * runtime the ref is whatever the plugin serialised: a real executor returns its own vendor
+   * fields beside the two this interface names, and their ORDER is whatever its serialiser chose.
+   * This plugin returned exactly `{externalId, url}`, both short, so no test could reach the
+   * branch that decides whether `externalId` survives the bound.
+   *
+   * WHY `externalId` IS THE WORST LEAF IN THE PRODUCT (pass 9's census, "Instance 3"). All nine
+   * executor plugins read it out of the persisted ref to address the run: `status()` here does
+   * `parseTargetRef(ref.externalId)` and compares `target.externalId !== ref.externalId`. A ref the
+   * executor can no longer interpret is not an error anywhere — this plugin answers `pending`, Argo
+   * CD answers 404 — so reconcile writes `observing` and POLLS THE TARGET AS AN UNKNOWN RUN
+   * FOREVER, behind a green health check.
+   *
+   * EMITTED FIRST, DELIBERATELY. The bound seats an object's keys in insertion order, so a ref
+   * whose vendor fields come first is the shape in which `externalId` is the one that does not fit.
+   * `externalId` and `url` are spread AFTER these, so a config that names either cannot break the
+   * plugin's own contract with itself.
+   */
+  runRefExtrasByTarget?: Record<string, Record<string, unknown>>;
 }
 
 function readConfig(config: unknown): FakeExecutorConfig {
@@ -110,18 +188,43 @@ function parseTargetRef(externalId: string): string {
   return idx === -1 ? externalId : externalId.slice(0, idx);
 }
 
-/** Parses a prior `status()` call's `stateRef` (e.g. `"v2"`) back into a version number for a
- *  `rollback` trigger; defensively falls back to 0 for anything else (unset, malformed, non-string —
- *  `priorStateRef` is typed `unknown` on the wire). */
+/**
+ * Parses a prior `status()` call's `stateRef` (e.g. `"v2"`) back into a version number for a
+ * `rollback` trigger; defensively falls back to 0 for anything else (unset, malformed,
+ * uninterpretable — `priorStateRef` is typed `unknown` on the wire).
+ *
+ * A STRUCTURED PRIOR STATE IS READ TOO, and that is not a convenience — it is what makes
+ * `change_wave_targets.prior_state_ref` drivable end to end (M23.0 verification pass 12).
+ * `ExecutionStatus.stateRef` is `unknown` precisely so an executor whose state is not one string
+ * can return an object (a Terraform state serial and lineage, an Argo CD revision per source), and
+ * that is the shape whose LOAD-BEARING LEAF the persisted-JSON bound can drop while leaving the
+ * column populated and plausible. With only the string form here, the harness could put nothing in
+ * that column that a wrong answer would be visible in: `String({...})` is `"[object Object]"`, so
+ * a damaged object and an intact one coerce identically to 0 and a rollback restores version 0
+ * either way — indistinguishable from a rollback that worked on a never-triggered target.
+ */
 function coercePriorStateRef(priorStateRef: unknown): number {
-  const match = /^v(\d+)$/.exec(String(priorStateRef ?? ""));
-  return match ? Number(match[1]) : 0;
+  const direct = /^v(\d+)$/.exec(String(priorStateRef ?? ""));
+  if (direct) return Number(direct[1]);
+  if (priorStateRef !== null && typeof priorStateRef === "object") {
+    const nested = (priorStateRef as Record<string, unknown>).version;
+    const structured = /^v(\d+)$/.exec(String(nested ?? ""));
+    if (structured) return Number(structured[1]);
+  }
+  return 0;
 }
 
 function computePhase(target: TargetState, autoSucceedAfterMs: number): ExecutionPhase {
   if (target.terminal) return target.phase;
   const elapsed = Date.now() - target.triggeredAt;
   return elapsed >= autoSucceedAfterMs ? "succeeded" : "running";
+}
+
+function expandRepeatedDetail(
+  spec: { head: string; unit: string; times: number; tail: string } | undefined
+): string | undefined {
+  if (!spec) return undefined;
+  return `${spec.head}${spec.unit.repeat(spec.times)}${spec.tail}`;
 }
 
 export class FakeExecutorPlugin implements ExecutorPlugin {
@@ -184,6 +287,7 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
         externalId: existing.externalId
       });
       return {
+        ...(readConfig(ctx.config).runRefExtrasByTarget?.[targetRef] ?? {}),
         externalId: existing.externalId,
         url: `fake-executor://${targetRef}/${existing.externalId}`
       };
@@ -206,7 +310,13 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     await this.saveState(ctx.config, state);
 
     ctx.logger.info("fake-executor: triggered", { targetRef, kind: intent.kind, version });
-    return { externalId, url: `fake-executor://${targetRef}/${externalId}` };
+    return {
+      // See `runRefExtrasByTarget`: BEFORE `externalId`, because insertion order is what decides
+      // which key the bound seats, and a real plugin does not put the leaf we depend on first.
+      ...(readConfig(ctx.config).runRefExtrasByTarget?.[targetRef] ?? {}),
+      externalId,
+      url: `fake-executor://${targetRef}/${externalId}`
+    };
   }
 
   async status(ctx: PluginContext, ref: ExternalRunRef): Promise<ExecutionStatus> {
@@ -235,12 +345,21 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     const images = cfg.imagesByTarget?.[targetRef];
     const rollout = cfg.rolloutByTarget?.[targetRef];
     const observed: { images?: string[]; rollout?: typeof rollout } = {};
-    if (images && images.length > 0) observed.images = images;
+    const generated = cfg.imagesRepeatByTarget?.[targetRef];
+    if (generated) {
+      const ref = `${generated.head}${generated.unit.repeat(generated.times)}`;
+      observed.images = Array.from({ length: generated.count }, () => ref);
+    } else if (images && images.length > 0) observed.images = images;
     if (rollout && Object.keys(rollout).length > 0) observed.rollout = rollout;
     return {
       phase,
-      stateRef: `v${target.version}`,
-      detail: `fake-executor target=${targetRef} version=v${target.version}`,
+      // The per-target override is the STRING seam into `observed_state.revision`; the default is
+      // the version this plugin has always reported. See `stateRefByTarget`.
+      stateRef: cfg.stateRefByTarget?.[targetRef] ?? `v${target.version}`,
+      detail:
+        cfg.detailByTarget?.[targetRef] ??
+        expandRepeatedDetail(cfg.detailRepeatByTarget?.[targetRef]) ??
+        `fake-executor target=${targetRef} version=v${target.version}`,
       ...(observed.images || observed.rollout ? { observed } : {}),
       progress: settled ? 1 : 0.5
     };
@@ -302,7 +421,43 @@ export const manifest: PluginManifest = {
         type: "object",
         additionalProperties: { type: "array", items: { type: "string" } }
       },
-      rolloutByTarget: { type: "object", additionalProperties: { type: "object" } }
+      rolloutByTarget: { type: "object", additionalProperties: { type: "object" } },
+      detailByTarget: { type: "object", additionalProperties: { type: "string" } },
+      imagesRepeatByTarget: {
+        type: "object",
+        additionalProperties: {
+          type: "object",
+          properties: {
+            head: { type: "string" },
+            unit: { type: "string" },
+            times: { type: "integer" },
+            count: { type: "integer" }
+          },
+          required: ["head", "unit", "times", "count"],
+          additionalProperties: false
+        }
+      },
+      detailRepeatByTarget: {
+        type: "object",
+        additionalProperties: {
+          type: "object",
+          properties: {
+            head: { type: "string" },
+            unit: { type: "string" },
+            times: { type: "integer" },
+            tail: { type: "string" }
+          },
+          required: ["head", "unit", "times", "tail"],
+          additionalProperties: false
+        }
+      },
+      // NOT `additionalProperties: {type: "string"}`: `ExecutionStatus.stateRef` is `unknown`, and
+      // a structured prior state is the shape `prior_state_ref` is bounded as.
+      stateRefByTarget: { type: "object" },
+      runRefExtrasByTarget: {
+        type: "object",
+        additionalProperties: { type: "object" }
+      }
     }
   }
 };

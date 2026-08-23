@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ExecutorTypeSchema, ExecutorCategorySchema } from "./executors.js";
+import { ComponentPipelineDomainSchema } from "./components.js";
 
 /**
  * Service release board (docs/proposals/coordination-ui-views.md § "Service release board", Phase 2,
@@ -260,7 +261,15 @@ export const ServiceBoardResponseSchema = z.object({
   service: z.object({
     id: z.string().uuid(),
     urn: z.string(),
-    name: z.string()
+    name: z.string(),
+    /** WHO MAINTAINS THIS SERVICE (outpost-ui.md §9.3a) — same shape as a pipeline stage's
+     *  `maintainedBy`. On an outpost, `isSelf: false` means the commander (or another peer) is
+     *  UPSTREAM of this domain's repos for the service's shared IaC/CaC; `isSelf: true` means this
+     *  domain authored it. READ from `originDomainId` vs federation self — never inferred. */
+    maintainedBy: ComponentPipelineDomainSchema,
+    /** ADR-0031 — a domain-local service has NO upstream: its rung-bound shared infra/config is
+     *  this domain's own, and no commander appears ahead of its repos. */
+    domainLocal: z.boolean()
   }),
   rows: z.array(ServiceBoardRowSchema),
   summary: ServiceBoardSummarySchema,

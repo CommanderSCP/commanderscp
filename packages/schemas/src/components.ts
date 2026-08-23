@@ -1,6 +1,18 @@
 import { z } from "zod";
 import { ChangeStageDependencyVerdictSchema } from "./changes.js";
-import { ExecutorCategorySchema, PipelineClassificationSchema } from "./executors.js";
+import {
+  ExecutorCategorySchema,
+  PipelineClassificationSchema,
+  SourceMappingScopeSchema
+} from "./executors.js";
+import { ControlOutcomeStatusSchema } from "./governance.js";
+import {
+  SbomRefSchema,
+  ScanMethodSchema,
+  ScanSeverityCountsSchema,
+  ScanThresholdSchema
+} from "./supply-chain.js";
+import { PromotionManifestSchema } from "./federation.js";
 
 // ---------------------------------------------------------------------------------------------
 // COMPONENT PIPELINE (coordination-ui-views.md §2, as corrected 2026-08-03)
@@ -37,6 +49,77 @@ export const ComponentPipelineDomainSchema = z.object({
 });
 export type ComponentPipelineDomain = z.infer<typeof ComponentPipelineDomainSchema>;
 
+/**
+ * WHICH OUTPOST A TARGET IS PART OF (pipeline-substrate-registry-scan.md §10.2 — the owner's
+ * TRUST-DOMAIN RULE; §10.5 — every target is within an outpost, the HQ outpost (formerly 'co-located'; GLOSSARY,
+ * ADR-0021 D7)), resolved by
+ * the server and READ by the client, never inferred.
+ *
+ * The rule: an `outpost` object carries `properties.peerDomainId` — a paired peer's federation
+ * identity, i.e. its trust domain, OR (§10.5) this instance's OWN trust domain, the HQ
+ * outpost (`outpost-binding.ts` refuses anything else); every object carries `originDomainId` — the
+ * trust domain that authored it; ADR-0017 §1 puts one outpost deployment per trust domain. So a
+ * target's outpost is THE `outpost` OBJECT WHOSE `peerDomainId` EQUALS THE TARGET'S `originDomainId`.
+ * No new data. Never derived from the target's name, and never from its containment `domain_id`
+ * (GLOSSARY: containment has nothing to do with deployment topology).
+ *
+ * Five states, each STATED — the identity fields are nullable per state, and a client renders the
+ * state it is given rather than guessing from which fields happen to be null. PRECEDENCE (§10.5,
+ * OBJECT-FIRST — this supersedes §10.2's self-first sentence): an `outpost` object naming the
+ * target's origin domain wins WHETHER OR NOT that domain is self; then `self` (only when NO object
+ * names this instance's domain); then the peer lookup. So on an outpost site its own targets read
+ * `outpost <its own name> · <tier>` off its replica of its own config, and on a commander with a
+ * HQ outpost registered its own targets read that outpost — `self` is the stated absence
+ * of one.
+ *   - `outpost`               — an `outpost` object names the target's origin domain (a paired peer's,
+ *                               or this instance's own — §10.5). `id`/`name` are that object's;
+ *                               `trustTier` its declared tier (null when the object declares none, or
+ *                               one this build does not know — `outposts-repo.ts`'s `readTrustTier`,
+ *                               never defaulted); `peerDomainId` the domain it names (the link target
+ *                               on the commander site, `/federation/outposts/$peerDomainId`, which
+ *                               renders the HQ record too); `peerRole` the peer row's role,
+ *                               or this instance's `federation_self.role` when the domain is self.
+ *   - `self`                  — the target's origin IS this instance (`federation_self`) and NO
+ *                               `outpost` object names this instance's domain. `name` is this
+ *                               instance's federation name; the rest null. A stated absence: "this
+ *                               instance's domain — no outpost registered" (one can be declared under
+ *                               Federation › Outposts with `peerDomainId` = this instance's domain id).
+ *   - `peer-without-outpost`  — the origin is a paired peer of role `outpost` with NO `outpost` object
+ *                               registered. `name` is the PEER's name and `peerDomainId` its id, so a
+ *                               client can say who — and, because the peer's role IS `outpost`, that an
+ *                               outpost record CAN be declared for it (POST /federation/outposts
+ *                               accepts only `outpost`-role peers — `outpost-binding.ts`).
+ *   - `peer-not-outpost`      — the origin is a paired peer whose role is NOT `outpost` (`commander`
+ *                               or `retrans`). This is what EVERY commander-authored (replicated)
+ *                               target reads on an outpost site. `name` is the peer's name,
+ *                               `peerDomainId` its id, `peerRole` its role. No outpost record can be
+ *                               declared for it — the API refuses (400) — so a client must NOT offer
+ *                               that fix; it says `commander <name>` / `relay <name>`.
+ *   - `unknown-domain`        — the origin names no peer known here (a replica whose peer row has not
+ *                               arrived; a foreign origin this instance never paired with).
+ *                               `peerDomainId` carries the raw origin id; the rest null. Not "ours".
+ */
+export const ComponentPipelineTargetOutpostSchema = z.object({
+  state: z.enum(["outpost", "self", "peer-without-outpost", "peer-not-outpost", "unknown-domain"]),
+  /** The `outpost` object's id — `outpost` only. */
+  id: z.string().uuid().nullable(),
+  /** `outpost`: the object's name; `self`: this instance's name; `peer-without-outpost` /
+   *  `peer-not-outpost`: the peer's name; `unknown-domain`: null. */
+  name: z.string().nullable(),
+  /** The outpost object's declared `trustTier`, verbatim when this build recognises it; else null. */
+  trustTier: z.string().nullable(),
+  /** The trust-domain id the state is about: the peer's id (`outpost`, `peer-without-outpost`,
+   *  `peer-not-outpost`) or the raw unrecognised origin (`unknown-domain`); null for `self`. */
+  peerDomainId: z.string().nullable(),
+  /** The paired peer's federation ROLE (`commander` / `outpost` / `retrans`), READ off its peer row,
+   *  for the three peer states — the word a client uses for `peer-not-outpost` (`commander …` /
+   *  `relay …`). For an `outpost` object naming THIS instance's own domain (§10.5) it is
+   *  `federation_self.role`. Null for `self` and `unknown-domain`, and for an `outpost` object whose
+   *  `peerDomainId` names neither self nor a peer row held here. */
+  peerRole: z.string().nullable()
+});
+export type ComponentPipelineTargetOutpost = z.infer<typeof ComponentPipelineTargetOutpostSchema>;
+
 /** Which topology wave declares a stage, and where it sits in release order. */
 export const ComponentPipelineWaveSchema = z.object({
   index: z.number().int(),
@@ -59,7 +142,13 @@ export const ComponentPipelineBindingSchema = z.object({
    *  the duplication ADR-0007 kept out of the database in the first place. */
   category: ExecutorCategorySchema,
   executionSystemId: z.string().uuid().nullable(),
-  executionSystemName: z.string().nullable()
+  executionSystemName: z.string().nullable(),
+  /** WHERE the ladder found it (ADR-0027/0029): "placement" when bound on the stage's own
+   *  placement, else the ancestor's `object_types.id` verbatim ("component", "assembly",
+   *  "service", "organization"). READ from the resolver's own provenance, never inferred
+   *  (resolution-provenance.test.ts is the cautionary tale). Optional: absent on responses
+   *  emitted before this field existed. */
+  resolvedVia: z.string().optional()
 });
 export type ComponentPipelineBinding = z.infer<typeof ComponentPipelineBindingSchema>;
 
@@ -106,9 +195,27 @@ export const ComponentPipelineSourceMappingSchema = z.object({
   /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting ONLY, never an
    *  enforcement input. Rendered as a label; it grants and withholds nothing. */
   classification: PipelineClassificationSchema.nullable(),
+  /** DECLARED provenance (outpost-ui.md §9.3a): `true` = a local mirror of a commander-shared repo;
+   *  `false` = domain-specific, tracked only in this domain. The source lane groups by it. Read,
+   *  never inferred; never an enforcement input. */
+  mirrorOfShared: z.boolean(),
+  /** The operator's pause switch (migration 0063) — `false` means this source tile is declared but
+   *  `matchComponentForSource` skips it, so a push that matches its repo/path/ref routes nowhere.
+   *  This is what lets the UI give each source its own enable/disable, not just its own arrow. */
+  enabled: z.boolean(),
+  /** Timed close bound, or null; and the read-time truth the matcher acts on. The arrow is
+   *  painted from `effectivelyEnabled`, never from `enabled` alone. */
+  disabledUntil: z.string().datetime().nullable(),
+  effectivelyEnabled: z.boolean(),
   /** The repo's web page, or null when it cannot be known — a GLOBBED `repoPattern` names a set of
    *  repos rather than a page, and a self-hosted provider's host is not recorded on a mapping. */
-  url: z.string().nullable()
+  url: z.string().nullable(),
+  /** DECLARED reach (§10.6, migration 0066): `global` → the tile's eyebrow reads "GLOBAL — shared
+   *  across domains"; `domain` → "DOMAIN-SPECIFIC — tracked only here"; `null` (not declared) → NO
+   *  eyebrow, nothing inferred. `mirrorOfShared` wins the eyebrow when both are set. Read, never
+   *  inferred; never an enforcement input. Required-nullable like `mirrorOfShared`/`disabledUntil`
+   *  (a new REQUIRED response property is additive within /v1). */
+  scope: SourceMappingScopeSchema.nullable()
 });
 export type ComponentPipelineSourceMapping = z.infer<typeof ComponentPipelineSourceMappingSchema>;
 
@@ -259,10 +366,28 @@ export const ComponentPipelineStageSchema = z.object({
     name: z.string(),
     /** ADR-0026 D1 — present only on a place-role target; without it no stage name derives. */
     environment: z.string().nullable(),
-    region: z.string().nullable()
+    region: z.string().nullable(),
+    /**
+     * THE SUBSTRATE FACET (pipeline-substrate-registry-scan.md §9.1) — what the target physically
+     * IS, read verbatim from the target's own `properties` (migration 0065 types them as optional
+     * strings; a non-string is read as absent). Well-known `substrate` values are GLOSSARY
+     * vocabulary (`aws|gcp|azure|kubernetes|vm|bare-metal|other`), rendered as-is, never enforced
+     * on the wire. Null = NOT DECLARED — an absence of a declaration, not an unknown observation,
+     * so a client renders nothing (no `—`, no badge). A client MUST NOT derive any of these from
+     * `name`: fixture names like `us-east-1-prod (k8s)` look parseable and are exactly the trap.
+     */
+    substrate: z.string().nullable(),
+    /** Provider account / project / subscription id. Same reading rules as `substrate`. */
+    account: z.string().nullable(),
+    /** Cluster name inside that account/region. Same reading rules as `substrate`. */
+    cluster: z.string().nullable()
   }),
   /** WHOSE DOMAIN maintains this place — see `ComponentPipelineDomainSchema`. */
   maintainedBy: ComponentPipelineDomainSchema,
+  /** WHICH OUTPOST this place is part of — see `ComponentPipelineTargetOutpostSchema` (§10.2).
+   *  Required: the server always resolves it (a state, never an omission), and a required additive
+   *  response property is the class #222 measured oasdiff accepts. */
+  outpost: ComponentPipelineTargetOutpostSchema,
   /** `<origin domain>-[<region>-]<environment>` (ADR-0026 D1). Null when the target carries no
    *  `environment`: not every deployment-target is a stage, and inventing a name would be a lie. */
   stageName: z.string().nullable(),
@@ -351,16 +476,198 @@ export const ComponentPipelineUnplacedStageSchema = z.object({
     id: z.string().uuid(),
     name: z.string(),
     environment: z.string().nullable(),
-    region: z.string().nullable()
+    region: z.string().nullable(),
+    /** The substrate facet — same fields, same reading rules as `ComponentPipelineStageSchema
+     *  .deploymentTarget`: the server builds ONE literal and pushes it into both arrays, so the two
+     *  shapes must not drift. */
+    substrate: z.string().nullable(),
+    account: z.string().nullable(),
+    cluster: z.string().nullable()
   }),
   /** WHOSE DOMAIN maintains this place. A stage this component never reaches is still somebody's to
    *  run, and saying so is what stops "not placed" reading as "nowhere". */
   maintainedBy: ComponentPipelineDomainSchema,
+  /** WHICH OUTPOST this place is part of — the SAME literal the server pushes into `stages[]`
+   *  (`ComponentPipelineTargetOutpostSchema`, §10.2); the two shapes must not drift. */
+  outpost: ComponentPipelineTargetOutpostSchema,
   /** `<origin domain>-[<region>-]<environment>` (ADR-0026 D1), derived exactly as for a placed
    *  stage — the name is a property of the PLACE, not of this component being at it. */
   stageName: z.string().nullable()
 });
 export type ComponentPipelineUnplacedStage = z.infer<typeof ComponentPipelineUnplacedStageSchema>;
+
+/**
+ * THE REGISTRY THIS COMPONENT PUBLISHES TO, AT THIS SITE (pipeline-substrate-registry-scan.md §9.2).
+ *
+ * Resolved from the component's outgoing `publishes_to` edges (component → execution-system,
+ * migration 0065) — a GRAPH FACT, deliberately not the `image` executor binding: a binding's Type is
+ * WHICH PIPELINE it drives (ADR-0007), so the image binding names what BUILDS the artifact, never
+ * where it lands. A registry is created `domainLocal:true` at each site and an edge with a
+ * domain-local endpoint never journals (M20.3), which is what makes this per-site by construction:
+ * the commander's Delivery lane shows the commander's registry, an outpost's shows its own.
+ *
+ * `state` is STATED, never chosen:
+ *   `none`      — no `publishes_to` edge here; every identity field null, `edgeCount` 0. A client
+ *                 says "no registry declared for this component here" — an absence, not an unknown.
+ *   `declared`  — exactly one edge; the identity fields describe it.
+ *   `ambiguous` — MORE than one edge. The identity fields are null and `edgeCount` says how many;
+ *                 the projection does NOT pick one (there is no rule that would make the pick
+ *                 honest, and "one per site" is a projection statement, not a DB constraint).
+ */
+export const ComponentPipelineRegistrySchema = z.object({
+  state: z.enum(["declared", "ambiguous", "none"]),
+  /** The execution-system object's id (`declared` only). */
+  executionSystemId: z.string().uuid().nullable(),
+  /** Its `name` — READ from the object, never from the component. */
+  name: z.string().nullable(),
+  /** Its `properties.kind` (`gitea`, `harbor`, `ecr`, …) when it is a string; null otherwise. */
+  kind: z.string().nullable(),
+  /** Console base — `webUrl`, else `serverUrl`, trailing slash trimmed (`executionSystemConsoleBase`).
+   *  Base only: no registry has a known deep-link shape here, and a guessed path is a lie. */
+  url: z.string().nullable(),
+  /** The edge's own `properties.repository` (the repository/path inside the registry, e.g.
+   *  `acme/checkout-api`) when it is a string; null otherwise. */
+  repository: z.string().nullable(),
+  /** How many `publishes_to` edges the component has here — 0, 1, or the count behind `ambiguous`. */
+  edgeCount: z.number().int()
+});
+export type ComponentPipelineRegistry = z.infer<typeof ComponentPipelineRegistrySchema>;
+
+/**
+ * ONE SCAN VERDICT over ONE artifact digest (pipeline-substrate-registry-scan.md §9.3) — a
+ * `control_runs` row of the artifact's change whose `evidence` parses as `ScanEvidenceSchema`,
+ * reduced to the NEWEST per (`scanner`, `digest`). Only what the evidence holds is here: severity
+ * COUNTS, never a CVE list (none is stored — §8 "Scan").
+ *
+ * `managed` is THE ONE server-side discriminator between the commander's own promotion scan step
+ * (promotion-scan-step.ts, the synthetic control id) and an org-pipeline `scan-result-control`
+ * run — the wire `ControlRun` carries no gateKind/gateRef, so without this flag the two are
+ * indistinguishable to a client. Read from `controlObjectId`, not inferred from the scanner.
+ */
+export const ComponentPipelineScanRunSummarySchema = z.object({
+  /** The scan METHOD (`trivy` / `trivy-vm` / `openscap`) — the managed step's `gateRef.method`
+   *  when the run carries one, else the evidence's own `scanner`. */
+  method: z.string(),
+  /** WHICH scanner produced the verdict, off the evidence. */
+  scanner: ScanMethodSchema,
+  scannerVersion: z.string(),
+  /** The digest the scanner ACTUALLY scanned (`evidence.artifactDigest`). */
+  digest: z.string(),
+  /** `evidence.digestMatch` — true iff the scanned digest equals the promoted one. Null only if
+   *  the evidence omitted it (the schema requires it, so today never — kept nullable for an older
+   *  evidence document). */
+  digestMatch: z.boolean().nullable(),
+  status: ControlOutcomeStatusSchema,
+  counts: ScanSeverityCountsSchema.nullable(),
+  /** The threshold the verdict was evaluated against, verbatim; null when the evidence omitted it. */
+  threshold: ScanThresholdSchema.nullable(),
+  /** The control run's `created_at` — when the verdict was recorded here. */
+  evaluatedAt: z.string().datetime(),
+  controlRunId: z.string().uuid(),
+  managed: z.boolean()
+});
+export type ComponentPipelineScanRunSummary = z.infer<typeof ComponentPipelineScanRunSummarySchema>;
+
+/**
+ * ONE EXPORT OF THIS CHANGE TO ONE PEER, as the commander stamped it at export time (§9.4 —
+ * `sourceRef.promotionExports[]`, written under the same row lock as `boundaryBundleChecksums`).
+ * This is WHAT THE COMMANDER SIGNED: its own promotion manifest (ADR-0015 §5 — SCP never signs an
+ * origin artifact), the detached cosign signature over `canonicalStringify(manifest)`, and the
+ * fingerprint of the instance key that signed it. A record here says "signed and exported"; it
+ * says nothing about arrival or verification at the peer (`boundary-segment.ts` R1).
+ */
+export const ComponentPipelinePromotionExportSchema = z.object({
+  peerDomainId: z.string(),
+  /** The peer's `name` when a `federation_peers` row still exists for it here; null otherwise. */
+  peerName: z.string().nullable(),
+  exportedAt: z.string(),
+  /** The Ed25519 bundle checksum — the same value `boundaryBundleChecksums[]` carries. */
+  checksum: z.string(),
+  manifest: PromotionManifestSchema,
+  manifestSignature: z.string(),
+  /** SHA-256 hex of the signing instance's cosign public-key PEM; null on a stamp written before
+   *  the fingerprint was recorded. */
+  keyFingerprint: z.string().nullable()
+});
+export type ComponentPipelinePromotionExport = z.infer<
+  typeof ComponentPipelinePromotionExportSchema
+>;
+
+/**
+ * THE IMPORTED PROMOTION MANIFEST (§10.4) — what an OUTPOST's Registry tile shows about the artifact
+ * that ARRIVED there. At promotion import the receiving instance stamps, on the imported change's
+ * `sourceRef`, the exporter's `promotionManifest` + detached cosign `manifestSignature` (plus
+ * `promotedFromDomain`, `artifactDigests[]`, `artifacts[]`, `boundaryBundleChecksums`). Import
+ * REJECTS on any signature / set-equality / digest-tie failure (`verifyPromotionManifest`), so a
+ * manifest stored here was verified at import BY CONSTRUCTION — the projection re-verifies nothing.
+ *
+ * Non-null ONLY when BOTH the manifest (parsing as `PromotionManifestSchema`) AND the signature are
+ * stamped. A manifest without a signature is stated in `artifact.unknownFields` as
+ * `importedManifest:unsigned`; a manifest that does not parse as `importedManifest:unparseable`;
+ * neither key ⇒ null with no note (nothing arrived — the commander site reads this).
+ *
+ *   - `exporterDomainId` — `manifest.exporterDomainId`, verbatim.
+ *   - `exporterName`     — the paired peer's `name` here when a `federation_peers` row carries that
+ *                          domain id (the exporter IS a paired peer at the importer); null otherwise.
+ *   - `importedFromDomain` — `sourceRef.promotedFromDomain` when it is a string; null otherwise.
+ *   - `artifactCount`    — `manifest.artifacts.length`.
+ */
+export const ComponentPipelineImportedManifestSchema = z.object({
+  manifest: PromotionManifestSchema,
+  manifestSignature: z.string(),
+  exporterDomainId: z.string(),
+  exporterName: z.string().nullable(),
+  importedFromDomain: z.string().nullable(),
+  artifactCount: z.number().int().nonnegative()
+});
+export type ComponentPipelineImportedManifest = z.infer<
+  typeof ComponentPipelineImportedManifestSchema
+>;
+
+/**
+ * THE ARTIFACT this pipeline is about, and every CHANGE-SCOPED fact the projection holds about it
+ * (§9.3). The pipeline is component-scoped; a digest, an SBOM reference, a scan verdict and a
+ * signed manifest are all facts about ONE CHANGE — so the projection PICKS a change and STATES the
+ * pick (`changeId`, `changeName`, `changeCreatedAt`): the newest change of the component whose
+ * `sourceRef` carries an artifact digest, preferring the changes at the stages' currents/holds,
+ * else the component's newest such change at all. No such change ⇒ the response carries
+ * `artifact: null` — "no artifact yet", not an empty artifact.
+ *
+ * Every field is READ from stored data or stated absent:
+ *   - `digests`     — `sourceRef.artifact_digest` / `artifactDigest` (string or string[]) plus the
+ *                     importer's `artifactDigests[]` stamp, union in that order, de-duplicated,
+ *                     verbatim.
+ *   - `sbom`        — `sourceRef.sbom` when it parses as `SbomRefSchema`; else null and
+ *                     `unknownFields` carries `sbom:unparseable` (a malformed reference is stated,
+ *                     not silently dropped).
+ *   - `scans`       — see `ComponentPipelineScanRunSummarySchema`.
+ *   - `exportGate`  — the E6 export gate's OWN predicate applied read-only over the same runs:
+ *                     `not_run` when no scan evidence exists at all; else `pass`/`fail`. It is a
+ *                     re-evaluation, never a remembered verdict (E6 writes no Decision on pass).
+ *   - `signing.promotionExports`   — the §9.4 stamps, newest last (append order).
+ *   - `signing.originSignatureRefs` — every ORIGIN `signatureRef` the sourceRef holds (today only
+ *                     the SBOM blob's; there is no artifact-level one — an empty array is the honest
+ *                     answer, never a fabricated ref).
+ *   - `signing.importedManifest` — §10.4, see `ComponentPipelineImportedManifestSchema`. Optional
+ *                     on the wire (additive; an older server omits it), null when nothing arrived
+ *                     under a signed manifest.
+ */
+export const ComponentPipelineArtifactSchema = z.object({
+  changeId: z.string().uuid(),
+  changeName: z.string().nullable(),
+  changeCreatedAt: z.string().datetime(),
+  digests: z.array(z.string()),
+  sbom: SbomRefSchema.nullable(),
+  scans: z.array(ComponentPipelineScanRunSummarySchema),
+  exportGate: z.enum(["pass", "fail", "not_run"]),
+  signing: z.object({
+    promotionExports: z.array(ComponentPipelinePromotionExportSchema),
+    originSignatureRefs: z.array(z.string()),
+    importedManifest: ComponentPipelineImportedManifestSchema.nullable().optional()
+  }),
+  unknownFields: z.array(z.string())
+});
+export type ComponentPipelineArtifact = z.infer<typeof ComponentPipelineArtifactSchema>;
 
 /** Which rung supplied the pipeline — the answer to "why does this component release this way?"
  *  (charter principle 6). `pipeline-resolution.ts` computes it; surfacing it here is what stops an
@@ -383,7 +690,19 @@ export type ComponentPipelineSource = z.infer<typeof ComponentPipelineSourceSche
  * that has never released, which the change-anchored surface it replaces could not represent at all.
  */
 export const ComponentPipelineResponseSchema = z.object({
-  component: z.object({ id: z.string().uuid(), urn: z.string(), name: z.string() }),
+  component: z.object({
+    id: z.string().uuid(),
+    urn: z.string(),
+    name: z.string(),
+    /** WHO MAINTAINS THIS COMPONENT (outpost-ui.md §9.3a) — same shape as a stage's `maintainedBy`.
+     *  `isSelf: false` on an outpost means the commander (or another peer) is UPSTREAM of this
+     *  domain's repos in the source lane; `isSelf: true` means this domain authored it. */
+    maintainedBy: ComponentPipelineDomainSchema,
+    /** ADR-0031 — a domain-local component has NO upstream: its repo is the source, and no
+     *  commander appears ahead of it. Structurally consistent with `maintainedBy.isSelf` (a
+     *  domain-local object never journaled, so it is always self-maintained). */
+    domainLocal: z.boolean()
+  }),
   /** Null when no rung supplies one — the component releases as a single anonymous wave. */
   pipeline: ComponentPipelineSourceSchema.nullable(),
   /** WHERE THE JOURNEY CAME FROM, which is what decides how to read an EMPTY `unplacedStages`.
@@ -417,6 +736,15 @@ export const ComponentPipelineResponseSchema = z.object({
    *  repeats anything in the other. `order` makes their union a single ordered pipeline. Do NOT
    *  "simplify" this into one array without an `api-v2-exception` (tools/openapi/OASDIFF-EXCEPTIONS.md). */
   unplacedStages: z.array(ComponentPipelineUnplacedStageSchema),
+  /** THE REGISTRY at this site — see `ComponentPipelineRegistrySchema`. Optional on the wire because
+   *  `/v1` is additive-only and this shipped after the response did; a server that emits it always
+   *  emits an object (`state: "none"` is a value, not an omission). Null/absent = an older server. */
+  registry: ComponentPipelineRegistrySchema.nullable().optional(),
+  /** THE ARTIFACT and its change-scoped facts — see `ComponentPipelineArtifactSchema`. Optional on
+   *  the wire (additive-only `/v1`); a server that emits it sends an object or `null` (null = no
+   *  change of this component carries an artifact digest — "no artifact yet"). Absent = an older
+   *  server. */
+  artifact: ComponentPipelineArtifactSchema.nullable().optional(),
   unknownFields: z.array(z.string())
 });
 export type ComponentPipelineResponse = z.infer<typeof ComponentPipelineResponseSchema>;

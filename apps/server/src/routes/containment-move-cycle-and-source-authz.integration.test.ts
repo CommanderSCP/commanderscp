@@ -1,4 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { and, eq, isNull } from "drizzle-orm";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { objects, relationships } from "../db/schema.js";
+import { containmentChain } from "../graph/containment.js";
 import {
   buildTestServer,
   createTestOrg,
@@ -195,12 +199,28 @@ describe("a containment move may not build a cycle, and is authorized at both en
     const stranded = await makeService(org, "unrooted-stranded", doomedId);
     const movable = await makeService(org, "unrooted-movable");
 
+    // THE API WILL NOT STRAND `stranded` FOR US: `deleteObject`'s route-1 orphan guard (M20, the
+    // ui-review branch) refuses to tombstone a domain that live children still name — 409, blockers
+    // named — precisely so this shape cannot be produced through a door. Pinned here as the
+    // negative control, because if that guard ever went quiet this fixture would silently start
+    // testing a state the API can produce.
     const deleted = await server.app.inject({
       method: "DELETE",
       url: `/api/v1/domains/${doomedId}`,
       headers: { authorization: `Bearer ${org.adminToken}` }
     });
-    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect(deleted.statusCode, deleted.body).toBe(409);
+    expect(deleted.body).toContain("still name it as their domain");
+
+    // So the broken chain is PLANTED the way the refusal's own doc says such rows arise — "a legacy
+    // row, or one planted before the doors were closed": the tombstone is written straight onto the
+    // row, below every door. That is exactly the population refusal 3 exists for.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({ deletedAt: new Date() })
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.id, doomedId)))
+    );
 
     // `stranded` passes the soft-delete filter — IT is live — so the refusal added for a tombstoned
     // parent (`resolveContainmentParent`) does not fire. The chain walk is what catches it: every
@@ -214,61 +234,120 @@ describe("a containment move may not build a cycle, and is authorized at both en
     expect((after.json() as { domainId: string | null }).domainId).toBe(org.orgId);
   });
 
-  it("a TRUNCATED walk fails closed — the destination reaches the org root, and hides the cycle past the bound", async () => {
+  it("a walk PAST THE BOUND fails closed — the destination reaches the org root, and the cycle sits beyond the bound", async () => {
     const org = await createTestOrg(server, "deep-parent");
 
     // The shape that makes the depth bound load-bearing rather than decorative, and the only shape
     // that isolates it. The destination is a DAG with two routes up:
     //
     //   destination --domain_id--> org root                      (1 hop: the root IS on the chain)
-    //   destination --contains---> deepService -...-> movable     (12 hops: past the bound)
+    //   destination --contains---> deepService -...-> movable     (10 hops; the root behind it at 11)
     //
-    // So `the org root is missing` does not fire, `the child is on the chain` does not fire either
-    // — `movable` sits at hop 12 and the walk stops at 10 — and yet the move WOULD close a real
-    // cycle. Only the truncation refusal stands between this manifest and two subtrees nobody can
-    // reach. Delete that branch and this case is the one that goes red.
+    // So `the org root is missing` does not fire, and yet the move WOULD close a real cycle whose
+    // proof lies at the edge of the bound. Under ADR-0037 the walk does not truncate silently: it
+    // probes one level PAST the bound and REFUSES when anything is there — and the containment-
+    // parent door turns that refusal into its own 400 (`containmentParentChainForDoor`'s conversion
+    // branch: "a row under it would sit past the bound on that route"). Delete that conversion —
+    // or let the door read a shortened chain — and this case is the one that goes red (measured
+    // 2026-08-18: `throw error` in place of the conversion, in CODE, turned exactly this case red
+    // while `containment-depth-doors` stayed green — the two files pin two different properties).
     //
-    // Ten levels is the deepest the ORG-ROOT ADMIN can build, and not by coincidence: creating a
-    // child of `deep-k` authorizes at `deep-k`, whose expansion reaches the org root at hop k+1, so
-    // the same bound that truncates the read truncates the write. That is the honest ceiling of the
-    // model, and it is why the fixture stops here and reaches the last rung with a bound principal.
+    // WHY THIS BRANCH IS STILL LOAD-BEARING when no door can build the shape any more: the depth
+    // invariant is a WRITE door, so rows planted before 2026-08-18, or arrived under the
+    // federation-import carve-out, are untouched by it. Whether an estate actually holds one is a
+    // measurable fact, not a guess — `scripts/containment-depth-census.sql` asks each database.
+    // Review pair, 2026-08-18: zero rows past the bound (deepest live route 5 on the commander, 6
+    // on the outpost); production not measured from a laptop. So today this is defence-in-depth
+    // against a state no current door can create, and the comment says so rather than implying a
+    // live population.
+    //
+    // Nine levels under `movable`: `deep-9`'s own chain is exactly ten hops — the ceiling, complete
+    // and readable — so a row under it would sit at hop ELEVEN. Since the owner ruling of 2026-08-18
+    // (ADR-0037 Consequences; `graph/containment-depth-doors.integration.test.ts`) NO door will
+    // write that row: `POST /components {service: deep-9}` — the way this fixture used to be built —
+    // now answers 400 from the `contains` door. The hop-eleven shape is therefore PLANTED below the
+    // doors, exactly as the refusal-3 case above plants its tombstone: the component is created
+    // legitimately under a root-level service, and its `contains` edge is then re-pointed at
+    // `deep-9` by a direct UPDATE. That is the population this conversion branch exists for — a
+    // legacy row, or one that arrived under the federation-import carve-out — and it is labelled as
+    // such rather than dressed up as something a door can produce.
     const movable = await makeService(org, "deep-movable");
     let deepService = movable;
-    for (let i = 1; i <= 10; i += 1) {
+    for (let i = 1; i <= 9; i += 1) {
       deepService = await makeService(org, `deep-${i}`, deepService);
     }
-    // Authored by a principal bound DIRECTLY at the deep service. The org-root admin cannot do it:
-    // its binding reaches `deepService` only through the very walk that is truncated here — which
-    // is the same fact this refusal exists to respect, showing up from the authorization side.
-    const deepAuthor = await createTestUser(server, org, [
-      { role: "Administrator", scope: deepService },
-      { role: "Administrator", scope: org.orgId }
-    ]);
-    const destination = await post(deepAuthor.token, "/api/v1/components", {
-      name: "deep-destination",
+    // THE DOOR IS CLOSED — pinned here as the negative control, so that if it ever went quiet this
+    // fixture would silently start testing a state the API can produce.
+    const throughTheDoor = await post(org.adminToken, "/api/v1/components", {
+      name: "deep-destination-refused",
       service: deepService,
+      domainId: null
+    });
+    expect(throughTheDoor.status, throughTheDoor.body).toBe(400);
+    expect(throughTheDoor.body).toContain("would exceed the supported containment depth");
+
+    const anchor = await makeService(org, "deep-anchor");
+    const destination = await post(org.adminToken, "/api/v1/components", {
+      name: "deep-destination",
+      service: anchor,
       // Explicit: the org root, so the SHORT route exists and the root-reachability refusal cannot
       // be what answers.
       domainId: null
     });
     expect(destination.status, destination.body).toBe(201);
     const destinationId = destination.json().id as string;
+    // The legacy/imported shape: re-point the component's `contains` edge at the ten-hop service,
+    // below every door. `content_hash` is left stale on purpose — no walk reads it.
+    const planted = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(relationships)
+        .set({ fromId: deepService })
+        .where(
+          and(
+            eq(relationships.orgId, org.orgId),
+            eq(relationships.typeId, "contains"),
+            eq(relationships.toId, destinationId),
+            isNull(relationships.deletedAt)
+          )
+        )
+        .returning({ id: relationships.id })
+    );
+    expect(planted, "the fixture's contains edge must exist to be re-pointed").toHaveLength(1);
+    // The fixture, asserted: the walk itself now refuses `destination` — this is the 409 the door
+    // below converts. Without this the case could pass against a shape the walk still accepts.
+    await expect(
+      withTenantTx(server.deps.db, org.orgId, (tx) =>
+        containmentChain(tx, org.orgId, destinationId)
+      )
+    ).rejects.toMatchObject({ status: 409 });
 
     const res = await patchService(org.adminToken, movable, { domainId: destinationId });
     expect(res.status, res.body).toBe(400);
+    // The door's OWN sentence, carrying the walk's: the depth bound and the ADR are named, so an
+    // operator meets one story from either side (ADR-0037 pins the phrase; M22 pins the status).
+    // This is the ONE door refusal that carries the WALK's phrase — every other depth refusal at a
+    // door says "would exceed" (see `containment.ts` CONTAINMENT_DEPTH_DOOR_PHRASE).
+    expect(res.body).toContain("exceeds the supported containment depth");
+    expect(res.body).toContain("a row under it would sit past the bound on that route");
+    // ...and NOT the cycle rationale: this branch also serves the CREATE doors, where the cycle
+    // question is deliberately not asked, so its sentence names its own condition only.
+    expect(res.body).not.toContain("free of a cycle");
 
     const after = await getService(org.adminToken, movable);
     expect((after.json() as { domainId: string | null }).domainId).toBe(org.orgId);
     // The consequence the refusal bought: both ends of the would-be loop are still reachable — the
-    // deep end by the principal bound at it, which is the only one that ever could reach it.
+    // deep end at exactly the ceiling, by the org admin (a ceiling, not a ban).
     expect((await getService(org.adminToken, movable)).status).toBe(200);
-    expect((await getService(deepAuthor.token, deepService)).status).toBe(200);
+    expect((await getService(org.adminToken, deepService)).status).toBe(200);
 
-    // The bound is a CEILING, not a ban on nesting: a container comfortably inside it takes the
-    // same move. Without this the case above would also pass if the check refused everything.
+    // The bound is a CEILING, not a ban on nesting: a subtree-less service takes a move under a
+    // shallow container. Without this the case above would also pass if the check refused
+    // everything. (`movable` itself cannot take that move any more — it carries a nine-deep
+    // subtree, and the door counts it: `graph/containment-depth-doors.integration.test.ts`.)
     const shallow = await makeService(org, "deep-shallow-0");
     const shallower = await makeService(org, "deep-shallow-1", shallow);
-    const ok = await patchService(org.adminToken, movable, { domainId: shallower });
+    const control = await makeService(org, "deep-control");
+    const ok = await patchService(org.adminToken, control, { domainId: shallower });
     expect(ok.status, ok.body).toBe(200);
   });
 

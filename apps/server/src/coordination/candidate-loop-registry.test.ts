@@ -102,18 +102,17 @@ import { readStripped } from "@scp/source-census";
  *     never become a bump. Regressions: `foreign-origin-campaign.integration.test.ts` (end to end)
  *     and `campaign-active-filter.integration.test.ts`'s S10 arm (the query predicate itself).
  *
- *     CENSUS, filterless, of every campaign/initiative-side read that feeds a write — because the
+ *     CENSUS, filterless, of every campaign-side read that feeds a write — because the
  *     named loop is one instance and the property is "an engine-driven read of a campaign whose
  *     writes are not authority-checked". Everything below is FINE, and the reason is recorded so the
  *     next sweep does not re-derive it:
  *       - `campaign-rollback.ts`'s `authoritativeCampaignMembers` -> `triggerRollback`: operator-
  *         driven, not a tick, and every member write goes through `triggerRollback`, which already
  *         refuses a foreign-origin change and reports it as a `skipped` reason.
- *       - `proposeCampaign` / `proposeInitiative` / `addCampaignToInitiative` / `iac/plans-repo.ts`'s
+ *       - `proposeCampaign` / `iac/plans-repo.ts`'s
  *         campaign apply: actor-driven creates and updates through `createObject`/`updateObject`,
  *         which carry the replica guard themselves ("object is a read-only replica").
- *       - `getCampaignStatus`, `listCampaigns`, `getCampaign`, `computeInitiativeRollupFor`,
- *         `graph/named-queries.ts`'s `initiative-rollup`, `routes/campaigns.ts`'s `:id/explain`:
+ *       - `getCampaignStatus`, `listCampaigns`, `getCampaign`, `routes/campaigns.ts`'s `:id/explain`:
  *         pure reads. Reporting a replica's status is correct and required.
  *       - `campaign-plan-service.ts`: writes only, and only ever called from the loop above — the
  *         authority decision belongs at the candidate query, not repeated at each writer.
@@ -124,7 +123,7 @@ import { readStripped } from "@scp/source-census";
  *         reads are not the security boundary). A stale comment asserting a caller that does not
  *         exist is precisely the hazard CLAUDE.md's census rule warns about — it would have let a
  *         future census tick this off as covered.
- *     `watchdog.ts` does not read campaigns, and there is no initiative-side tick.
+ *     `watchdog.ts` does not read campaigns.
  *   * THE ONE OPEN ITEM — NOW CLOSED (2026-08-08, same day it was opened). It was: the S10
  *     single-writer skip (`if (object.originDomainId !== selfDomainId) continue;`) at the top of
  *     five `advance*` loops leaves the row un-stamped, which IS this property — a SIXTH instance,

@@ -1,4 +1,30 @@
+/*
+ * LIGHT-ONLY BY DECISION (design spec, standing decisions): `color-scheme: light` below stays, and
+ * no `dark:` variant classes exist anywhere in apps/web. A future dark theme is a deliberate
+ * project, not something to drift into one `dark:` utility at a time.
+ */
 @import "tailwindcss";
+
+/*
+ * ACCENT: army olive (owner decision 2026-08-11 — "army themed, green color scheme, no camo").
+ * A hand-tuned olive-drab scale registered as first-class Tailwind tokens; used everywhere the
+ * design spec sanctions an accent (primary actions, active nav, focus rings, brand mark) and
+ * NOWHERE else — status colors are untouched, and the muted brown-green reads clearly apart from
+ * the emerald `success` tone, so accent and semantics still never collide (spec §1.5 note).
+ */
+@theme {
+  --color-army-50: #f7f8ef;
+  --color-army-100: #eaeeda;
+  --color-army-200: #d6ddb8;
+  --color-army-300: #bcc78e;
+  --color-army-400: #a0ad64;
+  --color-army-500: #849146;
+  --color-army-600: #687435;
+  --color-army-700: #515a2b;
+  --color-army-800: #424924;
+  --color-army-900: #383e20;
+  --color-army-950: #1d2110;
+}
 
 /*
  * Air-gap requirement (CLAUDE.md, DESIGN.md §14): zero external requests. Tailwind's default

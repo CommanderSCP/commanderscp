@@ -4,11 +4,13 @@ import {
   type DesiredStateManifest,
   type ExecutorType,
   type ManifestDependencyProducer,
+  type ManifestGovernanceMoveRung,
   type ManifestExecutorBinding,
   type ManifestObject,
   type ManifestRelationship,
   type ManifestPlacement,
-  type ManifestSourceMapping
+  type ManifestSourceMapping,
+  type SourceMappingScope
 } from "@scp/schemas";
 import { deriveConstructUrn } from "./urn.js";
 
@@ -92,6 +94,11 @@ export interface SourceMappingSpec {
   pathPattern?: string;
   /** Which pipeline of the component this source drives (ADR-0007). Omitted ⇒ `configuration`. */
   type?: ExecutorType;
+  /** Declared reach of the repo (pipeline-substrate-registry-scan.md §10.6): `global` (shared across
+   *  domains, tracked at the commander) | `domain` (tracked only in one domain). Omitted ⇒ this
+   *  program does not manage the scope (an apply never clears one set by hand); explicit `null` ⇒
+   *  declare it undeclared. A label read by pipelines, the CLI and plans — never a routing input. */
+  scope?: SourceMappingScope | null;
 }
 
 /**
@@ -145,6 +152,7 @@ export class Stack extends Construct {
   private readonly placementDecls: ManifestPlacement[] = [];
   private readonly executorBindingDecls: ManifestExecutorBinding[] = [];
   private readonly dependencyProducerDecls: ManifestDependencyProducer[] = [];
+  private readonly governanceMoveRungDecls: ManifestGovernanceMoveRung[] = [];
 
   constructor(app: App, stackName: string) {
     super(app, stackName);
@@ -181,7 +189,9 @@ export class Stack extends Construct {
       sourceKind: spec.sourceKind,
       ...(spec.repoPattern !== undefined ? { repoPattern: spec.repoPattern } : {}),
       ...(spec.pathPattern !== undefined ? { pathPattern: spec.pathPattern } : {}),
-      ...(spec.type !== undefined ? { type: spec.type } : {})
+      ...(spec.type !== undefined ? { type: spec.type } : {}),
+      // Omitted stays OMITTED (not `null`): the two mean different things server-side (§10.6).
+      ...(spec.scope !== undefined ? { scope: spec.scope } : {})
     });
     return this;
   }
@@ -295,6 +305,62 @@ export class Stack extends Construct {
   }
 
   /**
+   * Declares that containment moves BENEATH `subject` require `governance:move` at BOTH ends
+   * (ADR-0038 §2) — the IaC form of `PUT /governance/move-enforcement/rungs/{idOrUrn}`, and the
+   * follow-up named in `docs/proposals/governance-reach-on-containment-move.md` §9.6 Q4.
+   *
+   * WHAT THE RUNG DOES, so it is not mistaken for a label: from the moment it exists, every move of
+   * an object under `subject` — through `objects[].domainId`, through a `contains` relationship,
+   * through `setComponentService`, through discovery-accept and through this very apply path — is
+   * refused unless the mover holds `governance:move` at-or-above the object AND at-or-above the
+   * destination. `object:write` at both ends is no longer enough. That is a bar on other people's
+   * ordinary work, so it takes `policy:write` at-or-above `subject` to set.
+   *
+   * THERE IS NO TIER ARGUMENT, and the omission is the design: the tier is DERIVED server-side from
+   * `subject`'s object type (org root / domain / service / assembly). A manifest that could name one
+   * could name a tier the subject is not, and the stored literal would then describe a containment
+   * shape nothing else in the system believes in.
+   *
+   * THE SUBJECT MUST BE A CONTAINER THIS STACK OWNS. `governance_move_rungs` carries no stack
+   * labels, so ownership is inherited from the subject container, exactly like a source mapping's
+   * and a producer declaration's — `POST /plans` rejects 400 anything else, including a component
+   * (nothing is contained by a component, so the rung would govern the empty set of moves). The
+   * practical consequence is worth knowing before you reach for this: a rung on the ORG ROOT, or on
+   * a container another stack manages, is authored through the API/CLI, never through a manifest.
+   *
+   * THERE IS DELIBERATELY NO FLUENT `subject.governsMoves()`. `Service` and `Domain` come from the
+   * uniform `defineResourceConstruct` factory, so a fluent method would have to live on
+   * `ResourceConstruct` and would therefore be offered on `Component`, `Team`, `Policy` and
+   * `DeploymentTarget` — every one of which `POST /plans` refuses. That is the reason
+   * `producesDependency` sits on `Component` alone rather than on the base class; here the same
+   * reasoning lands on "stack-level only".
+   *
+   * ==========================================================================================
+   * READ THIS BEFORE YOU DELETE A CALL TO IT: REMOVING YOUR LAST ONE DISABLES NOTHING
+   * ==========================================================================================
+   * `governanceMoveRungs` is the SECOND collection where an ABSENT key does not prune (`producers`
+   * is the first), and the reason is sharper: pruning a rung DISABLES A GOVERNANCE BAR, and the
+   * symptom is an ABSENCE of refusals — moves that should have been refused quietly succeeding,
+   * which nothing surfaces until somebody audits where a governed object ended up. So:
+   *
+   *   - Removing ONE of several calls DOES disable that rung. The collection is still present, so it
+   *     is authoritative over its members and the plan shows a `delete` entry.
+   *   - Removing your ONLY call disables NOTHING. `synth()` omits an empty collection, so the
+   *     manifest becomes indistinguishable from one that never managed rungs at all. ACCEPTED COST
+   *     of the rule above, identical to `producers`.
+   *
+   * To disable a final rung use `scp governance move-enforcement disable`
+   * (`DELETE /governance/move-enforcement/rungs/{idOrUrn}`), or hand-author
+   * `"governanceMoveRungs": []`; `@scp/iac` cannot emit one. And note a disable may still be
+   * REFUSED: the lattice is monotone, so a rung whose ancestor — or the instance rung — is enabled
+   * cannot be turned off below, and the apply fails 409 naming the upper rung.
+   */
+  addGovernanceMoveRung(subject: ResourceConstruct | string): this {
+    this.governanceMoveRungDecls.push({ subjectIdOrUrn: resolveUrn(subject) });
+    return this;
+  }
+
+  /**
    * Pure synth: no `Date.now()`, no `Math.random()`, no `crypto.randomUUID()`, no network/
    * filesystem I/O — everything comes from the construct tree's own props. Objects are sorted by
    * URN and relationships by `(typeId, fromUrn, toUrn)` so re-ordering how constructs were added
@@ -338,6 +404,13 @@ export class Stack extends Construct {
     const producers: ManifestDependencyProducer[] = [...this.dependencyProducerDecls].sort((a, b) =>
       `${a.ecosystem}\u0000${a.coordinate}`.localeCompare(`${b.ecosystem}\u0000${b.coordinate}`)
     );
+    // Sorted on the SUBJECT, which is the whole identity — a rung has no value beyond existing, so
+    // there is nothing else two entries could differ in. Duplicates are left in rather than
+    // de-duplicated here: `synth()` reports what the program said, and the server collapses two
+    // declarations of one subject into one rung (a repeated rung is idempotent, not ambiguous).
+    const governanceMoveRungs: ManifestGovernanceMoveRung[] = [
+      ...this.governanceMoveRungDecls
+    ].sort((a, b) => a.subjectIdOrUrn.localeCompare(b.subjectIdOrUrn));
 
     return DesiredStateManifestSchema.parse({
       stackName: this.stackName,
@@ -351,7 +424,13 @@ export class Stack extends Construct {
       // UNMANAGED and prunes nothing, which is why a stack that drops its last
       // `producesDependency(...)` call does not retract it. See `addDependencyProducer` for the
       // whole rule and for how to retract a final declaration.
-      ...(producers.length > 0 ? { producers } : {})
+      ...(producers.length > 0 ? { producers } : {}),
+      // OMITTED WHEN EMPTY, and meaning the same thing `producers`' omission means — UNMANAGED, not
+      // "manages them and declares none" — which is why dropping the last `addGovernanceMoveRung`
+      // call disables nothing. See that method for the whole rule and for how to disable a final
+      // rung. This is the more dangerous of the two omissions to get wrong: pruning here would turn
+      // OFF a governance bar, and the symptom would be an absence of refusals.
+      ...(governanceMoveRungs.length > 0 ? { governanceMoveRungs } : {})
     });
   }
 }
@@ -448,16 +527,14 @@ export class ResourceConstruct extends Construct {
   }
 
   // NOTE — there is deliberately NO `coordinates()` fluent method (M5 CRITICAL, adversarial
-  // review). `coordinates` is a system-managed relationship type (campaign/initiative MEMBERSHIP):
+  // review). `coordinates` is a system-managed relationship type (campaign MEMBERSHIP):
   // the server refuses it on BOTH the generic `POST /relationships` endpoint AND the IaC plan/apply
   // path (`apps/server/src/graph/system-managed-relationships.ts`), because a `coordinates` edge
   // injected by any actor with `relationship:write` could sweep an arbitrary Change into a victim
   // campaign's rollback. Legitimate campaign IaC membership is declared through a `Campaign`'s
   // authority-checked `targets` (which the server binds to the applying actor's own authority at
-  // apply time via `assertCampaignTargetsWithinAuthority`); initiative membership is added via the
-  // authority-checked `POST /initiatives/{id}/campaigns` API (`scp initiative add-campaign`), NOT
-  // through IaC. Offering a `.coordinates()` synth method here would just produce a manifest that
-  // fails at apply — so it doesn't exist.
+  // apply time via `assertCampaignTargetsWithinAuthority`). Offering a `.coordinates()` synth
+  // method here would just produce a manifest that fails at apply — so it doesn't exist.
 
   /** @internal */
   _toManifestObject(): ManifestObject {
@@ -493,6 +570,26 @@ function defineResourceConstruct(
 export const Service = defineResourceConstruct("service");
 export const Domain = defineResourceConstruct("domain");
 export const Team = defineResourceConstruct("team");
+/**
+ * A policy (server-side object type `"policy"`) — first-class in a stack since M21.6 so that a
+ * DEPENDENCY SUBSCRIPTION, which IS a `dependencySubscription` effect on an ordinary policy
+ * (ADR-0032 §3a) and has no bespoke construct or verb anywhere, can be declared in IaC:
+ *
+ *   new Policy(stack, "checkout-deps", {
+ *     name: "checkout-deps",
+ *     properties: {
+ *       enforcement: "advisory",
+ *       scope: { objectRef: "urn:scp:…:component:checkout-api" },
+ *       effects: [{ dependencySubscription: { enabled: true, granularity: "minor_and_patch" } }]
+ *     }
+ *   });
+ *
+ * The properties travel VERBATIM into the manifest (the policy document is validated server-side by
+ * the type's JSON Schema at plan/apply, exactly as through `POST /policies`); a sole `group` scope
+ * on a dependencySubscription policy is refused there in both directions (ADR-0032 §6a). Uniform —
+ * no custom constructor logic — so it belongs in the factory list, not beside `Component`.
+ */
+export const Policy = defineResourceConstruct("policy");
 
 export interface ComponentProps extends ResourceProps {
   /**
@@ -638,7 +735,7 @@ export const User = defineResourceConstruct("user");
 export const ServiceAccount = defineResourceConstruct("service-account");
 
 // -------------------------------------------------------------------------------------------
-// Campaign / Initiative / Release Topology constructs (M5, BUILD_AND_TEST.md §8) — written as
+// Campaign / Release Topology constructs (M5, BUILD_AND_TEST.md §8) — written as
 // real `ResourceConstruct` subclasses rather than via `defineResourceConstruct`, because each
 // needs custom constructor logic (resolving construct references to URN strings, typed
 // `waves`/`targets` props) that plain `ResourceProps` doesn't support.
@@ -743,36 +840,6 @@ export class Campaign extends ResourceConstruct {
       domainId: props.domainId,
       labels: props.labels,
       properties
-    });
-  }
-}
-
-export interface InitiativeProps extends Omit<ResourceProps, "properties"> {
-  description?: string;
-}
-
-/**
- * A named grouping of campaigns (server-side object type `"initiative"`, pre-seeded —
- * `drizzle/0011_campaigns.sql`).
- *
- * MEMBERSHIP IS NOT DECLARED IN IaC (M5 CRITICAL, adversarial review). An initiative's member
- * campaigns are `coordinates` relationships (initiative -> campaign), a system-managed type the
- * server refuses on the IaC apply path (see `ResourceConstruct`'s note where `owns`/`dependsOn`
- * live, and `apps/server/src/graph/system-managed-relationships.ts`). Create the initiative in IaC
- * for its identity/description, then add member campaigns through the authority-checked
- * `POST /initiatives/{id}/campaigns` API (`scp initiative add-campaign`), which enforces
- * `relationship:write` at BOTH the initiative and each campaign's scope. (Campaign membership is
- * different: a `Campaign`'s `targets` ARE declarable in IaC, because the server binds them to the
- * applying actor's own authority at apply time — `assertCampaignTargetsWithinAuthority`.)
- */
-export class Initiative extends ResourceConstruct {
-  constructor(scope: Stack, id: string, props: InitiativeProps) {
-    super(scope, id, "initiative", {
-      name: props.name,
-      urn: props.urn,
-      domainId: props.domainId,
-      labels: props.labels,
-      properties: props.description !== undefined ? { description: props.description } : {}
     });
   }
 }

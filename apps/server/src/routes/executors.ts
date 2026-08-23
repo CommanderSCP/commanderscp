@@ -47,6 +47,7 @@ import { isGovernanceManagedObjectType } from "../governance/governance-managed-
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
+import { assertGovernanceMoveAdmits } from "../governance/move-enforcement.js";
 import {
   upsertExecutorBinding,
   listExecutorBindingsForTarget,
@@ -1059,6 +1060,10 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         // handful of endpoints across many edges, and re-asking the identical question is the only
         // cost this adds to the batch shape this route exists for.
         const endpointsAuthorized = new Set<string>();
+        /** The objects THIS request created — the `governance:move` create/move distinction below
+         *  turns on it, so it is read from `createdObjectIds` rather than from `urnToId` (which also
+         *  holds proposal-local aliases pointing at those same ids). */
+        const createdInThisBatch = new Set(createdObjectIds);
         const authorizeEndpoint = async (objectId: string): Promise<void> => {
           if (endpointsAuthorized.has(objectId)) return;
           await authorize(tx, {
@@ -1105,6 +1110,33 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           // the record.
           await authorizeEndpoint(fromId);
           await authorizeEndpoint(toId);
+          // THE THIRD DOOR ON THE SAME `contains` EDGE (proposal §9.2 door (c), owner ruling
+          // 2026-08-18). The block above proved this route mints a caller-typed containment parent
+          // onto endpoints that MAY BOTH BE PRE-EXISTING rows (`urnToId.get(...) ??` the graph
+          // lookup) with the REAL authenticated principal — that is a MOVE, not an import, and it
+          // was carrying `relationship:write` alone while `POST /relationships` and the IaC apply
+          // path both carry the second, opt-in bar. Three caller-supplied-`typeId` relationship
+          // doors, and the first round of this feature covered one of them.
+          //
+          // AN EDGE WHOSE CHILD WAS CREATED IN THIS SAME BATCH IS EXEMPT, and that is the rule
+          // applied rather than a loophole: `governance:move` gates a MOVE — a row leaving one
+          // container's governance reach for another's. A row created seconds ago in this request
+          // has no prior reach to leave, and the create's own rooting is not gated at the other
+          // doors either (`graph/containment-parent-authz.ts`'s door runs on `current`, an object
+          // that already exists; `createObject`'s rooting has no `governance:move` call). Exempting
+          // it here is what keeps this door AGREEING with those; gating it would refuse a plugin's
+          // ordinary "here is a new service and its new components" proposal under any enabled rung.
+          // `createdObjectIds` is the authority for "created in this batch" — `urnToId` is not, as
+          // it also holds proposal-local ALIASES.
+          if (proposedRelationship.typeId === "contains" && !createdInThisBatch.has(toId)) {
+            await assertGovernanceMoveAdmits(tx, {
+              orgId: auth.orgId,
+              subjectObjectId: auth.subjectObjectId,
+              movedObjectId: toId,
+              destinationObjectId: fromId,
+              permissionSetForExplain: "relationship:write"
+            });
+          }
           const created = await createRelationship(tx, {
             orgId: auth.orgId,
             actorObjectId: auth.subjectObjectId,

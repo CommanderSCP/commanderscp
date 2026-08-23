@@ -3,7 +3,9 @@ import { v7 as uuidv7 } from "uuid";
 import {
   categoryOfType,
   parsePipelineClassification,
+  parseSourceMappingScope,
   type SourceMapping,
+  type SourceMappingScope,
   type ExecutorType,
   type PipelineClassification
 } from "@scp/schemas";
@@ -11,6 +13,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, sourceMappings } from "../db/schema.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { notFound } from "../errors.js";
 
 function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping {
   const type = (row.type as ExecutorType | null) ?? "configuration";
@@ -25,6 +28,17 @@ function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping
     type,
     category: categoryOfType(type),
     classification: parsePipelineClassification(row.classification),
+    mirrorOfShared: row.mirrorOfShared,
+    enabled: row.enabled,
+    disabledUntil: row.disabledUntil ? row.disabledUntil.toISOString() : null,
+    // What the matcher will actually DO right now — the read-time truth. Differs from `enabled`
+    // only in the one honest case: a timed close whose bound has passed (enabled=false but the
+    // rule routes again). The UI paints the arrow from THIS, never from `enabled` alone.
+    effectivelyEnabled:
+      row.enabled || (row.disabledUntil !== null && row.disabledUntil.getTime() <= Date.now()),
+    // Declared reach (migration 0066, §10.6). READ off the row, total over anything the column can
+    // hold — never inferred from the site's role or the repo. NULL = not declared.
+    scope: parseSourceMappingScope(row.scope),
     createdAt: row.createdAt.toISOString()
   };
 }
@@ -38,6 +52,12 @@ export interface CreateSourceMappingInput {
   componentIdOrUrn: string;
   type?: ExecutorType;
   classification?: PipelineClassification;
+  /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a); omitted = domain-specific. */
+  mirrorOfShared?: boolean;
+  /** The pause switch (migration 0063); omitted = enabled (the pre-0063 behaviour). */
+  enabled?: boolean;
+  /** Declared reach (migration 0066, §10.6); omitted = NOT declared (stored NULL, no label). */
+  scope?: SourceMappingScope | null;
 }
 
 export async function createSourceMapping(
@@ -56,10 +76,71 @@ export async function createSourceMapping(
       refPattern: input.refPattern ?? null,
       componentObjectId: component.id,
       type: input.type ?? "configuration",
-      classification: input.classification ?? null
+      classification: input.classification ?? null,
+      mirrorOfShared: input.mirrorOfShared ?? false,
+      enabled: input.enabled ?? true,
+      scope: input.scope ?? null
     })
     .returning();
   if (!row) throw new Error("failed to insert source mapping");
+  return toSourceMapping(row);
+}
+
+/**
+ * Flips the ONE mutable field on this table (migration 0063, PATCH .../mappings/:id) — the
+ * operator's pause switch. Scoped by `(orgId, sourceKind, id)`, matching the route's addressing;
+ * a miss on any of the three throws 404 rather than silently patching nothing.
+ */
+export async function setSourceMappingEnabled(
+  tx: TenantTx,
+  orgId: string,
+  sourceKind: string,
+  id: string,
+  enabled: boolean,
+  /** A timed close: closed until this instant, then open again automatically (read-time, like a
+   *  freeze). Ignored — and cleared — when `enabled` is true. Null = closed until re-opened by hand. */
+  disabledUntil: Date | null = null
+): Promise<SourceMapping> {
+  const [row] = await tx
+    .update(sourceMappings)
+    .set({ enabled, disabledUntil: enabled ? null : disabledUntil })
+    .where(
+      and(
+        eq(sourceMappings.orgId, orgId),
+        eq(sourceMappings.sourceKind, sourceKind),
+        eq(sourceMappings.id, id)
+      )
+    )
+    .returning();
+  if (!row) throw notFound(`no source mapping '${id}' for source kind '${sourceKind}'`);
+  return toSourceMapping(row);
+}
+
+/**
+ * Sets or clears the DECLARED scope of one mapping (migration 0066, §10.6; PATCH
+ * .../mappings/:id/scope). Same `(orgId, sourceKind, id)` addressing and 404 rule as the pause
+ * switch above, and for the same reason: a label change on one row must never reach a
+ * byte-identical sibling. `null` clears the declaration. A label only — nothing here re-routes.
+ */
+export async function setSourceMappingScope(
+  tx: TenantTx,
+  orgId: string,
+  sourceKind: string,
+  id: string,
+  scope: SourceMappingScope | null
+): Promise<SourceMapping> {
+  const [row] = await tx
+    .update(sourceMappings)
+    .set({ scope })
+    .where(
+      and(
+        eq(sourceMappings.orgId, orgId),
+        eq(sourceMappings.sourceKind, sourceKind),
+        eq(sourceMappings.id, id)
+      )
+    )
+    .returning();
+  if (!row) throw notFound(`no source mapping '${id}' for source kind '${sourceKind}'`);
   return toSourceMapping(row);
 }
 
@@ -84,6 +165,12 @@ export interface BackfillSourceMappingInput {
   refPattern?: string;
   type?: ExecutorType;
   classification?: PipelineClassification;
+  /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a); omitted = domain-specific. */
+  mirrorOfShared?: boolean;
+  /** The pause switch (migration 0063); omitted = enabled. */
+  enabled?: boolean;
+  /** Declared reach (migration 0066, §10.6); omitted = not declared. */
+  scope?: SourceMappingScope | null;
 }
 
 export interface BackfillSourceMappingsResult {
@@ -162,7 +249,10 @@ export async function backfillSourceMappings(
       refPattern: m.refPattern,
       componentIdOrUrn: componentId,
       type: m.type,
-      classification: m.classification
+      classification: m.classification,
+      mirrorOfShared: m.mirrorOfShared,
+      enabled: m.enabled,
+      scope: m.scope
     });
     createdSourceMappingIds.push(created.id);
   }
@@ -210,6 +300,43 @@ export async function deleteSourceMappingsMatching(
 ): Promise<number> {
   const rows = await tx
     .delete(sourceMappings)
+    .where(
+      and(
+        eq(sourceMappings.orgId, input.orgId),
+        eq(sourceMappings.componentObjectId, input.componentObjectId),
+        eq(sourceMappings.sourceKind, input.sourceKind),
+        input.repoPattern === null
+          ? isNull(sourceMappings.repoPattern)
+          : eq(sourceMappings.repoPattern, input.repoPattern),
+        input.pathPattern === null
+          ? isNull(sourceMappings.pathPattern)
+          : eq(sourceMappings.pathPattern, input.pathPattern),
+        input.refPattern === null
+          ? isNull(sourceMappings.refPattern)
+          : eq(sourceMappings.refPattern, input.refPattern),
+        eq(sourceMappings.type, input.type)
+      )
+    )
+    .returning({ id: sourceMappings.id });
+  return rows.length;
+}
+
+/**
+ * Sets the declared scope on EVERY `source_mappings` row matching the identity tuple — the IaC
+ * apply primitive for a `source-mapping` `update` verdict (§10.6). Same tuple, same `is null`
+ * branches and same "every matching row" reasoning as `deleteSourceMappingsMatching` above: the
+ * table has no unique constraint, so a manifest's declaration must converge all of the byte-identical
+ * rows that share the tuple, or the next plan proposes the same update forever. Returns the number of
+ * rows converged so the caller can tell a real update from a tuple that vanished underneath it.
+ */
+export async function setSourceMappingScopeMatching(
+  tx: TenantTx,
+  input: DeleteSourceMappingsMatchingInput,
+  scope: SourceMappingScope | null
+): Promise<number> {
+  const rows = await tx
+    .update(sourceMappings)
+    .set({ scope })
     .where(
       and(
         eq(sourceMappings.orgId, input.orgId),

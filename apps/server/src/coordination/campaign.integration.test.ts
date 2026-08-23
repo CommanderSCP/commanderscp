@@ -18,14 +18,14 @@ import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 
 /**
- * Campaign & Initiative integration suite (BUILD_AND_TEST.md §8 M5 DoD, Testcontainers
+ * Campaign integration suite (BUILD_AND_TEST.md §8 M5 DoD, Testcontainers
  * postgres:16) — the campaign-scoped counterpart of coordination.integration.test.ts /
  * governance.integration.test.ts. Drives everything through the real HTTP API via `@scp/sdk`'s
  * `ScpClient`, with a real reconcile loop and a real subprocess plugin host (fake-executor +
  * webhook-control), never mocked. Re-verifies the M3/M4 invariants the M5 DoD calls out
  * explicitly hold at campaign scope: the guarded transition still writes audit+Decision
  * atomically for campaign-driven (member) changes, governance gates still apply, and RLS/RBAC
- * (both-endpoint authz) still gate campaign/initiative objects and their `coordinates` edges.
+ * (both-endpoint authz) still gate campaign objects and their `coordinates` edges.
  */
 
 interface TestWebhookServer {
@@ -100,7 +100,7 @@ async function expectApiError(fn: () => Promise<unknown>): Promise<ScpApiError> 
   throw new Error("expected the call to throw an ScpApiError, but it completed successfully");
 }
 
-describe("campaigns & initiatives (M5)", () => {
+describe("campaigns (M5)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
   let admin: ScpClient;
@@ -402,83 +402,6 @@ describe("campaigns & initiatives (M5)", () => {
     expect((await failAdmin.campaigns.get(campaign.id)).status).toBe("failed");
   }, 60_000);
 
-  it("initiative roll-up traversal aggregates MULTIPLE campaigns with MIXED statuses (real graph query), via both propose-with-campaigns and add-campaign, and is org-scoped", async () => {
-    // Campaign 1 -> completed (its member change accepted).
-    const t1 = await createTestComponent(admin, { name: "camp-rollup-completed-target" });
-    const completedCampaign = await admin.campaigns.propose({
-      name: "rollup-completed campaign",
-      targets: [t1.id]
-    });
-    const memberChangeId = await waitUntil(
-      async () => {
-        const e = await admin.campaigns.explain(completedCampaign.id);
-        return e.plan?.waves[0]?.targets[0]?.memberChangeObjectId ?? undefined;
-      },
-      { describe: "completed campaign's member change is proposed", timeoutMs: 20_000 }
-    );
-    await waitUntil(
-      async () => (await admin.changes.get(memberChangeId)).state === "validating" || undefined,
-      {
-        describe: `member change ${memberChangeId} reaches 'validating'`,
-        timeoutMs: 20_000
-      }
-    );
-    await admin.changes.accept(memberChangeId);
-    await waitUntil(
-      async () =>
-        (await admin.campaigns.get(completedCampaign.id)).status === "completed" || undefined,
-      { describe: `campaign ${completedCampaign.id} reaches 'completed'`, timeoutMs: 20_000 }
-    );
-
-    // Campaign 2 -> blocked (a required-but-failing control gates its only wave).
-    const t2 = await createTestComponent(admin, { name: "camp-rollup-blocked-target" });
-    const failingControl = await createFailingControl(admin, org, "rollup-fail", webhook.url);
-    await requireControlOn(admin, org, "rollup-fail-policy", t2.id, failingControl.id);
-    const blockedCampaign = await admin.campaigns.propose({
-      name: "rollup-blocked campaign",
-      targets: [t2.id]
-    });
-    await waitUntil(
-      async () => (await admin.campaigns.get(blockedCampaign.id)).status === "blocked" || undefined,
-      { describe: `campaign ${blockedCampaign.id} reaches 'blocked'`, timeoutMs: 20_000 }
-    );
-
-    // Initiative created with campaign 1 up front; campaign 2 added via the DEDICATED,
-    // authority-checked `POST /initiatives/{id}/campaigns` path (regression: this is the ONLY
-    // remaining way to create an initiative->campaign `coordinates` edge now that the generic
-    // endpoint and IaC apply both refuse it).
-    const initiative = await admin.initiatives.propose({
-      name: "mixed-status initiative",
-      campaigns: [completedCampaign.id]
-    });
-    await admin.initiatives.addCampaign(initiative.id, { campaign: blockedCampaign.id });
-
-    const rollup = await admin.initiatives.get(initiative.id);
-    expect(rollup.campaigns).toHaveLength(2);
-    const statusById = new Map(rollup.campaigns.map((c) => [c.campaign.id, c.status]));
-    expect(statusById.get(completedCampaign.id)).toBe("completed");
-    expect(statusById.get(blockedCampaign.id)).toBe("blocked");
-    // blocked outranks completed in the roll-up priority (campaign-status.ts's ROLLUP_PRIORITY).
-    expect(rollup.rollupStatus).toBe("blocked");
-
-    // The SAME derivation is reachable as a genuine named graph query (DESIGN §5/§9.5 — "derived
-    // by traversal, a named graph query over the existing engine"), org-scoped like every other
-    // named query — now aggregating TWO campaigns with MIXED statuses through the real traversal.
-    const graphResult = await admin.graph.query("initiative-rollup", { objectId: initiative.id });
-    expect(new Set(graphResult.objects.map((o) => o.id))).toEqual(
-      new Set([completedCampaign.id, blockedCampaign.id])
-    );
-    expect(graphResult.counts).toEqual({ "status:completed": 1, "status:blocked": 1 });
-
-    // Cross-tenant leakage check: a second org's admin can never see the first org's initiative
-    // or its roll-up, even by id (RLS org_isolation — the same defense-in-depth every other M1
-    // adversarial probe already covers, re-verified at campaign/initiative scope).
-    const otherOrg = await createTestOrg(server, "campaigns-other-org");
-    const otherAdmin = new ScpClient({ baseUrl: server.baseUrl, token: otherOrg.adminToken });
-    const err = await expectApiError(() => otherAdmin.initiatives.get(initiative.id));
-    expect(err.status).toBe(404);
-  }, 50_000);
-
   it("SECURITY: a campaign cannot coordinate a target the actor lacks authority over (both closed write paths)", async () => {
     const restrictedTarget = await createTestComponent(admin, { name: "camp-restricted-target" });
     // A Viewer has object:read but not object:write anywhere — cannot even name this target in a
@@ -499,31 +422,6 @@ describe("campaigns & initiatives (M5)", () => {
     const list = await admin.campaigns.list({ limit: 100 });
     expect(list.items.every((c) => c.name !== "should be forbidden")).toBe(true);
   });
-
-  it("SECURITY: linking a campaign into an initiative requires relationship:write at BOTH endpoints", async () => {
-    const t = await createTestComponent(admin, { name: "camp-initiative-authz-target" });
-    const campaign = await admin.campaigns.propose({
-      name: "authz-probe campaign",
-      targets: [t.id]
-    });
-
-    const viewer = await createTestUser(server, org, [{ role: "Viewer", scope: "self" }]);
-    const viewerClient = new ScpClient({ baseUrl: server.baseUrl, token: viewer.token });
-
-    const err = await expectApiError(() =>
-      viewerClient.initiatives.propose({ name: "should be forbidden", campaigns: [campaign.id] })
-    );
-    expect(err.status).toBe(403);
-  });
-
-  // -----------------------------------------------------------------------------------------
-  // M5 security note (BUILD_AND_TEST.md §8 M5): "if a new authority-scoped object type is
-  // introduced, it needs the governance-managed-types treatment (generic-endpoint block +
-  // plan-apply scope check)". `campaign.properties.targets` is exactly such a DECLARED-authority
-  // field (coordination/campaign-scope-authz.ts) — mirrors governance.integration.test.ts's own
-  // "generic /objects/policy... both exploits are blocked" + "IaC plan/apply enforces the same...
-  // scope-authority binding" pair of tests, applied to `campaign` instead of `policy`.
-  // -----------------------------------------------------------------------------------------
 
   it("SECURITY: the generic /api/v1/objects/campaign endpoint refuses every write verb, even for the org-root admin", async () => {
     const restrictedTarget = await createTestComponent(admin, {
@@ -668,7 +566,7 @@ describe("campaigns & initiatives (M5)", () => {
   });
 
   // -----------------------------------------------------------------------------------------
-  // M5 CRITICAL (adversarial review of PR #12): campaign/initiative membership must NOT be
+  // M5 CRITICAL (adversarial review of PR #12): campaign membership must NOT be
   // injectable through the unprotected `coordinates` graph edge. `coordinates` is now
   // system-managed (`graph/system-managed-relationships.ts`) — refused on BOTH the generic
   // `POST /relationships` endpoint and the IaC apply path — and campaign rollback sources

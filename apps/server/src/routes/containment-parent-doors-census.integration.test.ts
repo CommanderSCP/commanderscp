@@ -23,7 +23,7 @@ import {
  *    the agreed meaning on both kinds so the asymmetry cannot come back through whichever door was
  *    not looked at.
  *
- *  - the four coordination create doors (`/campaigns`, `/changes`, `/initiatives`, `/placements`)
+ *  - the three coordination create doors (`/campaigns`, `/changes`, `/placements`; `/initiatives` is gone — ADR-0036)
  *    and `POST /plans/{id}/apply`, whose update entries authorized the object and never the
  *    destination.
  *
@@ -226,7 +226,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     return (res.json() as { domainId: string | null }).domainId;
   }
 
-  it("POST /initiatives, /campaigns, /changes and /placements all read {domainId: null} as the org root", async () => {
+  it("POST /campaigns, /changes and /placements all read {domainId: null} as the org root (initiatives are removed — ADR-0036)", async () => {
     const org = await createTestOrg(server, "coordination-null");
     const service = await post(org.adminToken, "/api/v1/services", { name: "coord-null-svc" });
     expect(service.status, service.body).toBe(201);
@@ -241,14 +241,8 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect(target.status, target.body).toBe(201);
     const componentId = component.json().id as string;
 
-    const initiative = await post(org.adminToken, "/api/v1/initiatives", {
-      name: "coord-null-initiative",
-      domainId: null
-    });
-    expect(initiative.status, initiative.body).toBe(201);
-    expect(await readObjectDomainId(org, "initiative", initiative.json().id as string)).toBe(
-      org.orgId
-    );
+    // `POST /initiatives` was one of these doors until ADR-0036 removed the initiative concept
+    // (routes/initiatives.ts is gone); the census below is the surviving set.
 
     const campaign = await post(org.adminToken, "/api/v1/campaigns", {
       name: "coord-null-campaign",

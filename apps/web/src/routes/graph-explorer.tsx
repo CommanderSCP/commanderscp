@@ -4,6 +4,7 @@ import type { NamedGraphQuery } from "@scp/schemas";
 import { client } from "../lib/client";
 import { useIdOrUrnParam } from "../lib/use-route-params";
 import { GraphCanvas, type GraphCanvasData } from "../components/graph/GraphCanvas";
+import { QueryErrorNotice } from "../components/query-error";
 import {
   Select,
   SelectContent,
@@ -11,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue
 } from "../components/ui/select";
+import { PageHeader } from "../components/ui/page-header";
 
 type QuerySelection = NamedGraphQuery | "traverse";
 
@@ -45,7 +47,14 @@ export function GraphExplorerPage(): React.JSX.Element {
         const result = await client.graph.traverse({ objectId: idOrUrn, direction: "out" });
         return {
           objects: result.objects.map((o) => ({ id: o.id, name: o.name, typeId: o.typeId })),
-          edges: result.edges.map((e) => ({ id: e.id, fromId: e.fromId, toId: e.toId }))
+          // `typeId` is forwarded because the canvas derives colour GROUPS from `contains` edges
+          // (lib/graph-visual.ts) — dropping it here silently flattened every node into one group.
+          edges: result.edges.map((e) => ({
+            id: e.id,
+            fromId: e.fromId,
+            toId: e.toId,
+            typeId: e.typeId
+          }))
         };
       }
       const result = await client.graph.query(queryName, { objectId: idOrUrn });
@@ -57,7 +66,12 @@ export function GraphExplorerPage(): React.JSX.Element {
       const sub = await client.graph.subgraph({ objectId: idOrUrn, ids });
       return {
         objects,
-        edges: sub.edges.map((e) => ({ id: e.id, fromId: e.fromId, toId: e.toId }))
+        edges: sub.edges.map((e) => ({
+          id: e.id,
+          fromId: e.fromId,
+          toId: e.toId,
+          typeId: e.typeId
+        }))
       };
     },
     enabled: !!idOrUrn
@@ -65,26 +79,26 @@ export function GraphExplorerPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Graph explorer</h1>
-          <p className="font-mono text-xs text-slate-500">{idOrUrn}</p>
-        </div>
-        <div className="w-56">
-          <Select value={queryName} onValueChange={(v) => setQueryName(v as QuerySelection)}>
-            <SelectTrigger data-testid="graph-query-select">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {QUERY_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
+      <PageHeader
+        title="Graph explorer"
+        description={<span className="font-mono text-xs text-slate-500 break-all">{idOrUrn}</span>}
+        actions={
+          <div className="w-56">
+            <Select value={queryName} onValueChange={(v) => setQueryName(v as QuerySelection)}>
+              <SelectTrigger data-testid="graph-query-select">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {QUERY_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        }
+      />
 
       <div className="relative h-[32rem] rounded-lg border border-slate-200 bg-white">
         {graphQuery.isLoading && (
@@ -93,8 +107,8 @@ export function GraphExplorerPage(): React.JSX.Element {
           </div>
         )}
         {graphQuery.isError && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-red-600">
-            {graphQuery.error instanceof Error ? graphQuery.error.message : "Failed to load graph"}
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <QueryErrorNotice error={graphQuery.error} what="the graph" />
           </div>
         )}
         {graphQuery.data && graphQuery.data.objects.length === 0 && (

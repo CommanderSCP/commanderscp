@@ -174,7 +174,7 @@ async function fetchCampaignObject(tx: TenantTx, orgId: string, id: string): Pro
  * re-derived, never stored). Loads the campaign's latest compiled plan (if any) and every wave
  * target's member Change's CURRENT state in one batched query, then hands off to the pure
  * `computeCampaignStatus`. Shared by `GET /campaigns`, `GET /campaigns/{id}`, the campaign
- * reconciler's own bookkeeping, and `graph/named-queries.ts`'s `initiative-rollup`.
+ * reconciler's own bookkeeping.
  */
 export async function getCampaignStatus(
   tx: TenantTx,

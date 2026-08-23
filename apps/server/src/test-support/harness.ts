@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
@@ -218,27 +218,55 @@ export async function listenTestServer(
   let relayPool: pg.Pool | undefined;
   let natsFanout: NatsFanoutHandle | undefined;
   let pluginHost: SubprocessPluginHost | undefined;
+  let pluginStateDir: string | undefined;
   let reconcileLoop: ReconcileLoopHandle | undefined;
   let watchdogLoop: WatchdogLoopHandle | undefined;
   // The plugin host does NOT need pg-boss, so it is started outside the relay block — which is what
   // lets `withPluginHost` exist without dragging in the loops that make inline processing racy.
   if (opts.withReconcileLoop || opts.withPluginHost) {
+    // RAW `mkdtemp`, DELIBERATELY NOT `@scp/test-tmpdir` — and this is the one module in the repo
+    // where that package is not merely unnecessary but FATAL.
+    //
+    // THE PROPERTY: `@scp/test-tmpdir` registers `afterEach`/`afterAll` from `vitest` at MODULE
+    // LOAD (correctly — see its doc), so importing it drags `vitest` into the import graph of
+    // whatever imports it. THIS module is not vitest-only: `apps/web/e2e/global-setup.ts` (a
+    // PLAYWRIGHT `globalSetup`, a plain Node process with no vitest runner) imports
+    // `@scp/server/dist/test-support/harness.js` for `listenTestServer`/`createTestOrg`. Merely
+    // importing `vitest` there throws "Vitest failed to access its internal state" at module init,
+    // before a single line of setup runs — measured 2026-08-23 both in CI job 9 and locally with a
+    // bare `node -e 'await import(".../harness.js")'`. It takes down BOTH of that suite's modes,
+    // including the compose-stack mode that never reaches the code below.
+    //
+    // THE LIFETIME IS BETTER HERE ANYWAY. This directory belongs to the plugin host started three
+    // lines down, not to a test file's `afterAll` — so it is removed by `close()` below, beside
+    // every other resource this function opens. `test-support-runner-neutral.test.ts` is the gate
+    // that keeps a future import from putting `vitest` back into this directory's graph.
     const stateDir = await mkdtemp(join(tmpdir(), "scp-test-fake-executor-"));
+    pluginStateDir = stateDir;
     pluginHost = new SubprocessPluginHost(opts.pluginHostOptions);
     server.deps.pluginHost = pluginHost; // M7: routes/executors.ts's POST /discovery/run needs this
-    await pluginHost.start([
-      {
-        id: DEFAULT_EXECUTOR_INSTANCE_ID,
-        module: DEFAULT_EXECUTOR_MODULE,
-        orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
-        scopeKey: SHARED_PLUGIN_INSTANCE_SCOPE_KEY,
-        config: {
-          statePath: join(stateDir, "fake-executor-state.json"),
-          autoSucceedAfterMs: 50,
-          ...opts.fakeExecutorConfig
+    try {
+      await pluginHost.start([
+        {
+          id: DEFAULT_EXECUTOR_INSTANCE_ID,
+          module: DEFAULT_EXECUTOR_MODULE,
+          orgId: SHARED_PLUGIN_INSTANCE_ORG_ID,
+          scopeKey: SHARED_PLUGIN_INSTANCE_SCOPE_KEY,
+          config: {
+            statePath: join(stateDir, "fake-executor-state.json"),
+            autoSucceedAfterMs: 50,
+            ...opts.fakeExecutorConfig
+          }
         }
-      }
-    ]);
+      ]);
+    } catch (err) {
+      // `start()` can genuinely throw (a plugin that never reaches ready inside `callTimeoutMs`),
+      // and on that path NOBODY gets the `close()` below — `listenTestServer` never returns. The
+      // hook-based allocator this replaced covered that case for free; owning the lifetime by hand
+      // means owning the failure path too, or the fix trades a common leak for a rare one.
+      await rm(stateDir, { recursive: true, force: true });
+      throw err;
+    }
   }
 
   if (opts.withEventRelay) {
@@ -290,6 +318,11 @@ export async function listenTestServer(
       await reconcileLoop?.stop();
       await watchdogLoop?.stop();
       await pluginHost?.stop();
+      // AFTER `pluginHost.stop()`, never before: the fake executor re-creates this directory on
+      // every persist (`mkdir(dirname(statePath), { recursive: true })`), so removing it while a
+      // child is still alive removes nothing durably — that is exactly how the leak this replaced
+      // survived a green run.
+      if (pluginStateDir) await rm(pluginStateDir, { recursive: true, force: true });
       await relay?.stop();
       await boss?.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
       await relayPool?.end();

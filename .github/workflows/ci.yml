@@ -199,6 +199,35 @@ jobs:
       # coverage is actually collected. Without this flag the thresholds would be decorative —
       # which is precisely the state §7 was in when it claimed "≥80%" while configuring nothing.
       # Turbo forwards everything after `--` to each package's `test` script.
+      #
+      # ------------------------------------------------------------------------------------------
+      # THE HEAVIEST SUITE RUNS FIRST, WITH THE RUNNER TO ITSELF. Not a style preference — a
+      # measurement. `@scp/runner-launcher` holds the repo's heaviest unit sweeps, and this job runs
+      # them inside a 71-task turbo graph (default concurrency 10) where each vitest ALSO opens one
+      # fork per vCPU: ~40 CPU-bound processes on a 4-vCPU runner. Measured inflation on that
+      # runner: `persisted-json-bound.test.ts` 62,948ms against 4,301ms isolated (~14x), and its
+      # slowest single test 29,737ms against a 30,000ms `testTimeout` — a 263ms margin. The suite
+      # was not slow, it was starved, and it failed the build twice over:
+      #
+      #   * at 62,948ms it crossed vitest's compiled-in 60,000ms worker->main RPC deadline and
+      #     failed the run with `[vitest-worker]: Timeout calling "onTaskUpdate"` while reporting
+      #     `17 passed / 429 passed`. That cause is fixed structurally, in the package's own
+      #     `vitest.config.ts`, and this step is NOT what fixes it.
+      #   * at 29,737/30,000ms it is one scheduling accident away from a `testTimeout` failure,
+      #     which no amount of yielding inside the worker can prevent. THAT is what this step is
+      #     for, and it is the only lever that does not weaken a reviewed budget.
+      #
+      # Two steps rather than a separate job, for two reasons. The second step's `turbo run test`
+      # CACHE-HITS this one (identical task hash — verified locally), so the suite executes once and
+      # its output is replayed; and a new job would need adding to the 5z aggregation gate to mean
+      # anything, which is exactly how a job that gates nothing gets created.
+      #
+      # The tmpdir leak sweep wraps this step too, deliberately: `pnpm test` is
+      # `node scripts/tmpdir-leak-sweep.mjs -- turbo run test`, and a suite that runs here and is
+      # replayed from cache below would otherwise never execute inside the sweep at all — the gate
+      # would go green for this package having watched nothing.
+      - name: "Unit tests — @scp/runner-launcher alone (see the measurement above)"
+        run: node scripts/tmpdir-leak-sweep.mjs -- pnpm exec turbo run test --filter=@scp/runner-launcher -- --coverage
       - run: pnpm test -- --coverage
 
   helm-verify:
@@ -612,13 +641,19 @@ jobs:
       # revealed, not to move this step down.
       - name: Deny the mirrored upstream registries for the rest of the job
         run: scripts/ci-mirror.sh blackhole
-      # LEVER 2: `--shard=i/2` (turbo forwards args after `--` to every test:integration task —
-      # @scp/server, @scp/plugin-managed-iac AND @scp/plugin-managed-dep; every config passes
-      # `--passWithNoTests`, so the
-      # single-file managed-iac suite runs in whichever shard vitest assigns it and no-ops in the
-      # other). vitest shards at FILE granularity, so shard 1/2 + shard 2/2 together cover every
-      # file exactly once — verified locally (file counts sum to the full suite, none dropped or
-      # doubled).
+      # LEVER 2: `--shard=i/2` — turbo forwards args after `--` to every test:integration task.
+      # THE LIST IS FIVE PACKAGES, not the three this comment used to name (M23.0 verification
+      # pass 9): @scp/server, @scp/runner-launcher, @scp/plugin-managed-dep, @scp/plugin-managed-iac
+      # and @scp/plugin-managed-scan. It went stale for the same reason it is only a comment — turbo
+      # DISCOVERS the task from each package.json, so a new package needs no edit here and nothing
+      # forces the prose to keep up. Re-derive it rather than trusting this line:
+      #   for f in $(find apps packages -name package.json -not -path '*/node_modules/*'); do
+      #     python3 -c "import json;d=json.load(open('$f'));print(d['name']) if 'test:integration' in d.get('scripts',{}) else None"
+      #   done
+      # All five pass `--passWithNoTests`, so a single-file suite runs in whichever shard vitest
+      # assigns it and no-ops in the other. vitest shards at FILE granularity, so shard 1/2 +
+      # shard 2/2 together cover every file exactly once — verified locally (file counts sum to the
+      # full suite, none dropped or doubled).
       - run: pnpm test:integration -- --shard=${{ matrix.shard }}/2
       # Explicit, not part of test:integration's task graph (see comment above) — this is the ONLY
       # place in CI these tool-dependent assertions run for real rather than skip. Runs EXACTLY ONCE
@@ -627,6 +662,82 @@ jobs:
       - name: Air-gap install.sh tamper-rejection suite (CRITICAL #1 real gate — cosign/skopeo/helm now on PATH)
         if: ${{ matrix.shard == 1 }}
         run: pnpm --filter @scp/airgap test
+
+  kind-runner-harness:
+    name: "4e. Kubernetes runner harness (kind, real API server)"
+    # ============================================================================================
+    # THE GATE OWNER DECISION 3 REQUIRED, AND IT IS MERGE-GATING (BUILD_AND_TEST.md M23, 2026-08-18)
+    # ============================================================================================
+    # "A REAL PR-GATING KUBERNETES HARNESS. The DoD's premise that one exists is false: nothing in
+    # the tree talks to a Kubernetes API server, and the three shell drills are `schedule`-only,
+    # state twice that they are 'NEVER merge-gating', and recorded their greens on a decommissioned
+    # runner."  This job is the answer, and the difference from those drills is the whole point: it
+    # runs on every push and pull request, and 5z `needs:` it, so a red here blocks merge.
+    #
+    # WHY IT IS ITS OWN JOB RATHER THAN A STEP IN JOB 5, measured rather than assumed:
+    #   - `kindest/node` is ~1.27 GB in the local image store. Job 5 already spends the hosted
+    #     runner's ~14 GB of free disk (`.github/scripts/free-disk.sh`) on the Testcontainers tier
+    #     and three prebuilt runner images.
+    #   - Job 5 blackholes Docker Hub and quay.io PART WAY THROUGH, and a cluster bring-up placed
+    #     after that line would fail on the node-image pull. Here the blackhole comes first, before
+    #     anything that needs an image, which is a stronger claim than job 5 can make.
+    #   - Wall clock is small and separable: cluster create ~25s warm, image load ~2s, chart RBAC
+    #     ~2s, and the suite itself ~50s for eleven cases (re-measured 2026-08-20 on arm64/colima
+    #     after M23.4 added four; the CI runner is amd64 with different I/O, so treat these as the
+    #     shape rather than the number). HALF OF THAT 50s IS ONE CASE ON PURPOSE: "THE LAUNCHER
+    #     DYING MID-RUN" gives its abandoned run a 30-second budget so the Secret's collection can
+    #     be observed in the first HALF of it — a window in which the launcher provably has not
+    #     issued a teardown. Shortening the budget shortens the proof, not just the job.
+    #
+    # WHAT IT DELIBERATELY DOES NOT INSTALL: a CNI. kind's default kindnet does not enforce
+    # NetworkPolicy — re-measured for M23.2 with a known-positive control, a pod SELECTED by a
+    # deny-all-egress policy reached a public IP and a resolver exactly like an unselected one. A
+    # gate that asserted containment here would assert nothing, and installing Calico means its
+    # image, its rollout wait, and a manifest `scripts/airgap-drill.sh` still fetches from
+    # raw.githubusercontent.com at cluster-build time. NETWORK CONTAINMENT IS NOT GATED HERE and is
+    # not claimed to be; it stays with the scheduled air-gap drill, which already has the machinery.
+    runs-on: ubuntu-latest
+    needs: [static-checks, unit-tests, testcontainer-images]
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: "Install Helm (BUILD_AND_TEST.md §1: 3.16+) — the harness renders the chart's own RBAC"
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: Install kind (binary only — this job creates its own cluster)
+        # PINNED, not `latest`. `tools/ci-mirror/images.list` pins `kindest/node:v1.36.1`, which is
+        # kind v0.32.0's default node image; a kind that defaulted elsewhere would either pull an
+        # unmirrored image (and fail under the blackhole below, correctly) or run a control plane
+        # nobody pinned. `install_only` means this action creates no cluster —
+        # `scripts/kind-runner-harness.sh` does, with the extraMount the shared workspace needs.
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.32.0
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Seed every mirrored image (kindest/node and the runner Jobs' alpine come from here)
+        run: scripts/ci-mirror.sh seed
+      - name: Deny the mirrored upstream registries for the rest of the job
+        # BEFORE THE CLUSTER IS CREATED, not after — which is what makes this job's offline claim
+        # stronger than job 5's. Everything the cluster and the Jobs need is now in the local image
+        # store under the exact tag they name, so a pull that still reaches outside CANNOT pass. If
+        # this step ever makes the job red, the fix is to mirror the image it revealed.
+        run: scripts/ci-mirror.sh blackhole
+      - name: Stand up the kind cluster and apply the chart's own runner RBAC
+        run: scripts/kind-runner-harness.sh up
+      - name: Drive the Kubernetes adapter against the real API server
+        # Its own script and its own vitest config: the suite FAILS rather than skips when no cluster
+        # is present (a `skipIf` is how a gate becomes a green job that ran nothing), so it must be
+        # reachable from exactly one place — here.
+        run: pnpm --filter @scp/runner-launcher test:kind
+      - name: Tear the cluster down
+        if: always()
+        run: scripts/kind-runner-harness.sh down
 
   integration:
     name: "5z. Integration (aggregation gate)"
@@ -649,7 +760,18 @@ jobs:
     # relationship with integration-shard, so both are added as sibling `needs:` entries here
     # rather than folded into that job's chain.
     needs:
-      [integration-shard, helm-verify, prod-audit, e2e-m0, e2e-m4, e2e-m5, e2e-m6, e2e-m7, e2e-web]
+      [
+        integration-shard,
+        helm-verify,
+        prod-audit,
+        kind-runner-harness,
+        e2e-m0,
+        e2e-m4,
+        e2e-m5,
+        e2e-m6,
+        e2e-m7,
+        e2e-web
+      ]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -663,6 +785,7 @@ jobs:
             "integration-shard=${{ needs.integration-shard.result }}" \
             "helm-verify (4b)=${{ needs.helm-verify.result }}" \
             "prod-audit (5y)=${{ needs.prod-audit.result }}" \
+            "kind-runner-harness (4e)=${{ needs.kind-runner-harness.result }}" \
             "e2e-m0 (7)=${{ needs.e2e-m0.result }}" \
             "e2e-m4 (8)=${{ needs.e2e-m4.result }}" \
             "e2e-m5 (8b)=${{ needs.e2e-m5.result }}" \
@@ -721,7 +844,9 @@ jobs:
       - run: bash scripts/e2e-m4.sh
 
   e2e-m5:
-    name: "8b. E2E (M5 campaigns & initiatives golden path)"
+    # Both sides of the 2026-08 merges: initiatives are removed (ADR-0036), and E2E jobs run on
+    # PRs now (#224), so neither "& initiatives" nor "main only" survives.
+    name: "8b. E2E (M5 campaigns golden path)"
     # Same as e2e-m0/e2e-m4: needs a real Docker daemon (compose), and needs testcontainer-images
     # (4d) + runs mirror-seed before `pnpm build` for the same quay.io-mirror reason.
     runs-on: ubuntu-latest

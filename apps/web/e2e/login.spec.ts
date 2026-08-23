@@ -21,5 +21,7 @@ test("login: unauthenticated visit to / redirects to /login, and logging in reac
   await page.click('button[type="submit"]');
 
   await page.waitForURL(`${baseUrl()}/`);
-  await expect(page.getByTestId("org-name")).toHaveText(orgName);
+  // The account chrome lives in the header bar since the design overhaul; `current-org` is its
+  // pinned testid (AppShell §3.3) and renders "org · username".
+  await expect(page.getByTestId("current-org")).toContainText(orgName);
 });

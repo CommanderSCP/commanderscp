@@ -44,7 +44,13 @@ export function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLD
 }
 
 export function DialogFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("mt-4 flex justify-end gap-2", className)} {...props} />;
+  // §2.12: the footer is separated from the form body by a top rule.
+  return (
+    <div
+      className={cn("mt-4 flex justify-end gap-2 border-t border-slate-200 pt-4", className)}
+      {...props}
+    />
+  );
 }
 
 export const DialogTitle = React.forwardRef<
@@ -53,7 +59,8 @@ export const DialogTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
-    className={cn("text-lg font-semibold text-slate-900", className)}
+    // Section-heading type (§1.3), per the §2.12 dialog restyle.
+    className={cn("text-sm font-semibold text-slate-900", className)}
     {...props}
   />
 ));

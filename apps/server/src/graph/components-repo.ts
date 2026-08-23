@@ -5,6 +5,7 @@ import { isContainerType } from "./containment.js";
 import { createRelationship, deleteRelationship, listRelationships } from "./relationships-repo.js";
 import { authorize } from "../authz/resolve.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
+import { assertGovernanceMoveAdmits } from "../governance/move-enforcement.js";
 import { badRequest } from "../errors.js";
 
 export interface CreateComponentInServiceInput {
@@ -32,7 +33,7 @@ export interface CreateComponentInServiceInput {
  * overlay) call `createObject` directly and never reach this path, so they stay permissive by
  * construction.
  *
- * Modeled on `coordination/initiative-repo.ts`'s `proposeInitiative` — the same object +
+ * Modeled on `coordination/campaign-repo.ts`'s `proposeCampaign` — the same object +
  * both-endpoint authz + edge + Decision shape (NOT campaign/change, which store targets as a
  * properties array). The `contains` cardinality (one_to_many) plus migration 0022's partial unique
  * index enforce one-service-per-component for free, and `createRelationship`'s endpoint-type check
@@ -199,6 +200,24 @@ export async function setComponentService(
       scopeObjectId
     });
   }
+
+  // THE SECOND, OPT-IN BAR (proposal §9.2 door (c), owner ruling 2026-08-18). This verb is the
+  // `contains`-route move: the MOVED object is the component, the DESTINATION the new service or
+  // assembly. Checked here rather than only at the generic `/relationships` doors because this route
+  // never touches them — it calls `deleteRelationship`/`createRelationship` directly, which is the
+  // shape that let #244's containment fix ship inert on one of its three routes.
+  //
+  // An ASSIGN (no current edge) is a move too under this bar, and deliberately: the component's
+  // governance reach changes exactly as much when it acquires its first container as when it swaps
+  // one. `governance/move-enforcement.ts` decides whether any rung applies; a deployment with none
+  // pays one singleton read.
+  await assertGovernanceMoveAdmits(tx, {
+    orgId: input.orgId,
+    subjectObjectId: input.actorObjectId,
+    movedObjectId: component.id,
+    destinationObjectId: service.id,
+    permissionSetForExplain: "relationship:write"
+  });
 
   // MOVE: soft-delete the old edge FIRST so the new create clears both `assertCardinality` and the
   // 0022 index within this tx (a federation-replica old edge 409s here — correct: it's authoritative

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- The OUTPOST FORT on the army-olive tile: same path data as
+       src/components/icons/federation-roles.tsx (OUTPOST_FORT_PATHS). Swapped in at RUNTIME by
+       the shell once /auth/me reports instanceRole=outpost (outpost-ui.md §9) — the static
+       default stays the commander star so an unauthenticated visitor's tab discloses nothing
+       about this instance's federation role. Bundled asset, same origin, air-gap posture unchanged. -->
+  <rect width="24" height="24" rx="5" fill="#687435"/>
+  <g fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" transform="translate(2.4 2.4) scale(0.8)">
+    <path d="M4 21h16"/>
+    <path d="M6 21V5h3v2h2V5h2v2h2V5h3v16"/>
+    <path d="M10.5 21v-3.5a1.5 1.5 0 0 1 3 0V21"/>
+  </g>
+</svg>

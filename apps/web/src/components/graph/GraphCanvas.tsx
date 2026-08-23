@@ -1,7 +1,17 @@
 import { useEffect, useRef } from "react";
-import cytoscape, { type Core, type ElementDefinition } from "cytoscape";
+import cytoscape, { type Core, type ElementDefinition, type LayoutOptions } from "cytoscape";
 import { useNavigate } from "@tanstack/react-router";
+import { Maximize, ZoomIn, ZoomOut } from "lucide-react";
 import { REGISTRIES } from "../../lib/registries";
+import {
+  assignGroupColors,
+  deriveGroupIds,
+  shapeForType,
+  sizeForType,
+  UNGROUPED_COLOR
+} from "../../lib/graph-visual";
+import { glyphForType } from "../../lib/graph-glyphs";
+import { Button } from "../ui/button";
 
 export interface GraphCanvasNode {
   id: string;
@@ -61,6 +71,57 @@ interface GraphCanvasProps {
  * is false. Nothing in real production traffic sets `__SCP_E2E__`, so this never activates outside
  * a Playwright-controlled page.
  */
+/** A graph smaller than the viewport should render at life size, not be blown up to fill it. */
+const MAX_AUTOFIT_ZOOM = 1.4;
+
+/** How much one click of the zoom in/out control changes the zoom level. */
+const ZOOM_STEP_FACTOR = 1.25;
+
+/**
+ * FIT, THEN CLAMP — shared by the auto-fit-on-layout effect and the Maximize control (§4 Group D)
+ * so the two never drift into two different "fit" behaviours. `fit` frames the graph with padding;
+ * the clamp stops a small graph being magnified past life size, and re-centres after clamping so
+ * the content stays put rather than drifting to a corner.
+ */
+function fitAndClamp(cy: Core): void {
+  cy.fit(undefined, 48);
+  if (cy.zoom() > MAX_AUTOFIT_ZOOM) {
+    cy.zoom(MAX_AUTOFIT_ZOOM);
+    cy.center();
+  }
+}
+
+/**
+ * Per-layout spacing. Cytoscape's defaults are tuned for dense graphs and pack a handful of nodes
+ * into a tight cluster where the labels (rendered BELOW each node) overlap each other and the
+ * neighbouring shapes — so a five-service org map was unreadable despite having room to spare.
+ * These widen the spacing enough for a label to sit under its own node; `avoidOverlap`/`nodeOverlap`
+ * stop shapes colliding outright.
+ */
+const LAYOUT_OPTIONS: Record<string, Record<string, unknown>> = {
+  concentric: { minNodeSpacing: 70, avoidOverlap: true, padding: 40 },
+  cose: {
+    idealEdgeLength: 130,
+    nodeRepulsion: 14000,
+    nodeOverlap: 24,
+    padding: 40,
+    animate: false
+  },
+  breadthfirst: { spacingFactor: 1.5, padding: 40 },
+  grid: { avoidOverlap: true, spacingFactor: 1.4, padding: 40 },
+  circle: { avoidOverlap: true, spacingFactor: 1.3, padding: 40 }
+};
+
+/**
+ * Cytoscape types `LayoutOptions` as a UNION of per-layout option shapes keyed on a literal
+ * `name`, so a config assembled from a runtime string cannot be narrowed to one member. The cast
+ * is at the boundary and the option bag above is the only thing that reaches it; an unknown layout
+ * name falls back to bare padding rather than passing something Cytoscape would reject.
+ */
+function layoutConfig(name: string): LayoutOptions {
+  return { name, ...(LAYOUT_OPTIONS[name] ?? { padding: 40 }) } as unknown as LayoutOptions;
+}
+
 export function GraphCanvas({
   data,
   rootId,
@@ -98,15 +159,33 @@ export function GraphCanvas({
             height: 24
           }
         },
-        // Typed node coloring (Phase 3, coordination-ui-views.md § two-layer graph). Attribute
-        // selectors out-rank the bare `node` rule; `typeId` is already on every node's data.
+        // GLYPH = type up close (lib/graph-glyphs.ts): the same hand-drawn mark the sidebar and
+        // badges wear, white-stroked over the group fill. Attribute selector, so nodes whose type
+        // has no mark match nothing and render exactly as before.
         {
-          selector: 'node[typeId="service"]',
-          style: { "background-color": "#2563eb" }
+          selector: "node[glyph]",
+          style: {
+            "background-image": "data(glyph)",
+            "background-fit": "none",
+            "background-width": "58%",
+            "background-height": "58%",
+            "background-clip": "node"
+          }
         },
+        // SHAPE = type, COLOUR = group (lib/graph-visual.ts). Both are computed per node and
+        // handed to Cytoscape as data, so there is one style rule instead of one per type — a new
+        // object type gets a shape by adding a row to `NODE_SHAPE_BY_TYPE`, not a selector here.
+        // This replaced fixed per-type colours (service blue, component purple), which spent the
+        // colour channel on something shape already says and left a graph of N components as N
+        // identical dots.
         {
-          selector: 'node[typeId="component"]',
-          style: { "background-color": "#7c3aed" }
+          selector: "node",
+          style: {
+            shape: "data(shape)" as unknown as cytoscape.Css.NodeShape,
+            "background-color": "data(groupColor)",
+            width: "data(size)",
+            height: "data(size)"
+          }
         },
         // External node — a component owned by a DIFFERENT service in the component-layer view.
         // Keeps its type color but gets a dashed outline + reduced fill so it reads as off-scope.
@@ -116,7 +195,8 @@ export function GraphCanvas({
             "border-width": 2,
             "border-color": "#94a3b8",
             "border-style": "dashed",
-            "background-opacity": 0.4
+            "background-opacity": 0.4,
+            "background-image-opacity": 0.4
           }
         },
         // Health overlay (observe-enrichment signal 4) — a colored border ring keyed on the
@@ -140,10 +220,18 @@ export function GraphCanvas({
           selector: 'node[health="unknown"]',
           style: { "border-width": 4, "border-color": "#94a3b8", "border-opacity": 1 }
         },
-        // Root emphasis stays last so it wins over the typed colors for the explored object.
+        // Root emphasis. Deliberately NOT a fill override any more: fill now means "which group",
+        // and repainting the root would state a group membership it does not have. A dark ring and
+        // a bolder label say "this is what you are looking at" without touching the colour channel.
         {
           selector: "node[?root]",
-          style: { "background-color": "#2563eb", width: 32, height: 32, "border-width": 0 }
+          style: {
+            "border-width": 3,
+            "border-color": "#0f172a",
+            "border-style": "solid",
+            "font-weight": "bold",
+            "font-size": 11
+          }
         },
         {
           selector: "edge",
@@ -165,7 +253,9 @@ export function GraphCanvas({
           }
         }
       ],
-      layout: { name: layoutRef.current }
+      layout: layoutConfig(layoutRef.current),
+      minZoom: 0.2,
+      maxZoom: 2.5
     });
     cy.on("tap", "node", (event) => {
       const typeId = event.target.data("typeId") as string | undefined;
@@ -204,6 +294,16 @@ export function GraphCanvas({
     const nodeIds = new Set<string>(data.objects.map((o) => o.id));
     if (rootId) nodeIds.add(rootId);
 
+    // Colour groups are RELATIVE to what is being looked at, so they are recomputed on every data
+    // change rather than baked into the node set by the caller — every view gets the owner's rule
+    // (colour decided at the highest level in scope) without each page re-implementing it.
+    const groupIds = deriveGroupIds(
+      [...nodeIds].map((id) => ({ id })),
+      data.edges,
+      rootId
+    );
+    const groupColors = assignGroupColors(groupIds.values());
+
     const elements: ElementDefinition[] = [
       ...[...nodeIds].map((id) => {
         const obj = byId.get(id);
@@ -212,6 +312,14 @@ export function GraphCanvas({
             id,
             label: obj?.name ?? id.slice(0, 8),
             typeId: obj?.typeId,
+            shape: shapeForType(obj?.typeId),
+            size: sizeForType(obj?.typeId) + (rootId && id === rootId ? 8 : 0),
+            // An external node belongs to a group OUTSIDE this view by definition, so it never
+            // takes a palette colour — colouring it would imply a membership the view cannot see.
+            groupColor: obj?.external
+              ? UNGROUPED_COLOR
+              : (groupColors.get(groupIds.get(id) ?? id) ?? UNGROUPED_COLOR),
+            glyph: glyphForType(obj?.typeId),
             external: obj?.external ? true : undefined,
             health: obj?.health,
             root: rootId && id === rootId ? true : undefined
@@ -234,8 +342,64 @@ export function GraphCanvas({
         }))
     ];
     cy.add(elements);
-    cy.layout({ name: layoutRef.current }).run();
+    const runLayout = cy.layout(layoutConfig(layoutRef.current));
+    // Cytoscape's default is to fill the viewport with whatever it was given, so a two-node graph
+    // rendered as two enormous circles with everything else empty — the nodes were not oversized,
+    // the ZOOM was. See `fitAndClamp` above (also reused by the Maximize control).
+    runLayout.one("layoutstop", () => fitAndClamp(cy));
+    runLayout.run();
   }, [data, rootId]);
 
-  return <div ref={containerRef} className="h-full w-full" data-testid="cytoscape-container" />;
+  function handleZoomStep(factor: number): void {
+    const cy = cyRef.current;
+    const container = containerRef.current;
+    if (!cy || !container) return;
+    const level = Math.min(Math.max(cy.zoom() * factor, cy.minZoom()), cy.maxZoom());
+    // Zoom centred on the viewport, not the graph's top-left origin — `cy.zoom(level)` alone keeps
+    // pan fixed, which walks the content out from under a corner-anchored control.
+    cy.zoom({
+      level,
+      renderedPosition: { x: container.clientWidth / 2, y: container.clientHeight / 2 }
+    });
+  }
+
+  function handleFit(): void {
+    const cy = cyRef.current;
+    if (cy) fitAndClamp(cy);
+  }
+
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full" data-testid="cytoscape-container" />
+      {/* Zoom controls (§4 Group D) — a separate DOM subtree layered on top via `absolute`, not a
+       *  child of the Cytoscape mount, so a click here can never reach Cytoscape's own drag/pan
+       *  listeners underneath. */}
+      <div className="absolute right-2 top-2 flex gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          icon={ZoomIn}
+          aria-label="Zoom in"
+          onClick={() => handleZoomStep(ZOOM_STEP_FACTOR)}
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          icon={ZoomOut}
+          aria-label="Zoom out"
+          onClick={() => handleZoomStep(1 / ZOOM_STEP_FACTOR)}
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          icon={Maximize}
+          aria-label="Fit to screen"
+          onClick={handleFit}
+        />
+      </div>
+    </div>
+  );
 }

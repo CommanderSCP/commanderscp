@@ -39,8 +39,10 @@ import {
 } from "../coordination/changes-repo.js";
 import {
   BOUNDARY_BUNDLE_CHECKSUMS_KEY,
-  withoutBoundaryBundleChecksums
+  withoutBoundaryBundleChecksums,
+  withoutPromotionExports
 } from "./boundary-bundle-ref.js";
+import { artifactSetOfSourceRef } from "../coordination/artifact-facts.js";
 import { listControlRunsForChange } from "../governance/controls-repo.js";
 import { readInstanceScanFloors } from "../governance/scan-requirements.js";
 import {
@@ -346,30 +348,10 @@ export async function exportPromotionBundle(
     // `artifactDigests` FROM it. `artifacts` is the rich source; `artifactDigests` is the backward-
     // compatible flattening an older outpost reads. The OCI digest(s) are carried VERBATIM (identical
     // to the pre-E3 projection); the SBOM travels as a `blob` entry.
-    const sourceRef = change.sourceRef ?? {};
-    const artifactDigest =
-      (sourceRef as Record<string, unknown>).artifact_digest ??
-      (sourceRef as Record<string, unknown>).artifactDigest;
-    const ociDigests =
-      typeof artifactDigest === "string"
-        ? [artifactDigest]
-        : Array.isArray(artifactDigest)
-          ? artifactDigest.filter((d): d is string => typeof d === "string")
-          : [];
-
-    const artifactSet: ArtifactRef[] = ociDigests.map((digest) => ({ type: "oci", digest }));
-
-    const sbom = (sourceRef as Record<string, unknown>).sbom;
-    if (sbom && typeof sbom === "object" && !Array.isArray(sbom)) {
-      const sbomRef = sbom as Record<string, unknown>;
-      if (typeof sbomRef.digest === "string") {
-        const blob: ArtifactRef = { type: "blob", digest: sbomRef.digest };
-        if (typeof sbomRef.location === "string") blob.location = sbomRef.location;
-        if (typeof sbomRef.format === "string") blob.format = sbomRef.format;
-        if (typeof sbomRef.signatureRef === "string") blob.signatureRef = sbomRef.signatureRef;
-        artifactSet.push(blob);
-      }
-    }
+    // The reader is SHARED with the component pipeline's artifact projection
+    // (`coordination/artifact-facts.ts`, §9.3) so the digests the bundle carries and the digests the
+    // tile shows are read the same way from the same keys.
+    const artifactSet: ArtifactRef[] = artifactSetOfSourceRef(change.sourceRef ?? {});
 
     // M17.3 (E6) EXPORT SCAN GATE — HARD-REFUSE, fail-closed. The SBOM (`type: "blob"`) is EXEMPT
     // (it is the scan's output). EDGE CASE: a promotion carrying NO substantive artifact has nothing
@@ -469,7 +451,9 @@ export async function exportPromotionBundle(
       // re-export of an already-exported change produces a byte-identical canonical bundle string
       // (and hence the same Ed25519 checksum) as it would have before this key existed. The
       // exporter's ledger checksums are meaningless on the far side — the receiver stamps its own.
-      sourceRef: withoutBoundaryBundleChecksums(change.sourceRef)
+      // §9.4: the SAME holds for `promotionExports[]` (what this exporter signed for OTHER peers) —
+      // local bookkeeping, stripped for the same byte-identity reason.
+      sourceRef: withoutPromotionExports(withoutBoundaryBundleChecksums(change.sourceRef))
     };
 
     // The SELF-BINDING manifest — binds THIS bundle's identity + artifact set (built here so it sees
@@ -537,11 +521,25 @@ export async function exportPromotionBundle(
     // this row is and stays `created` on THIS instance (the ledger is INSERT-only and every
     // `submitted`/`confirmed` row is written by a LATER hop's own instance), so the boundary
     // segment may say "exported" here and must call the handoff unknown.
+    //
+    // §9.4 (pipeline-substrate-registry-scan.md) — AND WHAT WAS SIGNED. Under the SAME row lock and
+    // in the SAME UPDATE, the record of this export: peer, when, the checksum (the join to the
+    // ledger row above), the manifest, its cosign signature (phase 3, outside any tx — persisted
+    // here in the tx that already exists), and the fingerprint of the key that signed it. Before
+    // this the exporter kept nothing of what it signed; only the importer did.
     await stampBoundaryBundleChecksum(
       tx,
       input.orgId,
       gathered.header.sourceChangeObjectId,
-      checksum
+      checksum,
+      {
+        peerDomainId: gathered.header.peerDomainId,
+        exportedAt: gathered.header.exportedAt,
+        checksum,
+        manifest: gathered.manifest,
+        manifestSignature,
+        keyFingerprint: cosignPair.fingerprint
+      }
     );
 
     return {

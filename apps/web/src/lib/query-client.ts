@@ -93,6 +93,12 @@ export function serviceBoardKey(id: string): unknown[] {
   return ["service", "board", id];
 }
 
+/** Query keys for one assembly's board — `part` separates the assembly object itself from the
+ *  `contains` traversal that lists its components, so the two refetch independently. */
+export function assemblyBoardKey(idOrUrn: string, part: "self" | "members"): unknown[] {
+  return ["assembly", "board", idOrUrn, part];
+}
+
 /** Query key for the Campaigns list view (M5, BUILD_AND_TEST.md §8 M5 UI requirement). */
 export function campaignListKey(): unknown[] {
   return ["campaign", "list"];
@@ -103,16 +109,6 @@ export function campaignDetailKey(id: string): unknown[] {
   return ["campaign", "detail", id];
 }
 
-/** Query key for the Initiatives list view (M5, BUILD_AND_TEST.md §8 M5 UI requirement). */
-export function initiativeListKey(): unknown[] {
-  return ["initiative", "list"];
-}
-
-/** Query key for a single initiative's roll-up view (initiative + member campaigns + rollupStatus). */
-export function initiativeDetailKey(id: string): unknown[] {
-  return ["initiative", "detail", id];
-}
-
 export const authMeKey = ["auth", "me"];
 export const authConfigKey = ["auth", "config"];
 
@@ -121,4 +117,47 @@ export const authConfigKey = ["auth", "config"];
  *  the pipeline is durable and exists with nothing in flight. */
 export function componentPipelineKey(idOrUrn: string): unknown[] {
   return ["component", "pipeline", idOrUrn];
+}
+
+/** Query key for the instance dependency-subscription unlock (`GET /instance/dependency-subscription-unlock`)
+ *  — the first conjunct of the enablement chain, one singleton row per deployment, so the key is
+ *  not parameterized. Read-only in the tenant UI (the write is an operator-token CLI action). */
+export function dependencySubscriptionUnlockKey(): unknown[] {
+  return ["dependency-subscriptions", "unlock"];
+}
+
+/** Query key for a component's dependency INVENTORY (`GET /components/{id}/dependency-inventory`)
+ *  — its declared major lines with each line's head and resolved dependency subscription, plus the
+ *  component-level ingestion gate. Invalidated after a policy write authored from the Dependencies
+ *  tab (enable / opt out), because the rows' resolutions are read off the server, never recomputed. */
+export function componentDependencyInventoryKey(idOrUrn: string): unknown[] {
+  return ["component", "dependency-inventory", idOrUrn];
+}
+
+/** Query key for the bumps SCP authored for a component (`GET /components/{id}/dependency-bumps`). */
+export function componentDependencyBumpsKey(idOrUrn: string): unknown[] {
+  return ["component", "dependency-bumps", idOrUrn];
+}
+
+/** Query key for the org's dependency PRODUCER declarations (`GET /dependencies/producers`) — one
+ *  unpaged, org-level list (ADR-0032 §7e); NOT parameterized by producer: the Admin › Dependencies
+ *  page shows all of it and a component's "Produces" strip filters it client-side. Invalidated after
+ *  a declare / retract authored from the Admin page. */
+export function dependencyProducersKey(): unknown[] {
+  return ["dependency-producers"];
+}
+
+/** Query key for the whole governance:move lattice this org can act on — `GET
+ *  /governance/move-enforcement/rungs` (rungs + the instance rung's state, one unpaged org-level
+ *  list, governance-reach-on-containment-move.md §9.4). Invalidated after an enable/disable
+ *  authored from the Admin › Governance page. */
+export function governanceMoveRungsKey(): unknown[] {
+  return ["governance-move", "rungs"];
+}
+
+/** Query key for the instance (commander) rung of the governance:move lattice (`GET
+ *  /instance/governance-move-enforcement`) — one singleton row per deployment, not
+ *  parameterized. Read-only in the tenant UI: the write is operator-token only (CLI/API). */
+export function governanceMoveInstanceKey(): unknown[] {
+  return ["governance-move", "instance"];
 }

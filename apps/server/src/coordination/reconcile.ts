@@ -1,5 +1,6 @@
 import type PgBoss from "pg-boss";
 import type { TriggerIntent } from "@scp/plugin-api";
+import { boundDetail } from "@scp/runner-launcher";
 import type { ExecutorType, TrustDomainId } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { and, eq } from "drizzle-orm";
@@ -1274,7 +1275,16 @@ async function reconcileExecutingChange(
               waveId: activeWave.id,
               targetObjectId: target.targetObjectId,
               phase,
-              detail: status.detail ?? null
+              // BOUNDED BEFORE IT BECOMES A ROW. `ExecutionStatus.detail` is free-form `string`
+              // supplied by ANY executor plugin — including third-party ones this repository does
+              // not compose the string for — and this `inputContext` is a `Decision`, i.e. permanent
+              // governed state. An unbounded `detail` here is an unbounded DATABASE row per poll,
+              // the same family as the 1.44 GB/day Decision growth incident. The managed plugins
+              // already bound their own (`@scp/runner-launcher`'s `boundDetail`, enforced by their
+              // stores' types), so for them this is the IDENTITY — that is the property that makes
+              // a second application safe rather than a fourth different slice: one bound, applied
+              // at each trust boundary, keeping both ends.
+              detail: status.detail === undefined ? null : boundDetail(status.detail)
             },
             reasonTree: { summary: `wave target ${target.targetObjectId} reported '${phase}'` }
           });

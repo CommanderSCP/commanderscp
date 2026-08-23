@@ -18,17 +18,17 @@
  *    an `annotates` edge via the generic endpoint, they could layer a WEAKENING "overlay" that
  *    policy-merge-at-read-time code would need to separately distrust — closing the creation
  *    vector here means readers can trust every `annotates` edge they see was strictness-checked.
- *  - `coordinates` (DESIGN §9.5 campaign/initiative MEMBERSHIP): CRITICAL (M5 adversarial review) —
- *    campaign rollback and initiative roll-up read campaign/initiative membership, and a member
+ *  - `coordinates` (DESIGN §9.5 campaign MEMBERSHIP): CRITICAL (M5 adversarial review) —
+ *    campaign rollback reads campaign membership, and a member
  *    Change swept into a rollback is a real, side-effectful revert. If any actor holding org-scoped
  *    `relationship:write` could inject a `coordinates` edge from a victim's campaign to an arbitrary
  *    Change via the generic endpoint (or an IaC manifest), the victim's next legitimate rollback
  *    would revert the injected Change too — bypassing `proposeCampaign`'s per-target authority
  *    check, the headline campaign coordinates-authz invariant. So `coordinates` is created ONLY by
- *    the authority-checked dedicated paths: `campaign-repo.ts`'s `proposeCampaign` (campaign ->
- *    change, via the reconciler `campaign-reconcile.ts`) and `initiative-repo.ts`'s
- *    `proposeInitiative`/`addCampaignToInitiative` (initiative -> campaign), each of which
- *    `authorize()`-checks the acting actor's authority before creating the edge. Rollback itself no
+ *    the authority-checked dedicated path: `campaign-repo.ts`'s `proposeCampaign` (campaign ->
+ *    change, via the reconciler `campaign-reconcile.ts`), which `authorize()`-checks the acting
+ *    actor's authority before creating the edge. (A second writer was removed with the grouping
+ *    rung above campaigns — ADR-0036.) Rollback itself no
  *    longer trusts these raw edges at all — it sources membership from the plan-compiled
  *    `campaign_wave_targets` (`campaign-rollback.ts`) — this block is defense-in-depth on the
  *    creation side, closing the injection VECTOR outright.

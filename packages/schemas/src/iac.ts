@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { JsonRecordSchema, UrnSchema } from "./graph.js";
-import { ExecutorTypeSchema, PipelineClassificationSchema } from "./executors.js";
+import {
+  ExecutorTypeSchema,
+  PipelineClassificationSchema,
+  SourceMappingScopeSchema
+} from "./executors.js";
 import { DependencyCoordinateSchema, DependencyEcosystemSchema } from "./dependencies.js";
 
 /**
@@ -145,7 +149,21 @@ export const ManifestSourceMappingSchema = z.object({
   type: ExecutorTypeSchema.optional(),
   /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting only, never an
    *  enforcement input, and deliberately outside the identity tuple above. */
-  classification: PipelineClassificationSchema.optional()
+  classification: PipelineClassificationSchema.optional(),
+  /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a). Like `classification`, NOT part
+   *  of the mapping's identity — a descriptive label; omitted means domain-specific. */
+  mirrorOfShared: z.boolean().optional(),
+  /** The pause switch (migration 0063). Like `classification`/`mirrorOfShared`, deliberately
+   *  outside the identity tuple — disabling a live mapping is an in-place correction, not a
+   *  delete-and-recreate of the route. Omitted ⇒ enabled, the pre-0063 behaviour. */
+  enabled: z.boolean().optional(),
+  /** DECLARED reach (§10.6, migration 0066): `global` | `domain`. Outside the identity tuple, like
+   *  the three above — but unlike them it IS converged on an existing row: a declared scope that
+   *  differs from the live row's diffs as an `update` (`PlanSourceMappingDiffEntrySchema.action`),
+   *  and apply writes it in place. Three states, deliberately: OMITTED ⇒ this manifest does not
+   *  manage the scope (a manifest that has never heard of the field never clears a scope an operator
+   *  set by hand); explicit `null` ⇒ declare it undeclared (clear a stale label); a value ⇒ that. */
+  scope: SourceMappingScopeSchema.nullable().optional()
 });
 export type ManifestSourceMapping = z.infer<typeof ManifestSourceMappingSchema>;
 
@@ -265,6 +283,41 @@ export const ManifestDependencyProducerSchema = z.object({
 });
 export type ManifestDependencyProducer = z.infer<typeof ManifestDependencyProducerSchema>;
 
+/**
+ * A `governance_move_rungs` row (ADR-0038 §2, proposal governance-reach-on-containment-move.md §9.6
+ * Q4): "every containment move under this container needs `governance:move` at BOTH ends". The IaC
+ * form of `PUT /governance/move-enforcement/rungs/{idOrUrn}`.
+ *
+ * IDENTITY IS THE SUBJECT and there is deliberately no value: a rung is either enabled at a
+ * container or it is not, so this collection has `create`/`delete`/`noop` and no `update` — the same
+ * identity-only treatment `placements` gets, for the same reason. The TIER is DERIVED from the
+ * subject's object type (`moveRungTierForObjectType`) and is never declared: a manifest that could
+ * name a tier could name one the subject is not, and the stored literal would then describe a
+ * containment shape the rest of the system does not believe in.
+ *
+ * OWNERSHIP is the SUBJECT CONTAINER's stack — this table has no `labels` column either, so the same
+ * inheritance rule `sourceMappings`/`producers` use applies, and the same refusal follows at both
+ * `POST /plans` and apply: a rung declared on an object this stack does not manage is rejected 400.
+ * That is what stops two stacks enabling and pruning each other's rungs. The practical consequence:
+ * a rung on the ORG ROOT (or on a container another stack owns) is authored through the API/CLI, not
+ * through a manifest.
+ *
+ * THE SUBJECT MUST BE A CONTAINER — the org root, a containment domain, a service or an assembly. A
+ * component is refused for the reason `assertRungSubjectType` gives: a rung governs moves of the
+ * things INSIDE a container, and nothing is contained by a component, so the rung would govern the
+ * empty set of moves.
+ *
+ * AUTHORITY IS `policy:write` AT-OR-ABOVE THE SUBJECT, checked at apply against the REAL applying
+ * principal — the same bar `PUT /governance/move-enforcement/rungs/{idOrUrn}` takes, imported from
+ * one definition so the two doors cannot drift.
+ */
+export const ManifestGovernanceMoveRungSchema = z.object({
+  /** The container the rung sits on — an object id OR a URN. It must be an object THIS stack
+   *  declares (ownership is inherited from it), and must be a type that can carry a rung. */
+  subjectIdOrUrn: z.string().min(1).max(512)
+});
+export type ManifestGovernanceMoveRung = z.infer<typeof ManifestGovernanceMoveRungSchema>;
+
 export const DesiredStateManifestSchema = z.object({
   /** Deployable-unit label — becomes the row's server-written `managed_by_stack` (drizzle/0068),
    *  which is what scopes pruning. It is ALSO mirrored into `labels` as `scp:stack` for humans; that
@@ -357,6 +410,51 @@ export const DesiredStateManifestSchema = z.object({
         "POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author " +
         '"producers": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a ' +
         "producer this stack does not own is refused."
+    ),
+  /**
+   * ===========================================================================================
+   * ABSENT MEANS **UNMANAGED**, THE SAME DIVERGENCE `producers` MAKES AND FOR THE SAME KIND OF
+   * REASON (proposal governance-reach-on-containment-move.md §9.6 Q4)
+   * ===========================================================================================
+   * Read `producers` above first: absent and empty are the same thing for `sourceMappings`,
+   * `executorBindings` and `placements`, and both PRUNE. These two collections diverge, because the
+   * blast radius of a forgotten key is not "a route an operator notices the same day":
+   *
+   *   - Pruning a rung DISABLES a governance bar. The symptom is an ABSENCE of refusals — moves that
+   *     should have been refused quietly succeeding — and nothing surfaces it until somebody audits
+   *     where a governed object ended up. A stack that merely FORGOT A KEY must not un-govern a
+   *     subtree an operator deliberately governed.
+   *
+   * So: key absent  -> this stack manages no rungs. NOTHING is disabled, ever.
+   *     key present -> this stack is authoritative over the rungs it names, AND over any rung whose
+   *                    subject is an object this stack owns. Removing an entry from a present
+   *                    collection DOES disable it.
+   *
+   * AND `@scp/iac` THEREFORE CANNOT DISABLE THE **LAST** RUNG: `Stack.synth()` omits an empty
+   * collection, so a program that declares no rungs and one that declares none ANY MORE synthesize
+   * byte-identical manifests. Accepted cost, identical to `producers`. To disable, use
+   * `DELETE /governance/move-enforcement/rungs/{idOrUrn}` (`scp governance move-enforcement
+   * disable`), remove the entry while OTHER entries remain, or hand-author
+   * `"governanceMoveRungs": []`.
+   *
+   * A DISABLE MAY STILL BE REFUSED. The lattice is monotone (ADR-0038 §2): a rung whose ancestor —
+   * or the instance rung — is enabled cannot be disabled below, so a manifest that drops such an
+   * entry fails its apply with the 409 the verb gives, naming the upper rung. That is deliberate:
+   * reporting a successful disable that leaves every move under the subtree enforced anyway is the
+   * worst of both.
+   */
+  governanceMoveRungs: z
+    .array(ManifestGovernanceMoveRungSchema)
+    .optional()
+    .describe(
+      "governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, " +
+        "an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of " +
+        "dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing " +
+        "an entry disables that rung, and a present-but-empty array disables every rung on a container this stack " +
+        "owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use " +
+        'DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author "governanceMoveRungs": []. The ' +
+        "subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a " +
+        "disable under an enabled upper rung is refused 409."
     )
 });
 export type DesiredStateManifest = z.infer<typeof DesiredStateManifestSchema>;
@@ -404,13 +502,6 @@ export const PlanRelationshipDiffEntrySchema = z.object({
 });
 export type PlanRelationshipDiffEntry = z.infer<typeof PlanRelationshipDiffEntrySchema>;
 
-/**
- * One `source_mappings` row's verdict. No `update`: identity is the whole tuple (see
- * `ManifestSourceMappingSchema`), so a changed mapping surfaces as a delete plus a create — the
- * same identity-only treatment `PlanRelationshipDiffEntrySchema` gets, for the same reason.
- * `repoPattern`/`pathPattern`/`type` are normalized here (null / the `configuration` default) so the
- * entry the operator reviews shows exactly the row that will be written, not the author's shorthand.
- */
 /** A placement diff entry. No `update`: the pair IS the identity, so a changed pair is a different
  *  placement — a delete plus a create, never an in-place edit. */
 export const PlanPlacementDiffEntrySchema = z.object({
@@ -422,9 +513,23 @@ export const PlanPlacementDiffEntrySchema = z.object({
 });
 export type PlanPlacementDiffEntry = z.infer<typeof PlanPlacementDiffEntrySchema>;
 
+/**
+ * One `source_mappings` row's verdict. Identity is the whole tuple (see `ManifestSourceMappingSchema`),
+ * so a changed TUPLE surfaces as a delete plus a create — the same identity-only treatment
+ * `PlanRelationshipDiffEntrySchema` gets, for the same reason. `update` (§10.6, additive — a response
+ * enum gaining a member) is the verdict for an existing tuple whose declared `scope` differs from
+ * the manifest's: scope is an attribute of the row, not part of its identity, so it converges IN
+ * PLACE (apply sets it on every row matching the tuple) rather than by re-creating a live route.
+ * `classification`/`mirrorOfShared`/`enabled` are NOT converged this way today (a differing value
+ * still reads `noop`) — pre-existing, and left as is here on purpose: `enabled` is an enforcement
+ * input a hand-set pause must survive an apply of a manifest that omits it, and the other two have no
+ * "omitted ⇒ unmanaged" reading yet. `repoPattern`/`pathPattern`/`type` are normalized here (null /
+ * the `configuration` default) so the entry the operator reviews shows exactly the row that will be
+ * written, not the author's shorthand.
+ */
 export const PlanSourceMappingDiffEntrySchema = z.object({
   kind: z.literal("source-mapping"),
-  action: z.enum(["create", "delete", "noop"]),
+  action: z.enum(["create", "update", "delete", "noop"]),
   componentUrn: UrnSchema,
   sourceKind: z.string(),
   repoPattern: z.string().nullable(),
@@ -436,6 +541,16 @@ export const PlanSourceMappingDiffEntrySchema = z.object({
   /** Descriptive only, and outside the identity tuple — shown so a plan that introduces or clears a
    *  `dev` label is legible, not because it participates in matching. */
   classification: PipelineClassificationSchema.nullable(),
+  mirrorOfShared: z.boolean(),
+  /** Descriptive on this entry too, like `mirrorOfShared` above — outside the identity tuple, so
+   *  its presence here is purely so the operator reviewing the plan can see whether the row they
+   *  are creating/pruning is currently paused. */
+  enabled: z.boolean(),
+  /** The scope the row WILL HAVE after apply (§10.6): the manifest's declaration for `create`/
+   *  `update`; the live row's value for `noop`/`delete` and for a manifest that omits it (unmanaged).
+   *  `null` = not declared. Optional on the wire — a plan stored before 0066 has no key — read it as
+   *  "unknown", never as "undeclared". */
+  scope: SourceMappingScopeSchema.nullable().optional(),
   reason: z.string()
 });
 export type PlanSourceMappingDiffEntry = z.infer<typeof PlanSourceMappingDiffEntrySchema>;
@@ -497,6 +612,24 @@ export const PlanDependencyProducerDiffEntrySchema = z.object({
 });
 export type PlanDependencyProducerDiffEntry = z.infer<typeof PlanDependencyProducerDiffEntrySchema>;
 
+/**
+ * One `governance_move_rungs` row's verdict, keyed on the SUBJECT container. No `update`: a rung has
+ * no value beyond its existence (the tier is derived from the subject's type), so the only verdicts
+ * are enable, disable and "already enabled" — the same identity-only treatment
+ * {@link PlanPlacementDiffEntrySchema} gets.
+ *
+ * `subjectUrn` is the RESOLVED URN of whatever the manifest addressed by id-or-URN, so the entry an
+ * operator reviews names the container in the same vocabulary every other entry uses, and the apply
+ * path resolves it exactly like any other endpoint.
+ */
+export const PlanGovernanceMoveRungDiffEntrySchema = z.object({
+  kind: z.literal("governance-move-rung"),
+  action: z.enum(["create", "delete", "noop"]),
+  subjectUrn: UrnSchema,
+  reason: z.string()
+});
+export type PlanGovernanceMoveRungDiffEntry = z.infer<typeof PlanGovernanceMoveRungDiffEntrySchema>;
+
 export const PlanDiffSummarySchema = z.object({
   creates: z.number().int(),
   updates: z.number().int(),
@@ -525,6 +658,14 @@ export const PlanDiffSchema = z.object({
    * manages them and has nothing to change". An empty array means the latter.
    */
   producers: z.array(PlanDependencyProducerDiffEntrySchema).optional(),
+  /**
+   * `governance:move` rungs (ADR-0038 §2). OPTIONAL FOR THE SAME TWO REASONS `producers` is, and the
+   * second one is load-bearing in the same way: this key is ABSENT — not `[]` — whenever the manifest
+   * omitted its own `governanceMoveRungs` collection, because absent there means UNMANAGED. The
+   * stored plan therefore records "this stack manages no rungs", which an operator can tell apart
+   * from "this stack manages them and has nothing to change" (an empty array).
+   */
+  governanceMoveRungs: z.array(PlanGovernanceMoveRungDiffEntrySchema).optional(),
   summary: PlanDiffSummarySchema
 });
 export type PlanDiff = z.infer<typeof PlanDiffSchema>;

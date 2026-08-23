@@ -916,38 +916,34 @@ have every reason to revert the guard.
 
 **WHICH OUTPOST THIS CLAUSE IS ABOUT (vocabulary note added 2026-08-17).**
 
-> **PROVISIONAL, AND HONEST ABOUT WHY.** This note originally said *HQ outpost* and *field outpost*
-> "are defined in GLOSSARY.md and are not redefined here". **There are no such GLOSSARY entries as
-> this branch ships** — they are being authored on a separate branch that has not landed, so the
-> clause pointed at vocabulary the repository does not contain. GLOSSARY.md remains **authoritative**
-> for both terms (CLAUDE.md), and its `dependency subscription` entry now carries the same
-> distinction, **also marked provisional**. When the dedicated entries land they supersede both, and
-> this block should be cut back to the cross-reference it was pretending to be. Until then the
-> minimum needed to read §7d is stated here rather than dangling:
->
-> - **field outpost** — an outpost deployment in a trust domain **other than the commander's**: a
->   second running process, with its own database, paired to the commander as a `federation_peers`
->   row. The only outpost that is a separate deployment.
-> - **HQ outpost** — the outpost role for the **commander's own** trust domain. Not a second
->   deployment and not a second record: it is the commander instance itself, which is the model
->   statement [ADR-0011](0011-universal-outpost-validation.md) already makes.
->
-> Both definitions are *derived from the code below*, not asserted — which is why they can be
-> written down safely here without pre-empting the GLOSSARY's wording.
+> **HQ outpost** and **field outpost** are defined in [GLOSSARY.md](../GLOSSARY.md) (the
+> authoritative entries; [ADR-0021](0021-terminology.md) D7 records the decision) and are not
+> redefined here. (This block was written as a provisional definition while those entries were being
+> authored on a separate branch; both landed together, and it is now the cross-reference it was
+> pretending to be.) The one-line reading needed for §7d: a **field outpost** is an outpost deployment
+> in a trust domain **other than the commander's** — a second running process, with its own database,
+> paired to the commander as a `federation_peers` row; the **HQ outpost** is the outpost in the
+> **commander's own** trust domain, which is not a second deployment.
 
-What matters for
-this clause is what the code makes of the distinction, read out of the code rather than from the
-names: **a `SCP_FEDERATION_ROLE` is one value per deployment** (`config.ts:56`, `:267-275`) — a
-process is `commander` **or** `outpost` **or** `retrans`, never two — and **an `outpost` graph object
-can never name the commander's own trust domain**, because `assertOutpostPeerBinding`
-(`federation/outpost-binding.ts`) requires `properties.peerDomainId` to resolve to an already-paired
-`federation_peers` row holding role `outpost`, and *an instance is never its own peer*
-(`federation/peers-repo.ts:436-439`: `initFederationSelf` writes `federation_self`, not a peer row;
-restated at `outpost-binding.ts:98-100`). `federation_self` is one row per org
-(`federation/self-repo.ts`), so a second deployment mints a second trust-domain id and is by
-definition a **field** outpost.
+What matters for this clause is what the code makes of the distinction, read out of the code rather
+than from the names: **a `SCP_FEDERATION_ROLE` is one value per deployment** (`config.ts`) — a
+process is `commander` **or** `outpost` **or** `retrans`, never two — and the commander-only
+predicate (`dependencies/commander-only.ts`) reads **that** and never an `outpost` graph object. It
+cannot read the object, because an `outpost` graph object **can** name the commander's own trust
+domain: that record *is* the HQ outpost, commander-declared under
+[pipeline-substrate-registry-scan.md §10.5](../proposals/pipeline-substrate-registry-scan.md)
+(`assertOutpostPeerBinding` in `federation/outpost-binding.ts` accepts `properties.peerDomainId` =
+`federation_self.domainId` only from a `commander`-role instance; there is no `federation_peers` row
+behind it — an instance is never its own peer, `initFederationSelf` writes `federation_self` — and
+every reader renders it as "this instance", `OutpostConfig.peerIsSelf`). Every other `outpost` object
+must resolve to an already-paired `federation_peers` row holding role `outpost`, i.e. it describes a
+field outpost. So the object says which outpost a record *describes*; only the install-time role
+says what *this deployment is* — and this deployment is what the rule is about. `federation_self` is
+one row per org (`federation/self-repo.ts`), so a second deployment mints a second trust-domain id
+and is by definition a **field** outpost.
 
-**Consequently the HQ outpost is neither a separate deployment nor a separate record** — it is the
+**Consequently the HQ outpost is not a separate deployment** (it may be a separate *record* — the
+commander-declared §10.5 object — but never a second process with tables of its own): it is the
 commander instance itself filling the outpost role for its own trust domain, which is the model
 statement [ADR-0011](0011-universal-outpost-validation.md) already makes ("a non-federated
 single-instance install is its own commander+outpost… the validating party is the local instance").

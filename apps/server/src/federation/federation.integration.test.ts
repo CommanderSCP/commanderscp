@@ -38,6 +38,7 @@ import { materializeApprovalRequest, castApprovalVote } from "../governance/appr
 import { insertControlRun } from "../governance/controls-repo.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import { getDecision } from "../coordination/decisions-repo.js";
+import { getComponentPipeline } from "../coordination/component-pipeline.js";
 import { listAuditEvents } from "../audit/audit-repo.js";
 import { verifyBlob } from "@scp/cosign";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
@@ -2305,6 +2306,153 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     });
     const exported = await exportBundleA(dirtyNoFloor.changeId);
     expect(exported.artifacts).toEqual([{ type: "oci", digest: DEV_DIGEST }]);
+  });
+
+  it("§10.4 ROUND TRIP: a promotion (image + SBOM) exported A→B lands at B with `artifact.signing.importedManifest` on B's component pipeline — the exporter's manifest + signature verbatim, exporterName = A's peer name at B, artifactCount, importedFromDomain = A; B reads ONE image digest (the importer's flat `artifactDigests[]` also names the SBOM blob — never an image) and its E6 re-check passes on one passing scan of that image; A's own pipeline carries none (it imported nothing)", async () => {
+    const digest = `sha256:${"a4".repeat(32)}`;
+    const sbomDigest = `sha256:${"b7".repeat(32)}`;
+    // A COMPONENT (the pipeline is component-scoped) authored at A, synced to B by the same
+    // object_upsert path every promotion target takes, so `properties.targets` resolves at B.
+    const component = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: domainA.orgId,
+        requestId: "t-promo-manifest-component",
+        name: `promo-manifest-component-${randomUUID()}`
+      })
+    );
+    const preCursor = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      getCursor(tx, domainB.orgId, selfA.domainId, selfA.domainId)
+    );
+    const syncBundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      exportSyncBundle(tx, domainA.orgId, domainB.orgName, preCursor.sequence)
+    );
+    await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      importSyncBundle(tx, domainB.orgId, syncBundle)
+    );
+
+    const { change } = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      proposeChange(tx, {
+        orgId: domainA.orgId,
+        actorObjectId: domainA.orgId,
+        requestId: "t-promo-manifest-change",
+        name: `promote-manifest-${randomUUID()}`,
+        targets: [component.id],
+        sourceRef: {
+          artifact_digest: digest,
+          repo: "acme/checkout",
+          sbom: {
+            format: "cyclonedx",
+            digest: sbomDigest,
+            location: `oci://r.invalid/sbom@${sbomDigest}`
+          }
+        }
+      })
+    );
+    await seedPassingScan(change.id, digest); // E6 needs the passing, digest-bound row to export
+    const bundle = await exportBundleA(change.id);
+    expect(bundle.promotionManifest, "the exporter signs a manifest").toBeDefined();
+    expect(bundle.manifestSignature).toBeDefined();
+    // The importer's REAL stamp shape: the flat list is the typed set's projection, SBOM included.
+    expect(bundle.artifactDigests).toEqual([digest, sbomDigest]);
+    expect(bundle.artifacts).toEqual([
+      { type: "oci", digest },
+      {
+        type: "blob",
+        digest: sbomDigest,
+        location: `oci://r.invalid/sbom@${sbomDigest}`,
+        format: "cyclonedx"
+      }
+    ]);
+    const imported = await importPromotionBundle(domainB.db, domainB.orgId, bundle);
+
+    const pipelineAt = async (domain: IsolatedDomain) =>
+      withTenantTx(domain.db, domain.orgId, async (tx) => {
+        const c = await getObjectByIdOrUrnAnyType(tx, domain.orgId, component.id);
+        return getComponentPipeline(
+          tx,
+          domain.orgId,
+          {
+            id: c.id,
+            urn: c.urn,
+            name: c.name,
+            originDomainId: c.originDomainId,
+            domainLocal: c.domainLocal
+          },
+          domain.orgId
+        );
+      });
+
+    const atB = await pipelineAt(domainB);
+    expect(atB.artifact, "B picks the imported change — it carries the digest").not.toBeNull();
+    expect(atB.artifact!.changeId).toBe(imported.localChangeObjectId);
+    expect(
+      atB.artifact!.digests,
+      "origin key + importer's typed `artifacts[]` name ONE image — the SBOM blob's digest (in the flat `artifactDigests[]`) is NOT an image"
+    ).toEqual([digest]);
+    expect(atB.artifact!.sbom).toEqual({
+      format: "cyclonedx",
+      digest: sbomDigest,
+      location: `oci://r.invalid/sbom@${sbomDigest}`
+    });
+    expect(atB.artifact!.unknownFields).toEqual([]);
+    expect(atB.artifact!.signing.importedManifest).toEqual({
+      manifest: bundle.promotionManifest,
+      manifestSignature: bundle.manifestSignature,
+      exporterDomainId: selfA.domainId,
+      // B's `federation_peers` row for A carries A's org name (see `pair`) — the exporter IS a peer.
+      exporterName: domainA.orgName,
+      importedFromDomain: selfA.domainId,
+      artifactCount: 2
+    });
+    expect(atB.artifact!.signing.importedManifest!.manifest.exporterDomainId).toBe(selfA.domainId);
+    // The manifest binds the set by TYPE + DIGEST (its `artifacts[]` is that projection).
+    expect(atB.artifact!.signing.importedManifest!.manifest.artifacts).toEqual([
+      { type: "oci", digest },
+      { type: "blob", digest: sbomDigest }
+    ]);
+
+    // B's E6 re-check (the exporter's OWN predicate, read-only — `evaluateScanCoverage`): `not_run`
+    // with no scan evidence at B; ONE passing, digest-bound scan of the IMAGE from an ADMITTED
+    // producer (`scan-result-control` — the module NAMES the producer, it is not fixture decoration,
+    // see `seedScanOutcome`) makes it `pass` — a re-export from B would not be refused over the SBOM
+    // blob's digest, which was never a substantive artifact.
+    expect(atB.artifact!.exportGate).toBe("not_run");
+    await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      insertControlRun(tx, {
+        orgId: domainB.orgId,
+        controlObjectId: randomUUID(),
+        changeObjectId: imported.localChangeObjectId,
+        gateKind: "lifecycle_edge",
+        gateRef: { fromState: "validating", toState: "accepted" },
+        pluginModule: "scan-result-control",
+        status: "pass",
+        evidence: {
+          scanner: "trivy",
+          scannerVersion: "0.50.0",
+          artifactDigest: digest,
+          expectedDigest: digest,
+          digestMatch: true,
+          severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+          threshold: { maxCritical: 0, maxHigh: 0 }
+        }
+      })
+    );
+    const atBScanned = await pipelineAt(domainB);
+    expect(atBScanned.artifact!.digests).toEqual([digest]);
+    expect(
+      atBScanned.artifact!.exportGate,
+      "one passing scan of the one image satisfies E6 at B"
+    ).toBe("pass");
+    // The exporter's OWN sourceRef never carries `promotionManifest` — its manifest lives in the
+    // §9.4 export stamp, on Scan & sign — so A's Registry has nothing imported to state.
+    const atA = await pipelineAt(domainA);
+    expect(atA.artifact!.changeId).toBe(change.id);
+    expect(atA.artifact!.signing.importedManifest).toBeNull();
+    expect(atA.artifact!.signing.promotionExports).toHaveLength(1);
+    expect(atA.artifact!.unknownFields).toEqual([]);
   });
 });
 

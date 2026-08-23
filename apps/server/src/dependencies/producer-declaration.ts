@@ -1,9 +1,13 @@
 import type {
   DependencyLineProducer,
   DependencyLineProducerKey,
+  DependencyLineProducerView,
+  DependencyObjectRef,
   DependencyProducerLineImpact,
   DependencyProducerOpenBump
 } from "@scp/schemas";
+import { and, eq, inArray } from "drizzle-orm";
+import { objects } from "../db/schema.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import type { Permission } from "../authz/resolve.js";
 import { authorize } from "../authz/resolve.js";
@@ -154,6 +158,61 @@ export interface ProducerLineBefore {
   latestDigest: string | null;
   latestObservedAt: string | null;
   subscribedComponentObjectIds: string[];
+  /** The same set, named — one per id, same order. */
+  subscribedComponents: DependencyObjectRef[];
+}
+
+/**
+ * The names behind a set of object ids — ONE batched `objects` read, in the org, tombstones
+ * INCLUDED (a declaration is a stored fact; the name is what it was — the same reading the
+ * inventory row's `producer` takes in `dependency-read-surface.ts`). An id that names no row in
+ * this org resolves to `""`, never to a throw: the wire view is a courtesy on top of the id, and a
+ * dangling reference is the id's problem to report, not the name's.
+ */
+export async function namesForObjectIds(
+  tx: TenantTx,
+  orgId: string,
+  ids: readonly string[]
+): Promise<Map<string, string>> {
+  const unique = [...new Set(ids)];
+  const byId = new Map<string, string>();
+  if (unique.length === 0) return byId;
+  const rows = await tx
+    .select({ id: objects.id, name: objects.name })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), inArray(objects.id, unique)));
+  for (const row of rows) byId.set(row.id, row.name);
+  return byId;
+}
+
+/** `{objectId, name}` for each id, in the ids' order; unknown ids name `""`. */
+export function refsForIds(
+  ids: readonly string[],
+  names: Map<string, string>
+): DependencyObjectRef[] {
+  return ids.map((objectId) => ({ objectId, name: names.get(objectId) ?? "" }));
+}
+
+/**
+ * THE WIRE VIEW of stored declarations — the rows plus the producer's and the declarer's names
+ * (dependency-subscription-ui.md §12.6 Q1, owner 2026-08-18). One batched lookup for the whole
+ * list, so `GET /dependencies/producers` costs two queries however long the org's list is.
+ */
+export async function viewsOfDeclarations(
+  tx: TenantTx,
+  orgId: string,
+  declarations: readonly DependencyLineProducer[]
+): Promise<DependencyLineProducerView[]> {
+  const names = await namesForObjectIds(
+    tx,
+    orgId,
+    declarations.flatMap((d) => [d.producerObjectId, d.declaredByObjectId])
+  );
+  return declarations.map((d) => ({
+    ...d,
+    producer: { objectId: d.producerObjectId, name: names.get(d.producerObjectId) ?? "" },
+    declaredBy: { objectId: d.declaredByObjectId, name: names.get(d.declaredByObjectId) ?? "" }
+  }));
 }
 
 /**
@@ -194,9 +253,18 @@ export async function readProducerBlastRadius(
       subscribedComponentObjectIds: subscribed
         .filter((s) => s.lineId === line.id)
         .map((s) => s.componentObjectId)
-        .sort()
+        .sort(),
+      subscribedComponents: []
     });
   }
+  // NAMED, in one batched read for every line at once — the report a human confirms before the
+  // write must name what it reaches (schema note on `subscribedComponents`).
+  const names = await namesForObjectIds(
+    tx,
+    orgId,
+    out.flatMap((l) => l.subscribedComponentObjectIds)
+  );
+  for (const l of out) l.subscribedComponents = refsForIds(l.subscribedComponentObjectIds, names);
   return out;
 }
 
@@ -214,7 +282,8 @@ export function projectLineImpacts(before: ProducerLineBefore[]): DependencyProd
       latestObservedAt: l.latestObservedAt
     },
     headCleared: l.latestVersion !== null || l.latestDigest !== null || l.latestObservedAt !== null,
-    subscribedComponentObjectIds: l.subscribedComponentObjectIds
+    subscribedComponentObjectIds: l.subscribedComponentObjectIds,
+    subscribedComponents: l.subscribedComponents
   }));
 }
 
@@ -235,7 +304,8 @@ async function clearHeads(
       tagPattern: l.tagPattern,
       headBefore: reset.before,
       headCleared: reset.cleared,
-      subscribedComponentObjectIds: l.subscribedComponentObjectIds
+      subscribedComponentObjectIds: l.subscribedComponentObjectIds,
+      subscribedComponents: l.subscribedComponents
     });
   }
   return lines;

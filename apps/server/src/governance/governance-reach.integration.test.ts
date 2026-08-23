@@ -4,7 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ContainmentDomainId, TrustDomainId } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { auditEvents, decisions } from "../db/schema.js";
-import { upsertObjectByUrn } from "../graph/objects-repo.js";
+import { deleteObject, upsertObjectByUrn } from "../graph/objects-repo.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
 import {
   GOVERNANCE_REACH_AUDIT_ACTION,
@@ -366,42 +367,93 @@ describe("a containment write that changes which policies reach an object", () =
   // CASE 4 — ROUTE 3, the door that writes NO containment field at all.
   // ===========================================================================================
 
-  it("CASE 4: tombstoning a CONTAINER detaches everything beneath it, and that is recorded against the container", async () => {
+  it("CASE 4: tombstoning a CONTAINER detaches everything beneath it, and that is recorded against the container — through the `contains` route, because the `domain_id` route's delete is REFUSED outright", async () => {
     const org = await createTestOrg(server, "reach-route3");
+
+    // ROUTE-1 DEPENDENTS FIRST, AS THE NEGATIVE CONTROL. A domain whose live children name it via
+    // `objects.domain_id` cannot be tombstoned at all: `deleteObject`'s route-1 orphan guard (M20,
+    // the ui-review branch) answers 409 with the blockers named, because that delete would leave the
+    // children permanently unadministrable — nothing to record, because nothing happened. If that
+    // guard ever went quiet, this half is what goes red first.
     const domain = await post(org.adminToken, "/api/v1/domains", { name: "route3-domain" });
     expect(domain.status, domain.body).toBe(201);
     const domainId = domain.json().id as string;
-
-    const policyName = "route3-prod-gate";
-    await seedPolicyAt(org, policyName, domainId);
-
-    const service = await post(org.adminToken, "/api/v1/services", {
+    const domainGate = "route3-domain-gate";
+    await seedPolicyAt(org, domainGate, domainId);
+    const inDomain = await post(org.adminToken, "/api/v1/services", {
       name: "route3-service",
       domainId
     });
-    expect(service.status, service.body).toBe(201);
-    const serviceId = service.json().id as string;
-    expect(await reachingPolicyNames(org, serviceId)).toContain(policyName);
-
-    const del = await server.app.inject({
+    expect(inDomain.status, inDomain.body).toBe(201);
+    const inDomainId = inDomain.json().id as string;
+    expect(await reachingPolicyNames(org, inDomainId)).toContain(domainGate);
+    const refused = await server.app.inject({
       method: "DELETE",
       url: `/api/v1/domains/${domainId}`,
       headers: { authorization: `Bearer ${org.adminToken}` }
     });
-    expect(del.statusCode, del.body).toBe(200);
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.body).toContain("still name it as their domain");
+    expect(await reachingPolicyNames(org, inDomainId), "nothing detached").toContain(domainGate);
+    expect(await reachDecisionsFor(org, domainId), "nothing to record").toEqual([]);
 
-    // THE HARM. The service's own `domain_id` still names the domain and nothing about the service
-    // was written — but the containment walk skips a deleted ancestor, so the gate is gone.
-    expect(await reachingPolicyNames(org, serviceId)).not.toContain(policyName);
+    // ROUTE-2 DEPENDENTS — the container a delete CAN tombstone. A service holds its components by
+    // `contains` edges (cascaded with the row); a policy scoped at the service reaches them through
+    // that edge, and the tombstone takes it away without a byte of the component changing.
+    const service = await post(org.adminToken, "/api/v1/services", { name: "route3-container" });
+    expect(service.status, service.body).toBe(201);
+    const serviceId = service.json().id as string;
+    const policyName = "route3-prod-gate";
+    await seedPolicyAt(org, policyName, serviceId);
+    const component = await post(org.adminToken, "/api/v1/components", {
+      name: "route3-component",
+      service: serviceId
+    });
+    expect(component.status, component.body).toBe(201);
+    const componentId = component.json().id as string;
+    expect(await reachingPolicyNames(org, componentId)).toContain(policyName);
 
-    const recorded = await reachDecisionsFor(org, domainId);
+    // SINCE THE OWNER RULING OF 2026-08-18 (governance-reach-on-containment-move.md §9.3) ROUTE 2
+    // REFUSES TOO, so this half no longer runs through the HTTP door. That is not a weakening of the
+    // detection this file pins — it is the same harm PREVENTED rather than recorded — but it moves
+    // where the recorder is still reachable, and this test follows it rather than being deleted.
+    const refusedContains = await server.app.inject({
+      method: "DELETE",
+      url: `/api/v1/services/${serviceId}`,
+      headers: { authorization: `Bearer ${org.adminToken}` }
+    });
+    expect(refusedContains.statusCode, refusedContains.body).toBe(409);
+    expect(refusedContains.body).toContain("contained by it");
+    expect(await reachingPolicyNames(org, componentId), "nothing detached").toContain(policyName);
+
+    // THE RECORDER'S REMAINING REACHABLE PATH: the two carve-outs the guard shares with the edge
+    // cascade — a `federationImport` tombstone (a peer's authority already deleted the row; refusing
+    // it would wedge the bundle) and a foreign-shadow removal. The container's dependents ARE still
+    // detached on those paths, so that is exactly where the route-3 record still has to fire.
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const self = await ensureFederationSelf(tx, org.orgId);
+      await deleteObject(tx, {
+        orgId: org.orgId,
+        typeId: "service",
+        actorObjectId: org.orgId,
+        requestId: "reach-route3-import",
+        idOrUrn: serviceId,
+        federationImport: { originDomainId: self.domainId, revision: 9_999 }
+      });
+    });
+
+    // THE HARM. Nothing about the component was written — but its container is gone (and the edge
+    // with it), so the gate no longer reaches it.
+    expect(await reachingPolicyNames(org, componentId)).not.toContain(policyName);
+
+    const recorded = await reachDecisionsFor(org, serviceId);
     expect(recorded.length).toBe(1);
     expect(recorded[0]!.verdict).toBe("reach_reduced");
     expect(recorded[0]!.inputContext.route).toBe("container_deleted");
     expect(Number(recorded[0]!.inputContext.dependentCount)).toBeGreaterThan(0);
     expect(JSON.stringify(recorded[0]!.reasonTree.mayNoLongerReach)).toContain(policyName);
 
-    const reasons = await reachAuditReasons(org, domainId);
+    const reasons = await reachAuditReasons(org, serviceId);
     expect(reasons.join(" ")).toContain(policyName);
   });
 

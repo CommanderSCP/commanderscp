@@ -113,7 +113,7 @@
     <rect x="866" y="656" width="136" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
     <text x="934" y="675" text-anchor="middle">release topologies</text>
     <rect x="1010" y="656" width="170" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
-    <text x="1095" y="675" text-anchor="middle">campaigns · initiatives</text>
+    <text x="1095" y="675" text-anchor="middle">campaigns</text>
     <rect x="866" y="694" width="140" height="30" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
     <text x="936" y="713" text-anchor="middle">control definitions</text>
     <text x="1016" y="713" font-size="10.5" font-style="italic" fill="#a16207">single-writer · read-only at outposts</text>
@@ -148,7 +148,7 @@
     <rect x="432" y="886" width="150" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
     <text x="507" y="906" text-anchor="middle">policies · topologies</text>
     <rect x="590" y="886" width="230" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
-    <text x="705" y="906" text-anchor="middle">changes · campaigns · initiatives</text>
+    <text x="705" y="906" text-anchor="middle">changes · campaigns</text>
     <rect x="76" y="926" width="90" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
     <text x="121" y="946" text-anchor="middle">decisions</text>
     <rect x="174" y="926" width="290" height="32" rx="6" fill="#ffffff" opacity="0.8" stroke="#86efac"/>
@@ -206,7 +206,7 @@
   <text x="1302" y="592" font-size="11.5" font-weight="700" fill="#334155">Commander UI — cross-domain view</text>
   <text x="1302" y="612" font-size="10.5" fill="#475569">every domain · sync freshness</text>
   <text x="1302" y="630" font-size="10.5" fill="#475569">in-flight changes per domain</text>
-  <text x="1302" y="648" font-size="10.5" fill="#475569">campaign / initiative roll-up</text>
+  <text x="1302" y="648" font-size="10.5" fill="#475569">campaign roll-up</text>
   <text x="1302" y="666" font-size="10.5" fill="#475569">air-gapped: last-known + transfer status</text>
   <text x="1302" y="690" font-size="10" font-style="italic" fill="#64748b">outpost-initiated only — commander never</text>
   <text x="1302" y="706" font-size="10" font-style="italic" fill="#64748b">dials an outpost or edits its data</text>

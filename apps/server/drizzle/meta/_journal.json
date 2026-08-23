@@ -544,12 +544,61 @@
     {
       "idx": 77,
       "version": "7",
+      "when": 1788134217409,
+      "tag": "0077_remove_initiative",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1788135388731,
+      "tag": "0078_source_mapping_mirror_of_shared",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1788136459053,
+      "tag": "0079_source_mapping_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1788137199877,
+      "tag": "0080_source_mapping_disabled_until",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1788138770502,
+      "tag": "0081_target_facet_and_publishes_to",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1788139911505,
+      "tag": "0082_source_mapping_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1788141000000,
+      "tag": "0083_governance_move_rungs",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
       "when": 1788142000000,
       "tag": "0084_freeze_atomic",
       "breakpoints": true
     },
     {
-      "idx": 78,
+      "idx": 85,
       "version": "7",
       "when": 1788143000000,
       "tag": "0085_freeze_lift",

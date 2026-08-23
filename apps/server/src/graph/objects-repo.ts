@@ -1,4 +1,4 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import {
   asContainmentDomainId,
@@ -299,12 +299,16 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // carries it on (see the long comment there, and `graph/containment.ts` for the three refusals).
   //
   // It was installed on the MOVE path only, and the reasoning that left creates out was "a fresh id
-  // cannot already be an ancestor of the parent". That is true, and it covers exactly the refusals
-  // that ASK about the child's id — the CYCLE, and the truncation refusal that exists only to make
-  // the cycle answer sound. It says nothing about the third, which is a property of the PARENT's
-  // chain: the parent does not itself reach the org root, because an ancestor was soft-deleted.
-  // Hence `childIsNew` — refusal 3 alone, and see `containment.ts` for why running the other two on
-  // a create would be a new refusal rather than an invariant (it lowers a documented nesting limit).
+  // cannot already be an ancestor of the parent". That is true, and it covers exactly the ONE
+  // refusal that ASKS about the child's id — the CYCLE. It says nothing about the other two, which
+  // are properties of the PARENT's chain and of the row about to be written: the parent does not
+  // itself reach the org root (an ancestor was soft-deleted), and — since the owner ruling of
+  // 2026-08-18 — the new row would sit PAST `CONTAINMENT_WALK_MAX_DEPTH` (a parent at exactly the
+  // bound has a complete chain, and a child under it is the ungovernable hop-eleven row every walk
+  // refuses). Hence `childIsNew` — refusal 1 skipped, refusals 2 and 3 run, refusal 2 with height 0
+  // and therefore without a downward walk; `containment.ts` carries the arithmetic and the retired
+  // "running 2 on a create lowers a documented limit" reasoning, which was written against the
+  // pre-ADR-0037 truncating walk.
   //
   // MEASURED on the real doors before this call existed, not reasoned about: soft-delete a domain,
   // then `POST /services {domainId: <a service still inside it>}` answered **201**, and the ORG-ROOT
@@ -327,8 +331,10 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // PROVABLE no-op there, not because it is cheap enough to be worth risking. All three refusals are
   // decided before the query returns:
   //
-  //   - refusals 1 and 2 (cycle, and the truncation that backs it) do not run at all on a create:
-  //     `childIsNew` is true, which is the whole point of that flag (see `containment.ts`).
+  //   - refusal 1 (cycle) does not run at all on a create: `childIsNew` is true, which is the whole
+  //     point of that flag (see `containment.ts`).
+  //   - refusal 2 (the depth bound) is decided in advance: the org root sits at hops 0, the new row
+  //     has no subtree, so `0 + 1 + 0` is under any bound worth having — no walk can change it.
   //   - refusal 3 asks `ids.has(orgId)` over `containmentChain(orgId, orgId)`, and that walk seeds
   //     itself with the target row at depth 0. The org root IS the target, so it is in the set no
   //     matter what the recursive term finds — the answer cannot be anything but "rooted", however
@@ -1089,8 +1095,20 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     // wedges that channel over a row this domain does not own and has no standing to referee. If
     // `resolveImportDomainId` ever stops filtering tombstones, IT is the place to fix that — not
     // here, where the blast radius is a peer's entire sync rather than one entry.
+    //
+    // "PROVABLY INERT" is true of the LIVENESS half only. It is NOT true of the DEPTH half of the walk
+    // below: `resolveImportDomainId` checks that the parent is a live in-org row and nothing about
+    // how deep that row sits, so an imported row CAN land past `CONTAINMENT_WALK_MAX_DEPTH` (a
+    // peer-authored nesting this org's tree cannot hold). Accepted, per the owner ruling of
+    // 2026-08-18, for the reason above — the receiver does not referee a peer-authored containment,
+    // and this branch's failure mode is per-CHANNEL, not per-entry — and stated here so "provably
+    // inert" is never read as covering it. `containmentParentChainForDoor`'s conversion branch is
+    // what answers a local write UNDER such a row.
     await resolveContainmentParent(tx, input.orgId, nextDomainId);
 
+    // The MOVE half of the door invariant (owner ruling 2026-08-18): the row's whole live subtree
+    // moves with it, so `assertRootedContainmentParent`'s refusal 2 counts
+    // `hops(parent) + 1 + height(row)` here — `childIsNew` false is what makes it walk downward.
     await assertRootedContainmentParent(tx, {
       orgId: input.orgId,
       childId: existing.id,
@@ -1383,6 +1401,13 @@ export async function upsertObjectByUrn(
     // id, so the actor is the federation import subject rather than a tenant — which is precisely
     // why it is worth recording: a peer's reconciliation can re-parent a local row, and that must be
     // as visible as a local operator doing it.
+    //
+    // This `domain_id` write carries NO containment door — neither the root-reachability walk nor
+    // the depth bound (`assertRootedContainmentParent`). It is `federationImport`-only by the guard
+    // above, so it wears the same carve-out `updateObject` states at its own call: the receiver does
+    // not referee a peer-authored containment, and this branch's failure mode is per-CHANNEL (no
+    // try/catch around `object_upsert`). Named here so the census of `domain_id` write sites reads
+    // "two sites, one door, one deliberate carve-out" and not "one site forgotten".
     const reachBefore =
       nextDomainId !== existing.domainId
         ? await policyReachFor(tx, input.orgId, existing.id, input.actorObjectId)
@@ -1540,7 +1565,7 @@ export async function deleteObject(
   // `deleted_at IS NULL`, so soft-deleting a region target that a proposed change already names
   // makes the gate stop firing and the wave target dispatch against the shared default executor.
   //
-  // FIRST, ahead of the containment-reach capture below, for the reason that capture itself was
+  // FIRST, ahead of the route-1 orphan guard and the containment-reach capture below, for the reason that capture itself was
   // placed after `assertRootedContainmentParent` in `updateObject`: a REFUSAL should not pay for
   // work whose only consumer is the write it refuses. This check is read-only and short-circuits on
   // `typeId !== 'deployment-target'`, so it costs nothing on the ordinary path, while the reach
@@ -1557,6 +1582,125 @@ export async function deleteObject(
       before: existing.properties as Record<string, unknown>,
       after: null
     });
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // ROUTE-1 ORPHAN GUARD: a tombstoned domain parent makes its `domain_id` children permanently
+  // unadministrable, so a delete that would do that is refused — not cascaded, not tolerated.
+  //
+  // Measured 2026-08-13 (two API calls, depth 1): delete a domain whose live children name it via
+  // `objects.domain_id` → 200; every such child then 403s on UPDATE and DELETE forever, for the
+  // org-root admin included, because the authz scope expansion joins parents on
+  // `deleted_at IS NULL` and the child's one upward chain dead-ends at the tombstone.
+  //
+  // WIDENED TO ALL THREE DEPENDENT ROUTES (owner ruling 2026-08-18, proposal §9.3 / §9.6 Q3-A).
+  // It used to guard route 1 alone, on the reasoning that route 2 (`contains` edges) has deliberate
+  // CASCADE semantics and the reader-side filter backstops what the cascade cannot reach. THE OWNER
+  // RETIRED THAT ASYMMETRY, and the measurement behind it is `countContainmentDependents`' own
+  // (`governance/governance-reach.ts`): the cascade tombstones the EDGES, so a deleted service's
+  // components stay LIVE and detached — and placements are worse still, because a placement names
+  // its component and target by JSON PROPERTY, not by an edge the cascade can see, so deleting a
+  // component today leaves its placements live and dangling. One rule now covers all three:
+  //
+  //   route 1  `objects.domain_id` children   — the measured incident above
+  //   route 2  `contains` children            — a service's components, left live and detached
+  //   routes 3+4  placements naming this row  — invisible to the cascade entirely
+  //
+  // The counts are the same three `countContainmentDependents` computes (kept as counts THERE, for
+  // the reach Decision, because that record only needs the blast radius' size); here the rows are
+  // ENUMERATED, because a refusal an operator cannot act on is a wall, not a guard.
+  //
+  // CONSEQUENCE WORTH STATING: deleting a component with placements is now REFUSED. That closes the
+  // dangling-placement gap by refusal rather than by cascade — §9.6 Q3 offered the cascade and the
+  // owner chose refusal, so a placement is removed by `DELETE /placements/{id}` and never implicitly.
+  //
+  // NOT applied on the federation-import path, and not when removing a foreign SHADOW row — the same
+  // two carve-outs the edge cascade below has, for the same reason. The authoritative domain already
+  // deleted this object, and refusing the import would silently diverge this replica from its
+  // authority (a worse failure than the orphaning, which the reader-side deleted-ancestor filter at
+  // least bounds); a shadow removal is purely local cleanup of a row this domain never authored. A
+  // local child naming a foreign replica as its parent therefore CAN still be orphaned by that
+  // authority's delete; recorded as a cost, same class as the replica edges the cascade cannot reach.
+  if (!input.federationImport && !removedForeignShadow) {
+    const domainChildren = await tx
+      .select({ id: objects.id, urn: objects.urn, typeId: objects.typeId })
+      .from(objects)
+      .where(
+        and(
+          eq(objects.orgId, input.orgId),
+          // asContainmentDomainId: the column is branded; "is anyone's containment parent this
+          // row?" is precisely the containment-domain sense of the id (GLOSSARY, branded types).
+          eq(objects.domainId, asContainmentDomainId(existing.id)),
+          isNull(objects.deletedAt)
+        )
+      )
+      .limit(6);
+    const containsChildren = await tx
+      .select({ id: objects.id, urn: objects.urn, typeId: objects.typeId })
+      .from(relationships)
+      .innerJoin(objects, eq(objects.id, relationships.toId))
+      .where(
+        and(
+          eq(relationships.orgId, input.orgId),
+          eq(relationships.typeId, "contains"),
+          eq(relationships.fromId, existing.id),
+          isNull(relationships.deletedAt),
+          isNull(objects.deletedAt)
+        )
+      )
+      .limit(6);
+    // Placements name their endpoints by JSON property (`componentId` / `deploymentTargetId`) — the
+    // same predicate `countContainmentDependents` uses, so the guard and the reach record can never
+    // disagree about what depends on this row.
+    const placementBlockers = await tx
+      .select({ id: objects.id, urn: objects.urn, typeId: objects.typeId })
+      .from(objects)
+      .where(
+        and(
+          eq(objects.orgId, input.orgId),
+          eq(objects.typeId, "placement"),
+          isNull(objects.deletedAt),
+          sql`(${objects.properties} ->> 'componentId' = ${existing.id}
+               OR ${objects.properties} ->> 'deploymentTargetId' = ${existing.id})`
+        )
+      )
+      .limit(6);
+
+    const label = (rows: { urn: string; typeId: string }[]): string => {
+      const shown = rows.slice(0, 5).map((r) => `${r.typeId} '${r.urn}'`);
+      return `${shown.join(", ")}${rows.length > 5 ? ", …" : ""}`;
+    };
+    const count = (rows: unknown[]): string =>
+      rows.length > 5 ? "at least 5" : String(rows.length);
+
+    const clauses: string[] = [];
+    // VERBATIM the pre-widening sentence — the incident this guard was built for, and the copy the
+    // existing suite reads. Widening the guard must not rewrite the diagnosis of the case it already
+    // covered.
+    if (domainChildren.length > 0) {
+      clauses.push(
+        `${count(domainChildren)} live object(s) still name it as their domain (objects.domain_id) — ` +
+          `deleting it would orphan them permanently, because permission resolution stops at deleted parents and no admin could ever update or delete them again. ` +
+          `Move them to another domain or delete them first: ${label(domainChildren)}`
+      );
+    }
+    if (containsChildren.length > 0) {
+      clauses.push(
+        `${count(containsChildren)} live object(s) are still contained by it (a 'contains' edge, containment route 2) — ` +
+          `the delete cascade tombstones the EDGES, not the children, so they would stay live and detached from every authority, governance and audit chain. ` +
+          `Move them (PUT /components/{idOrUrn}/service) or delete them first: ${label(containsChildren)}`
+      );
+    }
+    if (placementBlockers.length > 0) {
+      clauses.push(
+        `${count(placementBlockers)} live placement(s) still name it (placement route) — ` +
+          `a placement references its component and target by property rather than by an edge, so nothing would tombstone them and they would be left live and dangling. ` +
+          `Delete them first (DELETE /placements/{idOrUrn}): ${label(placementBlockers)}`
+      );
+    }
+    if (clauses.length > 0) {
+      throw conflict(`cannot delete '${existing.urn}': ${clauses.join(" ")}`);
+    }
   }
 
   // CONTAINMENT ROUTE 3 — TOMBSTONING A CONTAINER, which writes no containment field and yet

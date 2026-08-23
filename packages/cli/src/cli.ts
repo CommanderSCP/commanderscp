@@ -19,17 +19,21 @@ import type {
   DoctorCheck,
   ExecutorType,
   PipelineClassification,
+  SourceMapping,
+  SourceMappingScope,
   Freeze,
   GraphObject,
-  Initiative,
-  InitiativeRollupResponse,
   NamedGraphQuery,
   ObjectListResponse,
   Pat,
   Plan,
+  PlanDiff,
   PlanDiffSummary,
+  PlanDependencyProducerDiffEntry,
   PlanExecutorBindingDiffEntry,
+  PlanGovernanceMoveRungDiffEntry,
   PlanObjectDiffEntry,
+  PlanPlacementDiffEntry,
   PlanRelationshipDiffEntry,
   PlanSourceMappingDiffEntry,
   PolicyEvaluateResponse,
@@ -55,8 +59,13 @@ import type {
   DependencySubscriptionContribution,
   DependencySubscriptionResolutionResponse,
   DependencySubscriptionUnlock,
+  // M21.6 — the component-scoped dependency READ surface (inventory + bumps).
+  ComponentDependencyBump,
+  ComponentDependencyBumpsResponse,
+  ComponentDependencyInventoryResponse,
+  ComponentDependencyInventoryRow,
   // ADR-0032 §7e — the producer declaration's authoring surface.
-  DependencyLineProducer,
+  DependencyLineProducerView,
   DependencyLineProducerVerbResponse,
   DependencyProducerLineImpact,
   DependencyProducerOpenBump,
@@ -71,13 +80,19 @@ import type {
   StageDependency,
   ChangeStageDependencyStatus,
   ChangeStageDependencyTarget,
-  ChangeStageDependencyVerdict
+  ChangeStageDependencyVerdict,
+  // governance:move lattice (governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18).
+  GovernanceMoveEnforcement,
+  GovernanceMoveInstanceRung,
+  GovernanceMoveRung,
+  GovernanceMoveRungWriteResponse
 } from "@scp/schemas";
 import {
   DesiredStateManifestSchema,
   outpostClaimantTokens,
   OutpostTrustTierSchema,
-  ScanMethodSchema
+  ScanMethodSchema,
+  SourceMappingScopeSchema
 } from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
@@ -253,7 +268,7 @@ function decisionRow(d: Decision): Record<string, string> {
 }
 
 // -------------------------------------------------------------------------------------
-// M5 Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — row formatters.
+// M5 Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — row formatters.
 // Campaign `status` is a pure derived field (no accept/cancel verbs), so it's surfaced
 // prominently in both the compact and detail rows.
 // -------------------------------------------------------------------------------------
@@ -283,16 +298,6 @@ export function campaignDetailRow(c: Campaign): Record<string, string> {
     topologyVersion: isAbsent(c.topologyVersion) ? "" : String(c.topologyVersion),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
-  };
-}
-
-function initiativeRow(i: Initiative): Record<string, string> {
-  return {
-    id: i.id,
-    name: i.name,
-    urn: i.urn,
-    description: i.description ?? "",
-    createdAt: i.createdAt
   };
 }
 
@@ -473,6 +478,12 @@ export function federationStatusRow(
 export function outpostConfigRow(o: OutpostConfig): Record<string, string> {
   return {
     peerDomainId: o.peerDomainId,
+    // §10.5 — WHAT `peerDomainId` NAMES (GLOSSARY / ADR-0021 D7 vocabulary): `hq` = THIS
+    // instance's own trust domain — the HQ outpost (formerly "co-located"), which has no peer row;
+    // `field` = a paired peer in another trust domain — a field outpost, whatever its
+    // connectivity. `peerIsSelf` is optional on the wire (additive): an older server that does not
+    // resolve it prints `?`, never "field" — absence is not a statement.
+    binding: o.peerIsSelf === true ? "hq" : o.peerIsSelf === false ? "field" : "?",
     name: o.name,
     trustTier: o.trustTier ?? "?",
     originDomainId: o.originDomainId,
@@ -720,6 +731,274 @@ export function dependencyInventoryBackfillRow(
 }
 
 /**
+ * ONE governance:move rung as a table row — `scp governance move-enforcement rungs`, and the
+ * per-object chain a `status`/`enable`/`disable` response carries. `depth` is present only on the
+ * per-object explain read (0 = org root, increasing toward the object); the org-wide `rungs` list
+ * walks no chain, so it prints `-` there rather than fabricating a position.
+ */
+export function governanceMoveRungRow(rung: GovernanceMoveRung): Record<string, string> {
+  return {
+    tier: rung.tier,
+    subject: rung.name,
+    subjectObjectId: rung.subjectObjectId,
+    depth: isAbsent(rung.depth) ? "-" : String(rung.depth),
+    enabledAt: rung.enabledAt,
+    enabledByObjectId: rung.enabledByObjectId
+  };
+}
+
+/**
+ * The verdict line of `scp governance move-enforcement status` — `enforced` is an OR across the
+ * instance rung and every rung on the queried object's OWN containment chain. It answers about ONE
+ * end of a move; the rungs table printed beside it (`governanceMoveRungRow`) is where "which rung"
+ * lives, because the verdict alone cannot say that.
+ */
+export function governanceMoveEnforcementRow(
+  enforcement: GovernanceMoveEnforcement
+): Record<string, string> {
+  return {
+    enforced: String(enforcement.enforced),
+    instanceRung: enforcement.instance.enabled ? "enabled" : "disabled",
+    rungsOnChain: String(enforcement.rungs.length)
+  };
+}
+
+/**
+ * The instance (commander) rung as a table row (`scp governance move-enforcement instance get|set`)
+ * — mirrors `dependencySubscriptionUnlockRow`'s "never set" distinction: `updatedAt: null` is the
+ * shipped default (never configured), not "disabled just now".
+ */
+export function governanceMoveInstanceRow(
+  instance: GovernanceMoveInstanceRung
+): Record<string, string> {
+  return {
+    enabled: String(instance.enabled),
+    updatedAt: isAbsent(instance.updatedAt) ? "(never set)" : instance.updatedAt
+  };
+}
+
+/**
+ * The response to a rung write (`enable`/`disable`) — the subject, the tier it was recorded at, the
+ * resulting enabled state, and the Decision id every governance write carries (charter principle
+ * 6). `enforcement` (the resolved state AT THE SUBJECT after the write) is available on the response
+ * but not printed here — the caller already knows what it just did; `status` is where the full
+ * chain belongs.
+ */
+export function governanceMoveRungWriteRow(
+  response: GovernanceMoveRungWriteResponse
+): Record<string, string> {
+  return {
+    subjectObjectId: response.subjectObjectId,
+    tier: response.tier,
+    enabled: String(response.enabled),
+    decisionId: response.decisionId
+  };
+}
+
+/**
+ * The one line BOTH read verbs print when the answering deployment does not manage dependencies
+ * (`dependencyManagement.managedHere === false`, ADR-0032 §7d) — and then print NOTHING ELSE of the
+ * envelope: on such a deployment an empty inventory is "nothing here ever ingested a manifest", not
+ * "declares nothing", and an empty bump list is "nothing is ever dispatched here", not "up to date",
+ * so a table there is a table of a fact that does not exist. `undefined` when dependencies ARE
+ * managed here — and ALSO when the server omitted the envelope (`=== false`, never falsy): an older
+ * server claims no posture and this must not invent one. Exported and pure so both directions are
+ * pinned (`dependency-subscription-cli.test.ts`, `dependency-read-verbs-wire.test.ts`).
+ */
+export function dependencyReadNotManagedLine(
+  managed: { managedHere: boolean; reason: string } | undefined
+): string | undefined {
+  if (managed?.managedHere !== false) return undefined;
+  return `dependencies are not managed on this instance (${managed.reason}) — ask the commander; nothing below would be a statement about this component`;
+}
+
+/**
+ * The header lines of `scp dependency-subscriptions inventory` (M21.6) — the envelope BEFORE the
+ * rows: which component, the ingestion STAMP (M21.7), the newest ingestion Decision, and the
+ * component-level ingestion gate. Exported and pure for the reason `cli-absent-formatters.test.ts`
+ * records. The caller has ALREADY handled `managedHere: false` (see
+ * {@link dependencyReadNotManagedLine}); these lines describe a deployment that manages dependencies.
+ *
+ * THE STAMP IS THE TRICHOTOMY, PRINTED AS ONE (`ingestion-stamp-repo.ts`): a null stamp is NEVER
+ * ATTEMPTED (there is no row, and only a pass writes one); `ok` with 0 rows written is "read fine —
+ * no dependencies declared" (the sentence an empty inventory could not earn before the stamp);
+ * `partial` / `unreadable` list every manifest with its per-file verdict, because the operator's
+ * next action is a file, not a component; `not_enabled` is "the gate was closed; nothing fetched".
+ * None of these is inferred from `rows` — the printer reads the stamp and says what it says. A null
+ * `lastIngestionDecision` is "no ingestion Decision exists" (never ingested, OR refused as
+ * not-enabled / not-addressable / superseded, none of which write one).
+ *
+ * `componentGate.reason` is a THIRD vocabulary (`enabled | instance_locked |
+ * no_enabling_contribution`), distinct from a row's `subscription.reason`; it is printed under its
+ * own label so the two are never read as one.
+ */
+export function dependencyInventoryHeaderLines(
+  response: ComponentDependencyInventoryResponse
+): string[] {
+  const lines: string[] = [];
+  lines.push(`component: ${response.component.name} (${response.component.id})`);
+  const decision = response.lastIngestionDecision;
+  lines.push(dependencyIngestionStampLine(response.ingestion, decision));
+  if (isAbsent(decision)) {
+    lines.push("last ingestion decision: none on record");
+  } else {
+    lines.push(
+      `last ingestion decision: ${decision.decisionId} first observed ${decision.firstObservedAt}; ` +
+        `read [${decision.manifestPathsRead.join(", ")}] absent [${decision.manifestPathsAbsent.join(", ")}] ` +
+        `skipped ${decision.skipped.length}` +
+        (decision.skipped.length > 0
+          ? ` (${decision.skipped.map((s) => `${s.path}: ${s.reason}`).join(", ")})`
+          : "")
+    );
+  }
+  const gate = response.componentGate;
+  lines.push(
+    `component gate: ${gate.reason} (enabled=${String(gate.enabled)}, ${gate.contributions.length} contribution(s))`
+  );
+  return lines;
+}
+
+/** The ingestion stamp as one line — see {@link dependencyInventoryHeaderLines} for the four
+ *  readings. `manifests[]` is listed as `repo:path=outcome (detail)`; on `ok` the list is the
+ *  receipt of what was read, on `partial`/`unreadable` it is the work list.
+ *
+ *  `lastIngestionDecision` is consulted ONLY when the stamp is absent: the stamp table (migration
+ *  0065) was created without a backfill from the `dependency_inventory_ingestion` Decisions, so a
+ *  component ingested before it has a Decision and no stamp — "never attempted" would contradict
+ *  the Decision line printed right under it. That case is stated as NOT STAMPED and defers to the
+ *  Decision; "never attempted" is printed only when NEITHER is on record. */
+export function dependencyIngestionStampLine(
+  stamp: ComponentDependencyInventoryResponse["ingestion"],
+  lastIngestionDecision?: ComponentDependencyInventoryResponse["lastIngestionDecision"]
+): string {
+  // `null` AND `undefined` alike: a server that omits the field (predating the stamp) has recorded
+  // nothing in the stamp table. With NO Decision either, "never attempted" is the only reading a
+  // missing stamp has; with one, the pass ran before the stamp existed and the Decision is the
+  // record of it.
+  if (isAbsent(stamp)) {
+    return isAbsent(lastIngestionDecision)
+      ? "ingestion: never attempted"
+      : "ingestion: not stamped (ingested before the stamp existed) — see the last ingestion decision below";
+  }
+  const manifests = stamp.manifests ?? [];
+  const files =
+    manifests.length > 0
+      ? "; manifests: " +
+        manifests
+          .map((m) => `${m.repo}:${m.path}=${m.outcome}${m.detail ? ` (${m.detail})` : ""}`)
+          .join(", ")
+      : "";
+  const when = `at ${stamp.lastAttemptAt} (${stamp.source})`;
+  const detail = isAbsent(stamp.detail) || stamp.detail === "" ? "" : ` — ${stamp.detail}`;
+  switch (stamp.outcome) {
+    case "ok":
+      return stamp.rowsWritten === 0
+        ? `ingestion: ok — no dependencies declared (read ${manifests.length} manifest(s)) ${when}${files}`
+        : `ingestion: ok ${when}, ${stamp.rowsWritten} row(s) written${files}`;
+    case "partial":
+      return `ingestion: partial — some manifests could not be read ${when}, ${stamp.rowsWritten} row(s) written${files}`;
+    case "unreadable":
+      return `ingestion: unreadable — no manifest could be read ${when}, ${stamp.rowsWritten} row(s) written${files}`;
+    case "not_enabled":
+      return `ingestion: not enabled — the gate was closed, nothing was fetched ${when}${detail}`;
+    default:
+      // A word this build does not know: print it rather than mislabel it.
+      return `ingestion: ${String(stamp.outcome)} ${when}, ${stamp.rowsWritten} row(s) written${files}${detail}`;
+  }
+}
+
+/**
+ * ONE ROW of `scp dependency-subscriptions inventory` (M21.6): one (major line × dependency
+ * manifest) declaration with the line's observed head and its resolved dependency subscription.
+ *
+ * The coordinate is printed VERBATIM (`@acme/lib` is not `acme-lib`; case and punctuation decide
+ * which package an opt-out named). `resolvedVersion: null` is "the manifest pins none" and
+ * `head.latestVersion: null` is "not observed" — never "nothing newer" — both print `-`, the CLI's
+ * absent-value convention. `granularity`/`delivery` are meaningful ONLY when the subscription is
+ * enabled, so they are shown only then; an `ignored` contribution (a malformed or unevaluable
+ * opt-out that admitted to NEITHER side — it fails OPEN) is surfaced in the REASON column rather
+ * than dropped, because hiding it hides exactly the opt-out that silently did not apply.
+ */
+export function dependencyInventoryRow(
+  row: ComponentDependencyInventoryRow
+): Record<string, string> {
+  const s = row.subscription;
+  const ignored = (s.contributions ?? []).filter((c) => c.contributed === "ignored");
+  const ignoredNote =
+    ignored.length > 0
+      ? ` (+${ignored.length} ignored: ${ignored.map((c) => c.ignoredReason ?? "?").join(", ")})`
+      : "";
+  // `head` is required on the wire, but a printer that reads through an omitted key crashes on the
+  // exact row it was asked to show — read it once, guarded, like every other absent-value site.
+  const latest = row.head?.latestVersion;
+  return {
+    ecosystem: row.line.ecosystem,
+    coordinate: row.line.coordinate,
+    major: row.line.major,
+    manifest: row.manifestPath,
+    declared: row.declaredVersion,
+    resolved: isAbsent(row.resolvedVersion) ? "-" : row.resolvedVersion,
+    latest: isAbsent(latest) ? "-" : latest,
+    subscription: s.enabled
+      ? `enabled (${isAbsent(s.granularity) ? "?" : s.granularity}, ${isAbsent(s.delivery) ? "?" : s.delivery})`
+      : "not enabled",
+    reason: `${s.reason}${ignoredNote}`
+  };
+}
+
+/**
+ * ONE ROW of `scp dependency-subscriptions bumps` (M21.6): a bump SCP authored for the component.
+ *
+ * Progress is `pullRequestNumber` (opened), `mergedAt` (the provider confirmed the merge) and the
+ * merge Decision's verdict — never the change's `state`, which sits at `proposed` for a bump's
+ * whole life. The PR column is `pullRequestUrl` when the server stored one, else `#<number>`; a
+ * URL is NEVER composed from `repo` + number (the provider is not known here, and a guessed link is
+ * a fabricated record).
+ * `mergedAt: null` prints `-`, not "open": the provider has not confirmed a merge, which is all
+ * that is known. `delivery` is what the dispatch RESOLVED TO — the first look is always
+ * `pull_request` — and `-` when no dispatch Decision is on record.
+ */
+export function dependencyBumpRow(bump: ComponentDependencyBump): Record<string, string> {
+  // THE URL WHEN THE SERVER STORED ONE, ELSE THE NUMBER, ELSE `-`. The URL is the provider's own
+  // (`pull_request_url`, M21.7) and is never composed here; a stored URL is the better address of the
+  // same PR, so it replaces the number rather than decorating it.
+  const pr = !isAbsent(bump.pullRequestUrl)
+    ? bump.pullRequestUrl
+    : isAbsent(bump.pullRequestNumber)
+      ? "-"
+      : `#${bump.pullRequestNumber}`;
+  return {
+    coordinate: bump.line.coordinate,
+    "from -> to": `${bump.fromVersion} -> ${bump.toVersion}`,
+    manifest: bump.manifestPath,
+    pr,
+    dispatched: bump.dispatchedAt,
+    merged: isAbsent(bump.mergedAt) ? "-" : bump.mergedAt,
+    verdict: isAbsent(bump.merge) ? "-" : bump.merge.verdict,
+    delivery: isAbsent(bump.delivery) ? "-" : bump.delivery
+  };
+}
+
+/**
+ * One ROW of `scp dependency-producers list` — the declaration NAMED (server-side view, ADR-0032 §7e,
+ * dependency-subscription-ui.md §12.6 Q1): the producing component and the declaring principal by
+ * name, with the ids beside them so a name is never the only handle. `""` (an id that named no row
+ * in the org — see `namesForObjectIds`) prints as the id, never as a blank cell.
+ *
+ * Exported and unit-tested DIRECTLY, for the reason `cli-absent-formatters.test.ts` records.
+ */
+export function dependencyProducerListRow(p: DependencyLineProducerView): Record<string, string> {
+  return {
+    ecosystem: p.ecosystem,
+    coordinate: p.coordinate,
+    producer: p.producer?.name || p.producerObjectId,
+    producerId: p.producerObjectId,
+    declaredBy: p.declaredBy?.name || p.declaredByObjectId,
+    declaredAt: p.declaredAt
+  };
+}
+
+/**
  * One LINE of a producer declaration's blast radius (`scp dependency-producers declare|retract`,
  * ADR-0032 §7e).
  *
@@ -752,6 +1031,12 @@ export function dependencyProducerLineRow(
     headWas: head.latestVersion ?? "-",
     headCleared: String(line.headCleared === true),
     subscribers: String(line.subscribedComponentObjectIds?.length ?? 0),
+    // WHO, by name — the same set as `subscribers` counts, named server-side (one batched read,
+    // dependency-subscription-ui.md §12.6 Q1). Names, not ids: the operator reading this table is
+    // about to affect these teams' repositories, and an id is not a name they can act on. `-`
+    // when the server sent no names (an older server, or an empty radius) — never a fabricated
+    // list, and never a count that disagrees with `subscribers`.
+    subscribedNames: line.subscribedComponents?.map((c) => c.name || c.objectId).join(", ") || "-",
     lineId: line.lineId
   };
 }
@@ -1095,15 +1380,80 @@ async function readManifestFile(manifestPath: string): Promise<DesiredStateManif
   return DesiredStateManifestSchema.parse(parsed);
 }
 
+/**
+ * One `source_mappings` row as a table row (`scp change-source list-mappings`), lifted out of the
+ * action closure and exported for the reason `federationStatusRow` gives. Column order is the order an
+ * operator reads a rule in: what routes where, then the labels on it. `scope` (§10.6, migration 0066)
+ * prints BLANK when not declared — the printer's absent-field convention, and the honest one: no
+ * label was set, and nothing here guesses one from the site's role. `?` when the key is ABSENT
+ * (absence is not "undeclared") — DEFENSIVE ONLY: `scope` is required-nullable on the wire and the
+ * generated SDK validates every response body (ADR-0023), so a pre-0066 server's body is a contract
+ * error at the SDK boundary and never reaches this printer; what an operator actually sees against
+ * such a server is that error, not `?`. The widening stays so a hand-built row cannot crash the table
+ * (the `outpostConfigRow` lesson above), not because the `?` is reachable through the SDK.
+ */
+export function sourceMappingRow(m: SourceMapping): Record<string, string> {
+  // Widened on purpose (defensive, see above): the SDK type AND its response validator say `scope`
+  // is required, so through the SDK it is never absent — read it as possibly-absent anyway so a row
+  // that arrives without it prints `?`, not a crash or a blank.
+  const scope = (m as { scope?: SourceMappingScope | null }).scope;
+  return {
+    id: m.id,
+    sourceKind: m.sourceKind,
+    component: m.componentObjectId,
+    repo: m.repoPattern ?? "*",
+    path: m.pathPattern ?? "*",
+    ref: m.refPattern ?? "*",
+    type: m.type,
+    classification: m.classification ?? "",
+    scope: scope === undefined ? "?" : (scope ?? ""),
+    mirrorOfShared: String(m.mirrorOfShared),
+    enabled: String(m.enabled),
+    effectivelyEnabled: String(m.effectivelyEnabled),
+    disabledUntil: m.disabledUntil ?? ""
+  };
+}
+
+/** Parses a `--scope` flag value: `global` | `domain`, or `none` to CLEAR (`null`). Anything else is
+ *  a usage error naming the accepted values — never silently dropped as undeclared. */
+export function parseScopeFlag(value: string): SourceMappingScope | null {
+  if (value === "none") return null;
+  const parsed = SourceMappingScopeSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`--scope must be one of global|domain|none (got '${value}')`);
+  }
+  return parsed.data;
+}
+
+/**
+ * EVERY collection `computePlanDiff` can emit, and the union is the point: a collection that is
+ * computed, counted in `summary`, but missing here is a change the operator approves without ever
+ * being shown it. `printPlanResult` spreads all of them, and the `never` arm below is what makes
+ * "add a collection, forget the table" a TYPE ERROR rather than a silent omission — which is how
+ * `placements`, `producers` and `governanceMoveRungs` each went unprinted for a while.
+ */
 type PlanDiffEntry =
   | PlanObjectDiffEntry
   | PlanRelationshipDiffEntry
   | PlanSourceMappingDiffEntry
-  | PlanExecutorBindingDiffEntry;
+  | PlanPlacementDiffEntry
+  | PlanExecutorBindingDiffEntry
+  | PlanDependencyProducerDiffEntry
+  | PlanGovernanceMoveRungDiffEntry;
 
+/** Every branch returns the SAME four keys in the same order — `tableLines` takes its columns from
+ *  the FIRST row only, so a branch with a different key set prints blanks for every later row. */
 export function diffEntryRow(entry: PlanDiffEntry): Record<string, string> {
   if (entry.kind === "object") {
     return { kind: "object", action: entry.action, ref: entry.urn, reason: entry.reason };
+  }
+  if (entry.kind === "relationship") {
+    return {
+      kind: "relationship",
+      action: entry.action,
+      ref: `${entry.fromUrn} --${entry.typeId}--> ${entry.toUrn}`,
+      reason: entry.reason
+    };
   }
   if (entry.kind === "source-mapping") {
     // The ref is part of the mapping IDENTITY (ADR-0030 §1), so it MUST appear here: two mappings
@@ -1131,12 +1481,81 @@ export function diffEntryRow(entry: PlanDiffEntry): Record<string, string> {
       reason: entry.reason
     };
   }
+  if (entry.kind === "placement") {
+    return {
+      kind: "placement",
+      action: entry.action,
+      ref: `${entry.componentUrn} @ ${entry.deploymentTargetUrn}`,
+      reason: entry.reason
+    };
+  }
+  if (entry.kind === "dependency-producer") {
+    // The DISPLACED producer is this entry's most consequential fact — an `update` takes a
+    // coordinate away from a component the manifest never mentions — so it belongs in the row an
+    // operator approves, not only in `--output json`.
+    const displaced =
+      entry.displacedProducerUrn === undefined
+        ? ""
+        : ` (taking it from ${entry.displacedProducerUrn})`;
+    return {
+      kind: "dependency-producer",
+      action: entry.action,
+      ref: `${entry.ecosystem}:${entry.coordinate} -> ${entry.producerUrn}${displaced}`,
+      reason: entry.reason
+    };
+  }
+  if (entry.kind === "governance-move-rung") {
+    // A `delete` here DISABLES a governance bar, and a disabled bar's symptom is an ABSENCE of
+    // refusals — nothing downstream surfaces the mistake, so the plan table is the only place an
+    // operator can catch it. Hence the action is spelled out in words as well as in the column.
+    const act =
+      entry.action === "create"
+        ? "enable"
+        : entry.action === "delete"
+          ? "DISABLE"
+          : "already enabled";
+    return {
+      kind: "governance-move-rung",
+      action: entry.action,
+      ref: `${act} governance:move enforcement on ${entry.subjectUrn}`,
+      reason: entry.reason
+    };
+  }
+  // Unreachable for any kind the union knows — the `never` binding turns a NEW collection into a
+  // compile error here. The runtime row exists anyway because entries are parsed off the wire: an
+  // older CLI reading a newer server's plan must show the row as UNKNOWN rather than mislabel it
+  // (this fall-through used to print every unknown kind as "relationship" with undefined refs).
+  const unknown: never = entry;
+  const wire = unknown as { kind?: unknown; action?: unknown; reason?: unknown };
   return {
-    kind: "relationship",
-    action: entry.action,
-    ref: `${entry.fromUrn} --${entry.typeId}--> ${entry.toUrn}`,
-    reason: entry.reason
+    kind: `unknown(${String(wire.kind)})`,
+    action: String(wire.action ?? ""),
+    ref: "(this CLI does not know this entry kind — use --output json)",
+    reason: String(wire.reason ?? "")
   };
+}
+
+/**
+ * EVERY collection the diff can carry, flattened into the rows `scp plan` prints. Exported so the
+ * "nothing computed is invisible" property is testable without capturing stdout.
+ *
+ * All but the first two are optional on the wire (a plan stored before the collection existed has
+ * no key; for `producers` and `governanceMoveRungs` an absent key additionally means "this stack
+ * manages none") — but every one that IS present must be PRINTED, or a plan whose only content is
+ * bindings, placements, producers or rungs shows an EMPTY table under a NON-ZERO summary, and an
+ * operator approves a diff they were never shown. Sharpest for a rung `delete`: it turns off a
+ * governance bar whose only symptom is an absence of refusals, so no later signal catches it.
+ */
+export function planDiffEntries(diff: PlanDiff): PlanDiffEntry[] {
+  return [
+    ...diff.objects,
+    ...diff.relationships,
+    ...(diff.sourceMappings ?? []),
+    ...(diff.placements ?? []),
+    ...(diff.executorBindings ?? []),
+    ...(diff.producers ?? []),
+    ...(diff.governanceMoveRungs ?? [])
+  ];
 }
 
 function summaryLine(summary: PlanDiffSummary): string {
@@ -1149,16 +1568,7 @@ function printPlanResult(plan: Plan, output: OutputFormat): void {
     console.log(JSON.stringify(plan, null, 2));
     return;
   }
-  // `sourceMappings`/`executorBindings` are optional on the wire (a plan stored before C1 has
-  // neither) — but they must be PRINTED, or a plan whose only content is bindings shows an empty
-  // table and an operator approves a diff they were never shown.
-  const entries: PlanDiffEntry[] = [
-    ...plan.diff.objects,
-    ...plan.diff.relationships,
-    ...(plan.diff.sourceMappings ?? []),
-    ...(plan.diff.executorBindings ?? [])
-  ];
-  printResult(entries, "table", (item) => diffEntryRow(item as PlanDiffEntry));
+  printResult(planDiffEntries(plan.diff), "table", (item) => diffEntryRow(item as PlanDiffEntry));
   console.log(
     `\nPlan ${plan.id} (${plan.stackName}, status: ${plan.status}): ${summaryLine(plan.diff.summary)}`
   );
@@ -1454,27 +1864,6 @@ function printCampaignExplainResult(result: CampaignExplainResponse, output: Out
         : JSON.stringify(decision.reasonTree);
     console.log(`  [${decision.createdAt}] ${decision.kind} -> ${decision.verdict}: ${summary}`);
   }
-}
-
-/**
- * Prints an Initiative's roll-up (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5): the initiative, each
- * member campaign's name + derived status, then the traversal-derived overall `rollupStatus`.
- */
-function printInitiativeRollupResult(result: InitiativeRollupResponse, output: OutputFormat): void {
-  if (output === "json") {
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
-
-  const { initiative, campaigns, rollupStatus } = result;
-  console.log(`Initiative ${initiative.id} '${initiative.name}'`);
-
-  console.log(`\nCampaigns (${campaigns.length}):`);
-  for (const member of campaigns) {
-    console.log(`  - ${member.campaign.name} (${member.campaign.id}): ${member.status}`);
-  }
-
-  console.log(`\nRoll-up status: ${rollupStatus}`);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -2728,7 +3117,7 @@ export function buildProgram(): Command {
       const report = await client.doctor.report();
 
       if (opts.output === "json") {
-        printResult(report, opts.output, (item) => item as Record<string, string>);
+        printResult(report, opts.output, (item) => item as Record<string, unknown>);
       } else {
         printResult(report.checks, opts.output, (item) => {
           const check = item as DoctorCheck;
@@ -3302,11 +3691,10 @@ export function buildProgram(): Command {
     });
 
   // -------------------------------------------------------------------------------------
-  // campaign / initiative (M5 Campaigns & Initiatives — DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5).
+  // campaign (M5 Campaigns — DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5).
   // A Campaign coordinates many Changes across targets, wave by wave, over the SAME plan compiler
   // a Change uses; unlike Change, it has no accept/cancel verbs — `status` is always a pure
-  // derived field, so `campaign status <id>` (its `get`) IS the CLI's window into that field. An
-  // Initiative groups Campaigns and exposes a derived roll-up status over its members.
+  // derived field, so `campaign status <id>` (its `get`) IS the CLI's window into that field.
   // -------------------------------------------------------------------------------------
   const campaignCmd = program
     .command("campaign")
@@ -3426,81 +3814,8 @@ export function buildProgram(): Command {
           }))
         ],
         opts.output,
-        (item) => item as Record<string, string>
+        (item) => item as Record<string, unknown>
       );
-    });
-
-  const initiativeCmd = program
-    .command("initiative")
-    .description(
-      "Manage Initiatives (DESIGN.md §9.5 — group Campaigns with a derived roll-up status)"
-    );
-
-  initiativeCmd
-    .command("create")
-    .description("Create a new Initiative")
-    .requiredOption("--name <name>", "initiative name")
-    .option("--campaigns <list>", "comma-separated campaign ids/URNs to include")
-    .option("--description <text>", "initiative description")
-    .option("--labels <json>", "JSON object")
-    .option("--base-url <url>", "API base URL override")
-    .option("--output <format>", "json|table", "table")
-    .action(
-      async (
-        opts: BaseCliOpts & {
-          name: string;
-          campaigns?: string;
-          description?: string;
-          labels?: string;
-        }
-      ) => {
-        const client = await clientFromStoredCredentials(opts);
-        const created = await client.initiatives.propose({
-          name: opts.name,
-          campaigns: parseList(opts.campaigns) ?? [],
-          description: opts.description,
-          labels: parseJsonOption(opts.labels, "--labels")
-        });
-        printResult(created, opts.output, (item) => initiativeRow(item as Initiative));
-      }
-    );
-
-  initiativeCmd
-    .command("list")
-    .description("List Initiatives")
-    .option("--base-url <url>", "API base URL override")
-    .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts) => {
-      const client = await clientFromStoredCredentials(opts);
-      const page = await client.initiatives.list({ limit: 100 });
-      printResult(page.items, opts.output, (item) => initiativeRow(item as Initiative));
-    });
-
-  initiativeCmd
-    .command("status <id>")
-    .description("Get an Initiative's member Campaigns and derived roll-up status")
-    .option("--base-url <url>", "API base URL override")
-    .option("--output <format>", "json|table", "table")
-    .action(async (id: string, opts: BaseCliOpts) => {
-      const client = await clientFromStoredCredentials(opts);
-      const result = await client.initiatives.get(id);
-      printInitiativeRollupResult(result, opts.output);
-    });
-
-  initiativeCmd
-    .command("add-campaign <id>")
-    .description("Add a Campaign to an Initiative")
-    .requiredOption("--campaign <idOrUrn>", "campaign id or URN to add")
-    .option("--base-url <url>", "API base URL override")
-    .option("--output <format>", "json|table", "table")
-    .action(async (id: string, opts: BaseCliOpts & { campaign: string }) => {
-      const client = await clientFromStoredCredentials(opts);
-      await client.initiatives.addCampaign(id, { campaign: opts.campaign });
-      if (opts.output === "json") {
-        console.log(JSON.stringify({ ok: true }, null, 2));
-        return;
-      }
-      console.log(`Added campaign ${opts.campaign} to initiative ${id}`);
     });
 
   // -------------------------------------------------------------------------------------
@@ -3600,7 +3915,7 @@ export function buildProgram(): Command {
           },
           operatorToken
         );
-        printResult(floor, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(floor, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -4203,6 +4518,276 @@ export function buildProgram(): Command {
       }
     );
 
+  // M21.6 — the component-scoped dependency READ surface: what a component DECLARES (its inventory
+  // rows, each with the line's observed head and its resolved dependency subscription), and the
+  // bumps SCP authored for it. Two READ verbs; neither authors anything, so the closed list in
+  // dependency-subscription-cli.test.ts grows by exactly these two and still has no `subscribe`.
+  depSubsCmd
+    .command("inventory")
+    .description(
+      "Show a component's dependency inventory — one row per (major line × dependency manifest) with the line's observed head and the resolved dependency subscription for THIS caller. The ingestion stamp says whether the manifests were ever read (never attempted / ok / partial / unreadable / not enabled) — an empty table is NOT RECORDED as 'no dependencies' without it. On a deployment that does not manage dependencies (an outpost) only the posture is printed"
+    )
+    .requiredOption("--component <idOrUrn>", "component id or URN")
+    .option(
+      "--ecosystem <ecosystem>",
+      "show only this ecosystem's rows (npm|go|maven|python|oci); a display filter over the fetched page"
+    )
+    .option("--limit <n>", "rows per page (default 100, max 200)")
+    .option("--cursor <cursor>", "continue from a previous page's nextCursor")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          component: string;
+          ecosystem?: string;
+          limit?: string;
+          cursor?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const response = await client.dependencySubscriptions.inventory(opts.component, {
+          ...(opts.limit !== undefined ? { limit: Number(opts.limit) } : {}),
+          ...(opts.cursor !== undefined ? { cursor: opts.cursor } : {})
+        });
+        // A DISPLAY filter, applied after the read: the route pages by line id and has no
+        // ecosystem query, so filtering here narrows what is shown, not what was fetched.
+        const rows =
+          opts.ecosystem === undefined
+            ? response.rows
+            : response.rows.filter((r) => r.line.ecosystem === opts.ecosystem);
+        if (opts.output === "json") {
+          console.log(JSON.stringify({ ...response, rows }, null, 2));
+          return;
+        }
+        // NOT MANAGED HERE (ADR-0032 §7d): the component line, the posture, and NOTHING ELSE —
+        // no stamp, no gate, no table. The envelope below the posture is not to be interpreted.
+        const notManaged = dependencyReadNotManagedLine(response.dependencyManagement);
+        if (notManaged !== undefined) {
+          console.log(`component: ${response.component.name} (${response.component.id})`);
+          console.log(notManaged);
+          return;
+        }
+        for (const line of dependencyInventoryHeaderLines(response)) console.log(line);
+        console.log("");
+        if (rows.length === 0) {
+          // AN EMPTY PAGE IS NOT "NO DEPENDENCIES". Beside a null stamp (never attempted) it is
+          // UNKNOWN; beside an `ok` stamp with 0 rows written it is "declared nothing" — the
+          // ingestion line above already said which.
+          console.log(
+            "(no rows on record — read the ingestion line above before reading this as 'no dependencies')"
+          );
+        } else {
+          printResult(rows, "table", (raw) =>
+            dependencyInventoryRow(raw as ComponentDependencyInventoryRow)
+          );
+        }
+        if (!isAbsent(response.nextCursor)) {
+          console.log("");
+          console.log(`more rows: --cursor ${response.nextCursor}`);
+        }
+      }
+    );
+
+  depSubsCmd
+    .command("bumps")
+    .description(
+      "Show the bumps SCP authored for a component, newest dispatch first — PR number, merge time and the merge gate's verdict. A PR link is printed only when the server stored one; it is never composed from repo + number"
+    )
+    .requiredOption("--component <idOrUrn>", "component id or URN")
+    .option("--limit <n>", "rows per page (default 100, max 200)")
+    .option("--cursor <cursor>", "continue from a previous page's nextCursor")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { component: string; limit?: string; cursor?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const response: ComponentDependencyBumpsResponse = await client.dependencySubscriptions.bumps(
+        opts.component,
+        {
+          ...(opts.limit !== undefined ? { limit: Number(opts.limit) } : {}),
+          ...(opts.cursor !== undefined ? { cursor: opts.cursor } : {})
+        }
+      );
+      if (opts.output === "json") {
+        console.log(JSON.stringify(response, null, 2));
+        return;
+      }
+      console.log(`component: ${response.component.name} (${response.component.id})`);
+      // NOT MANAGED HERE (ADR-0032 §7d): bumps are dispatched by a declared commander only, so on
+      // an outpost (or an undeclared role) the list is empty BY CONSTRUCTION and a table of it would
+      // read as "up to date". Say the posture and stop.
+      const notManaged = dependencyReadNotManagedLine(response.dependencyManagement);
+      if (notManaged !== undefined) {
+        console.log(notManaged);
+        return;
+      }
+      printResult(response.rows, "table", (raw) =>
+        dependencyBumpRow(raw as ComponentDependencyBump)
+      );
+      if (!isAbsent(response.nextCursor)) {
+        console.log("");
+        console.log(`more rows: --cursor ${response.nextCursor}`);
+      }
+    });
+
+  // -------------------------------------------------------------------------------------
+  // governance move-enforcement (governance-reach-on-containment-move.md §9.2, owner ruling
+  // 2026-08-18) — the `governance:move` LATTICE: a top-down monotone OR of enabled RUNGS (the
+  // instance, or one container object — org root, containment domain, service, assembly) that
+  // decides whether a containment move ALSO requires `governance:move`, at-or-above BOTH the moved
+  // object and the destination. Nothing is enforced until a rung is enabled — every deployment
+  // ships with none, and `status`/`rungs` say so honestly.
+  //
+  // AN UPPER RUNG CANNOT BE UNDONE BELOW IT. `disable` answers 409 while an ancestor's rung (or the
+  // instance rung) is still enabled, naming it — see `governanceMoveRungWriteRow`'s note on why a
+  // "successful" disable that left the subtree enforced anyway would be worse than refusing.
+  //
+  // THE INSTANCE RUNG IS OPERATOR-ONLY (SCP_OPERATOR_TOKEN) — never a tenant role — because it
+  // ACTIVATES enforcement for every org on the deployment (owner ruling Q1-A; contrast the
+  // dependency-subscription unlock, which only PERMITS). `rungs`/`status`/`instance get` are
+  // ordinary tenant reads; `enable`/`disable` need `policy:write` at-or-above the subject.
+  // -------------------------------------------------------------------------------------
+  const governanceCmd = program
+    .command("governance")
+    .description(
+      "The governance:move enforcement lattice (governance-reach-on-containment-move.md §9.2) — an opt-in second permission bar on containment moves"
+    );
+
+  const moveEnforcementCmd = governanceCmd
+    .command("move-enforcement")
+    .description(
+      "A top-down monotone OR of enabled rungs (instance, org root, containment domain, service, assembly) that decides whether a containment move additionally requires governance:move at both ends. Enforced iff the instance rung is enabled or the moved object's OR the destination's containment chain carries a rung"
+    );
+
+  moveEnforcementCmd
+    .command("status <type> <idOrUrn>")
+    .description(
+      "Explain whether moves of ONE object are governed, and by which rung(s) — a move has TWO ends, so `enforced: false` here is not a promise that a particular move is ungoverned; the destination's own chain is ORed in at the door"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (type: string, idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const enforcement = await client.governanceMove.enforcement(type, idOrUrn);
+      if (opts.output === "json") {
+        console.log(JSON.stringify(enforcement, null, 2));
+        return;
+      }
+      printResult(enforcement, "table", (raw) =>
+        governanceMoveEnforcementRow(raw as GovernanceMoveEnforcement)
+      );
+      console.log("");
+      console.log("RUNGS ON THIS OBJECT'S CONTAINMENT CHAIN (org-root-first):");
+      printResult(enforcement.rungs, "table", (raw) =>
+        governanceMoveRungRow(raw as GovernanceMoveRung)
+      );
+    });
+
+  moveEnforcementCmd
+    .command("rungs")
+    .description(
+      "List every governance:move rung enabled in this org, plus the instance rung's state — the whole lattice this org can act on, in one call"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const list = await client.governanceMove.rungs();
+      if (opts.output === "json") {
+        console.log(JSON.stringify(list, null, 2));
+        return;
+      }
+      console.log(
+        `instance rung: ${
+          list.instance.enabled
+            ? "enabled — ACTIVATES governance:move enforcement for every org on this deployment"
+            : "disabled"
+        }`
+      );
+      console.log("");
+      printResult(list.rungs, "table", (raw) => governanceMoveRungRow(raw as GovernanceMoveRung));
+    });
+
+  moveEnforcementCmd
+    .command("enable <idOrUrn>")
+    .description(
+      "Enable governance:move enforcement at one container (org root, containment domain, service or assembly) — every containment move of an object under it then requires governance:move at-or-above the object AND at-or-above the destination. Idempotent. Requires policy:write at-or-above the subject"
+    )
+    .option("--note <text>", "why the rung was enabled — recorded with the enable Decision")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts & { note?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const response = await client.governanceMove.enable(idOrUrn, {
+        ...(opts.note !== undefined ? { note: opts.note } : {})
+      });
+      printResult(response, opts.output, (raw) =>
+        governanceMoveRungWriteRow(raw as GovernanceMoveRungWriteResponse)
+      );
+    });
+
+  moveEnforcementCmd
+    .command("disable <idOrUrn>")
+    .description(
+      "Disable governance:move enforcement at one container. Refused 409 while an upper rung (an ancestor's, or the instance rung) is enabled, naming it — an enablement above cannot be undone below. Requires policy:write at-or-above the subject"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const response = await client.governanceMove.disable(idOrUrn);
+      printResult(response, opts.output, (raw) =>
+        governanceMoveRungWriteRow(raw as GovernanceMoveRungWriteResponse)
+      );
+    });
+
+  const governanceMoveInstanceCmd = moveEnforcementCmd
+    .command("instance")
+    .description(
+      "The instance (commander) rung — the deployment-wide top of the lattice. It ACTIVATES (owner ruling Q1-A): enabled here means every org on this deployment enforces governance:move on containment moves, and no org may disable it"
+    );
+
+  governanceMoveInstanceCmd
+    .command("get")
+    .description("Show the instance rung — an ordinary tenant read")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const instance = await client.governanceMove.instance();
+      printResult(instance, opts.output, (raw) =>
+        governanceMoveInstanceRow(raw as GovernanceMoveInstanceRung)
+      );
+    });
+
+  governanceMoveInstanceCmd
+    .command("set")
+    .description(
+      "Set the instance rung (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; it activates governance:move enforcement for every org on the deployment, and no org may disable it)"
+    )
+    .requiredOption("--enabled <bool>", "true|false")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { enabled: string }) => {
+      const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+      if (!operatorToken) {
+        throw new Error(
+          "SCP_OPERATOR_TOKEN is not set — the instance governance:move rung binds every org on the deployment, so setting it requires the deployment operator token, not your tenant login."
+        );
+      }
+      if (opts.enabled !== "true" && opts.enabled !== "false") {
+        throw new Error("--enabled must be exactly 'true' or 'false'");
+      }
+      const client = await clientFromStoredCredentials(opts);
+      const instance = await client.governanceMove.setInstance(
+        { enabled: opts.enabled === "true" },
+        operatorToken
+      );
+      printResult(instance, opts.output, (raw) =>
+        governanceMoveInstanceRow(raw as GovernanceMoveInstanceRung)
+      );
+    });
+
   // -------------------------------------------------------------------------------------
   // dependency-producers (ADR-0032 §7e) — WHICH COORDINATES THIS ORG PUBLISHES.
   //
@@ -4255,16 +4840,9 @@ export function buildProgram(): Command {
         console.log(JSON.stringify(response, null, 2));
         return;
       }
-      printResult(response.producers, "table", (raw) => {
-        const p = raw as DependencyLineProducer;
-        return {
-          ecosystem: p.ecosystem,
-          coordinate: p.coordinate,
-          producer: p.producerObjectId,
-          declaredBy: p.declaredByObjectId,
-          declaredAt: p.declaredAt
-        };
-      });
+      printResult(response.producers, "table", (raw) =>
+        dependencyProducerListRow(raw as DependencyLineProducerView)
+      );
       // The condition and the sentence live in `dependencyProducerManagementNote`, OUTSIDE this
       // closure, so both arms are reachable by a test — the M21.7 lesson: an inline caveat whose
       // condition is inverted warns the wrong deployment and leaves the suite green.
@@ -4365,7 +4943,7 @@ export function buildProgram(): Command {
       async (opts: BaseCliOpts & { name: string; role: "commander" | "outpost" | "retrans" }) => {
         const client = await clientFromStoredCredentials(opts);
         const result = await client.federation.init({ name: opts.name, role: opts.role });
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -4379,7 +4957,7 @@ export function buildProgram(): Command {
     .action(async (opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const self = await client.federation.self();
-      printResult(self, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(self, opts.output, (item) => item as Record<string, unknown>);
     });
 
   federationCmd
@@ -4672,8 +5250,13 @@ export function buildProgram(): Command {
 
   outpostCmd
     .command("declare")
-    .description("Declare the config object for an already-paired outpost peer")
-    .requiredOption("--peer <domainId>", "the paired outpost peer's trust-domain id")
+    .description(
+      "Declare the config object for an already-paired outpost peer — or, with --peer set to this instance's own domain id ('scp federation self'), the HQ outpost — the outpost in this instance's own trust domain (commander-role instances only: an outpost's own record arrives replicated)"
+    )
+    .requiredOption(
+      "--peer <domainId>",
+      "the paired outpost peer's trust-domain id (a field outpost), or this instance's own domain id for the HQ outpost"
+    )
     .option("--name <name>", "display name for the config object (defaults to the peer's name)")
     .option(
       "--trust-tier <tier>",
@@ -4952,7 +5535,7 @@ export function buildProgram(): Command {
       }
       const parsed: unknown = JSON.parse(raw);
       const result = await client.federation.import(parsed as ImportBundleRequest);
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   // M15.5(c) — the retrans validate-then-relay (ADR-0019 §2). `relay` runs on the RETRANS-role
@@ -5065,7 +5648,7 @@ export function buildProgram(): Command {
           name: opts.name,
           properties: parseJsonOption(opts.properties, "--properties")
         });
-        printResult(object, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(object, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -5095,7 +5678,7 @@ export function buildProgram(): Command {
           name: opts.name,
           properties: parseJsonOption(opts.properties, "--properties")
         });
-        printResult(overlay, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(overlay, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -5134,7 +5717,7 @@ export function buildProgram(): Command {
     .action(async (key: string, opts: BaseCliOpts & { value: string }) => {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.secrets.put(key, { value: opts.value });
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   secretCmd
@@ -5366,7 +5949,7 @@ export function buildProgram(): Command {
                 type: opts.type
               }
         );
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -5379,7 +5962,7 @@ export function buildProgram(): Command {
     .action(async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType }) => {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.executors.getBinding(idOrUrn, opts.type);
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   // M12 P5c binding primitives: list all / detach / relabel-type.
@@ -5391,7 +5974,7 @@ export function buildProgram(): Command {
     .action(async (idOrUrn: string, opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const items = await client.executors.listBindings(idOrUrn);
-      printResult(items, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(items, opts.output, (item) => item as Record<string, unknown>);
     });
 
   executorCmd
@@ -5403,7 +5986,7 @@ export function buildProgram(): Command {
     .action(async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType }) => {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.executors.deleteBinding(idOrUrn, opts.type);
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   executorCmd
@@ -5420,7 +6003,7 @@ export function buildProgram(): Command {
       async (idOrUrn: string, opts: BaseCliOpts & { to: ExecutorType; from?: ExecutorType }) => {
         const client = await clientFromStoredCredentials(opts);
         const result = await client.executors.repurposeBinding(idOrUrn, opts.to, opts.from);
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -5437,7 +6020,7 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const view = await client.executors.getRegionalExecutors(environment, opts.type);
       if (opts.output === "json") {
-        printResult(view, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(view, opts.output, (item) => item as Record<string, unknown>);
         return;
       }
       // Table view: one row per region, then the verdict + any problems.
@@ -5501,7 +6084,7 @@ export function buildProgram(): Command {
           allowedHosts: parseList(opts.allowedHosts),
           minSeverity: opts.minSeverity
         });
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -5513,7 +6096,7 @@ export function buildProgram(): Command {
     .action(async (opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const page = await client.notifications.listBindings();
-      printResult(page.items, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(page.items, opts.output, (item) => item as Record<string, unknown>);
     });
 
   notifyCmd
@@ -5605,7 +6188,7 @@ export function buildProgram(): Command {
         domainId: opts.domain,
         proposal: proposal as never
       });
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   // M12 P5 follow-up: automated backfill of source_mappings onto ALREADY-imported components (the 50
@@ -5629,7 +6212,7 @@ export function buildProgram(): Command {
         : await readFile(opts.proposal, "utf8");
       const proposal = JSON.parse(raw) as never;
       const result = await client.discovery.backfillSourceMappings(proposal);
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   const changeSourceCmd = program
@@ -5659,6 +6242,18 @@ export function buildProgram(): Command {
       "--classification <label>",
       "declared pipeline classification: dev|beta (UI/reporting ONLY — never an enforcement input, ADR-0030 §3)"
     )
+    .option(
+      "--mirror-of-shared",
+      "declare this repo a local MIRROR of a commander-shared source (outpost-ui.md §9.3a) — omit for a domain-specific repo; UI/reporting only, never an enforcement input"
+    )
+    .option(
+      "--disabled",
+      "create this mapping already PAUSED (migration 0063) — declared but routes nothing until enabled; default is enabled"
+    )
+    .option(
+      "--scope <scope>",
+      "declared reach of this repo (§10.6): global (shared across domains, tracked at the commander) | domain (tracked only here); omit = not declared (no label, nothing inferred); UI/reporting/IaC only, never a routing input"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -5671,8 +6266,19 @@ export function buildProgram(): Command {
           ref?: string;
           type?: ExecutorType;
           classification?: PipelineClassification;
+          mirrorOfShared?: boolean;
+          disabled?: boolean;
+          scope?: string;
         }
       ) => {
+        // Parsed BEFORE the client is built so a typo is a usage error, not a 400 after login.
+        // `none` is meaningless at create (omitted already means undeclared) — reject it as such.
+        const scope = opts.scope === undefined ? undefined : parseScopeFlag(opts.scope);
+        if (opts.scope !== undefined && scope === null) {
+          throw new Error(
+            "--scope none is not meaningful at create — omit --scope for an undeclared scope"
+          );
+        }
         const client = await clientFromStoredCredentials(opts);
         const result = await client.changeSources.createMapping(sourceKind, {
           component: opts.component,
@@ -5680,21 +6286,44 @@ export function buildProgram(): Command {
           pathPattern: opts.path,
           refPattern: opts.ref,
           type: opts.type,
-          classification: opts.classification
+          classification: opts.classification,
+          ...(opts.mirrorOfShared ? { mirrorOfShared: true } : {}),
+          ...(opts.disabled ? { enabled: false } : {}),
+          ...(scope ? { scope } : {})
         });
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => sourceMappingRow(item as SourceMapping));
       }
     );
 
   changeSourceCmd
     .command("list-mappings <sourceKind>")
-    .description("List source_mappings for one source kind")
+    .description(
+      "List source_mappings for one source kind (SCOPE column: global|domain, blank = not declared)"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (sourceKind: string, opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.changeSources.listMappings(sourceKind);
-      printResult(result.items, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result.items, opts.output, (item) => sourceMappingRow(item as SourceMapping));
+    });
+
+  // §10.6 — the after-the-fact door for the label `create-mapping --scope` sets at create. By id
+  // (`list-mappings` shows it), because this is a genuine update of ONE row and must never reach a
+  // byte-identical sibling. `--scope none` clears it. A label only: routing is untouched.
+  changeSourceCmd
+    .command("set-mapping-scope <sourceKind> <id>")
+    .description(
+      "Set or clear a source_mapping's declared scope — global (shared across domains) | domain (tracked only here) | none (clear); a label read by pipelines, IaC and this CLI, never a routing input"
+    )
+    .requiredOption("--scope <scope>", "global|domain|none")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (sourceKind: string, id: string, opts: BaseCliOpts & { scope: string }) => {
+      const scope = parseScopeFlag(opts.scope);
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.changeSources.setMappingScope(sourceKind, id, scope);
+      printResult(result, opts.output, (item) => sourceMappingRow(item as SourceMapping));
     });
 
   changeSourceCmd
@@ -5708,7 +6337,7 @@ export function buildProgram(): Command {
       const result = await client.changeSources.putWebhookSecret(sourceKind, {
         secret: opts.secret
       });
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   changeSourceCmd
@@ -5858,7 +6487,7 @@ export function buildProgram(): Command {
           requires: parseRequiresFlag(opts.requires),
           stageDependencies: parseStageDependenciesFlags(opts.stageDependsOn, opts.stageDependsAt)
         });
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 

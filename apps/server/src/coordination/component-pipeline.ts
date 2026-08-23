@@ -4,11 +4,21 @@ import type {
   ComponentPipelineHold,
   ComponentPipelineResponse,
   ComponentPipelineStage,
+  ComponentPipelineTargetOutpost,
   ComponentPipelineUnplacedStage
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { changes, changeWaveTargets, changeWaves, changePlans, objects } from "../db/schema.js";
-import { listExecutorBindingsForTarget } from "./executor-bindings-repo.js";
+import {
+  changes,
+  changeWaveTargets,
+  changeWaves,
+  changePlans,
+  objects,
+  relationships
+} from "../db/schema.js";
+import type { ExecutorBindingRow } from "./executor-bindings-repo.js";
+import { resolveBindingForTarget } from "./binding-resolution.js";
+import { ExecutorTypeSchema } from "@scp/schemas";
 import { listSourceMappingsForComponents } from "./source-mappings-repo.js";
 import { executionSystemConsoleBase, executorConsoleUrl, repoConsoleUrl } from "./console-urls.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
@@ -18,7 +28,9 @@ import { resolvePipelineForTarget } from "./pipeline-resolution.js";
 import { resolveStageDependencyStatus } from "./stage-dependency-status.js";
 import { parseTopologyWaves } from "./topology-waves.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { resolveOutpostObjectsByPeer } from "../federation/outposts-repo.js";
 import { federationPeers } from "../db/schema.js";
+import { artifactFactsForComponent } from "./artifact-facts.js";
 
 /**
  * A COMPONENT'S PIPELINE — its stages, derived from durable graph state.
@@ -424,7 +436,13 @@ async function gateForStage(
 export async function getComponentPipeline(
   tx: TenantTx,
   orgId: string,
-  component: { id: string; urn: string; name: string },
+  component: {
+    id: string;
+    urn: string;
+    name: string;
+    originDomainId: string;
+    domainLocal: boolean;
+  },
   actorObjectId: string
 ): Promise<ComponentPipelineResponse> {
   // The component's placements, read from `properties` — the source of truth for the pair
@@ -465,7 +483,14 @@ export async function getComponentPipeline(
       type: m.type,
       category: categoryOfType(m.type),
       classification: m.classification ?? null,
-      url: repoConsoleUrl(m.sourceKind, m.repoPattern ?? null)
+      mirrorOfShared: m.mirrorOfShared,
+      enabled: m.enabled,
+      disabledUntil: m.disabledUntil,
+      effectivelyEnabled: m.effectivelyEnabled,
+      url: repoConsoleUrl(m.sourceKind, m.repoPattern ?? null),
+      // Declared reach (§10.6) — carried through as READ; null stays null (no label, no inference
+      // from this site's role).
+      scope: m.scope
     }))
     .sort(
       (a, b) =>
@@ -510,7 +535,86 @@ export async function getComponentPipeline(
     // misreading this field exists to prevent.
     return { domainId: originDomainId, name: null, isSelf: false, role: null };
   };
+  // WHICH OUTPOST EACH PLACE IS PART OF (§10.2, the owner's TRUST-DOMAIN RULE; §10.5, every target is
+  // within an outpost): the `outpost` object whose `properties.peerDomainId` equals the target's OWN
+  // `origin_domain_id`. Read, never inferred — not from the target's name, and not from its
+  // containment `domain_id` (GLOSSARY: containment has nothing to do with deployment topology). ONE
+  // batched read of the live outpost objects (the repo resolves duplicates by the same authority rule
+  // the outposts API uses — see `resolveOutpostObjectsByPeer` for why that is not stated as
+  // "ambiguous"), plus the SAME `federation_self` and `federation_peers` reads `maintainerOf` already
+  // made.
+  const outpostByPeer = await resolveOutpostObjectsByPeer(tx, orgId);
+  const outpostOf = (originDomainId: string | null): ComponentPipelineTargetOutpost => {
+    const isSelf = originDomainId !== null && originDomainId === self.domainId;
+    const peer = originDomainId ? peerById.get(originDomainId) : undefined;
+    const outpost = originDomainId ? outpostByPeer.get(originDomainId) : undefined;
+    // PRECEDENCE — OBJECT-FIRST (§10.5; this supersedes §10.2's self-first sentence). An `outpost`
+    // object naming the target's origin domain wins WHETHER OR NOT that domain is self: an outpost
+    // site's replica of its own config is exactly "an `outpost` object whose `peerDomainId` names
+    // self", so that site's own targets read `outpost <its own name> · <tier>`; a commander that has
+    // registered the HQ outpost (`peerDomainId` = its own domain — outpost-binding.ts) reads
+    // it for every target it authored. `peerRole` is the peer row's role, or self's own role for the
+    // co-located record (there is no peer row for self).
+    if (outpost && originDomainId) {
+      return {
+        state: "outpost",
+        id: outpost.id,
+        name: outpost.name,
+        trustTier: outpost.trustTier,
+        peerDomainId: originDomainId,
+        peerRole: isSelf ? self.role : (peer?.role ?? null)
+      };
+    }
+    if (isSelf) {
+      // Authored by THIS instance and NO outpost object names this instance's domain — a STATED
+      // ABSENCE ("this instance's domain — no outpost registered"), not a sixth state: the fix is
+      // to declare the HQ outpost under Federation › Outposts.
+      return {
+        state: "self",
+        id: null,
+        name: self.name,
+        trustTier: null,
+        peerDomainId: null,
+        peerRole: null
+      };
+    }
+    if (peer && originDomainId) {
+      // A paired peer with no `outpost` object registered. Say WHO — and say WHETHER one can be
+      // declared for it: POST /federation/outposts binds ONLY to a peer of role `outpost`
+      // (outpost-binding.ts REQUIRED_PEER_ROLE, 400 otherwise). A `commander` or `retrans` peer is
+      // NOT "missing an outpost record" — on every outpost site that is what every commander-authored
+      // (replicated) target's origin is — so it is stated as its own thing, with the role, and a
+      // client must not offer the declare-an-outpost fix for it.
+      return {
+        state: peer.role === "outpost" ? "peer-without-outpost" : "peer-not-outpost",
+        id: null,
+        name: peer.name,
+        trustTier: null,
+        peerDomainId: originDomainId,
+        peerRole: peer.role
+      };
+    }
+    // Neither self nor a known peer (a replica whose peer row has not arrived; a foreign origin never
+    // paired here). The raw origin id rides `peerDomainId` so it is stated, not swallowed — and it
+    // must NOT read as "ours", for the same reason `maintainerOf` refuses to.
+    return {
+      state: "unknown-domain",
+      id: null,
+      name: null,
+      trustTier: null,
+      peerDomainId: originDomainId,
+      peerRole: null
+    };
+  };
   const resolved = await resolvePipelineForTarget(tx, orgId, component.id);
+
+  // One binding resolution per routing Type, from the COMPONENT — the same starting rung the
+  // engine's wave targets use. Mapped onto stages inside the stage loop (see the comment there
+  // for the outcome semantics).
+  const componentResolutions = [];
+  for (const bindingType of ExecutorTypeSchema.options) {
+    componentResolutions.push(await resolveBindingForTarget(tx, orgId, component.id, bindingType));
+  }
 
   const topologyRow = resolved
     ? await tx.query.objects.findFirst({
@@ -576,9 +680,22 @@ export async function getComponentPipeline(
   const unplacedStages: ComponentPipelineUnplacedStage[] = [];
   for (const [order, seed] of seeds.entries()) {
     const target = targetById.get(seed.deploymentTargetId);
-    const tProps = (target?.properties ?? {}) as { environment?: unknown; region?: unknown };
+    const tProps = (target?.properties ?? {}) as {
+      environment?: unknown;
+      region?: unknown;
+      substrate?: unknown;
+      account?: unknown;
+      cluster?: unknown;
+    };
     const environment = typeof tProps.environment === "string" ? tProps.environment : null;
     const region = typeof tProps.region === "string" ? tProps.region : null;
+    // THE SUBSTRATE FACET (§9.1) — read verbatim off the target's own bag with the same string
+    // guard as `region`. Migration 0065 types these as optional strings, but Ajv runs on WRITE only
+    // and a replicated row from an older peer was never checked here, so the guard is not
+    // decorative. Null = not declared. NEVER derived from `name`.
+    const substrate = typeof tProps.substrate === "string" ? tProps.substrate : null;
+    const account = typeof tProps.account === "string" ? tProps.account : null;
+    const cluster = typeof tProps.cluster === "string" ? tProps.cluster : null;
 
     // ADR-0026 D1: `<origin domain>-[<region>-]<environment>`, and ONLY for a target carrying an
     // `environment`. The domain segment comes from the target's OWN `origin_domain_id`, never from
@@ -590,12 +707,20 @@ export async function getComponentPipeline(
         ? [domainLabel, region, environment].filter(Boolean).join("-")
         : null;
 
+    // ONE literal, pushed unchanged into BOTH `stages` and `unplacedStages` — the two wire shapes
+    // must not drift, and this is the only place either is built.
     const deploymentTarget = {
       id: target?.id ?? seed.deploymentTargetId,
       name: target?.name ?? "(unresolved)",
       environment,
-      region
+      region,
+      substrate,
+      account,
+      cluster
     };
+    // ONE literal here too (§10.2), for the same reason — built once from the target's own origin,
+    // pushed into whichever array this seed lands in.
+    const outpost = outpostOf(target?.originDomainId ?? null);
 
     // AN UNPLACED STAGE CARRIES NO BINDING, NO `current` AND NO `version` — all three are keyed on a
     // placement that does not exist, and a null `binding` beside a real stage is the ADR-0006 case
@@ -611,21 +736,48 @@ export async function getComponentPipeline(
           wave: seed.wave,
           deploymentTarget,
           maintainedBy: maintainerOf(target?.originDomainId ?? null),
+          outpost,
           stageName
         });
       continue;
     }
 
-    // EVERY pipeline bound here, not just the first. A stage can carry an `image` build, an
-    // `infrastructure` plan/apply AND a `configuration` sync at once — `UNIQUE(org, target, type)`
-    // is what makes that legal, and the first version of this projection took `bindings[0]` and
-    // dropped the rest silently. Sorted by Type so `binding` (the compat field, `bindings[0]`) is a
-    // defined choice rather than whatever the planner returned first.
-    const rows = [...(await listExecutorBindingsForTarget(tx, orgId, seed.placement.id))].sort(
-      (a, b) => a.type.localeCompare(b.type)
-    );
+    // EVERY pipeline the ENGINE would run at this stage, from the SAME resolution reconcile uses
+    // (binding-resolution.ts, ADR-0027/0029) — never a bare placement-only listing. The listing
+    // version shipped first and produced a projection that CONTRADICTED the engine: a component-
+    // level binding (the owner's own-infra case, 2026-08-12 — checkout-api's terraform'd bucket)
+    // triggered fine but rendered as "No executor" / "no infrastructure pipeline is bound", a
+    // false alarm about a working pipeline.
+    //
+    // RESOLVED FROM THE COMPONENT, mapped onto stages by outcome — not resolved from the placement.
+    // The first attempt at this fix called `resolveBindingForTarget(placement.id)` and STILL missed
+    // the component rung, because `containsAncestors` seeds AT the component and pushes only its
+    // parents: a placement-rooted walk visits assembly/service/org but never the component itself.
+    // The engine does not have this problem because it resolves from the component (that is what a
+    // wave target carries) and lets `via_placement` name the stage-local winner. Mirror that:
+    //   direct        -> the component's own binding, acts at EVERY stage ("component")
+    //   via_placement -> a stage-local binding, acts ONLY at the stage whose placement it names
+    //   via_service   -> an ancestor's binding, acts at every stage (labelled with the ancestor's
+    //                    own object type — provenance READ, never inferred,
+    //                    resolution-provenance.test.ts)
+    //   ambiguous     -> nothing here: projecting the refusal is the reconcile/Decision path's job
+    //                    (ADR-0027 D2), and rendering nothing is what this view always did.
+    // `componentResolutions` is computed ONCE for the whole journey — it does not vary by stage.
+    const resolved: { row: ExecutorBindingRow; resolvedVia: string }[] = [];
+    for (const resolution of componentResolutions) {
+      if (!resolution.binding) continue;
+      if (resolution.outcome === "via_placement") {
+        if (resolution.viaPlacementObjectId !== seed.placement.id) continue;
+        resolved.push({ row: resolution.binding, resolvedVia: "placement" });
+      } else if (resolution.outcome === "via_service") {
+        resolved.push({ row: resolution.binding, resolvedVia: resolution.viaObjectTypeId });
+      } else {
+        resolved.push({ row: resolution.binding, resolvedVia: "component" });
+      }
+    }
+    resolved.sort((a, b) => a.row.type.localeCompare(b.row.type));
     const bindings: ComponentPipelineStage["bindings"] = [];
-    for (const row of rows) {
+    for (const { row, resolvedVia } of resolved) {
       let executionSystemName: string | null = null;
       let systemKind: string | null = null;
       let consoleBase: string | null = null;
@@ -651,7 +803,8 @@ export async function getComponentPipeline(
         }),
         category: categoryOfType(row.type),
         executionSystemId: row.executionSystemId ?? null,
-        executionSystemName
+        executionSystemName,
+        resolvedVia
       });
     }
 
@@ -670,6 +823,7 @@ export async function getComponentPipeline(
       wave: seed.wave,
       deploymentTarget,
       maintainedBy: maintainerOf(target?.originDomainId ?? null),
+      outpost,
       stageName,
       binding: bindings[0] ?? null,
       bindings,
@@ -704,13 +858,121 @@ export async function getComponentPipeline(
     };
   }
 
+  const registry = await registryForComponent(tx, orgId, component.id);
+
+  // §9.3 — THE ARTIFACT and its change-scoped facts. The pick prefers the releases the stages are
+  // already showing (currents + holds), so the tile and the journey describe the same change when
+  // there is one; `artifact-facts.ts` owns the pick and every reduction. Peer names resolve through
+  // the same `federation_peers` read `maintainerOf` uses.
+  const preferredChangeIds = [
+    ...[...currents.values()].flatMap((list) => list.map((c) => c.changeId)),
+    ...[...holds.values()].map((h) => h.changeId)
+  ];
+  const artifact = await artifactFactsForComponent(
+    tx,
+    orgId,
+    component.id,
+    preferredChangeIds,
+    (peerDomainId) => peerById.get(peerDomainId)?.name ?? null
+  );
+
   return {
-    component: { id: component.id, urn: component.urn, name: component.name },
+    component: {
+      id: component.id,
+      urn: component.urn,
+      name: component.name,
+      // outpost-ui.md §9.3a — the two facts the source lane READS to know its shape: a component
+      // maintained by another domain (typically the commander) has that domain UPSTREAM of this
+      // domain's repos; a domain-local one has no upstream at all — its repo IS the source. Stated
+      // by the server from `originDomainId`/`domainLocal` + federation self, never inferred by
+      // the client from labels or names.
+      maintainedBy: maintainerOf(component.originDomainId),
+      domainLocal: component.domainLocal
+    },
     pipeline,
     stageSource,
     sources,
     stages,
     unplacedStages,
+    registry,
+    artifact,
     unknownFields: []
+  };
+}
+
+/**
+ * THE REGISTRY THIS COMPONENT PUBLISHES TO, AT THIS SITE (§9.2) — resolved from its outgoing
+ * `publishes_to` edges (component → execution-system, migration 0065), never from the `image`
+ * executor binding (a binding's Type is WHICH PIPELINE it drives, ADR-0007 — the image binding
+ * names what BUILDS the artifact, not where it lands).
+ *
+ * ONE query for the edges (joined to the live execution-system row) — lane-level, not per stage.
+ * Per-site by construction: a registry is created `domainLocal:true` at each site, and an edge with
+ * a domain-local endpoint never journals (relationships-repo.ts, M20.3), so this instance's
+ * `relationships` table holds only the edges declared HERE.
+ *
+ * `state` is STATED, not chosen. >1 edge is `ambiguous` with the count and NULL identity fields —
+ * there is no rule that would make picking one honest, and rendering the first would look exactly
+ * like `declared`.
+ */
+async function registryForComponent(
+  tx: TenantTx,
+  orgId: string,
+  componentId: string
+): Promise<NonNullable<ComponentPipelineResponse["registry"]>> {
+  const rows = await tx
+    .select({
+      edgeProperties: relationships.properties,
+      systemId: objects.id,
+      systemName: objects.name,
+      systemProperties: objects.properties
+    })
+    .from(relationships)
+    .innerJoin(
+      objects,
+      and(
+        eq(objects.id, relationships.toId),
+        eq(objects.orgId, orgId),
+        eq(objects.typeId, "execution-system"),
+        isNull(objects.deletedAt)
+      )
+    )
+    .where(
+      and(
+        eq(relationships.orgId, orgId),
+        eq(relationships.typeId, "publishes_to"),
+        eq(relationships.fromId, componentId),
+        isNull(relationships.deletedAt)
+      )
+    );
+
+  const none = {
+    executionSystemId: null,
+    name: null,
+    kind: null,
+    url: null,
+    repository: null
+  };
+  if (rows.length === 0) return { state: "none", ...none, edgeCount: 0 };
+  if (rows.length > 1) return { state: "ambiguous", ...none, edgeCount: rows.length };
+
+  const row = rows[0]!;
+  const sysProps = (row.systemProperties ?? null) as Record<string, unknown> | null;
+  const edgeProps = (row.edgeProperties ?? null) as Record<string, unknown> | null;
+  // Every identity field READ, never inferred: name off the object, kind off `properties.kind`
+  // (string guard — the registered schema for execution-system is open), url = console base only
+  // (`webUrl` → `serverUrl`; no registry deep-link shape is known, so none is guessed), repository
+  // off the EDGE's own property (0065's open schema types it as a string, but a row written before
+  // that or replicated from elsewhere was never checked, hence the guard — a non-string is null,
+  // not a crash).
+  return {
+    state: "declared",
+    executionSystemId: row.systemId,
+    name: row.systemName,
+    kind: typeof sysProps?.["kind"] === "string" ? (sysProps["kind"] as string) : null,
+    url: executionSystemConsoleBase(sysProps),
+    repository:
+      typeof edgeProps?.["repository"] === "string" ? (edgeProps["repository"] as string) : null,
+    edgeCount: 1
   };
 }

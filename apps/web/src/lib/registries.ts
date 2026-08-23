@@ -1,3 +1,5 @@
+import { Bot, Globe, Server, UserRound, Users, UsersRound, type LucideIcon } from "lucide-react";
+import { AssemblyStack, ComponentCrate, ServiceGuidon } from "../components/icons/catalog-marks";
 import type { ScpClient } from "@scp/sdk";
 import type {
   CreateObjectRequest,
@@ -33,6 +35,10 @@ export interface RegistryConfig {
   label: string;
   /** Property name on `ScpClient` (packages/sdk/src/client.ts). */
   clientKey: RegistryClientKey;
+  /** Lucide icon for this registry — drives the nav's catalog entries (design spec §3.1: Services
+   *  `Layers`, Assemblies `Package`, Components `Box`) and the registry pages' empty states, so
+   *  the allow-list mapping stays data-driven instead of a second hand-kept table. */
+  icon: LucideIcon;
   /** `object_types.id` this resource maps to (routes/typed-registries.ts `TYPED_REGISTRY_RESOURCES`). */
   typeId: string;
   /** Has `.addOwner()/.listOwners()/.removeOwner()` — domains/services/components/deploymentTargets only. */
@@ -50,6 +56,7 @@ export const REGISTRIES: RegistryConfig[] = [
     basePath: "domains",
     label: "Domains",
     clientKey: "domains",
+    icon: Globe,
     typeId: "domain",
     ownable: true,
     edges: false
@@ -58,6 +65,7 @@ export const REGISTRIES: RegistryConfig[] = [
     basePath: "services",
     label: "Services",
     clientKey: "services",
+    icon: ServiceGuidon,
     typeId: "service",
     ownable: true,
     edges: true
@@ -71,6 +79,7 @@ export const REGISTRIES: RegistryConfig[] = [
     basePath: "assemblies",
     label: "Assemblies",
     clientKey: "assemblies",
+    icon: AssemblyStack,
     typeId: "assembly",
     ownable: true,
     edges: false
@@ -79,6 +88,7 @@ export const REGISTRIES: RegistryConfig[] = [
     basePath: "components",
     label: "Components",
     clientKey: "components",
+    icon: ComponentCrate,
     typeId: "component",
     ownable: true,
     edges: true,
@@ -88,6 +98,7 @@ export const REGISTRIES: RegistryConfig[] = [
     basePath: "deployment-targets",
     label: "Deployment Targets",
     clientKey: "deploymentTargets",
+    icon: Server,
     typeId: "deployment-target",
     ownable: true,
     edges: false
@@ -96,6 +107,7 @@ export const REGISTRIES: RegistryConfig[] = [
     basePath: "teams",
     label: "Teams",
     clientKey: "teams",
+    icon: Users,
     typeId: "team",
     ownable: false,
     edges: false
@@ -104,6 +116,7 @@ export const REGISTRIES: RegistryConfig[] = [
     basePath: "groups",
     label: "Groups",
     clientKey: "groups",
+    icon: UsersRound,
     typeId: "group",
     ownable: false,
     edges: false
@@ -112,6 +125,7 @@ export const REGISTRIES: RegistryConfig[] = [
     basePath: "users",
     label: "Users",
     clientKey: "users",
+    icon: UserRound,
     typeId: "user",
     ownable: false,
     edges: false
@@ -120,6 +134,7 @@ export const REGISTRIES: RegistryConfig[] = [
     basePath: "service-accounts",
     label: "Service Accounts",
     clientKey: "serviceAccounts",
+    icon: Bot,
     typeId: "service-account",
     ownable: false,
     edges: false

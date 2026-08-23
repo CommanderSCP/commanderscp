@@ -1,3 +1,4 @@
+{{- include "commanderscp.assertRunnerPrerequisites" . }}
 {{/*
 worker — SCP_ROLE=worker: outbox relay, coordination reconcile loop, watchdog, subprocess plugin
 host. Multiple replicas (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6): the coordination
@@ -35,7 +36,11 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "commanderscp.serviceAccountName" . }}
-      automountServiceAccountToken: {{ .Values.managedIac.enabled }}
+      {{- /* M23.2 (owner decision 6): was `{{ .Values.managedIac.enabled }}`, which gave the worker a
+             token for managed-IaC and NONE for managed-scan or managed-dep — and gave it one even
+             on a docker-launcher deployment, where it is surface for nothing. Now it is exactly
+             "can a managed runner launch through the API server from this pod". */}}
+      automountServiceAccountToken: {{ eq (include "commanderscp.needsRunnerApiAccess" .) "true" }}
       terminationGracePeriodSeconds: 30
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -117,10 +122,11 @@ spec:
               readOnly: true
             {{- end }}
             {{- end }}
-            {{- if .Values.managedIac.enabled }}
-            - name: managed-iac-workspace
-              mountPath: {{ .Values.managedIac.workspaceRoot }}
-            {{- end }}
+            {{- /* M23.5 — EVERY WORKER-ROLE WRITE PATH, from the one helper `deployment-api.yaml`
+                   also includes. Keyed on the ROLE, never on which Deployment this is: the same
+                   three mounts are needed by an `api.role=all` pod, and two of the three were
+                   missing there. See `commanderscp.podRunsWorkerRole`. */}}
+            {{- include "commanderscp.workerRoleVolumeMounts" (dict "root" . "role" "worker") | nindent 12 }}
             {{- if .Values.scanDbCache.enabled }}
             - name: scan-db
               mountPath: {{ .Values.scanDbCache.mountPath }}
@@ -155,7 +161,4 @@ spec:
             secretName: {{ .Values.federation.serverMtls.crl.existingSecret }}
         {{- end }}
         {{- end }}
-        {{- if .Values.managedIac.enabled }}
-        - name: managed-iac-workspace
-          emptyDir: {}
-        {{- end }}
+        {{- include "commanderscp.workerRoleVolumes" (dict "root" . "role" "worker") | nindent 8 }}

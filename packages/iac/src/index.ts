@@ -13,19 +13,18 @@ export {
   Component,
   Domain,
   Team,
+  Policy,
   DeploymentTarget,
   Group,
   User,
   ServiceAccount,
   Campaign,
-  Initiative,
   ReleaseTopology,
   Placement
 } from "./construct.js";
 export type {
   ComponentProps,
   CampaignProps,
-  InitiativeProps,
   ReleaseTopologyProps,
   ReleaseTopologyWaveSpec,
   SourceMappingSpec,

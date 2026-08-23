@@ -11,7 +11,7 @@
     "build": "tsc -b && chmod +x dist/bin.js",
     "dev": "tsc -b -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
     "@scp/schemas": "workspace:*",

@@ -91,3 +91,38 @@ that is the designed, approved outcome, not a failure to fix. `check.sh` is not 
 bypassed, or edited; the label plus this entry are the record of owner approval. Job 3b is deliberately NOT a required status check on `main`, so there is no protection for a label to override (see `check.sh`'s header and BUILD_AND_TEST.md §6); since PR #144, job 3b READS the label, so an approved break carrying an entry here reports green-with-warning instead of red. Job **3 (codegen drift)** must
 still be **green** — the regenerated `tools/openapi/openapi.v1.json` and `packages/sdk/src/generated/*`
 are committed in this PR.
+
+### ADR-0036 — remove the `initiative` object type (2026-08-10, on the `claude/ui-review-worktree-efc42b` branch)
+
+**Spec:** [docs/adr/0036-remove-initiative.md](../../docs/adr/0036-remove-initiative.md). Migration:
+`apps/server/drizzle/0065_remove_initiative.sql` (renumbered from 0056 with a `when` bump when the
+branch merged main).
+
+**What breaks (deliberate, one-time):** the portfolio rung above campaigns is removed entirely —
+graph type, API, SDK, CLI, IaC construct, UI. On the wire that is:
+
+- **Four operations removed:** `GET /initiatives`, `POST /initiatives`, `GET /initiatives/{id}`,
+  `POST /initiatives/{id}/campaigns` (`operationId`s `listInitiatives`, `proposeInitiative`,
+  `getInitiative`, `addInitiativeCampaign` — and with them the generated `client.initiatives.*`
+  SDK surface and the `scp initiative …` CLI verbs).
+- **Enum narrowed on `/graph/query/{name}`:** the `initiative-rollup` member is removed from the
+  `name` path parameter's enum (a **request** position — oasdiff ERR) and from the response's
+  echoed `name` enum. The remaining named queries are untouched.
+- The `Initiative` / `InitiativeProps` IaC constructs are removed with no shim (ADR-0036
+  "Consequences").
+
+The `coordinates` relationship type survives, narrowed to `campaign -> change` (migration
+`0061`); nothing about the `/relationships` wire changes.
+
+**Why it is acceptable here:** owner instruction, 2026-08-10, given explicitly AFTER the charter
+and API-gate consequences were put in front of them (ADR-0036 header). The single-instance
+reasoning ADR-0007 and ADR-0021 relied on still holds: the initiative surface had **no SDK
+consumer outside this monorepo** (CLI, IaC and web ship from the same commit as the server), the
+type never federated anything a peer's journal depends on, and — the removal's own finding — the
+rung carried no plan, no waves, no gates and no execution, so no coordination state is lost. This
+is, as before, **not** a precedent for post-GA `/v1` breakage.
+
+**How the gate is satisfied:** the PR carrying this branch applies the **`api-v2-exception`**
+label; job **3b** reads the label and this entry (both are required — the label alone leaves 3b
+red) and reports green-with-warning. Job **3 (codegen drift)** stays green — the regenerated
+`tools/openapi/openapi.v1.json` and `packages/sdk/src/generated/*` are committed on the branch.

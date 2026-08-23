@@ -90,15 +90,16 @@ import { ingestComponentManifests, type ComponentIngestionOutcome } from "./inve
  *    commander-only since M21.5 because writing to a source repository with a credential is a thing
  *    an air-gapped or high-side field outpost must never do.
  *
- *    "FIELD" IS LOAD-BEARING HERE, NOT DECORATION (ADR-0032 §7d's vocabulary note). An HQ outpost —
- *    the outpost in the commander's own trust domain — is not a second deployment this guard could
- *    refuse: `SCP_FEDERATION_ROLE` is one value per process (`config.ts:56`), and an `outpost` graph
- *    object can never name the commander's own domain, because it must be bound 1:1 to a paired
- *    `federation_peers` row and an instance is never its own peer (`federation/peers-repo.ts:436-439`,
- *    `federation/outpost-binding.ts:98-100`). So THE HQ OUTPOST'S DEPENDENCY INVENTORY IS THE
- *    COMMANDER'S — the same rows, in this database, written by this loop. Do not read "an outpost
- *    holds no inventory" as covering it; the correct statement is that the inventory exists in
- *    exactly one place.
+ *    "FIELD" IS LOAD-BEARING HERE, NOT DECORATION (GLOSSARY `HQ outpost` / `field outpost`, ADR-0021
+ *    D7; ADR-0032 §7d's vocabulary note). An HQ outpost — the outpost in the commander's own trust
+ *    domain — is not a second deployment this guard could refuse: `SCP_FEDERATION_ROLE` is one value
+ *    per process (`config.ts`), and this guard reads THAT, never an `outpost` graph object — an
+ *    `outpost` object CAN name the commander's own domain (the commander-declared HQ outpost record,
+ *    pipeline-substrate-registry-scan.md §10.5, `federation/outpost-binding.ts`), but that record
+ *    describes which outpost, not what this deployment is. So THE HQ OUTPOST'S DEPENDENCY INVENTORY
+ *    IS THE COMMANDER'S — the same rows, in this database, written by this loop. Do not read "an
+ *    outpost holds no inventory" as covering it; the correct statement is that the inventory exists
+ *    in exactly one place.
  *
  *    WHAT THE OLD PARAGRAPH GOT RIGHT, AND WHY IT STILL LOST. Its facts hold — ingestion really
  *    does initiate no timed egress, and `changes`/`source_mappings` really are this domain's own

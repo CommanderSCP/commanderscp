@@ -12,7 +12,11 @@ import {
   TableRow
 } from "../components/ui/table";
 import { Badge } from "../components/ui/badge";
+import { PageHeader } from "../components/ui/page-header";
+import { EmptyState } from "../components/ui/empty-state";
+import { SkeletonRows } from "../components/ui/skeleton";
 import { QueryErrorNotice } from "../components/query-error";
+import { KeyRound } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -73,13 +77,12 @@ export function PatsPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">Personal Access Tokens</h1>
-        <p className="text-sm text-slate-500">
-          Use a PAT as a bearer token for the CLI or API when a browser session isn&apos;t
-          available.
-        </p>
-      </div>
+      {/* h1 echoes the nav label "Access Tokens" in sentence case (copy rule 7); the nav label
+          itself is pinned and unchanged. */}
+      <PageHeader
+        title="Access tokens"
+        description="Use a PAT as a bearer token for the CLI or API when a browser session isn't available."
+      />
 
       <form
         className="flex items-end gap-2 rounded-lg border border-slate-200 bg-white p-4"
@@ -102,7 +105,7 @@ export function PatsPage(): React.JSX.Element {
         </Button>
       </form>
 
-      {listQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+      {listQuery.isLoading && <SkeletonRows n={4} />}
       {/* ADR-0023: without this branch a failed read renders neither the table nor "No tokens
           yet" — an operator sees the create form above an entirely blank space and cannot tell a
           401 from a contract failure. */}
@@ -114,7 +117,7 @@ export function PatsPage(): React.JSX.Element {
         />
       )}
       {listQuery.data && listQuery.data.items.length === 0 && (
-        <p className="text-sm text-slate-500">No tokens yet.</p>
+        <EmptyState icon={KeyRound} message="No tokens yet." />
       )}
       {listQuery.data && listQuery.data.items.length > 0 && (
         <Table>
@@ -130,12 +133,15 @@ export function PatsPage(): React.JSX.Element {
             {listQuery.data.items.map((pat) => (
               <TableRow key={pat.id}>
                 <TableCell>{pat.name}</TableCell>
-                <TableCell>{new Date(pat.createdAt).toLocaleDateString()}</TableCell>
+                {/* A date is not a status (spec §4E) — plain caption text, not a Badge. */}
+                <TableCell className="text-xs text-slate-500">
+                  {new Date(pat.createdAt).toLocaleDateString()}
+                </TableCell>
                 <TableCell>
                   {pat.revokedAt ? (
-                    <Badge variant="destructive">Revoked</Badge>
+                    <Badge variant="danger">Revoked</Badge>
                   ) : (
-                    <Badge variant="secondary">Active</Badge>
+                    <Badge variant="success">Active</Badge>
                   )}
                 </TableCell>
                 <TableCell className="text-right">

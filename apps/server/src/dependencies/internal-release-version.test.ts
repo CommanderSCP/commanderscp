@@ -177,6 +177,59 @@ describe("resolveReleasedVersion — oci reads the observed image ref", () => {
     ).toMatchObject({ determined: false, reason: "no_matching_image_ref" });
   });
 
+  /**
+   * MEDIUM (M23.0 verification pass 8) — A MISS AFTER A CUT IS NOT A MISS.
+   *
+   * `observed_state` is bounded at the store, and an Argo CD Application's `status.summary.images`
+   * is the uncapped image list across every managed resource — an umbrella app overflows the
+   * whole-value budget on its own, at a measured 73 refs. The bound truncates the array's tail and
+   * leaves a recognisable marker; this function then found no match and reported
+   * `no_matching_image_ref`, which is a claim about the EXECUTOR ("it deployed these and none was
+   * yours") for something the platform did. Fail-silent: the internal release's `latest_version` is
+   * never determined and no dependant is ever bumped, with a reason that sends the reader to the
+   * pipeline instead of to the bound.
+   *
+   * The end-to-end arm — a REAL bounded row, read by the real `observedImagesOf` — is
+   * `coordination/observed-state-gate-critical-leaf.integration.test.ts`. These pin the branch.
+   */
+  it("a MISS in a TRUNCATED list is `observed_images_elided`, never `no_matching_image_ref`", async () => {
+    const truncated = [
+      "ghcr.io/acme/other:1.2.3",
+      // Exactly what `boundPersistedJson` leaves behind. Written as a literal rather than built from
+      // the helper on purpose: if the marker's wording changes, the recogniser test in
+      // `persisted-json-bound.test.ts` fails and this one keeps asserting the old shape, so the two
+      // together say "the walk emits this AND this reader understands it".
+      "[elided: 44 more entries]"
+    ];
+    expect(await resolveReleasedVersion(input({ observedImages: truncated }))).toMatchObject({
+      determined: false,
+      reason: "observed_images_elided"
+    });
+    // THE CONTROL: the same miss without a cut still blames nobody but the executor's own report.
+    expect(
+      await resolveReleasedVersion(input({ observedImages: ["ghcr.io/acme/other:1.2.3"] }))
+    ).toMatchObject({ determined: false, reason: "no_matching_image_ref" });
+  });
+
+  it("a list that was truncated to NOTHING is a cut, not `no_observed_images`", async () => {
+    // Every real ref dropped. `no_observed_images` would say the executor reported none, which is
+    // the opposite of what happened.
+    expect(
+      await resolveReleasedVersion(input({ observedImages: ["[elided: 80 more entries]"] }))
+    ).toMatchObject({ determined: false, reason: "observed_images_elided" });
+  });
+
+  it("a MATCH inside a truncated list still determines — and the `why` states what it compared", async () => {
+    // Refusing here would silence the feature for exactly the large applications the truncation
+    // happens to. But `ambiguous_image_refs` could only see the refs that were recorded, so the
+    // provenance has to say so rather than imply a whole-list agreement nobody verified.
+    const result = await resolveReleasedVersion(
+      input({ observedImages: ["ghcr.io/acme/api:1.2.3", "[elided: 44 more entries]"] })
+    );
+    expect(result).toMatchObject({ determined: true, version: "1.2.3" });
+    expect(result.determined && result.why).toContain("truncated");
+  });
+
   it("matches the coordinate VERBATIM — no slug folding", async () => {
     // `graph/urn.ts` collapses these to one slug. If matching normalised, a release of
     // `ghcr.io/acme/API` would move `ghcr.io/acme-api`'s head.

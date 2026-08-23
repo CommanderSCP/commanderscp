@@ -9,9 +9,12 @@ import type {
 } from "@scp/schemas";
 import { client } from "../lib/client";
 import { federationStatusKey } from "../lib/query-client";
+import { cn, focusRing } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import { Alert } from "../components/ui/alert";
+import { SectionLabel } from "../components/ui/section-label";
 
 /**
  * M16.2 phase B (B2) — PER-OUTPOST SETTINGS: the `federation_peers` ROW half of the authority split
@@ -229,15 +232,17 @@ function LabelledField({
 }): React.JSX.Element {
   return (
     <label className="block">
-      <span className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</span>
+      <SectionLabel as="span">{label}</SectionLabel>
       <div className="mt-1">{children}</div>
       {hint && <span className="mt-1 block text-xs text-slate-500">{hint}</span>}
     </label>
   );
 }
 
-const selectClass =
-  "flex h-9 w-full rounded-md border border-slate-300 bg-white px-3 py-1 text-sm shadow-sm";
+const selectClass = cn(
+  "flex h-9 w-full rounded-md border border-slate-300 bg-white px-3 py-1 text-sm shadow-sm",
+  focusRing
+);
 
 /**
  * The Settings form. EXPORTED for `outpost-settings.test.tsx`, which renders it directly — the
@@ -404,9 +409,7 @@ export function PeerSettingsCard({
           {/* KEY MATERIAL — DISPLAY ONLY, AND SAID OUT LOUD. There is no input for it anywhere in
               this form, and the door this form writes through cannot carry one. */}
           <div className="rounded border border-slate-200 bg-slate-50 p-3">
-            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Registered signing key
-            </div>
+            <SectionLabel>Registered signing key</SectionLabel>
             <div
               className="mt-1 truncate font-mono text-xs text-slate-700"
               title={peer.publicKey}
@@ -422,12 +425,9 @@ export function PeerSettingsCard({
           </div>
 
           {saveError !== undefined && saveError !== null && (
-            <div
-              className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800"
-              data-testid="peer-settings-error"
-            >
+            <Alert tone="danger" data-testid="peer-settings-error">
               {problemDetail(saveError)}
-            </div>
+            </Alert>
           )}
 
           <div className="flex items-center gap-3">

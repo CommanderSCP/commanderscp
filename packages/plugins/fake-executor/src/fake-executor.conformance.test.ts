@@ -8,15 +8,17 @@
  * the suite's cross-restart dedup test genuinely reads durable on-disk state rather than the
  * first instance's in-process memory.
  */
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext } from "@scp/plugin-api";
-import { runExecutorConformanceSuite } from "@scp/plugin-testkit";
+import { runExecutorConformanceSuite, mkdtempTracked } from "@scp/plugin-testkit";
 import { createFakeExecutorPlugin } from "./index.js";
 
 runExecutorConformanceSuite("fake-executor", async () => {
-  const statePath = join(await mkdtemp(join(tmpdir(), "fake-executor-conformance-")), "state.json");
+  const statePath = join(
+    await mkdtempTracked(join(tmpdir(), "fake-executor-conformance-")),
+    "state.json"
+  );
   const build = (): {
     plugin: ReturnType<typeof createFakeExecutorPlugin>;
     ctx: PluginContext;

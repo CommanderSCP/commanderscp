@@ -23,13 +23,26 @@ export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 // has any credentials at all.
 // -------------------------------------------------------------------------------------------
 
-/** `GET /auth/me` — mirrors `AuthContext` (auth/local-auth.ts) exactly. */
+/**
+ * The install-time federation role of the INSTANCE serving this response (`SCP_FEDERATION_ROLE`,
+ * `apps/server/src/config.ts`) — outpost-ui.md §9.2. It decides ONLY which nav and route table the
+ * web shell mounts (a commander site vs the smaller outpost site); it authorizes nothing, and it is
+ * deliberately NOT `federation_self.role` (per-org, advisory, post-install — M16.3 P3 refused that
+ * axis for exactly this kind of decision). `retrans` never serves the SPA, so it never reaches a
+ * browser, but the enum mirrors the config rather than the UI.
+ */
+export const InstanceRoleSchema = z.enum(["commander", "outpost", "retrans"]);
+export type InstanceRole = z.infer<typeof InstanceRoleSchema>;
+
+/** `GET /auth/me` — mirrors `AuthContext` (auth/local-auth.ts) exactly, plus the serving
+ *  instance's install-time role (additive, outpost-ui.md §9.2). */
 export const CurrentUserSchema = z.object({
   userId: z.string().uuid(),
   orgId: z.string().uuid(),
   orgName: z.string(),
   username: z.string(),
-  subjectObjectId: z.string().uuid()
+  subjectObjectId: z.string().uuid(),
+  instanceRole: InstanceRoleSchema
 });
 export type CurrentUser = z.infer<typeof CurrentUserSchema>;
 

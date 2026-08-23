@@ -159,6 +159,38 @@ export const DependencyLineProducerSchema = z.object({
 });
 export type DependencyLineProducer = z.infer<typeof DependencyLineProducerSchema>;
 
+/**
+ * `{objectId, name}` — the shape every dependency read uses to name a graph object beside its id
+ * (the inventory row's `producer` had it first). `name` is the object's CURRENT name as stored; a
+ * soft-deleted object still names (the row is a stored fact and the name is what it was) — a client
+ * that needs liveness reads the object.
+ */
+export const DependencyObjectRefSchema = z.object({
+  objectId: z.string().uuid(),
+  name: z.string()
+});
+export type DependencyObjectRef = z.infer<typeof DependencyObjectRefSchema>;
+
+/**
+ * THE WIRE VIEW of a declaration — the stored row PLUS the two names a reader needs and cannot
+ * derive: the producing component's and the declaring principal's (proposal
+ * dependency-subscription-ui.md §12.6 Q1, owner decision 2026-08-18: names are enriched server-side,
+ * one batched `objects` lookup, so every viewer sees the same answer in one round trip and no client
+ * pays N+1 reads it may not even be authorized to make — a user object is readable by few).
+ *
+ * A VIEW, NOT THE ROW: {@link DependencyLineProducerSchema} stays the repo/domain type
+ * (`isInternalDependencyLine` and the internal-release derivation read it and never need a name), so
+ * the enrichment lives at the two routes that answer humans and nowhere else. Additive on the wire:
+ * two REQUIRED properties added to a RESPONSE (oasdiff-safe — PR #222 precedent).
+ */
+export const DependencyLineProducerViewSchema = DependencyLineProducerSchema.extend({
+  /** The producing component, named. Same object as `producerObjectId`. */
+  producer: DependencyObjectRefSchema,
+  /** The principal that asserted the declaration, named. Same object as `declaredByObjectId`. */
+  declaredBy: DependencyObjectRefSchema
+});
+export type DependencyLineProducerView = z.infer<typeof DependencyLineProducerViewSchema>;
+
 /** True iff the coordinate has a DECLARED producer. The one place "internal" is decided — read from
  *  the declared row, never derived from `coordinate`. Kept as a function so no call site is tempted
  *  to re-derive it from a name (ADR-0032 §7).
@@ -533,7 +565,8 @@ export const DEFAULT_DEPENDENCY_SUBSCRIPTION_DELIVERY: DependencySubscriptionDel
 // ===========================================================================================
 // M21.3 — THE API SURFACE for the enablement chain (charter principle 3: API -> SDK -> CLI).
 //
-// TWO SURFACES, AND DELIBERATELY NO THIRD:
+// TWO SURFACES HERE, AND DELIBERATELY NO SUBSCRIPTION-WRITE SURFACE ANYWHERE (the M21.6 READ surface
+// — the inventory and the bump history, per component — is the last section of this file):
 //
 //  1. The INSTANCE UNLOCK — read + write of the `dependency_subscription_unlock` singleton. Read is
 //     tenant-facing (a team whose subscription is inert because the DEPLOYMENT never opened the
@@ -894,7 +927,11 @@ export const DependencyProducerLineImpactSchema = z.object({
   headCleared: z.boolean(),
   /** WHOSE REPOSITORIES THIS REACHES. The declarer names one coordinate and affects a set of
    *  components they cannot see from the request; this list is that set. Sorted. */
-  subscribedComponentObjectIds: z.array(z.string().uuid())
+  subscribedComponentObjectIds: z.array(z.string().uuid()),
+  /** The same set, NAMED — one entry per id above, same order (sorted by id). A blast radius a human
+   *  is asked to confirm before it is written must name what it reaches; ids alone are not a
+   *  report a declarer can act on (dependency-subscription-ui.md §12.6 Q1). */
+  subscribedComponents: z.array(DependencyObjectRefSchema)
 });
 export type DependencyProducerLineImpact = z.infer<typeof DependencyProducerLineImpactSchema>;
 
@@ -930,8 +967,8 @@ export const DependencyLineProducerVerbResponseSchema = z.object({
   /** True when nothing was written. */
   dryRun: z.boolean(),
   /** The declaration as it now stands — `null` after a retraction, and `null` on a `dryRun` retract
-   *  because the report describes the state the caller ASKED FOR. */
-  declaration: DependencyLineProducerSchema.nullable(),
+   *  because the report describes the state the caller ASKED FOR. Named (the wire view). */
+  declaration: DependencyLineProducerViewSchema.nullable(),
   /** Every major line of this coordinate the verb covers, with what happened to its head. EMPTY is
    *  a legitimate and common answer: a producer may be declared before any consumer's manifest has
    *  minted a line, which is exactly what per-coordinate grain makes representable. */
@@ -958,7 +995,8 @@ export type ListDependencyLineProducersQuery = z.infer<
 >;
 
 export const ListDependencyLineProducersResponseSchema = z.object({
-  producers: z.array(DependencyLineProducerSchema),
+  /** Named rows (the wire view) — see {@link DependencyLineProducerViewSchema}. */
+  producers: z.array(DependencyLineProducerViewSchema),
   dependencyManagement: DependencyManagementSchema
 });
 export type ListDependencyLineProducersResponse = z.infer<
@@ -973,3 +1011,319 @@ export interface DeclareLineProducerInput {
   producerObjectId: string;
   declaredByObjectId: string;
 }
+
+// ===========================================================================================
+// M21.6 — THE READ SURFACE (docs/proposals/dependency-subscription-ui.md §3.1/§3.2; owner
+// decisions §8 Q1/Q4, 2026-08-16).
+//
+// Everything above this line is the inventory's WRITE contract and the enablement chain's
+// EXPLAINABILITY surface. What was missing — and what the UI cannot exist without — is a READ of
+// what a component DECLARES (its inventory rows), the HEAD of each declared line, the resolved
+// dependency subscription of every declared line at once, and the history of the bumps SCP authored
+// for it. Two component-scoped, paged, additive GETs carry all of that:
+//
+//   GET /components/{idOrUrn}/dependency-inventory   -> ComponentDependencyInventoryResponse
+//   GET /components/{idOrUrn}/dependency-bumps       -> ComponentDependencyBumpsResponse
+//
+// Both authorize `object:read` AT THE COMPONENT (never at the org), exactly as the resolution GET
+// does, so a component-scoped viewer can read them.
+//
+// THREE RULES THESE SHAPES CARRY, stated because a reader of the types alone would not see them:
+//
+//  1. NO SECOND AND. `rows[].subscription` is the SAME `DependencySubscriptionResolution` the
+//     resolution GET returns for the same actor and line — produced by the same merge, from the
+//     same gathered candidates — never a per-row recomputation, and `componentGate` is the SAME
+//     `ComponentIngestionGate` ingestion runs. A UI reads these; it derives nothing.
+//  2. `null` IS "NOT RECORDED", NEVER "NOTHING". `ingestion: null` is "NEVER ATTEMPTED" (the stamp
+//     table's one reading of a missing row — `ingestion-stamp-repo.ts`), NEVER "no dependencies";
+//     `head.latestVersion: null` is "not observed", never "nothing newer"; `producer: null` is "no
+//     producer declared" (third-party OR undeclared — the stored fact cannot say which);
+//     `pullRequestUrl: null` is "not stored". An empty `rows` beside a null `ingestion` and a null
+//     `lastIngestionDecision` is UNKNOWN, and a consumer must render it so.
+//  3. THE COORDINATE TRAVELS VERBATIM in every field that carries one, as everywhere else in this
+//     file.
+//  4. BOTH RESPONSES ARE QUALIFIED BY A REQUIRED `dependencyManagement` (ADR-0032 §7d, M21.7 —
+//     `DependencyManagementSchema` above, computed by the ONE predicate `commander-only.ts`
+//     exports). When `managedHere` is false the REST OF THE ENVELOPE IS NOT TO BE INTERPRETED:
+//     the routes still answer 200 with the same RBAC, but an empty inventory there is "nothing here
+//     ever ingested a manifest and nothing ever will", not "declares nothing", and an empty bump
+//     list is "no bump is ever dispatched here", not "up to date". A consumer renders the pointer to
+//     the commander and nothing else.
+// ===========================================================================================
+
+/**
+ * The page query for both read routes. Its own schema rather than `CursorPageQuerySchema` because
+ * an inventory is read WHOLE far more often than paged (a component declares tens of lines, not
+ * thousands), so the ceiling and the default are both higher than the generic envelope's 100/20.
+ */
+export const ComponentDependencyPageQuerySchema = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100)
+});
+export type ComponentDependencyPageQuery = z.infer<typeof ComponentDependencyPageQuerySchema>;
+
+/** The component both responses are about — its graph id, its name, and its CONTAINMENT domain
+ *  (nullable: an org-root object has none). The domain is carried because authoring a
+ *  `dependencySubscription` policy for this component sends `domainId` (see the proposal §8 Q3 and
+ *  the M21.7-owned gate-ordering pin in `policy-write-gate-ordering.integration.test.ts`). */
+export const ComponentDependencyReadSubjectSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  domainId: z.string().uuid().nullable()
+});
+export type ComponentDependencyReadSubject = z.infer<typeof ComponentDependencyReadSubjectSchema>;
+
+/**
+ * The per-component ingestion STAMP — "when did ingestion last ATTEMPT this component, and what
+ * happened", including the attempts that write no Decision (`not_enabled`, unreadable). READ from
+ * `dependency_ingestion_stamps` (M21.7, migration 0065; `ingestion-stamp-repo.ts`'s
+ * `findIngestionStampByComponent`), one row per component, merged per REPOSITORY by its writer —
+ * which is why every `manifests[]` entry names its `repo`: a component fed by two repositories
+ * carries both slices, and the component-level `outcome` / `rowsWritten` are computed ACROSS them.
+ *
+ * THE TRICHOTOMY THIS EXISTS TO BREAK. With no stamp (`ingestion: null`) the component was NEVER
+ * ATTEMPTED. `outcome: "ok"` with `rowsWritten: 0` is "read fine, genuinely declares nothing" —
+ * the state an empty inventory could not express before. `partial` / `unreadable` are "ingestion
+ * ran and some / every manifest could not be read", with the per-file verdicts in `manifests[]`.
+ * `not_enabled` is "the gate was closed; nothing was fetched". A consumer renders these
+ * differently and never collapses an empty `rows` into "no dependencies" without the stamp.
+ */
+export const ComponentDependencyIngestionStampSchema = z.object({
+  lastAttemptAt: z.string(),
+  /** What ran it: the accepted-change loop, or an operator backfill. The LATEST attempt's. */
+  source: z.enum(["loop", "backfill"]),
+  outcome: z.enum(["ok", "partial", "unreadable", "not_enabled"]),
+  /** Summed across every repository's slice — a fact about the COMPONENT. 0 with `ok` is legal
+   *  and meaningful. */
+  rowsWritten: z.number().int().nonnegative(),
+  /** The stamp's own sentence about the LATEST attempt (a closed gate's reason, a refusal), or
+   *  `null` when the per-file entries are the explanation. */
+  detail: z.string().nullable(),
+  manifests: z.array(
+    z.object({
+      /** The repository this entry's evidence came from — the merge key. */
+      repo: z.string(),
+      path: z.string(),
+      /** `ok` | `unreadable` | `unsupported` as the writer spells it (`IngestionStampManifest`);
+       *  carried as a string so a future outcome word does not break a reader. */
+      outcome: z.string(),
+      /** `component_dependencies` rows this manifest's last observation wrote. */
+      rows: z.number().int().nonnegative(),
+      /** When the pass that wrote this entry looked, ISO-8601. */
+      at: z.string(),
+      detail: z.string().optional()
+    })
+  )
+});
+export type ComponentDependencyIngestionStamp = z.infer<
+  typeof ComponentDependencyIngestionStampSchema
+>;
+
+/**
+ * The newest `dependency_inventory_ingestion` Decision about this component, projected — what
+ * exists TODAY as evidence that an ingestion pass ran and what it read. It is written ONLY on the
+ * `ingested` verdict and under persist-on-change, so `firstObservedAt` is when THIS state was FIRST
+ * seen — never the time of the last pass — and its absence is ambiguous (never ingested, or refused
+ * as not-enabled / not-addressable / superseded, none of which write one).
+ */
+export const ComponentDependencyLastIngestionDecisionSchema = z.object({
+  decisionId: z.string().uuid(),
+  firstObservedAt: z.string(),
+  manifestPathsRead: z.array(z.string()),
+  manifestPathsAbsent: z.array(z.string()),
+  /** Dependency manifests that could NOT be read or parsed on that pass — left untouched, never
+   *  treated as declaring nothing. */
+  skipped: z.array(z.object({ path: z.string(), reason: z.string() }))
+});
+export type ComponentDependencyLastIngestionDecision = z.infer<
+  typeof ComponentDependencyLastIngestionDecisionSchema
+>;
+
+/**
+ * The COMPONENT-LEVEL ingestion gate — "may this component's dependency manifests be fetched at
+ * all?" — as `resolveComponentIngestionGate` answers it for the calling actor. A THIRD reason
+ * vocabulary from the per-line resolution's, deliberately: the gate is existential over lines
+ * ("is there ANY line this component would be subscribed to?"), so its closed answers are
+ * `instance_locked` and `no_enabling_contribution`, not `disabled`/`not_enabled`.
+ */
+export const ComponentIngestionGateReasonSchema = z.enum([
+  "enabled",
+  "instance_locked",
+  "no_enabling_contribution"
+]);
+export type ComponentIngestionGateReason = z.infer<typeof ComponentIngestionGateReasonSchema>;
+
+export const ComponentDependencyIngestionGateSchema = z.object({
+  enabled: z.boolean(),
+  reason: ComponentIngestionGateReasonSchema,
+  /** The contributions of the merge that decided it — the same explanation the ingestion Decision
+   *  carries under `reasonTree.gate.contributions`. */
+  contributions: z.array(DependencySubscriptionContributionSchema)
+});
+export type ComponentDependencyIngestionGate = z.infer<
+  typeof ComponentDependencyIngestionGateSchema
+>;
+
+/** The head of a line as last OBSERVED — every field `null` = not yet observed. Never "nothing
+ *  newer exists" (`DependencyLineSchema.latestVersion`). */
+export const ComponentDependencyLineHeadSchema = z.object({
+  latestVersion: z.string().nullable(),
+  latestDigest: z.string().nullable(),
+  latestObservedAt: z.string().nullable()
+});
+export type ComponentDependencyLineHead = z.infer<typeof ComponentDependencyLineHeadSchema>;
+
+/**
+ * ONE ROW of a component's inventory: one (line, dependency manifest) declaration, hydrated with the
+ * line's head, its DECLARED producer and its resolved dependency subscription.
+ *
+ * `manifestPath` IS PART OF THE ROW KEY: one line declared from two manifests is TWO rows (it is
+ * in `component_dependencies`' primary key for exactly this reason — collapsing them would let a
+ * prune of one silently delete the other). A consumer that wants one row per line groups these.
+ */
+export const ComponentDependencyInventoryRowSchema = z.object({
+  line: z.object({
+    id: z.string().uuid(),
+    ecosystem: DependencyEcosystemSchema,
+    /** Verbatim — `@acme/lib` stays `@acme/lib`. */
+    coordinate: DependencyCoordinateSchema,
+    major: DependencyMajorLineSchema,
+    /** `oci` only; `null` for the language ecosystems. */
+    tagPattern: z.string().nullable()
+  }),
+  manifestPath: z.string(),
+  /** What the manifest LITERALLY says (`^1.2.3`, `3.18-alpine`) — the actuator's edit target. */
+  declaredVersion: z.string(),
+  /** `null` = the manifest pins no concrete version, never "did not look". */
+  resolvedVersion: z.string().nullable(),
+  resolvedDigest: z.string().nullable(),
+  observedRepo: z.string().nullable(),
+  observedRef: z.string().nullable(),
+  /** When the manifest was READ. */
+  observedAt: z.string(),
+  head: ComponentDependencyLineHeadSchema,
+  /** The DECLARED producer of this line — `null` when none is declared, which is what a
+   *  third-party line AND an undeclared internal one both look like; the stored fact does not say
+   *  which, and neither does this field. Never inferred from the coordinate. */
+  producer: z
+    .object({
+      objectId: z.string().uuid(),
+      name: z.string()
+    })
+    .nullable(),
+  /**
+   * The resolved dependency subscription of (this component, this line) — the SAME shape, from the
+   * SAME merge, as `GET /components/{idOrUrn}/dependency-subscription` returns for the same actor
+   * and line. Resolved AS THE CALLER (the acting subject is the requesting principal, exactly as
+   * the resolution GET threads it), which is why the two are byte-equal for one caller and why a
+   * `scope.group` policy can make a human's answer differ from the SYSTEM actor's.
+   */
+  subscription: DependencySubscriptionResolutionSchema
+});
+export type ComponentDependencyInventoryRow = z.infer<typeof ComponentDependencyInventoryRowSchema>;
+
+export const ComponentDependencyInventoryResponseSchema = z.object({
+  component: ComponentDependencyReadSubjectSchema,
+  /** WHETHER DEPENDENCY MANAGEMENT HAPPENS ON THIS DEPLOYMENT (rule 4 above). Required. When
+   *  `managedHere` is false the fields below are not to be interpreted. */
+  dependencyManagement: DependencyManagementSchema,
+  /** The M21.7 ingestion stamp; `null` = NEVER ATTEMPTED (no row — `findIngestionStampByComponent`).
+   *  Optional on the wire only so a deployment predating the stamp's read path can omit it; this
+   *  route always sends it. NEVER read as "no dependencies" — see the stamp's own doc. */
+  ingestion: ComponentDependencyIngestionStampSchema.nullable().optional(),
+  /** `null` = no `dependency_inventory_ingestion` Decision is on record for this component. */
+  lastIngestionDecision: ComponentDependencyLastIngestionDecisionSchema.nullable(),
+  componentGate: ComponentDependencyIngestionGateSchema,
+  /** One row per (line, dependency manifest); ordered by line id then manifest path, which is the
+   *  storage order and stable under paging. `[]` beside null `ingestion`/`lastIngestionDecision` is
+   *  UNKNOWN, not empty. */
+  rows: z.array(ComponentDependencyInventoryRowSchema),
+  nextCursor: z.string().nullable()
+});
+export type ComponentDependencyInventoryResponse = z.infer<
+  typeof ComponentDependencyInventoryResponseSchema
+>;
+
+/**
+ * ONE BUMP SCP AUTHORED for this component — a `dependency_bump_authorships` row (server-written,
+ * every field), joined to its change's name and to the newest `dependency_bump_dispatch` /
+ * `dependency_bump_merge` Decisions about that change.
+ *
+ * THE CHANGE'S `state` IS NOT HERE, ON PURPOSE. A bump change sits at `proposed` for its whole life
+ * (`bump-gate.ts`: it is deliberately never advanced down the lifecycle), so reading it as progress
+ * would show every bump as "proposed" forever. Progress is `pullRequestNumber` (opened),
+ * `headCommit` (the authored push observed back), `mergedAt` (the provider confirmed the merge) and
+ * `merge` (the gate's latest verdict) — nothing else.
+ */
+export const ComponentDependencyBumpSchema = z.object({
+  changeId: z.string().uuid(),
+  changeName: z.string(),
+  line: z.object({
+    id: z.string().uuid(),
+    ecosystem: DependencyEcosystemSchema,
+    coordinate: DependencyCoordinateSchema,
+    major: DependencyMajorLineSchema
+  }),
+  manifestPath: z.string(),
+  fromVersion: z.string(),
+  toVersion: z.string(),
+  /** `owner/repo` as SCP recorded it — the authority for which repository the merge may touch. */
+  repo: z.string(),
+  baseBranch: z.string(),
+  /** `refs/heads/scp/dep-bump/<changeId>`. */
+  authoredRef: z.string(),
+  /** The pull request SCP opened; `null` until the authoring run reported one. */
+  pullRequestNumber: z.number().int().nullable(),
+  /**
+   * The pull request's web URL AS THE PROVIDER RETURNED IT, read off
+   * `dependency_bump_authorships.pull_request_url` (M21.7, migration 0066); `null` when SCP recorded
+   * no link (a row written before the column existed, an authoring run whose outcome carried no
+   * readable `html_url`). NEVER SYNTHESISED from `repo` + `pullRequestNumber`: the provider is not
+   * known here (a Gitea-authored bump composed as a GitHub URL would 404), and a guessed link is a
+   * fabricated record. A consumer links only when this is non-null.
+   */
+  pullRequestUrl: z.string().nullable(),
+  /** The commit SCP's own branch is at; `null` until the authored push is observed back. */
+  headCommit: z.string().nullable(),
+  /**
+   * When SCP RECORDED THE AUTHORSHIP: the change and its branch were proposed and the
+   * `dependency_bump_dispatch` Decision written, in one transaction. The plugin trigger that
+   * actually opens the pull request runs AFTER that transaction, so this timestamp proves the
+   * record, not the trigger — a bump whose trigger failed is listed identically to one whose pull
+   * request is merely pending. `pullRequestNumber: null` therefore reads as "no pull request
+   * recorded", never as "pending". A stored trigger outcome is M21.7's.
+   */
+  dispatchedAt: z.string(),
+  /** When the provider confirmed the merge; `null` while no merge is recorded (which includes a
+   *  pull request that is still open, one closed without a merge — never observed — and one that
+   *  was never opened). */
+  mergedAt: z.string().nullable(),
+  /** The delivery the dispatch RESOLVED TO (the first look is always `pull_request`, ADR-0032 §8c)
+   *  and why, read from the newest `dependency_bump_dispatch` Decision; `null` when that Decision
+   *  is not on record. */
+  delivery: DependencySubscriptionDeliverySchema.nullable(),
+  deliveryReason: z.string().nullable(),
+  /** The newest `dependency_bump_merge` Decision — the second look; `null` when the gate has not
+   *  run for this bump. `verdict` is `merged` or `withheld` as the gate wrote it. */
+  merge: z
+    .object({
+      verdict: z.string(),
+      decisionId: z.string().uuid(),
+      evaluatedAt: z.string()
+    })
+    .nullable()
+});
+export type ComponentDependencyBump = z.infer<typeof ComponentDependencyBumpSchema>;
+
+export const ComponentDependencyBumpsResponseSchema = z.object({
+  component: ComponentDependencyReadSubjectSchema,
+  /** WHETHER DEPENDENCY MANAGEMENT HAPPENS ON THIS DEPLOYMENT (rule 4 above). Required. When
+   *  `managedHere` is false, `rows` is not to be interpreted (nothing is ever dispatched there). */
+  dependencyManagement: DependencyManagementSchema,
+  /** Newest dispatch first. */
+  rows: z.array(ComponentDependencyBumpSchema),
+  nextCursor: z.string().nullable()
+});
+export type ComponentDependencyBumpsResponse = z.infer<
+  typeof ComponentDependencyBumpsResponseSchema
+>;

@@ -273,12 +273,25 @@ describe("the containment-parent invariant at the org root, and on the create pa
       { role: "Administrator", scope: strandedId }
     ]);
 
+    // THE API WILL NOT STRAND `stranded` FOR US: `deleteObject`'s route-1 orphan guard (M20, the
+    // ui-review branch) refuses to tombstone a domain that live children still name — 409, blockers
+    // named — precisely so this shape cannot be produced through a door. Pinned as the negative
+    // control; the broken chain is then PLANTED the way the refusal's own doc says such rows arise
+    // ("a legacy row, or one planted before the doors were closed"): the tombstone is written
+    // straight onto the row, below every door.
     const deleted = await server.app.inject({
       method: "DELETE",
       url: `/api/v1/domains/${doomedId}`,
       headers: { authorization: `Bearer ${org.adminToken}` }
     });
-    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect(deleted.statusCode, deleted.body).toBe(409);
+    expect(deleted.body).toContain("still name it as their domain");
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({ deletedAt: new Date() })
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.id, doomedId)))
+    );
 
     // THE FIXTURE ITSELF, ASSERTED — and this one is the whole premise. `stranded` must really have
     // lost its route to the org root, or every refusal below would be about something else. The

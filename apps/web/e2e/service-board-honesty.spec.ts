@@ -53,7 +53,14 @@ function boardPayload(
   replica: StubComponent
 ): ServiceBoardResponse {
   return {
-    service,
+    // outpost-ui.md §9.3a — the board's `service` block carries its own provenance now. This stub
+    // is a SELF-maintained, shared service (the ordinary commander case); the outpost's
+    // "commander upstream" shape is exercised by the pipeline-view tests, not this spec.
+    service: {
+      ...service,
+      maintainedBy: { domainId: null, name: null, isSelf: true, role: null },
+      domainLocal: false
+    },
     rows: [
       {
         component: driven,
@@ -200,15 +207,20 @@ test("service board: an unobservable field renders as an explicit unknown, never
   //    otherwise this assertion would still pass if the success styling itself were renamed.
   const notDrivenStat = page.getByTestId("board-summary-not-driven-here");
   await expect(notDrivenStat).toContainText("1");
+  // Target the BADGE itself (the innermost element carrying the text), not div-last — the
+  // StatCard's internal div order is layout, not contract.
   const stableBadgeClass =
-    (await page.getByTestId("board-summary-stable").locator("div").last().getAttribute("class")) ??
-    "";
+    (await page
+      .getByTestId("board-summary-stable")
+      .getByText("Stable", { exact: true })
+      .getAttribute("class")) ?? "";
   const notDrivenBadgeClass =
-    (await notDrivenStat.locator("div").last().getAttribute("class")) ?? "";
+    (await notDrivenStat.getByText("Not driven here", { exact: true }).getAttribute("class")) ?? "";
+  // Six-tone system (docs/design-system.md): success = emerald tint, not the retired solid green.
   expect(stableBadgeClass, "premise: Stable really is the success variant").toContain(
-    "bg-green-600"
+    "bg-emerald-50"
   );
-  expect(notDrivenBadgeClass).not.toContain("bg-green-600");
+  expect(notDrivenBadgeClass).not.toContain("bg-emerald-50");
 
   // 5. The board-level freeze-visibility caveat: freezes never replicate, so an unfrozen row on a
   //    federated instance means "none declared here", not "none applies" — for EVERY row alike.

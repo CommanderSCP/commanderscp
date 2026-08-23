@@ -1,11 +1,21 @@
 import { useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExecutorTypeSchema, type ExecutorType } from "@scp/schemas";
+import { Trash2, Unlink } from "lucide-react";
+import {
+  ExecutorTypeSchema,
+  type ExecutorType,
+  type GovernanceMoveEnforcement,
+  type GovernanceMoveTier,
+  type GraphObject,
+  type TraverseResult
+} from "@scp/schemas";
+import { ScpApiError } from "@scp/sdk";
 import { client } from "../lib/client";
-import { findRegistry, getEdgeClient, getOwnerClient, getRegistryClient } from "../lib/registries";
+import { findRegistry, findRegistryByTypeId, getRegistryClient } from "../lib/registries";
 import { registryDetailKey, registryListKey } from "../lib/query-client";
 import { useBasePathParam, useIdOrUrnParam } from "../lib/use-route-params";
+import { cn, focusRing } from "../lib/utils";
 import {
   ForeignOriginNotice,
   isForeignOriginObject,
@@ -15,8 +25,24 @@ import {
   useOwnDomainId
 } from "../lib/replica-origin";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { DomainLocalBadge, DomainLocalPublishCard } from "../components/domain-local";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Alert } from "../components/ui/alert";
+import { Notice } from "../components/ui/notice";
+import { KeyValueList } from "../components/ui/key-value-list";
+import { SkeletonRows } from "../components/ui/skeleton";
+import { PageHeader } from "../components/ui/page-header";
+import { SectionLabel } from "../components/ui/section-label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
 import {
   Select,
   SelectContent,
@@ -24,6 +50,7 @@ import {
   SelectTrigger,
   SelectValue
 } from "../components/ui/select";
+import { queryErrorMessage } from "../components/query-error";
 
 /**
  * `/{basePath}/{idOrUrn}` (BUILD_AND_TEST.md §8 M2 item 2) — object properties/labels, owners
@@ -36,6 +63,8 @@ export function RegistryDetailPage(): React.JSX.Element {
   const registry = findRegistry(basePath);
   const detailKey = registryDetailKey(basePath ?? "", idOrUrn ?? "");
   const { domainId: ownDomainId } = useOwnDomainId();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const objectQuery = useQuery({
     queryKey: detailKey,
@@ -43,35 +72,60 @@ export function RegistryDetailPage(): React.JSX.Element {
     enabled: !!registry && !!idOrUrn
   });
 
-  const ownersQuery = useQuery({
-    queryKey: [...detailKey, "owners"],
-    queryFn: () => getOwnerClient(client, registry!).listOwners(idOrUrn!),
-    enabled: !!registry?.ownable && !!idOrUrn
+  // Owners/consumes/depends-on resolved to full objects (name + type), not bare relationship rows
+  // — `client.graph.traverse` returns the neighbor GraphObjects directly, the same pattern
+  // `component-graph.tsx` uses to name external nodes. Gated on `objectQuery.data` rather than
+  // `idOrUrn` because `traverse`'s `objectId` is a strict UUID and the route param may be a URN.
+  const objectId = objectQuery.data?.id;
+  const ownersRelatedQuery = useQuery({
+    queryKey: [...detailKey, "owners-related"],
+    queryFn: () =>
+      client.graph.traverse({
+        objectId: objectId!,
+        direction: "in",
+        relTypes: ["owns"],
+        maxDepth: 1
+      }),
+    enabled: !!registry?.ownable && !!objectId
   });
-
-  const consumesQuery = useQuery({
-    queryKey: [...detailKey, "consumes"],
-    queryFn: () => getEdgeClient(client, registry!).listConsumes(idOrUrn!),
-    enabled: !!registry?.edges && !!idOrUrn
+  const consumesRelatedQuery = useQuery({
+    queryKey: [...detailKey, "consumes-related"],
+    queryFn: () =>
+      client.graph.traverse({
+        objectId: objectId!,
+        direction: "out",
+        relTypes: ["consumes"],
+        maxDepth: 1
+      }),
+    enabled: !!registry?.edges && !!objectId
   });
-
-  const dependsOnQuery = useQuery({
-    queryKey: [...detailKey, "depends-on"],
-    queryFn: () => getEdgeClient(client, registry!).listDependsOn(idOrUrn!),
-    enabled: !!registry?.edges && !!idOrUrn
+  const dependsOnRelatedQuery = useQuery({
+    queryKey: [...detailKey, "depends-on-related"],
+    queryFn: () =>
+      client.graph.traverse({
+        objectId: objectId!,
+        direction: "out",
+        relTypes: ["depends_on"],
+        maxDepth: 1
+      }),
+    enabled: !!registry?.edges && !!objectId
   });
 
   if (!registry || !idOrUrn) {
-    return <p className="text-sm text-red-600">Not found.</p>;
+    return (
+      <Alert tone="danger" title="Not found">
+        This route names no registry object.
+      </Alert>
+    );
   }
   if (objectQuery.isLoading) {
-    return <p className="text-sm text-slate-500">Loading…</p>;
+    return <SkeletonRows n={4} />;
   }
   if (objectQuery.isError || !objectQuery.data) {
     return (
-      <p className="text-sm text-red-600">
+      <Alert tone="danger" title="Not found">
         {objectQuery.error instanceof Error ? objectQuery.error.message : "Not found"}
-      </p>
+      </Alert>
     );
   }
 
@@ -87,42 +141,77 @@ export function RegistryDetailPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold text-slate-900" data-testid="object-name">
-              {object.name}
-            </h1>
-            {foreign && <ForeignOriginNotice originDomainId={object.originDomainId} />}
-          </div>
-          <p className="font-mono text-xs text-slate-500">{object.urn}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Service release board (coordination-ui-views.md Phase 2) — the scannable per-component
-              status table for this service. Only meaningful for `service` objects. */}
-          {object.typeId === "service" && (
-            <Link to="/services/$idOrUrn" params={{ idOrUrn: object.id }}>
-              <Button data-testid="open-release-board">Release board</Button>
+      <PageHeader
+        title={<span data-testid="object-name">{object.name}</span>}
+        description={<span className="font-mono text-xs break-all">{object.urn}</span>}
+        meta={
+          foreign || object.domainLocal === true ? (
+            <span className="flex flex-wrap items-center gap-2">
+              {foreign && <ForeignOriginNotice originDomainId={object.originDomainId} />}
+              {object.domainLocal === true && (
+                <DomainLocalBadge inheritedFrom={object.domainLocalInheritedFrom} />
+              )}
+            </span>
+          ) : undefined
+        }
+        actions={
+          <>
+            {/* Service release board (coordination-ui-views.md Phase 2) — the scannable
+                per-component status table for this service. Only meaningful for `service`
+                objects. */}
+            {object.typeId === "service" && (
+              <Link to="/services/$idOrUrn" params={{ idOrUrn: object.id }}>
+                <Button data-testid="open-release-board">Release board</Button>
+              </Link>
+            )}
+            <Link to="/graph/$idOrUrn" params={{ idOrUrn: object.id }}>
+              <Button variant="outline">Open in graph explorer</Button>
             </Link>
-          )}
-          <Link to="/graph/$idOrUrn" params={{ idOrUrn: object.id }}>
-            <Button variant="outline">Open in graph explorer</Button>
-          </Link>
-        </div>
-      </div>
+            {/* Decisions & Audit explorer (owner-approved 2026-08-23) — every object gets this
+                pointer, unconditionally: `GET /decisions` filters by `subjectId` on the wire
+                (DecisionListQuerySchema, packages/schemas/src/changes.ts), so the search param
+                below is a real server-side filter, not a client one dressed up as an object
+                page. */}
+            <Link
+              to="/admin/decisions"
+              search={{ subjectId: object.id }}
+              className={cn("text-sm text-slate-600 underline", focusRing)}
+              data-testid="object-decisions-link"
+            >
+              Decisions about this object
+            </Link>
+          </>
+        }
+      />
+
+      {/* proposal governance-reach-on-containment-move.md §9.4 Q4 follow-up (owner-approved): a
+          read-only pointer to the `governance:move` lattice, on EVERY registry type — the explain
+          read is object-scoped and cheap, and every graph object can sit on some rung's containment
+          chain. Renders NOTHING while pending, on a failed read, or when the lattice does not reach
+          this object — absence here makes no claim; only a successful `enforced: true` answer does. */}
+      <GovernedHereLineForObject
+        typeId={registry.typeId}
+        objectId={object.id}
+        detailKey={detailKey}
+        fetchEnforcement={(type, id) => client.governanceMove.enforcement(type, id)}
+      />
+
+      {/* M20 (ADR-0031 §6): the one-way publish verb. Self-gates on the object's own
+          `domainLocal` bit — never on the instance's federation role (see the module doc in
+          components/domain-local.tsx). First card so the action and its edge-sweep report are
+          visible without scrolling. */}
+      <DomainLocalPublishCard
+        object={object}
+        typeId={registry.typeId}
+        invalidateKeys={[detailKey, registryListKey(basePath ?? "")]}
+      />
 
       <Card>
         <CardHeader>
           <CardTitle>Properties</CardTitle>
         </CardHeader>
         <CardContent>
-          {Object.keys(object.properties).length === 0 ? (
-            <p className="text-sm text-slate-500">No properties set.</p>
-          ) : (
-            <pre className="overflow-auto rounded bg-slate-50 p-3 text-xs">
-              {JSON.stringify(object.properties, null, 2)}
-            </pre>
-          )}
+          <PropertiesView properties={object.properties} />
         </CardContent>
       </Card>
 
@@ -136,7 +225,7 @@ export function RegistryDetailPage(): React.JSX.Element {
           ) : (
             <div className="flex flex-wrap gap-2">
               {Object.entries(object.labels).map(([key, value]) => (
-                <Badge key={key} variant="secondary">
+                <Badge key={key} variant="neutral">
                   {key}={String(value)}
                 </Badge>
               ))}
@@ -155,17 +244,12 @@ export function RegistryDetailPage(): React.JSX.Element {
             <CardTitle>Owners</CardTitle>
           </CardHeader>
           <CardContent>
-            {(ownersQuery.data?.items.length ?? 0) === 0 ? (
-              <p className="text-sm text-slate-500">No owners.</p>
-            ) : (
-              <ul className="flex flex-col gap-1 text-sm">
-                {ownersQuery.data?.items.map((rel) => (
-                  <li key={rel.id} className="font-mono text-xs text-slate-600">
-                    {rel.fromId}
-                  </li>
-                ))}
-              </ul>
-            )}
+            <RelatedObjectList
+              query={ownersRelatedQuery}
+              selfId={object.id}
+              direction="in"
+              emptyMessage="No owners."
+            />
           </CardContent>
         </Card>
       )}
@@ -177,17 +261,12 @@ export function RegistryDetailPage(): React.JSX.Element {
               <CardTitle>Consumes</CardTitle>
             </CardHeader>
             <CardContent>
-              {(consumesQuery.data?.items.length ?? 0) === 0 ? (
-                <p className="text-sm text-slate-500">Nothing.</p>
-              ) : (
-                <ul className="flex flex-col gap-1 text-sm">
-                  {consumesQuery.data?.items.map((rel) => (
-                    <li key={rel.id} className="font-mono text-xs text-slate-600">
-                      {rel.toId}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <RelatedObjectList
+                query={consumesRelatedQuery}
+                selfId={object.id}
+                direction="out"
+                emptyMessage="No consumed components."
+              />
             </CardContent>
           </Card>
           <Card>
@@ -195,17 +274,12 @@ export function RegistryDetailPage(): React.JSX.Element {
               <CardTitle>Depends on</CardTitle>
             </CardHeader>
             <CardContent>
-              {(dependsOnQuery.data?.items.length ?? 0) === 0 ? (
-                <p className="text-sm text-slate-500">Nothing.</p>
-              ) : (
-                <ul className="flex flex-col gap-1 text-sm">
-                  {dependsOnQuery.data?.items.map((rel) => (
-                    <li key={rel.id} className="font-mono text-xs text-slate-600">
-                      {rel.toId}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <RelatedObjectList
+                query={dependsOnRelatedQuery}
+                selfId={object.id}
+                direction="out"
+                emptyMessage="No dependencies."
+              />
             </CardContent>
           </Card>
         </div>
@@ -223,11 +297,142 @@ export function RegistryDetailPage(): React.JSX.Element {
         <MergeComponentCard survivorId={object.id} detailKey={detailKey} />
       )}
 
-      <p className="text-xs text-slate-400">
-        &quot;Why?&quot; / Decision links aren&apos;t available yet — the Decision Engine lands in a
-        later milestone (M4).
-      </p>
+      {/* Owner decision 2026-08-18: yes, delete offered for every registry type. Confirm dialog +
+          typed-name gate (destructive act); a 409 (container-delete guard, or a governance refusal)
+          or a 403 renders the server's sentence verbatim and the dialog stays open — never an
+          optimistic removal. Last card: it acts on the whole object every card above describes. */}
+      <DeleteObjectCard
+        typeLabel={registry.typeId}
+        name={object.name}
+        urn={object.urn}
+        idOrUrn={object.id}
+        runDelete={(id) => getRegistryClient(client, registry).delete(id)}
+        onDeleted={() => {
+          void queryClient.invalidateQueries({ queryKey: registryListKey(basePath ?? "") });
+          void navigate({ to: "/$basePath", params: { basePath: basePath ?? "" } });
+        }}
+      />
     </div>
+  );
+}
+
+/**
+ * Properties, type-aware (spec §4E): scalar values (string/number/boolean/null) render plainly in a
+ * KeyValueList; nested objects/arrays collapse behind one "view raw" toggle rather than always
+ * dumping the whole bag as JSON. No default JSON dump for an object with only scalar properties.
+ */
+function PropertiesView({
+  properties
+}: {
+  properties: Record<string, unknown>;
+}): React.JSX.Element {
+  const [showRaw, setShowRaw] = useState(false);
+  const entries = Object.entries(properties);
+  if (entries.length === 0) return <p className="text-sm text-slate-500">No properties set.</p>;
+
+  const scalarEntries = entries.filter(([, value]) => value === null || typeof value !== "object");
+  const nestedCount = entries.length - scalarEntries.length;
+
+  return (
+    <div className="flex flex-col gap-3">
+      {scalarEntries.length > 0 && (
+        <KeyValueList
+          columns={2}
+          items={scalarEntries.map(([key, value]) => ({
+            label: key,
+            value: value === null ? "null" : String(value)
+          }))}
+        />
+      )}
+      {nestedCount > 0 && (
+        <div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowRaw((v) => !v)}
+            data-testid="properties-view-raw-toggle"
+          >
+            {showRaw ? "Hide raw" : "View raw"} ({nestedCount} nested{" "}
+            {nestedCount === 1 ? "value" : "values"})
+          </Button>
+          {showRaw && (
+            <pre className="mt-2 overflow-auto rounded bg-slate-50 p-3 text-xs">
+              {JSON.stringify(properties, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Owners/consumes/depends-on, resolved to name + type badge + link (spec §4E) — driven by
+ * `client.graph.traverse`'s resolved neighbor objects rather than bare relationship rows. An edge
+ * `traverse` could not resolve to an object (its endpoint exists but was not returned — e.g. a
+ * foreign domain that does not replicate it here) falls back to the raw id in mono, per spec, rather
+ * than silently dropping the edge.
+ */
+function RelatedObjectList({
+  query,
+  selfId,
+  direction,
+  emptyMessage
+}: {
+  query: { isLoading: boolean; data?: TraverseResult };
+  selfId: string;
+  /** Which end of each edge is "the other object" — `in` edges point INTO self (owners), `out`
+   *  edges point OUT of self (consumes/depends-on). */
+  direction: "in" | "out";
+  emptyMessage: string;
+}): React.JSX.Element {
+  if (query.isLoading) return <SkeletonRows n={2} />;
+  const objects = query.data?.objects ?? [];
+  const edges = query.data?.edges ?? [];
+  const byId = new Map(objects.map((o) => [o.id, o]));
+  const otherIds = [...new Set(edges.map((e) => (direction === "in" ? e.fromId : e.toId)))].filter(
+    (id) => id !== selfId
+  );
+
+  if (otherIds.length === 0) {
+    return <p className="text-sm text-slate-500">{emptyMessage}</p>;
+  }
+  return (
+    <ul className="flex flex-col gap-2 text-sm">
+      {otherIds.map((id) => {
+        const o = byId.get(id);
+        if (!o) {
+          // The edge exists but `traverse` did not return its endpoint object — raw id, mono,
+          // rather than a name this side cannot vouch for.
+          return (
+            <li key={id} className="font-mono text-xs text-slate-600">
+              {id}
+            </li>
+          );
+        }
+        const relatedRegistry = findRegistryByTypeId(o.typeId);
+        return (
+          <li key={id} className="flex items-center gap-2">
+            <Badge variant="neutral" className="capitalize">
+              {relatedRegistry?.label ?? o.typeId}
+            </Badge>
+            {relatedRegistry ? (
+              <Link
+                to="/$basePath/$idOrUrn"
+                params={{ basePath: relatedRegistry.basePath, idOrUrn: o.id }}
+                className="font-medium text-slate-900 hover:underline"
+              >
+                {o.name}
+              </Link>
+            ) : (
+              // No registry maps this typeId — still name it, just not as a link.
+              <span className="text-slate-900">{o.name}</span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -308,7 +513,15 @@ function ComponentServiceCard({
         </div>
         <div className="flex items-end gap-2">
           <div className="flex flex-1 flex-col gap-1.5">
-            <label htmlFor="assign-service" className="text-xs font-medium text-slate-600">
+            {/* M20.5/§6a honesty (the M20 author's flagged edge, 2026-08-13): re-parenting is
+                where an operator EXPECTS locality to follow, and it never does — locality is set
+                at create only. Stated on the move control itself, as a tooltip: always true, so
+                it must not shout, but the one place someone reaches for it is here. */}
+            <label
+              htmlFor="assign-service"
+              className="text-xs font-medium text-slate-600"
+              title="Moving never changes locality (ADR-0031 §6a): a shared component moved into a domain-local subtree stays shared, and a domain-local one stays local. Locality is set at create; the only exit is the one-way publish."
+            >
               {currentServiceId ? "Move to service" : "Assign to service"}
             </label>
             <Select value={selected} onValueChange={setSelected} disabled={moveBlocked}>
@@ -336,11 +549,11 @@ function ComponentServiceCard({
           </Button>
         </div>
         {setServiceMutation.isError && (
-          <p className="text-sm text-red-600">
+          <Alert tone="danger">
             {setServiceMutation.error instanceof Error
               ? setServiceMutation.error.message
               : "Failed"}
-          </p>
+          </Alert>
         )}
       </CardContent>
     </Card>
@@ -411,12 +624,14 @@ function TargetBindingsCard({
                 key={b.id}
                 className="flex items-center justify-between gap-3 rounded border border-slate-200 p-2"
               >
-                <div className="flex flex-col">
+                <div className="flex min-w-0 flex-col">
                   <span className="text-sm font-medium text-slate-900">
-                    <Badge variant="secondary">{b.type}</Badge>{" "}
-                    <Badge variant="outline">{b.category}</Badge> {b.pluginModule}
+                    <Badge variant="neutral">{b.type}</Badge>{" "}
+                    <Badge variant="neutral">{b.category}</Badge> {b.pluginModule}
                   </span>
-                  <span className="font-mono text-xs text-slate-500">{b.pluginInstanceId}</span>
+                  <span className="break-all font-mono text-xs text-slate-500">
+                    {b.pluginInstanceId}
+                  </span>
                 </div>
                 <div className="flex gap-2">
                   {/* Relabel this binding to any other routing Type (ADR-0007). */}
@@ -440,6 +655,7 @@ function TargetBindingsCard({
                   </Select>
                   <Button
                     variant="outline"
+                    icon={Unlink}
                     disabled={pending}
                     onClick={() => deleteMutation.mutate(b.type)}
                     data-testid={`unbind-${b.type}`}
@@ -451,11 +667,7 @@ function TargetBindingsCard({
             ))}
           </ul>
         )}
-        {error && (
-          <p className="text-sm text-red-600">
-            {error instanceof Error ? error.message : "Failed"}
-          </p>
-        )}
+        {error && <Alert tone="danger">{error instanceof Error ? error.message : "Failed"}</Alert>}
       </CardContent>
     </Card>
   );
@@ -555,16 +767,282 @@ function MergeComponentCard({
           </Button>
         </div>
         {mergeMutation.isError && (
-          <p className="text-sm text-red-600">
+          <Alert tone="danger">
             {mergeMutation.error instanceof Error ? mergeMutation.error.message : "Failed"}
-          </p>
+          </Alert>
         )}
         {mergeMutation.isSuccess && (
-          <p className="text-sm text-green-700" data-testid="merge-success">
-            Merged — moved {mergeMutation.data.movedBindingTypes.join(", ") || "no"} binding(s).
-          </p>
+          <Notice tone="success" data-testid="merge-success">
+            {mergeMutation.data.movedBindingTypes.length === 0
+              ? "Merged — no bindings moved."
+              : // Real pluralization (copy rule 6) — "binding(s)" is banned.
+                `Merged — moved ${mergeMutation.data.movedBindingTypes.length} binding${
+                  mergeMutation.data.movedBindingTypes.length === 1 ? "" : "s"
+                } (${mergeMutation.data.movedBindingTypes.join(", ")}).`}
+          </Notice>
         )}
       </CardContent>
+    </Card>
+  );
+}
+
+// -------------------------------------------------------------------------------------------
+// Governed-here line (governance-reach-on-containment-move.md §9.4 Q4 follow-up).
+// -------------------------------------------------------------------------------------------
+
+/** Sentence-case labels for the rung tiers a UI ever needs to name (admin-governance.tsx's
+ *  `CONTAINER_TIERS` covers the same three plus its own "Org root" spelling for the switch; this is
+ *  the read-only prose form used inline in a sentence, so "org root" rather than "Org root"). */
+const GOVERNANCE_MOVE_TIER_LABELS: Record<GovernanceMoveTier, string> = {
+  org: "org root",
+  containment_domain: "containment domain",
+  service: "service",
+  assembly: "assembly"
+};
+
+/**
+ * The rendered line itself — pure, off an already-resolved `GovernanceMoveEnforcement`. Exported for
+ * the test: given `enforced: true`, names the NEAREST rung on this object's chain (rungs arrive
+ * org-root-first per the schema doc, so the last entry is nearest — "+N more" in the tooltip names
+ * the rest); given `enforced: true` with an EMPTY rungs array (the instance rung alone is doing the
+ * work — see `GovernanceMoveEnforcement`'s own doc on the OR), names the instance level instead of a
+ * rung that does not exist. Callers must not invoke this when `enforced` is false — there is nothing
+ * honest to say short of "not enforced here", which is not what this line is for (silence already
+ * says that).
+ */
+export function GovernedHereLine({
+  enforcement
+}: {
+  enforcement: GovernanceMoveEnforcement;
+}): React.JSX.Element {
+  const rungs = enforcement.rungs;
+  const nearest = rungs.length > 0 ? rungs[rungs.length - 1] : undefined;
+  const others = rungs.length > 1 ? rungs.slice(0, -1) : [];
+  const moreTooltip =
+    others.length > 0
+      ? `Also enabled at ${others
+          .map((r) => `${GOVERNANCE_MOVE_TIER_LABELS[r.tier]} '${r.name}'`)
+          .join(", ")}.`
+      : undefined;
+
+  return (
+    <p className="text-xs text-slate-500" data-testid="governed-here-line">
+      Moves here are governed — enforcement enabled at{" "}
+      {nearest ? (
+        <span title={moreTooltip} data-testid="governed-here-rung">
+          {GOVERNANCE_MOVE_TIER_LABELS[nearest.tier]} '
+          <span className="font-medium text-slate-700">{nearest.name}</span>'
+          {others.length > 0 ? ` (+${others.length} more)` : ""}
+        </span>
+      ) : (
+        "the instance level"
+      )}
+      {" — "}
+      <Link to="/admin/governance" className={cn("underline", focusRing)}>
+        Manage
+      </Link>
+    </p>
+  );
+}
+
+/**
+ * Wires the explain read (`GET /objects/{type}/{idOrUrn}/governance-move-enforcement`) to
+ * `GovernedHereLine`, provider-free (`fetchEnforcement` threaded in) so it is testable off a spy
+ * with no route/client mocking. `queryKeyExtra` is the page's own `detailKey` — keying the read off
+ * it (rather than off nothing) is what makes the fetch happen exactly ONCE per object shown, cached
+ * by TanStack Query like every other read on this page.
+ *
+ * Pending, errored, or a successful `enforced: false` all render NOTHING — the line makes a claim
+ * only when it has one to make; absence here is never itself a claim.
+ */
+export function GovernedHereLineForObject({
+  typeId,
+  objectId,
+  detailKey,
+  fetchEnforcement
+}: {
+  typeId: string;
+  objectId: string;
+  detailKey: unknown[];
+  fetchEnforcement: (type: string, idOrUrn: string) => Promise<GovernanceMoveEnforcement>;
+}): React.JSX.Element | null {
+  const query = useQuery({
+    queryKey: [...detailKey, "governance-move-enforcement"],
+    queryFn: () => fetchEnforcement(typeId, objectId)
+  });
+  if (query.data?.enforced !== true) return null;
+  return <GovernedHereLine enforcement={query.data} />;
+}
+
+// -------------------------------------------------------------------------------------------
+// Delete… (owner decision 2026-08-18: every registry type, confirm + rendered refusal).
+// -------------------------------------------------------------------------------------------
+
+/** Verbatim server sentence for a delete refusal — the container-delete guard's 409 (children,
+ *  placements, named with a remedy) or a plain 403 both carry the whole explanation in
+ *  `problem.detail`; `.message` is only the RFC 9457 `title` ("Conflict", "Forbidden"), which is why
+ *  this reads `.problem?.detail` first, exactly `admin-governance.tsx`'s
+ *  `governanceMoveWriteRefusal` does for the sibling refusal class. */
+export function deleteRefusalMessage(error: unknown): string {
+  if (error instanceof ScpApiError) {
+    return error.problem?.detail ?? error.message;
+  }
+  return queryErrorMessage(error);
+}
+
+/**
+ * The confirm dialog's body, portal-free — exported for the test. Requires the object's OWN NAME
+ * typed back (destructive-act gate, the `outposts.tsx`/`component-pipeline.tsx` precedent this
+ * feature has no direct sibling for yet); Delete stays disabled until it matches EXACTLY. A refusal
+ * (409 container-delete guard, 403) renders the server's sentence verbatim and the dialog stays
+ * open — no navigation, no optimistic removal. Success calls `onDeleted`, which the card below turns
+ * into invalidate-and-navigate.
+ */
+export function DeleteObjectDialogBody({
+  typeLabel,
+  name,
+  urn,
+  run,
+  onDeleted,
+  onCancel
+}: {
+  typeLabel: string;
+  name: string;
+  urn: string;
+  run: () => Promise<GraphObject>;
+  onDeleted: () => void;
+  onCancel: () => void;
+}): React.JSX.Element {
+  const [confirmText, setConfirmText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const matches = confirmText === name;
+
+  const doDelete = async () => {
+    // Belt and braces beside the disabled button: the real write never fires on a mismatched name,
+    // whatever dispatched the click.
+    if (!matches) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await run();
+      onDeleted();
+    } catch (e) {
+      setError(e);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="flex flex-col gap-3 text-sm text-slate-600" data-testid="delete-body">
+        <p>
+          Permanently removes this {typeLabel} —{" "}
+          <span className="font-medium text-slate-900">{name}</span>{" "}
+          <span className="font-mono text-xs text-slate-500">{urn}</span>. If anything still depends
+          on it, the server refuses and names what to move or delete first.
+        </p>
+        <label className="block">
+          <SectionLabel as="span">
+            Type <span className="font-mono text-slate-700">{name}</span> to confirm
+          </SectionLabel>
+          <Input
+            className="mt-1 font-mono"
+            value={confirmText}
+            disabled={busy}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder={name}
+            data-testid="delete-confirm-name"
+          />
+        </label>
+        {error !== null ? (
+          <Alert tone="danger" data-testid="delete-error">
+            {deleteRefusalMessage(error)}
+          </Alert>
+        ) : null}
+      </div>
+      <DialogFooter>
+        <Button variant="outline" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+        <Button
+          variant="destructive"
+          onClick={() => void doDelete()}
+          disabled={busy || !matches}
+          data-testid="delete-confirm"
+        >
+          {busy ? "Deleting…" : "Delete"}
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+/**
+ * The card + dialog trigger, threaded provider-free (`runDelete`/`onDeleted`) so the whole flow is
+ * testable without a router. Danger-styled per the design system's `destructive` Button variant;
+ * placed as the LAST card on the page, since it acts on the whole object every card above describes.
+ */
+export function DeleteObjectCard({
+  typeLabel,
+  name,
+  urn,
+  idOrUrn,
+  runDelete,
+  onDeleted
+}: {
+  typeLabel: string;
+  name: string;
+  urn: string;
+  idOrUrn: string;
+  runDelete: (idOrUrn: string) => Promise<GraphObject>;
+  onDeleted: () => void;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Delete</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <p className="text-xs text-slate-500">
+          Permanently removes this {typeLabel}. This cannot be undone from here.
+        </p>
+        <Button
+          variant="destructive"
+          icon={Trash2}
+          className="self-start"
+          onClick={() => setOpen(true)}
+          data-testid="delete-open"
+        >
+          Delete…
+        </Button>
+      </CardContent>
+      <Dialog open={open} onOpenChange={(next) => !next && setOpen(false)}>
+        <DialogContent data-testid="delete-dialog">
+          <DialogHeader>
+            <DialogTitle>Delete {typeLabel}</DialogTitle>
+            <DialogDescription>
+              This soft-deletes the object. If anything still depends on it, the server refuses and
+              names what to move or delete first.
+            </DialogDescription>
+          </DialogHeader>
+          {open ? (
+            <DeleteObjectDialogBody
+              typeLabel={typeLabel}
+              name={name}
+              urn={urn}
+              run={() => runDelete(idOrUrn)}
+              onDeleted={() => {
+                setOpen(false);
+                onDeleted();
+              }}
+              onCancel={() => setOpen(false)}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

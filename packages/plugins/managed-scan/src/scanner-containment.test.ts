@@ -60,8 +60,33 @@ function trackedFiles(): string[] {
   return out.split("\0").filter((p) => p.length > 0);
 }
 
+/** A file this gate NAMES. Missing means the repo lost something it must have — throw. */
 function read(path: string): string {
   return readFileSync(resolve(REPO_ROOT, path), "utf8");
+}
+
+/**
+ * A file this gate SWEEPS, read tolerantly. `git ls-files` lists the INDEX, and the index and the
+ * WORKTREE disagree routinely — a file `rm`'d but not yet `git rm`'d, a half-applied patch, an
+ * interrupted rebase. Feeding that straight into {@link read} made this file die with a bare
+ * `ENOENT ... launch-argv.golden.test.ts` at the "NO product code outside apps/runner-scan EXECUTES
+ * a scanner binary" test — a repo-wide SECURITY gate going red with a message about a test file and
+ * nothing about scanners. The cheap fix under time pressure is the one this file's header warns
+ * against: narrowing the sweep until it passes. So the candidate set is UNCHANGED and unreadable
+ * candidates are skipped instead — and every caller then asserts its non-vacuity floor over the
+ * files ACTUALLY READ, so a worktree full of missing files cannot masquerade as a clean sweep
+ * either.
+ */
+function sweep(paths: string[]): { path: string; text: string }[] {
+  const read: { path: string; text: string }[] = [];
+  for (const path of paths) {
+    try {
+      read.push({ path, text: readFileSync(resolve(REPO_ROOT, path), "utf8") });
+    } catch {
+      // Tracked but not in the worktree right now. Skipped, and therefore not counted below.
+    }
+  }
+  return read;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -105,7 +130,9 @@ const SHELL_INVOCATION = new RegExp(
 
 /** A scanner as the COMMAND argument of a Node process-spawning call. */
 const NODE_SPAWN_INVOCATION = new RegExp(
-  String.raw`\b(?:execFile|execFileSync|execFileAsync|spawn|spawnSync|exec|execSync)\s*\(\s*["'\`](?:${SCANNER_BINARIES})["'\`]`
+  // `spawnRunnerProcess` is in this list because M23.6 clause 1 made it the package's ONLY spawner:
+  // a scanner reached through it would otherwise be a scanner invocation this gate stopped seeing.
+  String.raw`\b(?:execFile|execFileSync|execFileAsync|spawnRunnerProcess|spawn|spawnSync|exec|execSync)\s*\(\s*["'\`](?:${SCANNER_BINARIES})["'\`]`
 );
 
 export function invocationHits(text: string): string[] {
@@ -135,8 +162,18 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
       "Dockerfile"
     );
 
-    const offenders = dockerfiles
-      .map((p) => ({ path: p, hits: dockerfileScannerHits(read(p)) }))
+    // READ tolerantly, then assert over what was READ — same property as the invocation sweep
+    // below, and the same reason. The root image must be among the files actually read, not merely
+    // among the paths listed: `toContain` on `dockerfiles` alone would still pass if every one of
+    // them had vanished from the worktree.
+    const swept = sweep(dockerfiles);
+    expect(
+      swept.map((f) => f.path),
+      "the scpd runtime image must have been READ, not merely listed"
+    ).toContain("Dockerfile");
+
+    const offenders = swept
+      .map((f) => ({ path: f.path, hits: dockerfileScannerHits(f.text) }))
       .filter((f) => f.hits.length > 0);
     expect(
       offenders.map((o) => `${o.path}: ${o.hits[0]!.trim()}`),
@@ -162,19 +199,32 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
         // This file defines the detector patterns; matching itself proves nothing.
         !p.endsWith("scanner-containment.test.ts")
     );
+    // THE FLOOR IS OVER THE FILES ACTUALLY READ, not over the candidate list. Those two numbers are
+    // the same on a clean worktree and differ exactly when the index and the worktree do — which is
+    // the case that used to kill this test with a bare ENOENT. Asserting the read count keeps the
+    // tolerance from becoming a vacuous pass: skipping is allowed, skipping EVERYTHING is not.
+    const swept = sweep(candidates);
     expect(
-      candidates.length,
-      "the invocation sweep must actually have files to read"
+      swept.length,
+      `the invocation sweep must actually have files to read (${candidates.length} tracked candidates, ${swept.length} readable)`
     ).toBeGreaterThan(50);
 
-    const offenders = candidates
-      .map((p) => ({ path: p, hits: invocationHits(read(p)) }))
+    const offenders = swept
+      .map((f) => ({ path: f.path, hits: invocationHits(f.text) }))
       .filter((f) => f.hits.length > 0);
     expect(
       offenders.map((o) => `${o.path}: ${o.hits[0]!.trim()}`),
       "only apps/runner-scan/run.sh may execute a scanner; the orchestrator launches `docker`, never a scanner"
     ).toEqual([]);
-  });
+    // 30 s, NOT the 5 s default, and NOT because the assertion is slow to decide — because this one
+    // `it` READS ~1189 TRACKED FILES off disk (the sweep is repo-wide on purpose; see turbo.json).
+    // Standalone it finishes in ~230 ms. Under a full-repo `turbo run test`, with every other
+    // package's vitest workers competing for the same disk, it intermittently crossed 5000 ms and
+    // failed — a flake with nothing wrong with it, which is the kind that gets "fixed" by narrowing
+    // the sweep until the gate passes vacuously. The budget is widened; the sweep is not narrowed,
+    // and NOTHING THIS TEST ASSERTS IS WEAKENED — same candidate set, same >50 floor, same
+    // `toEqual([])`. If it ever takes 30 s the machine is the problem, not this file.
+  }, 30_000);
 
   it("apps/runner-scan/run.sh DOES execute both scanners, including the machine-image arm", () => {
     const hits = invocationHits(read("apps/runner-scan/run.sh"));
@@ -186,14 +236,33 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
 
   it("the orchestrator plugin launches `docker`, never a scanner", () => {
     // RAW for the ABSENCE half: `invocationHits` finding nothing is the assertion, and stripping
-    // could only shrink what it searches.
+    // could only shrink what it searches. THE SWEEP NOW COVERS THE PORT TOO — M23.1 moved the
+    // create/copy/start/remove sequence into `@scp/runner-launcher`, and a containment gate that
+    // still looked only at the plugin would have stopped covering the file that actually spawns
+    // processes.
     expect(invocationHits(read("packages/plugins/managed-scan/src/index.ts"))).toEqual([]);
-    // …and it really does launch containers (so the assertion above is about a live code path).
+    expect(invocationHits(read("packages/runner-launcher/src/index.ts"))).toEqual([]);
+
+    // …and it really does launch containers (so the assertions above are about a live code path).
     // STRIPPED for the PRESENCE half: this is the non-vacuity guard, and a guard satisfiable by a
     // comment describing the launch would let the launch itself be deleted with the containment
     // assertion above passing trivially.
-    expect(readStripped(resolve(REPO_ROOT, "packages/plugins/managed-scan/src/index.ts"))).toMatch(
-      /execFileAsync\(\s*\n?\s*docker,/
+    //
+    // IT TAKES BOTH HALVES NOW, and that is the point of asserting them separately: the plugin must
+    // still hand a runner spec to the port (`.run({`, reached through the injected resolver), and
+    // the port must still exec the container CLI. Either one going missing would leave "no scanner
+    // is executed here" true for the uninteresting reason that nothing is executed at all.
+    const pluginSource = readStripped(
+      resolve(REPO_ROOT, "packages/plugins/managed-scan/src/index.ts")
+    );
+    expect(pluginSource).toMatch(/resolveLauncher\(\{[^}]*\}\)\.run\(\{/);
+    // `spawnRunnerProcess`, NOT `execFileAsync`, SINCE M23.6 CLAUSE 1. Every spawn in the package
+    // now goes through one recorded function so that "nothing was spawned on the Kubernetes path"
+    // can be an assertion rather than a hope; `no-docker-on-kubernetes.test.ts` censuses that
+    // `execFileAsync` is referenced exactly once, inside it. The claim this line makes is unchanged:
+    // the port still hands the container CLI an argv.
+    expect(readStripped(resolve(REPO_ROOT, "packages/runner-launcher/src/index.ts"))).toMatch(
+      /spawnRunnerProcess\(\s*\n?\s*dockerBinary,/
     );
   });
 });

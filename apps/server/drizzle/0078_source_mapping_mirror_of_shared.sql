@@ -1,0 +1,43 @@
+-- 0062 — `source_mappings.mirror_of_shared`: a DECLARED provenance marker on a source mapping
+-- (docs/proposals/outpost-ui.md §9.3a, owner decision 2026-08-14).
+--
+-- ## The model this serves
+--
+-- A component spans domains — an instance of it runs in each, and the instances need not
+-- communicate. Its pipeline has ONE definition, but its INPUTS have two provenances:
+--
+--   * globally SHARED repos — the same everywhere (ASGs, instance types, EBS volumes…), authored
+--     at the commander;
+--   * DOMAIN-SPECIFIC repos — network configuration, CIDR bands, anything that must stay in its
+--     domain for classification reasons; tracked only by that domain's outpost.
+--
+-- Source mappings never federate (ADR-0031 §Context measured it), so an outpost outside the
+-- commander's domain does not learn the shared repo at all — a shared input's source is opaquely
+-- "the commander". EXCEPT where the domain holds a COPY of a shared repo — the owner's worked row:
+--
+--   IaC shared source → IaC repo, domain-B COPY → component (domain B)
+--
+-- That mapping is physically local to B but its provenance is the commander, and it sits beside
+-- B's own domain-specific IaC feeding the SAME component. Before this column the two were
+-- indistinguishable rows, so B's source lane could not honestly say which was which.
+--
+-- ## Declared, never inferred
+--
+-- `mirror_of_shared = true` is an OPERATOR DECLARATION at create: "this repo mirrors a
+-- commander-shared source". Nothing parses the repo host, the org, or a name pattern to decide it
+-- — the domain's classified network repo can live on the very same Gitea as the mirror, and a
+-- heuristic would label it shared. Same discipline as `classification` (0057 / ADR-0030 §2), for
+-- the same charter-principle-6 reason.
+--
+-- ## Never an enforcement input
+--
+-- It grants and withholds nothing. The source lane groups by it ("Shared — mirror of the
+-- commander's source" / "Domain-specific — tracked only in this domain") and reporting may read
+-- it; no gate, no scan requirement, no export decision consults it. `NOT NULL DEFAULT false`
+-- rather than nullable: a two-state fact with no honest "unknown" — every pre-0062 row is
+-- domain-specific, which was its exact meaning before this column existed, so no backfill.
+--
+-- Idempotent (IF NOT EXISTS), like every migration here since the 2026-08-13 three-branch
+-- `when` collision showed a re-run must be a no-op.
+
+ALTER TABLE "source_mappings" ADD COLUMN IF NOT EXISTS "mirror_of_shared" boolean NOT NULL DEFAULT false;

@@ -41,7 +41,8 @@ import {
   listDecisionsForSubject
 } from "../coordination/decisions-repo.js";
 import { listControlRunsForChange } from "../governance/controls-repo.js";
-import { conflict } from "../errors.js";
+import { conflict, ProblemError } from "../errors.js";
+import { serverOwnedSourceRefKeysIn } from "../federation/boundary-bundle-ref.js";
 
 /**
  * `/changes`, `/change-sources`'s sibling `/decisions` sub-resource, and the guarded-transition
@@ -136,6 +137,20 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const body = request.body;
+      // The server-owned `sourceRef` keys (`boundaryBundleChecksums`, `promotionExports`) are
+      // stamped by the exporter/importer and RENDERED as facts ("manifest signed for <peer>") —
+      // a caller who plants one would make the pipeline claim a signing that never happened.
+      // Refused loudly rather than stripped silently: `sourceRef` is otherwise kept verbatim, so
+      // a caller must learn its payload was not stored as sent. Checked before any tx is opened.
+      const planted = serverOwnedSourceRefKeysIn(body.sourceRef);
+      if (planted.length > 0) {
+        throw new ProblemError(400, "sourceRef carries a server-owned key", {
+          detail:
+            `sourceRef.${planted.join(", sourceRef.")} ${planted.length === 1 ? "is" : "are"} ` +
+            `written only by the server (promotion export/import stamps) and cannot be supplied on ` +
+            `a proposed change`
+        });
+      }
       const { change } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         // The declared parent, resolved ONCE and used for both the permission scope and the write
         // (`graph/containment-parent-authz.ts` — a wire `null` means the org root, never "detach").

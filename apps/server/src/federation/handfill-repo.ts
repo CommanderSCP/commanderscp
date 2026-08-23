@@ -5,6 +5,7 @@ import { hasPermission } from "../authz/resolve.js";
 import { getPeerByIdOrName } from "./peers-repo.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { upsertObjectByUrn } from "../graph/objects-repo.js";
+import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import { isPeerBoundObjectType } from "./outpost-binding.js";
 import { ensureFederationSelf } from "./self-repo.js";
@@ -90,6 +91,37 @@ export interface HandFillInput {
  * `federation/import-repo.ts` (signature/chain-verified journal replay) and this one. There is no third.
  */
 async function assertHandFillableType(tx: TenantTx, input: HandFillInput): Promise<void> {
+  // PAIR-BOUND TYPES — THE FIFTH DOOR OF `graph/pair-bound-types.ts`'s CENSUS (2026-08-18).
+  //
+  // A `placement` is identified by a PAIR of objects, and every free-form-`typeId` door refuses it
+  // for the reason that file records: this door takes free-form `properties`, so it would store two
+  // unresolved, untyped UUIDs and — decisively — write NEITHER derived edge (`places`, `placed_at`),
+  // leaving an island no traversal can reach. Hand-fill was the one free-form-`typeId` door the
+  // census had not listed, and it had a SECOND hole the other four do not: a placement is CONTAINED
+  // by both endpoints it names (containment routes 3 and 4, `graph/containment.ts`
+  // `placementParentsSql`), and the depth door for that pair lives ONLY in
+  // `graph/placements-repo.ts`'s `createPlacement`, which this path never reaches. MEASURED on the
+  // pre-fix tree through the HTTP API: `POST /federation/hand-fill {typeId: "placement",
+  // properties: {componentId: <a component at hop ten>, deploymentTargetId: <root target>}}` answered
+  // 201 where `POST /placements` of the same pair answered the door's 400, and `containmentChain` of
+  // the hand-filled row then threw ADR-0037's 409 — a live placement no policy, freeze or gate could
+  // scope, readable through its one-hop `domain_id` route (hand-fill passes no `domainId`, so
+  // `createObject`'s org-root shortcut skips D1 too).
+  //
+  // WHY REFUSE THE TYPE rather than run the pair arithmetic here: the arithmetic alone would leave
+  // the edgeless island the four sibling doors already refuse, and a hand-filled placement has no
+  // reconciliation story that needs it — a real bundle carries a placement as its own `object_upsert`
+  // PLUS `relationship_upsert` entries, so nothing an operator could key in here is a shape the next
+  // signed bundle would confirm. The `federationImport` carve-out this door wears is a statement
+  // about a CHANNEL that cannot absorb a refusal (see `handFillObject` below); this is a local
+  // operator's per-request POST, and its failure mode is one 403 to that operator.
+  if (isPairBoundObjectType(input.typeId)) {
+    throw forbidden(
+      `object type '${input.typeId}' is identified by a pair of objects and cannot be hand-filled — ` +
+        `use /api/v1/${input.typeId}s, which requires both endpoints, writes the derived edges ` +
+        `atomically and enforces the containment depth bound for both (ADR-0037)`
+    );
+  }
   if (!isPeerBoundObjectType(input.typeId)) return;
   const raw = input.properties?.peerDomainId;
   const self = await ensureFederationSelf(tx, input.orgId);

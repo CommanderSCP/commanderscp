@@ -13,6 +13,24 @@ export function encodeCursor(row: { createdAt: Date; id: string }): string {
   ).toString("base64url");
 }
 
+/**
+ * The shape a keyset id must have BEFORE it reaches `::uuid` in SQL. A cursor is client input; a
+ * syntactically valid but semantically garbage one (`{id:"nope"}`) reaches Postgres and comes back
+ * as 22P02 → 500. NOT applied inside `decodeCursor` itself: the shared codec's `id` is the
+ * tiebreak column, which is a uuid for most lists but a TEXT id for the type registries
+ * (`bulk-type-00` — see list-pagination-sweep.integration.test.ts), so the check belongs to the
+ * caller whose SQL casts `::uuid` — today the dependency inventory's `(lineId, manifestPath)`
+ * cursor and the bumps read's descending twin.
+ */
+export const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * `null` for anything that is not a well-formed cursor — undecodable base64/JSON, a missing or
+ * non-string field, or a `createdAt` that does not parse to a real Date (which would otherwise
+ * throw `RangeError: Invalid time value` from `toISOString()` inside the SQL builder). Every caller
+ * treats `null` as "no cursor" (the first page), so a garbage cursor gets the first page rather
+ * than an Internal Server Error.
+ */
 export function decodeCursor(cursor: string): { createdAt: Date; id: string } | null {
   try {
     const parsed: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
@@ -25,7 +43,9 @@ export function decodeCursor(cursor: string): { createdAt: Date; id: string } | 
       typeof (parsed as Record<string, unknown>).id === "string"
     ) {
       const p = parsed as { createdAt: string; id: string };
-      return { createdAt: new Date(p.createdAt), id: p.id };
+      const createdAt = new Date(p.createdAt);
+      if (Number.isNaN(createdAt.getTime())) return null;
+      return { createdAt, id: p.id };
     }
     return null;
   } catch {

@@ -30,8 +30,8 @@ import type { ServerConfig } from "../config.js";
  * outpost in the COMMANDER'S OWN trust domain, so its dependency inventory simply IS the
  * commander's — the same rows, in the same database, written by the commander's own jobs. Only a
  * **field outpost**, one in ANOTHER trust domain, runs no dependency job and holds no inventory.
- * (Both terms: ADR-0032 §7d's vocabulary note, and see its dependency caveat there — the GLOSSARY
- * entries are being authored on a separate branch and have not landed yet.)
+ * (Both terms: GLOSSARY.md's `HQ outpost` / `field outpost` entries, ADR-0021 D7; ADR-0032 §7d's
+ * vocabulary note cross-references them.)
  *
  * READ OUT OF THE CODE, not from the names, because the naming is exactly what lets the wrong
  * reading survive a review. Two facts settle it:
@@ -39,19 +39,23 @@ import type { ServerConfig } from "../config.js";
  *   1. `SCP_FEDERATION_ROLE` IS ONE VALUE PER DEPLOYMENT — `config.federationRole` is
  *      `"commander" | "outpost" | "retrans"` (`config.ts`), a single scalar set once at install.
  *      No process is "a commander, and also an outpost".
- *   2. AN `outpost` GRAPH OBJECT CAN NEVER NAME THE COMMANDER'S OWN TRUST DOMAIN.
- *      `assertOutpostPeerBinding` (`federation/outpost-binding.ts`) requires
- *      `properties.peerDomainId` to resolve to an already-PAIRED `federation_peers` row holding
- *      role `outpost`, and an instance is never its own peer: `initFederationSelf` writes
- *      `federation_self`, not a peer row (`federation/self-repo.ts`; restated at
- *      `federation/peers-repo.ts:436-439` and `outpost-binding.ts:98-100`).
+ *   2. THIS PREDICATE READS THE ROLE AND NEVER AN `outpost` GRAPH OBJECT — and it cannot read the
+ *      object, because an `outpost` object CAN name the commander's own trust domain: that record
+ *      IS the HQ outpost, commander-declared (pipeline-substrate-registry-scan.md §10.5;
+ *      `assertOutpostPeerBinding` in `federation/outpost-binding.ts` accepts
+ *      `properties.peerDomainId` = `federation_self.domainId` only from a `commander`-role
+ *      instance, with NO `federation_peers` row behind it — an instance is never its own peer,
+ *      `initFederationSelf` writes `federation_self`). Every other `outpost` object must resolve to
+ *      an already-PAIRED `federation_peers` row holding role `outpost`, i.e. it describes a field
+ *      outpost. The object says which outpost a record DESCRIBES; only the install-time role says
+ *      what THIS DEPLOYMENT is — and the deployment is what this predicate is about.
  *
- * So the HQ outpost is NEITHER A SEPARATE DEPLOYMENT NOR A SEPARATE RECORD — it is the commander
- * instance itself filling the outpost role for its own trust domain, which is the model statement
- * ADR-0011 already makes ("a non-federated single-instance install is its own commander+outpost").
- * There is no second process here to refuse and no second store to exempt. A FIELD outpost is the
- * only outpost that is a running process with tables of its own, which is why it is the only one
- * the rule above is about.
+ * So the HQ outpost is NOT A SEPARATE DEPLOYMENT (it may be a separate record — the §10.5 object —
+ * but never a second process with tables of its own): it is the commander instance itself filling
+ * the outpost role for its own trust domain, which is the model statement ADR-0011 already makes
+ * ("a non-federated single-instance install is its own commander+outpost"). There is no second
+ * process here to refuse and no second store to exempt. A FIELD outpost is the only outpost that is
+ * a running process with tables of its own, which is why it is the only one the rule above is about.
  *
  * ONE CONSEQUENCE FOR THE REFUSAL STRINGS BELOW, so the next sweep does not "correct" them: every
  * refusal here is returned to a deployment that DECLARED `SCP_FEDERATION_ROLE=outpost`, and by (1)

@@ -76,6 +76,7 @@ export type GetCurrentUserResponses = {
         orgName: string;
         username: string;
         subjectObjectId: string;
+        instanceRole: 'commander' | 'outpost' | 'retrans';
     };
 };
 
@@ -6471,6 +6472,13 @@ export type GetComponentPipelineResponses = {
             id: string;
             urn: string;
             name: string;
+            maintainedBy: {
+                domainId: string | null;
+                name: string | null;
+                isSelf: boolean;
+                role: string | null;
+            };
+            domainLocal: boolean;
         };
         pipeline: {
             topologyObjectId: string;
@@ -6490,7 +6498,12 @@ export type GetComponentPipelineResponses = {
             type: string;
             category: 'build' | 'infrastructure' | 'configuration';
             classification: 'dev' | 'beta' | null;
+            mirrorOfShared: boolean;
+            enabled: boolean;
+            disabledUntil: string | null;
+            effectivelyEnabled: boolean;
             url: string | null;
+            scope: 'global' | 'domain' | null;
         }>;
         stages: Array<{
             placement: {
@@ -6507,12 +6520,23 @@ export type GetComponentPipelineResponses = {
                 name: string;
                 environment: string | null;
                 region: string | null;
+                substrate: string | null;
+                account: string | null;
+                cluster: string | null;
             };
             maintainedBy: {
                 domainId: string | null;
                 name: string | null;
                 isSelf: boolean;
                 role: string | null;
+            };
+            outpost: {
+                state: 'outpost' | 'self' | 'peer-without-outpost' | 'peer-not-outpost' | 'unknown-domain';
+                id: string | null;
+                name: string | null;
+                trustTier: string | null;
+                peerDomainId: string | null;
+                peerRole: string | null;
             };
             stageName: string | null;
             binding: {
@@ -6522,6 +6546,7 @@ export type GetComponentPipelineResponses = {
                 category: 'build' | 'infrastructure' | 'configuration';
                 executionSystemId: string | null;
                 executionSystemName: string | null;
+                resolvedVia?: string;
             } | null;
             bindings: Array<{
                 externalRef: string | null;
@@ -6530,6 +6555,7 @@ export type GetComponentPipelineResponses = {
                 category: 'build' | 'infrastructure' | 'configuration';
                 executionSystemId: string | null;
                 executionSystemName: string | null;
+                resolvedVia?: string;
             }>;
             current: {
                 changeId: string;
@@ -6598,6 +6624,9 @@ export type GetComponentPipelineResponses = {
                 name: string;
                 environment: string | null;
                 region: string | null;
+                substrate: string | null;
+                account: string | null;
+                cluster: string | null;
             };
             maintainedBy: {
                 domainId: string | null;
@@ -6605,8 +6634,111 @@ export type GetComponentPipelineResponses = {
                 isSelf: boolean;
                 role: string | null;
             };
+            outpost: {
+                state: 'outpost' | 'self' | 'peer-without-outpost' | 'peer-not-outpost' | 'unknown-domain';
+                id: string | null;
+                name: string | null;
+                trustTier: string | null;
+                peerDomainId: string | null;
+                peerRole: string | null;
+            };
             stageName: string | null;
         }>;
+        registry?: {
+            state: 'declared' | 'ambiguous' | 'none';
+            executionSystemId: string | null;
+            name: string | null;
+            kind: string | null;
+            url: string | null;
+            repository: string | null;
+            edgeCount: number;
+        } | null;
+        artifact?: {
+            changeId: string;
+            changeName: string | null;
+            changeCreatedAt: string;
+            digests: Array<string>;
+            sbom: {
+                format: 'cyclonedx' | 'spdx';
+                specVersion?: string;
+                digest: string;
+                location: string;
+                mediaType?: string;
+                signatureRef?: string;
+                scanner?: string;
+                scannerVersion?: string;
+                generatedAt?: string;
+            } | null;
+            scans: Array<{
+                method: string;
+                scanner: 'trivy' | 'openscap' | 'trivy-vm';
+                scannerVersion: string;
+                digest: string;
+                digestMatch: boolean | null;
+                status: 'pass' | 'fail' | 'warning' | 'skipped' | 'timed_out' | 'expired';
+                counts: {
+                    critical: number;
+                    high: number;
+                    medium: number;
+                    low: number;
+                } | null;
+                threshold: {
+                    maxCritical: number;
+                    maxHigh: number;
+                    maxMedium?: number;
+                    maxLow?: number;
+                } | null;
+                evaluatedAt: string;
+                controlRunId: string;
+                managed: boolean;
+            }>;
+            exportGate: 'pass' | 'fail' | 'not_run';
+            signing: {
+                promotionExports: Array<{
+                    peerDomainId: string;
+                    peerName: string | null;
+                    exportedAt: string;
+                    checksum: string;
+                    manifest: {
+                        manifestVersion: 'scp-promotion-manifest/v1';
+                        createdAt: string;
+                        sourceChangeObjectId: string;
+                        exporterDomainId: string;
+                        peerDomainId: string;
+                        changeUrn: string;
+                        artifacts: Array<{
+                            type: 'oci' | 'blob';
+                            digest: string;
+                            signatureRef?: string;
+                        }>;
+                    };
+                    manifestSignature: string;
+                    keyFingerprint: string | null;
+                }>;
+                originSignatureRefs: Array<string>;
+                importedManifest?: {
+                    manifest: {
+                        manifestVersion: 'scp-promotion-manifest/v1';
+                        createdAt: string;
+                        sourceChangeObjectId: string;
+                        exporterDomainId: string;
+                        peerDomainId: string;
+                        changeUrn: string;
+                        artifacts: Array<{
+                            type: 'oci' | 'blob';
+                            digest: string;
+                            signatureRef?: string;
+                        }>;
+                    };
+                    manifestSignature: string;
+                    exporterDomainId: string;
+                    exporterName: string | null;
+                    importedFromDomain: string | null;
+                    artifactCount: number;
+                } | null;
+            };
+            unknownFields: Array<string>;
+        } | null;
         unknownFields: Array<string>;
     };
 };
@@ -7945,6 +8077,13 @@ export type GetServiceBoardResponses = {
             id: string;
             urn: string;
             name: string;
+            maintainedBy: {
+                domainId: string | null;
+                name: string | null;
+                isSelf: boolean;
+                role: string | null;
+            };
+            domainLocal: boolean;
         };
         rows: Array<{
             component: {
@@ -10267,7 +10406,7 @@ export type RemoveComponentDependsOnResponse = RemoveComponentDependsOnResponses
 export type GraphQueryData = {
     body?: never;
     path: {
-        name: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted' | 'initiative-rollup';
+        name: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted';
     };
     query: {
         objectId: string;
@@ -10332,7 +10471,7 @@ export type GraphQueryResponses = {
      * Success
      */
     200: {
-        query: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted' | 'initiative-rollup';
+        query: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted';
         objects: Array<{
             id: string;
             orgId: string;
@@ -10755,6 +10894,9 @@ export type CreatePlanData = {
                 refPattern?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 classification?: 'dev' | 'beta';
+                mirrorOfShared?: boolean;
+                enabled?: boolean;
+                scope?: 'global' | 'domain' | null;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10786,6 +10928,12 @@ export type CreatePlanData = {
                 producerUrn: string;
                 ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
                 coordinate: string;
+            }>;
+            /**
+             * governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author "governanceMoveRungs": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.
+             */
+            governanceMoveRungs?: Array<{
+                subjectIdOrUrn: string;
             }>;
         };
     };
@@ -10874,6 +11022,9 @@ export type CreatePlanResponses = {
                 refPattern?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 classification?: 'dev' | 'beta';
+                mirrorOfShared?: boolean;
+                enabled?: boolean;
+                scope?: 'global' | 'domain' | null;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10906,6 +11057,12 @@ export type CreatePlanResponses = {
                 ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
                 coordinate: string;
             }>;
+            /**
+             * governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author "governanceMoveRungs": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.
+             */
+            governanceMoveRungs?: Array<{
+                subjectIdOrUrn: string;
+            }>;
         };
         diff: {
             objects: Array<{
@@ -10937,7 +11094,7 @@ export type CreatePlanResponses = {
             }>;
             sourceMappings?: Array<{
                 kind: 'source-mapping';
-                action: 'create' | 'delete' | 'noop';
+                action: 'create' | 'update' | 'delete' | 'noop';
                 componentUrn: string;
                 sourceKind: string;
                 repoPattern: string | null;
@@ -10945,6 +11102,9 @@ export type CreatePlanResponses = {
                 refPattern: string | null;
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 classification: 'dev' | 'beta' | null;
+                mirrorOfShared: boolean;
+                enabled: boolean;
+                scope?: 'global' | 'domain' | null;
                 reason: string;
             }>;
             placements?: Array<{
@@ -10982,6 +11142,12 @@ export type CreatePlanResponses = {
                 coordinate: string;
                 producerUrn: string;
                 displacedProducerUrn?: string;
+                reason: string;
+            }>;
+            governanceMoveRungs?: Array<{
+                kind: 'governance-move-rung';
+                action: 'create' | 'delete' | 'noop';
+                subjectUrn: string;
                 reason: string;
             }>;
             summary: {
@@ -11088,6 +11254,9 @@ export type GetPlanResponses = {
                 refPattern?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 classification?: 'dev' | 'beta';
+                mirrorOfShared?: boolean;
+                enabled?: boolean;
+                scope?: 'global' | 'domain' | null;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -11120,6 +11289,12 @@ export type GetPlanResponses = {
                 ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
                 coordinate: string;
             }>;
+            /**
+             * governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author "governanceMoveRungs": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.
+             */
+            governanceMoveRungs?: Array<{
+                subjectIdOrUrn: string;
+            }>;
         };
         diff: {
             objects: Array<{
@@ -11151,7 +11326,7 @@ export type GetPlanResponses = {
             }>;
             sourceMappings?: Array<{
                 kind: 'source-mapping';
-                action: 'create' | 'delete' | 'noop';
+                action: 'create' | 'update' | 'delete' | 'noop';
                 componentUrn: string;
                 sourceKind: string;
                 repoPattern: string | null;
@@ -11159,6 +11334,9 @@ export type GetPlanResponses = {
                 refPattern: string | null;
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 classification: 'dev' | 'beta' | null;
+                mirrorOfShared: boolean;
+                enabled: boolean;
+                scope?: 'global' | 'domain' | null;
                 reason: string;
             }>;
             placements?: Array<{
@@ -11196,6 +11374,12 @@ export type GetPlanResponses = {
                 coordinate: string;
                 producerUrn: string;
                 displacedProducerUrn?: string;
+                reason: string;
+            }>;
+            governanceMoveRungs?: Array<{
+                kind: 'governance-move-rung';
+                action: 'create' | 'delete' | 'noop';
+                subjectUrn: string;
                 reason: string;
             }>;
             summary: {
@@ -11314,6 +11498,9 @@ export type ApplyPlanResponses = {
                     refPattern?: string;
                     type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                     classification?: 'dev' | 'beta';
+                    mirrorOfShared?: boolean;
+                    enabled?: boolean;
+                    scope?: 'global' | 'domain' | null;
                 }>;
                 executorBindings?: Array<{
                     targetUrn: string;
@@ -11346,6 +11533,12 @@ export type ApplyPlanResponses = {
                     ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
                     coordinate: string;
                 }>;
+                /**
+                 * governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author "governanceMoveRungs": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.
+                 */
+                governanceMoveRungs?: Array<{
+                    subjectIdOrUrn: string;
+                }>;
             };
             diff: {
                 objects: Array<{
@@ -11377,7 +11570,7 @@ export type ApplyPlanResponses = {
                 }>;
                 sourceMappings?: Array<{
                     kind: 'source-mapping';
-                    action: 'create' | 'delete' | 'noop';
+                    action: 'create' | 'update' | 'delete' | 'noop';
                     componentUrn: string;
                     sourceKind: string;
                     repoPattern: string | null;
@@ -11385,6 +11578,9 @@ export type ApplyPlanResponses = {
                     refPattern: string | null;
                     type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                     classification: 'dev' | 'beta' | null;
+                    mirrorOfShared: boolean;
+                    enabled: boolean;
+                    scope?: 'global' | 'domain' | null;
                     reason: string;
                 }>;
                 placements?: Array<{
@@ -11422,6 +11618,12 @@ export type ApplyPlanResponses = {
                     coordinate: string;
                     producerUrn: string;
                     displacedProducerUrn?: string;
+                    reason: string;
+                }>;
+                governanceMoveRungs?: Array<{
+                    kind: 'governance-move-rung';
+                    action: 'create' | 'delete' | 'noop';
+                    subjectUrn: string;
                     reason: string;
                 }>;
                 summary: {
@@ -11516,6 +11718,7 @@ export type ListChangesResponses = {
             createdAt: string;
             updatedAt: string;
             originDomainId?: string;
+            domainLocal: boolean;
         }>;
         nextCursor: string | null;
     };
@@ -11629,6 +11832,7 @@ export type ProposeChangeResponses = {
         createdAt: string;
         updatedAt: string;
         originDomainId?: string;
+        domainLocal: boolean;
     };
 };
 
@@ -11712,6 +11916,7 @@ export type GetChangeResponses = {
         createdAt: string;
         updatedAt: string;
         originDomainId?: string;
+        domainLocal: boolean;
     };
 };
 
@@ -11796,6 +12001,7 @@ export type ExplainChangeResponses = {
             createdAt: string;
             updatedAt: string;
             originDomainId?: string;
+            domainLocal: boolean;
         };
         plan: {
             id: string;
@@ -11834,6 +12040,14 @@ export type ExplainChangeResponses = {
                             step?: number;
                             weight?: number;
                             message?: string;
+                        };
+                        truncation?: {
+                            [key: string]: {
+                                dropped: boolean;
+                                droppedCharacters?: number;
+                                droppedEntries?: number;
+                                droppedFields?: number;
+                            };
                         };
                     } | null;
                     status: string;
@@ -12029,6 +12243,7 @@ export type CancelChangeResponses = {
         createdAt: string;
         updatedAt: string;
         originDomainId?: string;
+        domainLocal: boolean;
     };
 };
 
@@ -12126,6 +12341,7 @@ export type AcceptChangeResponses = {
         createdAt: string;
         updatedAt: string;
         originDomainId?: string;
+        domainLocal: boolean;
     };
 };
 
@@ -12233,6 +12449,7 @@ export type RollbackChangeResponses = {
         createdAt: string;
         updatedAt: string;
         originDomainId?: string;
+        domainLocal: boolean;
     };
 };
 
@@ -12676,6 +12893,11 @@ export type ListSourceMappingsResponses = {
             type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
             category: 'build' | 'infrastructure' | 'configuration';
             classification: 'dev' | 'beta' | null;
+            mirrorOfShared: boolean;
+            enabled: boolean;
+            disabledUntil: string | null;
+            effectivelyEnabled: boolean;
+            scope: 'global' | 'domain' | null;
             createdAt: string;
         }>;
         nextCursor: string | null;
@@ -12693,6 +12915,9 @@ export type CreateSourceMappingData = {
         component: string;
         type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
         classification?: 'dev' | 'beta';
+        mirrorOfShared?: boolean;
+        enabled?: boolean;
+        scope?: 'global' | 'domain';
     };
     path: {
         sourceKind: string;
@@ -12765,11 +12990,191 @@ export type CreateSourceMappingResponses = {
         type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
         category: 'build' | 'infrastructure' | 'configuration';
         classification: 'dev' | 'beta' | null;
+        mirrorOfShared: boolean;
+        enabled: boolean;
+        disabledUntil: string | null;
+        effectivelyEnabled: boolean;
+        scope: 'global' | 'domain' | null;
         createdAt: string;
     };
 };
 
 export type CreateSourceMappingResponse = CreateSourceMappingResponses[keyof CreateSourceMappingResponses];
+
+export type SetSourceMappingEnabledData = {
+    body: {
+        enabled: boolean;
+        disabledUntil?: string | null;
+    };
+    path: {
+        sourceKind: string;
+        id: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/mappings/{id}';
+};
+
+export type SetSourceMappingEnabledErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type SetSourceMappingEnabledError = SetSourceMappingEnabledErrors[keyof SetSourceMappingEnabledErrors];
+
+export type SetSourceMappingEnabledResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        sourceKind: string;
+        repoPattern: string | null;
+        pathPattern: string | null;
+        refPattern: string | null;
+        componentObjectId: string;
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        category: 'build' | 'infrastructure' | 'configuration';
+        classification: 'dev' | 'beta' | null;
+        mirrorOfShared: boolean;
+        enabled: boolean;
+        disabledUntil: string | null;
+        effectivelyEnabled: boolean;
+        scope: 'global' | 'domain' | null;
+        createdAt: string;
+    };
+};
+
+export type SetSourceMappingEnabledResponse = SetSourceMappingEnabledResponses[keyof SetSourceMappingEnabledResponses];
+
+export type SetSourceMappingScopeData = {
+    body: {
+        scope: 'global' | 'domain' | null;
+    };
+    path: {
+        sourceKind: string;
+        id: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/mappings/{id}/scope';
+};
+
+export type SetSourceMappingScopeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type SetSourceMappingScopeError = SetSourceMappingScopeErrors[keyof SetSourceMappingScopeErrors];
+
+export type SetSourceMappingScopeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        sourceKind: string;
+        repoPattern: string | null;
+        pathPattern: string | null;
+        refPattern: string | null;
+        componentObjectId: string;
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        category: 'build' | 'infrastructure' | 'configuration';
+        classification: 'dev' | 'beta' | null;
+        mirrorOfShared: boolean;
+        enabled: boolean;
+        disabledUntil: string | null;
+        effectivelyEnabled: boolean;
+        scope: 'global' | 'domain' | null;
+        createdAt: string;
+    };
+};
+
+export type SetSourceMappingScopeResponse = SetSourceMappingScopeResponses[keyof SetSourceMappingScopeResponses];
 
 export type ListPolicysData = {
     body?: never;
@@ -14832,6 +15237,421 @@ export type PolicyEvaluateResponses = {
 
 export type PolicyEvaluateResponse = PolicyEvaluateResponses[keyof PolicyEvaluateResponses];
 
+export type GetObjectGovernanceMoveEnforcementData = {
+    body?: never;
+    path: {
+        type: string;
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/objects/{type}/{idOrUrn}/governance-move-enforcement';
+};
+
+export type GetObjectGovernanceMoveEnforcementErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetObjectGovernanceMoveEnforcementError = GetObjectGovernanceMoveEnforcementErrors[keyof GetObjectGovernanceMoveEnforcementErrors];
+
+export type GetObjectGovernanceMoveEnforcementResponses = {
+    /**
+     * Success
+     */
+    200: {
+        enforced: boolean;
+        instance: {
+            enabled: boolean;
+        };
+        rungs: Array<{
+            tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+            subjectObjectId: string;
+            name: string;
+            enabledAt: string;
+            enabledByObjectId: string;
+            depth?: number;
+        }>;
+    };
+};
+
+export type GetObjectGovernanceMoveEnforcementResponse = GetObjectGovernanceMoveEnforcementResponses[keyof GetObjectGovernanceMoveEnforcementResponses];
+
+export type ListGovernanceMoveRungsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/governance/move-enforcement/rungs';
+};
+
+export type ListGovernanceMoveRungsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListGovernanceMoveRungsError = ListGovernanceMoveRungsErrors[keyof ListGovernanceMoveRungsErrors];
+
+export type ListGovernanceMoveRungsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        instance: {
+            enabled: boolean;
+        };
+        rungs: Array<{
+            tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+            subjectObjectId: string;
+            name: string;
+            enabledAt: string;
+            enabledByObjectId: string;
+            depth?: number;
+        }>;
+    };
+};
+
+export type ListGovernanceMoveRungsResponse = ListGovernanceMoveRungsResponses[keyof ListGovernanceMoveRungsResponses];
+
+export type DisableGovernanceMoveRungData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/governance/move-enforcement/rungs/{idOrUrn}';
+};
+
+export type DisableGovernanceMoveRungErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DisableGovernanceMoveRungError = DisableGovernanceMoveRungErrors[keyof DisableGovernanceMoveRungErrors];
+
+export type DisableGovernanceMoveRungResponses = {
+    /**
+     * Success
+     */
+    200: {
+        subjectObjectId: string;
+        tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+        enabled: boolean;
+        enforcement: {
+            enforced: boolean;
+            instance: {
+                enabled: boolean;
+            };
+            rungs: Array<{
+                tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+                subjectObjectId: string;
+                name: string;
+                enabledAt: string;
+                enabledByObjectId: string;
+                depth?: number;
+            }>;
+        };
+        decisionId: string;
+    };
+};
+
+export type DisableGovernanceMoveRungResponse = DisableGovernanceMoveRungResponses[keyof DisableGovernanceMoveRungResponses];
+
+export type EnableGovernanceMoveRungData = {
+    body: {
+        note?: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/governance/move-enforcement/rungs/{idOrUrn}';
+};
+
+export type EnableGovernanceMoveRungErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type EnableGovernanceMoveRungError = EnableGovernanceMoveRungErrors[keyof EnableGovernanceMoveRungErrors];
+
+export type EnableGovernanceMoveRungResponses = {
+    /**
+     * Success
+     */
+    200: {
+        subjectObjectId: string;
+        tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+        enabled: boolean;
+        enforcement: {
+            enforced: boolean;
+            instance: {
+                enabled: boolean;
+            };
+            rungs: Array<{
+                tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+                subjectObjectId: string;
+                name: string;
+                enabledAt: string;
+                enabledByObjectId: string;
+                depth?: number;
+            }>;
+        };
+        decisionId: string;
+    };
+};
+
+export type EnableGovernanceMoveRungResponse = EnableGovernanceMoveRungResponses[keyof EnableGovernanceMoveRungResponses];
+
+export type GetGovernanceMoveInstanceRungData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/governance-move-enforcement';
+};
+
+export type GetGovernanceMoveInstanceRungErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetGovernanceMoveInstanceRungError = GetGovernanceMoveInstanceRungErrors[keyof GetGovernanceMoveInstanceRungErrors];
+
+export type GetGovernanceMoveInstanceRungResponses = {
+    /**
+     * Success
+     */
+    200: {
+        enabled: boolean;
+        updatedAt: string | null;
+    };
+};
+
+export type GetGovernanceMoveInstanceRungResponse = GetGovernanceMoveInstanceRungResponses[keyof GetGovernanceMoveInstanceRungResponses];
+
+export type PutGovernanceMoveInstanceRungData = {
+    body: {
+        enabled: boolean;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/governance-move-enforcement';
+};
+
+export type PutGovernanceMoveInstanceRungErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutGovernanceMoveInstanceRungError = PutGovernanceMoveInstanceRungErrors[keyof PutGovernanceMoveInstanceRungErrors];
+
+export type PutGovernanceMoveInstanceRungResponses = {
+    /**
+     * Success
+     */
+    200: {
+        enabled: boolean;
+        updatedAt: string | null;
+    };
+};
+
+export type PutGovernanceMoveInstanceRungResponse = PutGovernanceMoveInstanceRungResponses[keyof PutGovernanceMoveInstanceRungResponses];
+
 export type ListInstanceScanFloorsData = {
     body?: never;
     path?: never;
@@ -15683,6 +16503,284 @@ export type GetComponentDependencySubscriptionResponses = {
 
 export type GetComponentDependencySubscriptionResponse = GetComponentDependencySubscriptionResponses[keyof GetComponentDependencySubscriptionResponses];
 
+export type ListComponentDependencyInventoryData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/components/{idOrUrn}/dependency-inventory';
+};
+
+export type ListComponentDependencyInventoryErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListComponentDependencyInventoryError = ListComponentDependencyInventoryErrors[keyof ListComponentDependencyInventoryErrors];
+
+export type ListComponentDependencyInventoryResponses = {
+    /**
+     * Success
+     */
+    200: {
+        component: {
+            id: string;
+            name: string;
+            domainId: string | null;
+        };
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
+        ingestion?: {
+            lastAttemptAt: string;
+            source: 'loop' | 'backfill';
+            outcome: 'ok' | 'partial' | 'unreadable' | 'not_enabled';
+            rowsWritten: number;
+            detail: string | null;
+            manifests: Array<{
+                repo: string;
+                path: string;
+                outcome: string;
+                rows: number;
+                at: string;
+                detail?: string;
+            }>;
+        } | null;
+        lastIngestionDecision: {
+            decisionId: string;
+            firstObservedAt: string;
+            manifestPathsRead: Array<string>;
+            manifestPathsAbsent: Array<string>;
+            skipped: Array<{
+                path: string;
+                reason: string;
+            }>;
+        } | null;
+        componentGate: {
+            enabled: boolean;
+            reason: 'enabled' | 'instance_locked' | 'no_enabling_contribution';
+            contributions: Array<{
+                tier: 'instance' | 'org' | 'containment_domain' | 'service' | 'component';
+                source: string;
+                objectTypeId?: string;
+                contributed: 'unlock' | 'lock' | 'enable' | 'disable' | 'ignored';
+                ignoredReason?: 'malformed' | 'condition_unevaluable';
+                selector?: {
+                    ecosystem?: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate?: string;
+                    major?: string;
+                };
+                granularity?: 'patch' | 'minor_and_patch';
+                delivery?: 'pull_request' | 'auto_merge';
+            }>;
+        };
+        rows: Array<{
+            line: {
+                id: string;
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                major: string;
+                tagPattern: string | null;
+            };
+            manifestPath: string;
+            declaredVersion: string;
+            resolvedVersion: string | null;
+            resolvedDigest: string | null;
+            observedRepo: string | null;
+            observedRef: string | null;
+            observedAt: string;
+            head: {
+                latestVersion: string | null;
+                latestDigest: string | null;
+                latestObservedAt: string | null;
+            };
+            producer: {
+                objectId: string;
+                name: string;
+            } | null;
+            subscription: {
+                enabled: boolean;
+                reason: 'enabled' | 'instance_locked' | 'disabled' | 'not_enabled';
+                granularity: 'patch' | 'minor_and_patch';
+                delivery: 'pull_request' | 'auto_merge';
+                contributions: Array<{
+                    tier: 'instance' | 'org' | 'containment_domain' | 'service' | 'component';
+                    source: string;
+                    objectTypeId?: string;
+                    contributed: 'unlock' | 'lock' | 'enable' | 'disable' | 'ignored';
+                    ignoredReason?: 'malformed' | 'condition_unevaluable';
+                    selector?: {
+                        ecosystem?: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                        coordinate?: string;
+                        major?: string;
+                    };
+                    granularity?: 'patch' | 'minor_and_patch';
+                    delivery?: 'pull_request' | 'auto_merge';
+                }>;
+            };
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListComponentDependencyInventoryResponse = ListComponentDependencyInventoryResponses[keyof ListComponentDependencyInventoryResponses];
+
+export type ListComponentDependencyBumpsData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/components/{idOrUrn}/dependency-bumps';
+};
+
+export type ListComponentDependencyBumpsErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListComponentDependencyBumpsError = ListComponentDependencyBumpsErrors[keyof ListComponentDependencyBumpsErrors];
+
+export type ListComponentDependencyBumpsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        component: {
+            id: string;
+            name: string;
+            domainId: string | null;
+        };
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
+        rows: Array<{
+            changeId: string;
+            changeName: string;
+            line: {
+                id: string;
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                major: string;
+            };
+            manifestPath: string;
+            fromVersion: string;
+            toVersion: string;
+            repo: string;
+            baseBranch: string;
+            authoredRef: string;
+            pullRequestNumber: number | null;
+            pullRequestUrl: string | null;
+            headCommit: string | null;
+            dispatchedAt: string;
+            mergedAt: string | null;
+            delivery: 'pull_request' | 'auto_merge' | null;
+            deliveryReason: string | null;
+            merge: {
+                verdict: string;
+                decisionId: string;
+                evaluatedAt: string;
+            } | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListComponentDependencyBumpsResponse = ListComponentDependencyBumpsResponses[keyof ListComponentDependencyBumpsResponses];
+
 export type BackfillDependencyInventoryData = {
     body: {
         componentIdsOrUrns?: Array<string>;
@@ -15843,6 +16941,14 @@ export type ListDependencyLineProducersResponses = {
             producerObjectId: string;
             declaredAt: string;
             declaredByObjectId: string;
+            producer: {
+                objectId: string;
+                name: string;
+            };
+            declaredBy: {
+                objectId: string;
+                name: string;
+            };
         }>;
         dependencyManagement: {
             managedHere: boolean;
@@ -15941,6 +17047,14 @@ export type DeclareDependencyLineProducerResponses = {
             producerObjectId: string;
             declaredAt: string;
             declaredByObjectId: string;
+            producer: {
+                objectId: string;
+                name: string;
+            };
+            declaredBy: {
+                objectId: string;
+                name: string;
+            };
         } | null;
         lines: Array<{
             lineId: string;
@@ -15953,6 +17067,10 @@ export type DeclareDependencyLineProducerResponses = {
             };
             headCleared: boolean;
             subscribedComponentObjectIds: Array<string>;
+            subscribedComponents: Array<{
+                objectId: string;
+                name: string;
+            }>;
         }>;
         openBumpAuthorships: Array<{
             changeObjectId: string;
@@ -16060,6 +17178,14 @@ export type RetractDependencyLineProducerResponses = {
             producerObjectId: string;
             declaredAt: string;
             declaredByObjectId: string;
+            producer: {
+                objectId: string;
+                name: string;
+            };
+            declaredBy: {
+                objectId: string;
+                name: string;
+            };
         } | null;
         lines: Array<{
             lineId: string;
@@ -16072,6 +17198,10 @@ export type RetractDependencyLineProducerResponses = {
             };
             headCleared: boolean;
             subscribedComponentObjectIds: Array<string>;
+            subscribedComponents: Array<{
+                objectId: string;
+                name: string;
+            }>;
         }>;
         openBumpAuthorships: Array<{
             changeObjectId: string;
@@ -16925,6 +18055,7 @@ export type RollbackCampaignResponses = {
                 createdAt: string;
                 updatedAt: string;
                 originDomainId?: string;
+                domainLocal: boolean;
             };
         }>;
         skipped: Array<{
@@ -16935,287 +18066,6 @@ export type RollbackCampaignResponses = {
 };
 
 export type RollbackCampaignResponse = RollbackCampaignResponses[keyof RollbackCampaignResponses];
-
-export type ListInitiativesData = {
-    body?: never;
-    path?: never;
-    query?: {
-        cursor?: string;
-        limit?: number;
-    };
-    url: '/initiatives';
-};
-
-export type ListInitiativesErrors = {
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type ListInitiativesError = ListInitiativesErrors[keyof ListInitiativesErrors];
-
-export type ListInitiativesResponses = {
-    /**
-     * Success
-     */
-    200: {
-        items: Array<{
-            id: string;
-            orgId: string;
-            urn: string;
-            name: string;
-            description: string | null;
-            createdAt: string;
-            updatedAt: string;
-        }>;
-        nextCursor: string | null;
-    };
-};
-
-export type ListInitiativesResponse = ListInitiativesResponses[keyof ListInitiativesResponses];
-
-export type ProposeInitiativeData = {
-    body: {
-        name: string;
-        id?: string;
-        urn?: string;
-        domainId?: string | null;
-        description?: string;
-        labels?: {
-            [key: string]: unknown;
-        };
-        campaigns: Array<string>;
-    };
-    path?: never;
-    query?: never;
-    url: '/initiatives';
-};
-
-export type ProposeInitiativeErrors = {
-    /**
-     * Error
-     */
-    400: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type ProposeInitiativeError = ProposeInitiativeErrors[keyof ProposeInitiativeErrors];
-
-export type ProposeInitiativeResponses = {
-    /**
-     * Success
-     */
-    201: {
-        id: string;
-        orgId: string;
-        urn: string;
-        name: string;
-        description: string | null;
-        createdAt: string;
-        updatedAt: string;
-    };
-};
-
-export type ProposeInitiativeResponse = ProposeInitiativeResponses[keyof ProposeInitiativeResponses];
-
-export type GetInitiativeData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/initiatives/{id}';
-};
-
-export type GetInitiativeErrors = {
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    404: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type GetInitiativeError = GetInitiativeErrors[keyof GetInitiativeErrors];
-
-export type GetInitiativeResponses = {
-    /**
-     * Success
-     */
-    200: {
-        initiative: {
-            id: string;
-            orgId: string;
-            urn: string;
-            name: string;
-            description: string | null;
-            createdAt: string;
-            updatedAt: string;
-        };
-        campaigns: Array<{
-            campaign: {
-                id: string;
-                orgId: string;
-                urn: string;
-                name: string;
-                description: string | null;
-                targets: Array<string>;
-                topologyObjectId: string | null;
-                topologyVersion: number | null;
-                status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
-                createdAt: string;
-                updatedAt: string;
-            };
-            status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
-        }>;
-        rollupStatus: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
-    };
-};
-
-export type GetInitiativeResponse = GetInitiativeResponses[keyof GetInitiativeResponses];
-
-export type AddInitiativeCampaignData = {
-    body: {
-        campaign: string;
-    };
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/initiatives/{id}/campaigns';
-};
-
-export type AddInitiativeCampaignErrors = {
-    /**
-     * Error
-     */
-    400: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    404: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type AddInitiativeCampaignError = AddInitiativeCampaignErrors[keyof AddInitiativeCampaignErrors];
-
-export type AddInitiativeCampaignResponses = {
-    /**
-     * Success
-     */
-    204: void;
-};
-
-export type AddInitiativeCampaignResponse = AddInitiativeCampaignResponses[keyof AddInitiativeCampaignResponses];
 
 export type InitFederationData = {
     body: {
@@ -17773,6 +18623,22 @@ export type GetFederationStatusResponses = {
             cosignPublicKey?: string | null;
         } | null;
         ownJournalTail?: number | null;
+        selfOutpost?: {
+            objectId: string;
+            urn: string;
+            name: string;
+            peerDomainId: string;
+            trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
+            originDomainId: string;
+            originIsSelf?: boolean;
+            peerIsSelf?: boolean;
+            provenance?: 'manual' | null;
+            revision: number;
+            version: number;
+            unknownFields: Array<string>;
+            createdAt: string;
+            updatedAt: string;
+        } | null;
         peers: Array<{
             peer: {
                 id: string;
@@ -18858,6 +19724,7 @@ export type ListOutpostConfigsResponses = {
         trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
         originIsSelf?: boolean;
+        peerIsSelf?: boolean;
         provenance?: 'manual' | null;
         revision: number;
         version: number;
@@ -18952,6 +19819,7 @@ export type CreateOutpostConfigResponses = {
         trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
         originIsSelf?: boolean;
+        peerIsSelf?: boolean;
         provenance?: 'manual' | null;
         revision: number;
         version: number;
@@ -19022,6 +19890,7 @@ export type GetOutpostConfigResponses = {
         trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
         originIsSelf?: boolean;
+        peerIsSelf?: boolean;
         provenance?: 'manual' | null;
         revision: number;
         version: number;
@@ -19129,6 +19998,7 @@ export type UpdateOutpostConfigResponses = {
         trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
         originIsSelf?: boolean;
+        peerIsSelf?: boolean;
         provenance?: 'manual' | null;
         revision: number;
         version: number;
@@ -19226,6 +20096,7 @@ export type ReconcileOutpostConfigErrors = {
             trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
             originDomainId: string;
             originIsSelf?: boolean;
+            peerIsSelf?: boolean;
             provenance?: 'manual' | null;
             revision: number;
             version: number;
@@ -19251,6 +20122,7 @@ export type ReconcileOutpostConfigResponses = {
             trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
             originDomainId: string;
             originIsSelf?: boolean;
+            peerIsSelf?: boolean;
             provenance?: 'manual' | null;
             revision: number;
             version: number;

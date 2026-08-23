@@ -190,7 +190,7 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
     await expectApiError(
       admin.federation.createOutpost({ peerDomainId: unpaired }),
       400,
-      /not a paired federation peer/i
+      /neither a paired federation peer nor this instance's own trust domain/i
     );
     expect(await outpostObjectRows()).toHaveLength(before.length);
   });
@@ -215,6 +215,79 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
       /already has an outpost config object/i
     );
     expect(await outpostObjectRows()).toHaveLength(before.length);
+  });
+
+  // ==========================================================================================
+  // pipeline-substrate-registry-scan.md §10.5 — THE HQ OUTPOST (owner, 2026-08-16). The
+  // second accepted binding shape: `peerDomainId` = THIS instance's own trust domain. Everything
+  // else stays fail-closed (the two 400s above still hold — measured in this same file), the 1:1
+  // rule applies to self exactly as to a peer (409), and every read surface states "this instance"
+  // rather than joining to a peer row that does not exist.
+  //
+  // MUTATION LOG (each applied ALONE, then reverted)
+  // | Mutation | Result |
+  // |---|---|
+  // | `const isSelf = false` in outpost-binding.ts | the create below FAILS 400 ("neither a paired federation peer nor…") |
+  // | drop the clash scan for self (`if (!isSelf && blocking[0])`) | the second-object case FAILS (201, not 409) |
+  // | `peerIsSelf: originIsSelf` in toOutpostConfig | passes here (both true on the commander) — pinned as DIFFERENT by outpost-config-sync's replica, where origin is foreign and peer is self |
+  // | omit `selfOutpost` from status-repo | the status case FAILS (undefined) |
+  // ==========================================================================================
+  it("§10.5: `peerDomainId` = THIS instance's own domain is ACCEPTED (201) — the HQ outpost — named after self by default, `peerIsSelf: true`, resolvable by GET, listed, and on `federation.status().selfOutpost`", async () => {
+    const self = await admin.federation.self();
+    const before = await outpostObjectRows();
+
+    const config = await admin.federation.createOutpost({
+      peerDomainId: self.domainId,
+      trustTier: "commercial"
+    });
+    expect(config.peerDomainId).toBe(self.domainId);
+    // No peer row to take a name from — the default is this instance's OWN federation name.
+    expect(config.name).toBe(self.name);
+    expect(config.trustTier).toBe("commercial");
+    expect(config.peerIsSelf, "the wire states the binding is to self").toBe(true);
+    expect(config.originIsSelf, "…and this instance authored it").toBe(true);
+    expect(await outpostObjectRows()).toHaveLength(before.length + 1);
+
+    // The single GET resolves it through the same binding — the page the pipeline's outpost link
+    // opens (`/federation/outposts/{self}`) has something to render.
+    const viaGet = await admin.federation.getOutpost(self.domainId);
+    expect(viaGet.objectId).toBe(config.objectId);
+    expect(viaGet.peerIsSelf).toBe(true);
+    // Listed beside the peer-bound records, with the flag; peer-bound records read false.
+    const listed = await admin.federation.listOutposts();
+    expect(listed.find((c) => c.objectId === config.objectId)?.peerIsSelf).toBe(true);
+    expect(listed.find((c) => c.peerDomainId === outpostPeerId)?.peerIsSelf).toBe(false);
+    // The status surface carries it as `selfOutpost` — it can never be a `peers[]` entry (no peer
+    // row), and the Outposts page reads it from there.
+    const status = await admin.federation.status();
+    expect(status.selfOutpost?.objectId).toBe(config.objectId);
+    expect(status.selfOutpost?.trustTier).toBe("commercial");
+    expect(
+      status.peers.some((p) => p.peer.id === self.domainId),
+      "self is not a peer"
+    ).toBe(false);
+  });
+
+  it("§10.5: a SECOND self-bound object CONFLICTS (409) — 1:1 per domain holds for self as for a peer", async () => {
+    const self = await admin.federation.self();
+    const before = await outpostObjectRows();
+    await expectApiError(
+      admin.federation.createOutpost({ peerDomainId: self.domainId, name: "second-self" }),
+      409,
+      /already has an outpost config object/i
+    );
+    expect(await outpostObjectRows()).toHaveLength(before.length);
+  });
+
+  it("§10.5: the unbound refusal names BOTH accepted shapes — a paired `outpost` peer or this instance's own domain id", async () => {
+    const self = await admin.federation.self();
+    await expectApiError(
+      admin.federation.createOutpost({ peerDomainId: randomUUID() }),
+      400,
+      new RegExp(
+        `neither a paired federation peer nor this instance's own trust domain \\('${self.domainId}'\\)`
+      )
+    );
   });
 
   it("a tier is NEVER fabricated: created without one, `trustTier` is null and declared unknown", async () => {

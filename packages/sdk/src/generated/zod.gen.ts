@@ -19,7 +19,12 @@ export const zGetCurrentUserResponse = z.object({
     orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     orgName: z.string(),
     username: z.string(),
-    subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+    subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    instanceRole: z.enum([
+        'commander',
+        'outpost',
+        'retrans'
+    ])
 });
 
 /**
@@ -2025,7 +2030,14 @@ export const zGetComponentPipelineResponse = z.object({
     component: z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         urn: z.string(),
-        name: z.string()
+        name: z.string(),
+        maintainedBy: z.object({
+            domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            name: z.string().nullable(),
+            isSelf: z.boolean(),
+            role: z.string().nullable()
+        }),
+        domainLocal: z.boolean()
     }),
     pipeline: z.object({
         topologyObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -2053,7 +2065,12 @@ export const zGetComponentPipelineResponse = z.object({
             'configuration'
         ]),
         classification: z.enum(['dev', 'beta']).nullable(),
-        url: z.string().nullable()
+        mirrorOfShared: z.boolean(),
+        enabled: z.boolean(),
+        disabledUntil: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
+        effectivelyEnabled: z.boolean(),
+        url: z.string().nullable(),
+        scope: z.enum(['global', 'domain']).nullable()
     })),
     stages: z.array(z.object({
         placement: z.object({
@@ -2069,13 +2086,30 @@ export const zGetComponentPipelineResponse = z.object({
             id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
             name: z.string(),
             environment: z.string().nullable(),
-            region: z.string().nullable()
+            region: z.string().nullable(),
+            substrate: z.string().nullable(),
+            account: z.string().nullable(),
+            cluster: z.string().nullable()
         }),
         maintainedBy: z.object({
             domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
             name: z.string().nullable(),
             isSelf: z.boolean(),
             role: z.string().nullable()
+        }),
+        outpost: z.object({
+            state: z.enum([
+                'outpost',
+                'self',
+                'peer-without-outpost',
+                'peer-not-outpost',
+                'unknown-domain'
+            ]),
+            id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            name: z.string().nullable(),
+            trustTier: z.string().nullable(),
+            peerDomainId: z.string().nullable(),
+            peerRole: z.string().nullable()
         }),
         stageName: z.string().nullable(),
         binding: z.object({
@@ -2088,7 +2122,8 @@ export const zGetComponentPipelineResponse = z.object({
                 'configuration'
             ]),
             executionSystemId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
-            executionSystemName: z.string().nullable()
+            executionSystemName: z.string().nullable(),
+            resolvedVia: z.string().optional()
         }).nullable(),
         bindings: z.array(z.object({
             externalRef: z.string().nullable(),
@@ -2100,7 +2135,8 @@ export const zGetComponentPipelineResponse = z.object({
                 'configuration'
             ]),
             executionSystemId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
-            executionSystemName: z.string().nullable()
+            executionSystemName: z.string().nullable(),
+            resolvedVia: z.string().optional()
         })),
         current: z.object({
             changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -2203,7 +2239,10 @@ export const zGetComponentPipelineResponse = z.object({
             id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
             name: z.string(),
             environment: z.string().nullable(),
-            region: z.string().nullable()
+            region: z.string().nullable(),
+            substrate: z.string().nullable(),
+            account: z.string().nullable(),
+            cluster: z.string().nullable()
         }),
         maintainedBy: z.object({
             domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
@@ -2211,8 +2250,136 @@ export const zGetComponentPipelineResponse = z.object({
             isSelf: z.boolean(),
             role: z.string().nullable()
         }),
+        outpost: z.object({
+            state: z.enum([
+                'outpost',
+                'self',
+                'peer-without-outpost',
+                'peer-not-outpost',
+                'unknown-domain'
+            ]),
+            id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            name: z.string().nullable(),
+            trustTier: z.string().nullable(),
+            peerDomainId: z.string().nullable(),
+            peerRole: z.string().nullable()
+        }),
         stageName: z.string().nullable()
     })),
+    registry: z.object({
+        state: z.enum([
+            'declared',
+            'ambiguous',
+            'none'
+        ]),
+        executionSystemId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        name: z.string().nullable(),
+        kind: z.string().nullable(),
+        url: z.string().nullable(),
+        repository: z.string().nullable(),
+        edgeCount: z.int().gte(-9007199254740991).lte(9007199254740991)
+    }).nullish(),
+    artifact: z.object({
+        changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        changeName: z.string().nullable(),
+        changeCreatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+        digests: z.array(z.string()),
+        sbom: z.object({
+            format: z.enum(['cyclonedx', 'spdx']),
+            specVersion: z.string().optional(),
+            digest: z.string(),
+            location: z.string().min(1),
+            mediaType: z.string().optional(),
+            signatureRef: z.string().optional(),
+            scanner: z.string().optional(),
+            scannerVersion: z.string().optional(),
+            generatedAt: z.string().optional()
+        }).nullable(),
+        scans: z.array(z.object({
+            method: z.string(),
+            scanner: z.enum([
+                'trivy',
+                'openscap',
+                'trivy-vm'
+            ]),
+            scannerVersion: z.string(),
+            digest: z.string(),
+            digestMatch: z.boolean().nullable(),
+            status: z.enum([
+                'pass',
+                'fail',
+                'warning',
+                'skipped',
+                'timed_out',
+                'expired'
+            ]),
+            counts: z.object({
+                critical: z.int().gte(0).lte(9007199254740991),
+                high: z.int().gte(0).lte(9007199254740991),
+                medium: z.int().gte(0).lte(9007199254740991),
+                low: z.int().gte(0).lte(9007199254740991)
+            }).nullable(),
+            threshold: z.object({
+                maxCritical: z.int().gte(0).lte(9007199254740991),
+                maxHigh: z.int().gte(0).lte(9007199254740991),
+                maxMedium: z.int().gte(0).lte(9007199254740991).optional(),
+                maxLow: z.int().gte(0).lte(9007199254740991).optional()
+            }).nullable(),
+            evaluatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+            controlRunId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            managed: z.boolean()
+        })),
+        exportGate: z.enum([
+            'pass',
+            'fail',
+            'not_run'
+        ]),
+        signing: z.object({
+            promotionExports: z.array(z.object({
+                peerDomainId: z.string(),
+                peerName: z.string().nullable(),
+                exportedAt: z.string(),
+                checksum: z.string(),
+                manifest: z.object({
+                    manifestVersion: z.literal('scp-promotion-manifest/v1'),
+                    createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                    sourceChangeObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+                    exporterDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+                    peerDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+                    changeUrn: z.string(),
+                    artifacts: z.array(z.object({
+                        type: z.enum(['oci', 'blob']),
+                        digest: z.string(),
+                        signatureRef: z.string().optional()
+                    }))
+                }),
+                manifestSignature: z.string(),
+                keyFingerprint: z.string().nullable()
+            })),
+            originSignatureRefs: z.array(z.string()),
+            importedManifest: z.object({
+                manifest: z.object({
+                    manifestVersion: z.literal('scp-promotion-manifest/v1'),
+                    createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                    sourceChangeObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+                    exporterDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+                    peerDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+                    changeUrn: z.string(),
+                    artifacts: z.array(z.object({
+                        type: z.enum(['oci', 'blob']),
+                        digest: z.string(),
+                        signatureRef: z.string().optional()
+                    }))
+                }),
+                manifestSignature: z.string(),
+                exporterDomainId: z.string(),
+                exporterName: z.string().nullable(),
+                importedFromDomain: z.string().nullable(),
+                artifactCount: z.int().gte(0).lte(9007199254740991)
+            }).nullish()
+        }),
+        unknownFields: z.array(z.string())
+    }).nullish(),
     unknownFields: z.array(z.string())
 });
 
@@ -2683,7 +2850,14 @@ export const zGetServiceBoardResponse = z.object({
     service: z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         urn: z.string(),
-        name: z.string()
+        name: z.string(),
+        maintainedBy: z.object({
+            domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            name: z.string().nullable(),
+            isSelf: z.boolean(),
+            role: z.string().nullable()
+        }),
+        domainLocal: z.boolean()
     }),
     rows: z.array(z.object({
         component: z.object({
@@ -3298,8 +3472,7 @@ export const zGraphQueryResponse = z.object({
         'impact-of',
         'blast-radius',
         'paths-between',
-        'domains-impacted',
-        'initiative-rollup'
+        'domains-impacted'
     ]),
     objects: z.array(z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -3483,7 +3656,10 @@ export const zCreatePlanResponse = z.object({
                 'infrastructure',
                 'configuration'
             ]).optional(),
-            classification: z.enum(['dev', 'beta']).optional()
+            classification: z.enum(['dev', 'beta']).optional(),
+            mirrorOfShared: z.boolean().optional(),
+            enabled: z.boolean().optional(),
+            scope: z.enum(['global', 'domain']).nullish()
         })).optional(),
         executorBindings: z.array(z.object({
             targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3518,6 +3694,9 @@ export const zCreatePlanResponse = z.object({
                 'oci'
             ]),
             coordinate: z.string().min(1).max(512)
+        })).optional(),
+        governanceMoveRungs: z.array(z.object({
+            subjectIdOrUrn: z.string().min(1).max(512)
         })).optional()
     }),
     diff: z.object({
@@ -3557,6 +3736,7 @@ export const zCreatePlanResponse = z.object({
             kind: z.literal('source-mapping'),
             action: z.enum([
                 'create',
+                'update',
                 'delete',
                 'noop'
             ]),
@@ -3574,6 +3754,9 @@ export const zCreatePlanResponse = z.object({
                 'configuration'
             ]),
             classification: z.enum(['dev', 'beta']).nullable(),
+            mirrorOfShared: z.boolean(),
+            enabled: z.boolean(),
+            scope: z.enum(['global', 'domain']).nullish(),
             reason: z.string()
         })).optional(),
         placements: z.array(z.object({
@@ -3634,6 +3817,16 @@ export const zCreatePlanResponse = z.object({
             coordinate: z.string().min(1).max(512),
             producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            reason: z.string()
+        })).optional(),
+        governanceMoveRungs: z.array(z.object({
+            kind: z.literal('governance-move-rung'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            subjectUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             reason: z.string()
         })).optional(),
         summary: z.object({
@@ -3690,7 +3883,10 @@ export const zGetPlanResponse = z.object({
                 'infrastructure',
                 'configuration'
             ]).optional(),
-            classification: z.enum(['dev', 'beta']).optional()
+            classification: z.enum(['dev', 'beta']).optional(),
+            mirrorOfShared: z.boolean().optional(),
+            enabled: z.boolean().optional(),
+            scope: z.enum(['global', 'domain']).nullish()
         })).optional(),
         executorBindings: z.array(z.object({
             targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3725,6 +3921,9 @@ export const zGetPlanResponse = z.object({
                 'oci'
             ]),
             coordinate: z.string().min(1).max(512)
+        })).optional(),
+        governanceMoveRungs: z.array(z.object({
+            subjectIdOrUrn: z.string().min(1).max(512)
         })).optional()
     }),
     diff: z.object({
@@ -3764,6 +3963,7 @@ export const zGetPlanResponse = z.object({
             kind: z.literal('source-mapping'),
             action: z.enum([
                 'create',
+                'update',
                 'delete',
                 'noop'
             ]),
@@ -3781,6 +3981,9 @@ export const zGetPlanResponse = z.object({
                 'configuration'
             ]),
             classification: z.enum(['dev', 'beta']).nullable(),
+            mirrorOfShared: z.boolean(),
+            enabled: z.boolean(),
+            scope: z.enum(['global', 'domain']).nullish(),
             reason: z.string()
         })).optional(),
         placements: z.array(z.object({
@@ -3841,6 +4044,16 @@ export const zGetPlanResponse = z.object({
             coordinate: z.string().min(1).max(512),
             producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            reason: z.string()
+        })).optional(),
+        governanceMoveRungs: z.array(z.object({
+            kind: z.literal('governance-move-rung'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            subjectUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             reason: z.string()
         })).optional(),
         summary: z.object({
@@ -3898,7 +4111,10 @@ export const zApplyPlanResponse = z.object({
                     'infrastructure',
                     'configuration'
                 ]).optional(),
-                classification: z.enum(['dev', 'beta']).optional()
+                classification: z.enum(['dev', 'beta']).optional(),
+                mirrorOfShared: z.boolean().optional(),
+                enabled: z.boolean().optional(),
+                scope: z.enum(['global', 'domain']).nullish()
             })).optional(),
             executorBindings: z.array(z.object({
                 targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3933,6 +4149,9 @@ export const zApplyPlanResponse = z.object({
                     'oci'
                 ]),
                 coordinate: z.string().min(1).max(512)
+            })).optional(),
+            governanceMoveRungs: z.array(z.object({
+                subjectIdOrUrn: z.string().min(1).max(512)
             })).optional()
         }),
         diff: z.object({
@@ -3972,6 +4191,7 @@ export const zApplyPlanResponse = z.object({
                 kind: z.literal('source-mapping'),
                 action: z.enum([
                     'create',
+                    'update',
                     'delete',
                     'noop'
                 ]),
@@ -3989,6 +4209,9 @@ export const zApplyPlanResponse = z.object({
                     'configuration'
                 ]),
                 classification: z.enum(['dev', 'beta']).nullable(),
+                mirrorOfShared: z.boolean(),
+                enabled: z.boolean(),
+                scope: z.enum(['global', 'domain']).nullish(),
                 reason: z.string()
             })).optional(),
             placements: z.array(z.object({
@@ -4051,6 +4274,16 @@ export const zApplyPlanResponse = z.object({
                 displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
                 reason: z.string()
             })).optional(),
+            governanceMoveRungs: z.array(z.object({
+                kind: z.literal('governance-move-rung'),
+                action: z.enum([
+                    'create',
+                    'delete',
+                    'noop'
+                ]),
+                subjectUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                reason: z.string()
+            })).optional(),
             summary: z.object({
                 creates: z.int().gte(-9007199254740991).lte(9007199254740991),
                 updates: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -4110,7 +4343,8 @@ export const zListChangesResponse = z.object({
         properties: z.record(z.string(), z.unknown()),
         createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
         updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-        originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional()
+        originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional(),
+        domainLocal: z.boolean()
     })),
     nextCursor: z.string().nullable()
 });
@@ -4150,7 +4384,8 @@ export const zProposeChangeResponse = z.object({
     properties: z.record(z.string(), z.unknown()),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
     updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-    originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional()
+    originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional(),
+    domainLocal: z.boolean()
 });
 
 /**
@@ -4188,7 +4423,8 @@ export const zGetChangeResponse = z.object({
     properties: z.record(z.string(), z.unknown()),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
     updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-    originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional()
+    originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional(),
+    domainLocal: z.boolean()
 });
 
 /**
@@ -4227,7 +4463,8 @@ export const zExplainChangeResponse = z.object({
         properties: z.record(z.string(), z.unknown()),
         createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
         updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-        originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional()
+        originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional(),
+        domainLocal: z.boolean()
     }),
     plan: z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -4275,7 +4512,13 @@ export const zExplainChangeResponse = z.object({
                         step: z.number().optional(),
                         weight: z.number().optional(),
                         message: z.string().optional()
-                    }).optional()
+                    }).optional(),
+                    truncation: z.record(z.string(), z.object({
+                        dropped: z.boolean(),
+                        droppedCharacters: z.int().gte(0).lte(9007199254740991).optional(),
+                        droppedEntries: z.int().gte(0).lte(9007199254740991).optional(),
+                        droppedFields: z.int().gte(0).lte(9007199254740991).optional()
+                    })).optional()
                 }).nullish(),
                 status: z.string(),
                 attempt: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -4436,7 +4679,8 @@ export const zCancelChangeResponse = z.object({
     properties: z.record(z.string(), z.unknown()),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
     updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-    originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional()
+    originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional(),
+    domainLocal: z.boolean()
 });
 
 /**
@@ -4474,7 +4718,8 @@ export const zAcceptChangeResponse = z.object({
     properties: z.record(z.string(), z.unknown()),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
     updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-    originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional()
+    originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional(),
+    domainLocal: z.boolean()
 });
 
 /**
@@ -4512,7 +4757,8 @@ export const zRollbackChangeResponse = z.object({
     properties: z.record(z.string(), z.unknown()),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
     updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-    originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional()
+    originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional(),
+    domainLocal: z.boolean()
 });
 
 /**
@@ -4603,6 +4849,11 @@ export const zListSourceMappingsResponse = z.object({
             'configuration'
         ]),
         classification: z.enum(['dev', 'beta']).nullable(),
+        mirrorOfShared: z.boolean(),
+        enabled: z.boolean(),
+        disabledUntil: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
+        effectivelyEnabled: z.boolean(),
+        scope: z.enum(['global', 'domain']).nullable(),
         createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
     })),
     nextCursor: z.string().nullable()
@@ -4633,6 +4884,77 @@ export const zCreateSourceMappingResponse = z.object({
         'configuration'
     ]),
     classification: z.enum(['dev', 'beta']).nullable(),
+    mirrorOfShared: z.boolean(),
+    enabled: z.boolean(),
+    disabledUntil: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
+    effectivelyEnabled: z.boolean(),
+    scope: z.enum(['global', 'domain']).nullable(),
+    createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+});
+
+/**
+ * Success
+ */
+export const zSetSourceMappingEnabledResponse = z.object({
+    id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    sourceKind: z.string(),
+    repoPattern: z.string().nullable(),
+    pathPattern: z.string().nullable(),
+    refPattern: z.string().nullable(),
+    componentObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    type: z.enum([
+        'image',
+        'rpm',
+        'deb',
+        'npm',
+        'infrastructure',
+        'configuration'
+    ]),
+    category: z.enum([
+        'build',
+        'infrastructure',
+        'configuration'
+    ]),
+    classification: z.enum(['dev', 'beta']).nullable(),
+    mirrorOfShared: z.boolean(),
+    enabled: z.boolean(),
+    disabledUntil: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
+    effectivelyEnabled: z.boolean(),
+    scope: z.enum(['global', 'domain']).nullable(),
+    createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+});
+
+/**
+ * Success
+ */
+export const zSetSourceMappingScopeResponse = z.object({
+    id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    sourceKind: z.string(),
+    repoPattern: z.string().nullable(),
+    pathPattern: z.string().nullable(),
+    refPattern: z.string().nullable(),
+    componentObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    type: z.enum([
+        'image',
+        'rpm',
+        'deb',
+        'npm',
+        'infrastructure',
+        'configuration'
+    ]),
+    category: z.enum([
+        'build',
+        'infrastructure',
+        'configuration'
+    ]),
+    classification: z.enum(['dev', 'beta']).nullable(),
+    mirrorOfShared: z.boolean(),
+    enabled: z.boolean(),
+    disabledUntil: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
+    effectivelyEnabled: z.boolean(),
+    scope: z.enum(['global', 'domain']).nullable(),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
 });
 
@@ -5252,6 +5574,135 @@ export const zPolicyEvaluateResponse = z.object({
 /**
  * Success
  */
+export const zGetObjectGovernanceMoveEnforcementResponse = z.object({
+    enforced: z.boolean(),
+    instance: z.object({
+        enabled: z.boolean()
+    }),
+    rungs: z.array(z.object({
+        tier: z.enum([
+            'org',
+            'containment_domain',
+            'service',
+            'assembly'
+        ]),
+        subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        name: z.string(),
+        enabledAt: z.string(),
+        enabledByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        depth: z.int().gte(-9007199254740991).lte(9007199254740991).optional()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zListGovernanceMoveRungsResponse = z.object({
+    instance: z.object({
+        enabled: z.boolean()
+    }),
+    rungs: z.array(z.object({
+        tier: z.enum([
+            'org',
+            'containment_domain',
+            'service',
+            'assembly'
+        ]),
+        subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        name: z.string(),
+        enabledAt: z.string(),
+        enabledByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        depth: z.int().gte(-9007199254740991).lte(9007199254740991).optional()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zDisableGovernanceMoveRungResponse = z.object({
+    subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    tier: z.enum([
+        'org',
+        'containment_domain',
+        'service',
+        'assembly'
+    ]),
+    enabled: z.boolean(),
+    enforcement: z.object({
+        enforced: z.boolean(),
+        instance: z.object({
+            enabled: z.boolean()
+        }),
+        rungs: z.array(z.object({
+            tier: z.enum([
+                'org',
+                'containment_domain',
+                'service',
+                'assembly'
+            ]),
+            subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string(),
+            enabledAt: z.string(),
+            enabledByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            depth: z.int().gte(-9007199254740991).lte(9007199254740991).optional()
+        }))
+    }),
+    decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+});
+
+/**
+ * Success
+ */
+export const zEnableGovernanceMoveRungResponse = z.object({
+    subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    tier: z.enum([
+        'org',
+        'containment_domain',
+        'service',
+        'assembly'
+    ]),
+    enabled: z.boolean(),
+    enforcement: z.object({
+        enforced: z.boolean(),
+        instance: z.object({
+            enabled: z.boolean()
+        }),
+        rungs: z.array(z.object({
+            tier: z.enum([
+                'org',
+                'containment_domain',
+                'service',
+                'assembly'
+            ]),
+            subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string(),
+            enabledAt: z.string(),
+            enabledByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            depth: z.int().gte(-9007199254740991).lte(9007199254740991).optional()
+        }))
+    }),
+    decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+});
+
+/**
+ * Success
+ */
+export const zGetGovernanceMoveInstanceRungResponse = z.object({
+    enabled: z.boolean(),
+    updatedAt: z.string().nullable()
+});
+
+/**
+ * Success
+ */
+export const zPutGovernanceMoveInstanceRungResponse = z.object({
+    enabled: z.boolean(),
+    updatedAt: z.string().nullable()
+});
+
+/**
+ * Success
+ */
 export const zListInstanceScanFloorsResponse = z.object({
     items: z.array(z.object({
         tier: z.enum(['platform', 'trust_domain']),
@@ -5589,6 +6040,226 @@ export const zGetComponentDependencySubscriptionResponse = z.object({
 /**
  * Success
  */
+export const zListComponentDependencyInventoryResponse = z.object({
+    component: z.object({
+        id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        name: z.string(),
+        domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    }),
+    dependencyManagement: z.object({
+        managedHere: z.boolean(),
+        reason: z.enum([
+            'commander',
+            'outpost',
+            'retrans',
+            'role_undeclared'
+        ])
+    }),
+    ingestion: z.object({
+        lastAttemptAt: z.string(),
+        source: z.enum(['loop', 'backfill']),
+        outcome: z.enum([
+            'ok',
+            'partial',
+            'unreadable',
+            'not_enabled'
+        ]),
+        rowsWritten: z.int().gte(0).lte(9007199254740991),
+        detail: z.string().nullable(),
+        manifests: z.array(z.object({
+            repo: z.string(),
+            path: z.string(),
+            outcome: z.string(),
+            rows: z.int().gte(0).lte(9007199254740991),
+            at: z.string(),
+            detail: z.string().optional()
+        }))
+    }).nullish(),
+    lastIngestionDecision: z.object({
+        decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        firstObservedAt: z.string(),
+        manifestPathsRead: z.array(z.string()),
+        manifestPathsAbsent: z.array(z.string()),
+        skipped: z.array(z.object({
+            path: z.string(),
+            reason: z.string()
+        }))
+    }).nullable(),
+    componentGate: z.object({
+        enabled: z.boolean(),
+        reason: z.enum([
+            'enabled',
+            'instance_locked',
+            'no_enabling_contribution'
+        ]),
+        contributions: z.array(z.object({
+            tier: z.enum([
+                'instance',
+                'org',
+                'containment_domain',
+                'service',
+                'component'
+            ]),
+            source: z.string(),
+            objectTypeId: z.string().optional(),
+            contributed: z.enum([
+                'unlock',
+                'lock',
+                'enable',
+                'disable',
+                'ignored'
+            ]),
+            ignoredReason: z.enum(['malformed', 'condition_unevaluable']).optional(),
+            selector: z.object({
+                ecosystem: z.enum([
+                    'npm',
+                    'go',
+                    'maven',
+                    'python',
+                    'oci'
+                ]).optional(),
+                coordinate: z.string().min(1).max(512).optional(),
+                major: z.string().min(1).max(64).optional()
+            }).optional(),
+            granularity: z.enum(['patch', 'minor_and_patch']).optional(),
+            delivery: z.enum(['pull_request', 'auto_merge']).optional()
+        }))
+    }),
+    rows: z.array(z.object({
+        line: z.object({
+            id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512),
+            major: z.string().min(1).max(64),
+            tagPattern: z.string().nullable()
+        }),
+        manifestPath: z.string(),
+        declaredVersion: z.string(),
+        resolvedVersion: z.string().nullable(),
+        resolvedDigest: z.string().nullable(),
+        observedRepo: z.string().nullable(),
+        observedRef: z.string().nullable(),
+        observedAt: z.string(),
+        head: z.object({
+            latestVersion: z.string().nullable(),
+            latestDigest: z.string().nullable(),
+            latestObservedAt: z.string().nullable()
+        }),
+        producer: z.object({
+            objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string()
+        }).nullable(),
+        subscription: z.object({
+            enabled: z.boolean(),
+            reason: z.enum([
+                'enabled',
+                'instance_locked',
+                'disabled',
+                'not_enabled'
+            ]),
+            granularity: z.enum(['patch', 'minor_and_patch']),
+            delivery: z.enum(['pull_request', 'auto_merge']),
+            contributions: z.array(z.object({
+                tier: z.enum([
+                    'instance',
+                    'org',
+                    'containment_domain',
+                    'service',
+                    'component'
+                ]),
+                source: z.string(),
+                objectTypeId: z.string().optional(),
+                contributed: z.enum([
+                    'unlock',
+                    'lock',
+                    'enable',
+                    'disable',
+                    'ignored'
+                ]),
+                ignoredReason: z.enum(['malformed', 'condition_unevaluable']).optional(),
+                selector: z.object({
+                    ecosystem: z.enum([
+                        'npm',
+                        'go',
+                        'maven',
+                        'python',
+                        'oci'
+                    ]).optional(),
+                    coordinate: z.string().min(1).max(512).optional(),
+                    major: z.string().min(1).max(64).optional()
+                }).optional(),
+                granularity: z.enum(['patch', 'minor_and_patch']).optional(),
+                delivery: z.enum(['pull_request', 'auto_merge']).optional()
+            }))
+        })
+    })),
+    nextCursor: z.string().nullable()
+});
+
+/**
+ * Success
+ */
+export const zListComponentDependencyBumpsResponse = z.object({
+    component: z.object({
+        id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        name: z.string(),
+        domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    }),
+    dependencyManagement: z.object({
+        managedHere: z.boolean(),
+        reason: z.enum([
+            'commander',
+            'outpost',
+            'retrans',
+            'role_undeclared'
+        ])
+    }),
+    rows: z.array(z.object({
+        changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        changeName: z.string(),
+        line: z.object({
+            id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512),
+            major: z.string().min(1).max(64)
+        }),
+        manifestPath: z.string(),
+        fromVersion: z.string(),
+        toVersion: z.string(),
+        repo: z.string(),
+        baseBranch: z.string(),
+        authoredRef: z.string(),
+        pullRequestNumber: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+        pullRequestUrl: z.string().nullable(),
+        headCommit: z.string().nullable(),
+        dispatchedAt: z.string(),
+        mergedAt: z.string().nullable(),
+        delivery: z.enum(['pull_request', 'auto_merge']).nullable(),
+        deliveryReason: z.string().nullable(),
+        merge: z.object({
+            verdict: z.string(),
+            decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            evaluatedAt: z.string()
+        }).nullable()
+    })),
+    nextCursor: z.string().nullable()
+});
+
+/**
+ * Success
+ */
 export const zBackfillDependencyInventoryResponse = z.object({
     ref: z.string(),
     components: z.array(z.object({
@@ -5633,7 +6304,15 @@ export const zListDependencyLineProducersResponse = z.object({
         coordinate: z.string().min(1).max(512),
         producerObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         declaredAt: z.string(),
-        declaredByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+        declaredByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        producer: z.object({
+            objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string()
+        }),
+        declaredBy: z.object({
+            objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string()
+        })
     })),
     dependencyManagement: z.object({
         managedHere: z.boolean(),
@@ -5672,7 +6351,15 @@ export const zDeclareDependencyLineProducerResponse = z.object({
         coordinate: z.string().min(1).max(512),
         producerObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         declaredAt: z.string(),
-        declaredByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+        declaredByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        producer: z.object({
+            objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string()
+        }),
+        declaredBy: z.object({
+            objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string()
+        })
     }).nullable(),
     lines: z.array(z.object({
         lineId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -5684,7 +6371,11 @@ export const zDeclareDependencyLineProducerResponse = z.object({
             latestObservedAt: z.string().nullable()
         }),
         headCleared: z.boolean(),
-        subscribedComponentObjectIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/))
+        subscribedComponentObjectIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)),
+        subscribedComponents: z.array(z.object({
+            objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string()
+        }))
     })),
     openBumpAuthorships: z.array(z.object({
         changeObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -5733,7 +6424,15 @@ export const zRetractDependencyLineProducerResponse = z.object({
         coordinate: z.string().min(1).max(512),
         producerObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         declaredAt: z.string(),
-        declaredByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+        declaredByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        producer: z.object({
+            objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string()
+        }),
+        declaredBy: z.object({
+            objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string()
+        })
     }).nullable(),
     lines: z.array(z.object({
         lineId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -5745,7 +6444,11 @@ export const zRetractDependencyLineProducerResponse = z.object({
             latestObservedAt: z.string().nullable()
         }),
         headCleared: z.boolean(),
-        subscribedComponentObjectIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/))
+        subscribedComponentObjectIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)),
+        subscribedComponents: z.array(z.object({
+            objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string()
+        }))
     })),
     openBumpAuthorships: z.array(z.object({
         changeObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -6083,7 +6786,8 @@ export const zRollbackCampaignResponse = z.object({
             properties: z.record(z.string(), z.unknown()),
             createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
             updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-            originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional()
+            originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).optional(),
+            domainLocal: z.boolean()
         })
     })),
     skipped: z.array(z.object({
@@ -6091,96 +6795,6 @@ export const zRollbackCampaignResponse = z.object({
         reason: z.string()
     }))
 });
-
-/**
- * Success
- */
-export const zListInitiativesResponse = z.object({
-    items: z.array(z.object({
-        id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
-        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
-        urn: z.string(),
-        name: z.string(),
-        description: z.string().nullable(),
-        createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-        updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
-    })),
-    nextCursor: z.string().nullable()
-});
-
-/**
- * Success
- */
-export const zProposeInitiativeResponse = z.object({
-    id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
-    orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
-    urn: z.string(),
-    name: z.string(),
-    description: z.string().nullable(),
-    createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-    updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
-});
-
-/**
- * Success
- */
-export const zGetInitiativeResponse = z.object({
-    initiative: z.object({
-        id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
-        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
-        urn: z.string(),
-        name: z.string(),
-        description: z.string().nullable(),
-        createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-        updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
-    }),
-    campaigns: z.array(z.object({
-        campaign: z.object({
-            id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
-            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
-            urn: z.string(),
-            name: z.string(),
-            description: z.string().nullable(),
-            targets: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)),
-            topologyObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
-            topologyVersion: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
-            status: z.enum([
-                'proposed',
-                'active',
-                'blocked',
-                'failed',
-                'completed',
-                'partially_rolled_back',
-                'rolled_back'
-            ]),
-            createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
-            updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
-        }),
-        status: z.enum([
-            'proposed',
-            'active',
-            'blocked',
-            'failed',
-            'completed',
-            'partially_rolled_back',
-            'rolled_back'
-        ])
-    })),
-    rollupStatus: z.enum([
-        'proposed',
-        'active',
-        'blocked',
-        'failed',
-        'completed',
-        'partially_rolled_back',
-        'rolled_back'
-    ])
-});
-
-/**
- * Success
- */
-export const zAddInitiativeCampaignResponse = z.void();
 
 /**
  * Success
@@ -6413,6 +7027,28 @@ export const zGetFederationStatusResponse = z.object({
         cosignPublicKey: z.string().nullish()
     }).nullable(),
     ownJournalTail: z.int().gte(-9007199254740991).lte(9007199254740991).nullish(),
+    selfOutpost: z.object({
+        objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        urn: z.string(),
+        name: z.string(),
+        peerDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        trustTier: z.enum([
+            'commercial',
+            'govcloud',
+            'fedramp-high',
+            'il5',
+            'airgap'
+        ]).nullable(),
+        originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        originIsSelf: z.boolean().optional(),
+        peerIsSelf: z.boolean().optional(),
+        provenance: z.enum(['manual']).nullish(),
+        revision: z.int().gte(-9007199254740991).lte(9007199254740991),
+        version: z.int().gte(-9007199254740991).lte(9007199254740991),
+        unknownFields: z.array(z.string()),
+        createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+        updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+    }).nullish(),
     peers: z.array(z.object({
         peer: z.object({
             id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -6778,6 +7414,7 @@ export const zListOutpostConfigsResponse = z.array(z.object({
     ]).nullable(),
     originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     originIsSelf: z.boolean().optional(),
+    peerIsSelf: z.boolean().optional(),
     provenance: z.enum(['manual']).nullish(),
     revision: z.int().gte(-9007199254740991).lte(9007199254740991),
     version: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -6803,6 +7440,7 @@ export const zCreateOutpostConfigResponse = z.object({
     ]).nullable(),
     originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     originIsSelf: z.boolean().optional(),
+    peerIsSelf: z.boolean().optional(),
     provenance: z.enum(['manual']).nullish(),
     revision: z.int().gte(-9007199254740991).lte(9007199254740991),
     version: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -6828,6 +7466,7 @@ export const zGetOutpostConfigResponse = z.object({
     ]).nullable(),
     originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     originIsSelf: z.boolean().optional(),
+    peerIsSelf: z.boolean().optional(),
     provenance: z.enum(['manual']).nullish(),
     revision: z.int().gte(-9007199254740991).lte(9007199254740991),
     version: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -6853,6 +7492,7 @@ export const zUpdateOutpostConfigResponse = z.object({
     ]).nullable(),
     originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     originIsSelf: z.boolean().optional(),
+    peerIsSelf: z.boolean().optional(),
     provenance: z.enum(['manual']).nullish(),
     revision: z.int().gte(-9007199254740991).lte(9007199254740991),
     version: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -6879,6 +7519,7 @@ export const zReconcileOutpostConfigResponse = z.object({
         ]).nullable(),
         originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         originIsSelf: z.boolean().optional(),
+        peerIsSelf: z.boolean().optional(),
         provenance: z.enum(['manual']).nullish(),
         revision: z.int().gte(-9007199254740991).lte(9007199254740991),
         version: z.int().gte(-9007199254740991).lte(9007199254740991),

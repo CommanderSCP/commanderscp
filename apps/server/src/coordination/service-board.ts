@@ -893,7 +893,24 @@ export async function buildServiceBoard(
 
   const serviceFreeze = activeFreezeFor(service.id);
   return {
-    service: { id: service.id, urn: service.urn, name: service.name },
+    service: {
+      id: service.id,
+      urn: service.urn,
+      name: service.name,
+      // outpost-ui.md §9.3a — the service's own provenance, READ from originDomainId vs self and
+      // the known peers, so the Infrastructure tab can state whether the commander is upstream of
+      // this domain's shared IaC/CaC (a replica) or this domain authored it (self / domain-local).
+      maintainedBy: (() => {
+        if (service.originDomainId === self.domainId) {
+          return { domainId: self.domainId, name: self.name, isSelf: true, role: self.role };
+        }
+        const peer = peers.find((p) => p.id === service.originDomainId);
+        return peer
+          ? { domainId: peer.id, name: peer.name, isSelf: false, role: peer.role }
+          : { domainId: service.originDomainId, name: null, isSelf: false, role: null };
+      })(),
+      domainLocal: service.domainLocal
+    },
     rows,
     summary: { releasing, blocked, stable, notDrivenHere },
     serviceFreeze: serviceFreeze ? toFreeze(serviceFreeze) : null,

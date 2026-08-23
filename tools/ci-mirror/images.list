@@ -121,6 +121,24 @@ docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12
 docker.io/library/debian@sha256:99cdf7792e25416bd801861ccd8e2fb27fb527b25e8d9a8704ebc3ead2015675      debian:11
 docker.io/library/oraclelinux@sha256:0e34a24d2cf0bcc03ee12dfa288ed6e598ea3c273d7bc20be174705c25ec4237 oraclelinux:8
 
+# --- The Kubernetes runner harness (M23.2, CI job 4e) ---------------------------------------------
+# `scripts/kind-runner-harness.sh` creates a kind cluster to run the Kubernetes launcher against a
+# REAL API server (owner decision 3: "a fake Kubernetes client only proves the adapter agrees with
+# itself"). `kind create cluster --image` finds this by the alias tag after `ci-mirror.sh seed`
+# re-tags it, so the cluster bring-up pulls nothing — consumer form (1).
+#
+# THIS IS THE ONLY IMAGE THE CLUSTER ITSELF NEEDS. `kindest/node` carries the whole control plane
+# pre-loaded (kube-apiserver/controller-manager/scheduler, etcd, coredns, kindnet,
+# local-path-provisioner), so a plain kind cluster makes no further registry request. The runner Jobs
+# run `alpine:3.20`, which is already mirrored above as managed-scan's clean scan subject — the
+# harness deliberately reuses it rather than adding a second entry.
+#
+# IT IS BIG: ~1.27 GB in the local image store (measured). That is the whole cost argument for
+# whether this can gate a PR, and it is why the harness is its own job rather than a step inside job
+# 5 — job 5 blackholes the mirrored registries mid-job, and the disk budget of a hosted runner
+# (~14 GB free, `.github/scripts/free-disk.sh`) is already spent there on multiple image builds.
+docker.io/kindest/node@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5      kindest/node:v1.36.1
+
 # --- Pinned CLI tools CI installs before the integration suite --------------------------------------
 # `${…}` is expanded from tools/skopeo/pin.env and tools/cosign/pin.env — the declared single source
 # of truth for both pins — so this file cannot drift from them. The quay.io skopeo pull is the one

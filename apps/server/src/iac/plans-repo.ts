@@ -34,8 +34,20 @@ import { isSystemManagedRelationshipType } from "../graph/system-managed-relatio
 import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 import { assertCampaignTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
 import {
+  assertGovernanceMoveAdmits,
+  assertRungSubjectType,
+  listGovernanceMoveRungs
+} from "../governance/move-enforcement.js";
+import {
+  disableGovernanceMoveRungWithEffects,
+  enableGovernanceMoveRungWithEffects,
+  governanceMoveRungScopeCheck
+} from "../governance/move-rung-write.js";
+import {
   computePlanDiff,
+  CONTAINS_TYPE_ID,
   duplicateProjectionDeclarations,
+  invalidGovernanceMoveRungDeclarations,
   invalidProducerDeclarations,
   managedLabels,
   uncontainedComponentCreates,
@@ -79,7 +91,8 @@ import {
 import {
   createSourceMapping,
   deleteSourceMappingsMatching,
-  listSourceMappingsForComponents
+  listSourceMappingsForComponents,
+  setSourceMappingScopeMatching
 } from "../coordination/source-mappings-repo.js";
 import { validatePluginConfig } from "../plugin-host/plugin-manifests.js";
 
@@ -134,6 +147,25 @@ function assertProjectionsOwned(diff: PlanDiff): void {
  * deleted anywhere. Owning the destination component is therefore not sufficient to make a transfer
  * this stack's business — `invalidProducerDeclarations` carries the full argument.
  */
+/**
+ * Rejects (400) a plan whose `governance:move` rung declarations this stack may not make — a rung on
+ * a container it does not own, or on a type that cannot carry one. Run at BOTH plan-compute and
+ * apply, exactly like the three guards around it and for the same reason: `prepareApplyChecks`
+ * re-derives every invariant from the STORED diff rather than trusting plan-compute ran.
+ *
+ * `invalidGovernanceMoveRungDeclarations` carries the full argument for both refusals.
+ */
+function assertGovernanceMoveRungsValid(diff: PlanDiff): void {
+  const invalid = invalidGovernanceMoveRungDeclarations(diff);
+  if (invalid.length === 0) return;
+  throw badRequest(
+    `plan declares governance:move rung(s) it may not: ${invalid.join("; ")}. ` +
+      `'governance_move_rungs' carries no stack labels, so ownership is inherited from the SUBJECT ` +
+      `CONTAINER — declare that container in this stack's manifest, or enable the rung through ` +
+      `PUT /governance/move-enforcement/rungs/{idOrUrn}.`
+  );
+}
+
 function assertProducerDeclarationsValid(diff: PlanDiff): void {
   const invalid = invalidProducerDeclarations(diff);
   if (invalid.length === 0) return;
@@ -343,8 +375,45 @@ export async function computeDiffForManifest(
     });
   }
 
+  // ---------------------------------------------------------------------------------------
+  // `governance:move` RUNG SUBJECTS — id-or-URN in, URN out, resolved HERE (a DB read, hence not in
+  // the pure diff engine) so every downstream stage speaks the one vocabulary the rest of the diff
+  // uses. Same shape as the `executionSystemId` resolution further down, with one addition that
+  // matters:
+  //
+  // A URN THIS MANIFEST ITSELF DECLARES IS CARRIED VERBATIM AND NOT LOOKED UP, because the subject
+  // may not exist yet — "create this service and govern moves under it" is the ordinary first
+  // manifest, and resolving it here would 404 on precisely the plan that is allowed to create it.
+  // Every other reference must already exist, and a miss is "your manifest is wrong" (400) rather
+  // than a plan that silently manages nothing.
+  // ---------------------------------------------------------------------------------------
+  const declaredObjectUrns = new Set(manifest.objects.map((o) => o.urn));
+  let resolvedRungSubjectUrns: string[] | null = null;
+  if (manifest.governanceMoveRungs !== undefined) {
+    resolvedRungSubjectUrns = [];
+    for (const rung of manifest.governanceMoveRungs) {
+      if (declaredObjectUrns.has(rung.subjectIdOrUrn)) {
+        resolvedRungSubjectUrns.push(rung.subjectIdOrUrn);
+        continue;
+      }
+      let resolved;
+      try {
+        resolved = await getObjectByIdOrUrnAnyType(tx, orgId, rung.subjectIdOrUrn);
+      } catch {
+        throw badRequest(
+          `governance:move rung names subject '${rung.subjectIdOrUrn}', which does not exist and is ` +
+            `not declared by this manifest`
+        );
+      }
+      resolvedRungSubjectUrns.push(resolved.urn);
+    }
+  }
+
   const referencedUrns = new Set<string>();
   for (const obj of manifest.objects) referencedUrns.add(obj.urn);
+  // A rung's owning object is its SUBJECT CONTAINER — the row hangs off it and inherits its
+  // ownership, the same rule a source mapping's component and a producer's component get.
+  for (const subjectUrn of resolvedRungSubjectUrns ?? []) referencedUrns.add(subjectUrn);
   for (const rel of manifest.relationships) {
     referencedUrns.add(rel.fromUrn);
     referencedUrns.add(rel.toUrn);
@@ -496,7 +565,11 @@ export async function computeDiffForManifest(
       // one that does, on every single run.
       refPattern: row.refPattern,
       type: row.type,
-      classification: row.classification
+      classification: row.classification,
+      mirrorOfShared: row.mirrorOfShared,
+      enabled: row.enabled,
+      // The ACTUAL side's scope — what the diff's `update` verdict compares against (§10.6).
+      scope: row.scope
     });
   }
 
@@ -600,6 +673,34 @@ export async function computeDiffForManifest(
     existingDependencyProducers = declaredRows.map(toExisting);
   }
 
+  // ---------------------------------------------------------------------------------------
+  // `governance:move` RUNGS (ADR-0038 §2) — ONE pool, ownership-scoped, and the reason it is one
+  // rather than the two `producers` needs is on `PlanDiffSnapshot.managedGovernanceMoveRungs`.
+  //
+  // Read through `listGovernanceMoveRungs` — the same function the API list read and the Admin page
+  // use — rather than a SELECT written here, so a plan can never disagree with what an operator sees
+  // on the page they authored the rung from. The whole org's rungs is a handful of rows by
+  // construction (one per governed container), so the filter is in memory.
+  //
+  // Skipped entirely when the manifest has no `governanceMoveRungs` key: absent means UNMANAGED, so
+  // there is nothing to converge and nothing to prune, and reading a prune pool we must never act on
+  // would only invite a later edit to act on it.
+  // ---------------------------------------------------------------------------------------
+  const managedGovernanceMoveRungs: string[] = [];
+  if (resolvedRungSubjectUrns !== null) {
+    const owned = new Set(ownedIdList);
+    for (const rung of await listGovernanceMoveRungs(tx, orgId)) {
+      if (!owned.has(rung.subjectObjectId)) continue;
+      const subjectUrn = objectsById.get(rung.subjectObjectId)?.urn;
+      // DROP an unnameable subject, the conservative direction here: this pool decides what gets
+      // DISABLED, and a rung whose container cannot be named is one this plan can neither honestly
+      // report a prune of nor prove ownership of. Dropping it means the disable does not happen —
+      // inaction, and the subtree keeps the bar it has today.
+      if (!subjectUrn) continue;
+      managedGovernanceMoveRungs.push(subjectUrn);
+    }
+  }
+
   // A manifest may name its execution-system by id OR URN (`CreateExecutorBindingRequest` semantics,
   // and a URN is the only stable reference an offline-authored manifest has). The table stores a real
   // object id, so resolve here — a DB read, hence not in the pure diff engine. Without it a
@@ -637,7 +738,18 @@ export async function computeDiffForManifest(
       pathPattern: m.pathPattern ?? null,
       refPattern: m.refPattern ?? null,
       type: m.type ?? DEFAULT_BINDING_TYPE,
-      classification: m.classification ?? null
+      classification: m.classification ?? null,
+      // Descriptive, like classification — NOT part of the identity (iac.ts): a mapping that only
+      // changed its declared provenance is the same mapping, not a delete+create.
+      mirrorOfShared: m.mirrorOfShared ?? false,
+      // The pause switch (migration 0063) — also descriptive here (see `sourceMappingKey`).
+      // Omitted ⇒ enabled, the pre-0063 behaviour and the safer default for a hand-authored
+      // manifest that has never heard of this field.
+      enabled: m.enabled ?? true,
+      // §10.6 — deliberately NOT defaulted: `undefined` means "this manifest does not manage the
+      // scope" (no update proposed, a create writes NULL), `null` means "declare it undeclared".
+      // Collapsing the two would make every pre-0066 manifest clear every hand-set scope on apply.
+      ...(m.scope !== undefined ? { scope: m.scope } : {})
     })),
     placements: (manifest.placements ?? []).map((pl) => ({
       componentUrn: pl.componentUrn,
@@ -653,6 +765,10 @@ export async function computeDiffForManifest(
             ecosystem: declaration.ecosystem,
             coordinate: declaration.coordinate
           })),
+    // `undefined` -> `null` — ABSENT MEANS UNMANAGED HERE TOO, the second of the two collections
+    // that diverge from the prune-on-absent rule (see `ResolvedManifest.governanceMoveRungs`).
+    // Already resolved to URNs above, because the manifest addresses a subject by id OR URN.
+    governanceMoveRungs: resolvedRungSubjectUrns,
     executorBindings: (manifest.executorBindings ?? []).map((b) => ({
       targetUrn: b.targetUrn,
       deploymentTargetUrn: b.deploymentTargetUrn ?? null,
@@ -681,7 +797,8 @@ export async function computeDiffForManifest(
     managedExecutorBindings,
     managedPlacements,
     managedDependencyProducers,
-    existingDependencyProducers
+    existingDependencyProducers,
+    managedGovernanceMoveRungs
   });
   // Strict create-in-service, IaC path (M12 P5a): reject at plan-compute so the invalid manifest
   // never becomes a stored plan and the human reviews only a valid diff. C1's two guards run at the
@@ -689,6 +806,7 @@ export async function computeDiffForManifest(
   assertComponentsContained(diff);
   assertProjectionsOwned(diff);
   assertProducerDeclarationsValid(diff);
+  assertGovernanceMoveRungsValid(diff);
   assertInlineBindingsValid(diff);
   return diff;
 }
@@ -864,6 +982,7 @@ export async function prepareApplyChecks(
   // typed route requires.
   assertProjectionsOwned(diff);
   assertProducerDeclarationsValid(diff);
+  assertGovernanceMoveRungsValid(diff);
   assertInlineBindingsValid(diff);
 
   for (const entry of diff.objects) {
@@ -985,6 +1104,30 @@ export async function prepareApplyChecks(
             scopeObjectId: found.domainId
           });
         }
+        // THE `governance:move` TWIN (proposal §9.2 door (b), owner ruling 2026-08-18). A door-only
+        // fix ships INERT on IaC — proven by mutation in #244 — so the second bar has to be added
+        // here as well as in `graph/containment-parent-authz.ts`, and the two must agree.
+        //
+        // Thrown EAGERLY rather than pushed onto `checks`, for the reason
+        // `assertPolicyScopeWithinAuthority` and `assertCampaignTargetsWithinAuthority` are: the
+        // demand is CONDITIONAL (it exists only where a rung is enabled) and its refusal carries a
+        // written explanation naming the rung, neither of which a `{permission, scopeObjectId}` pair
+        // can express. Still fully fail-closed: an uncaught throw aborts `prepareApplyChecks` before
+        // `executePlanDiff` runs, inside the route's transaction, so nothing partially applies.
+        //
+        // The applying principal is the REAL one (`actorObjectId`, resolved at apply time), which is
+        // what makes this path a genuine door rather than a replay of a plan-time decision.
+        //
+        // NO ORG-ROOT EXEMPTION at either end, unlike the four `object:write` entries above — see
+        // `governance/move-enforcement.ts`'s header: custody shrinks at the root, but governance
+        // REACH is exactly what a move to the root reduces.
+        await assertGovernanceMoveAdmits(tx, {
+          orgId,
+          subjectObjectId: actorObjectId,
+          movedObjectId: found.id,
+          destinationObjectId: destination,
+          permissionSetForExplain: writePermissionFor(entry.typeId)
+        });
       }
       if (entry.typeId === "policy" && entry.action === "update") {
         await assertPolicyScopeWithinAuthority(tx, {
@@ -1019,12 +1162,10 @@ export async function prepareApplyChecks(
     // `POST /relationships` endpoint (`routes/relationships.ts`) — must refuse an engine-owned
     // system-managed type (`coordinates`/`approves`) outright. Otherwise IaC apply becomes a second
     // injection vector for a `coordinates` membership edge that only needs `relationship:write`,
-    // bypassing the authority-checked campaign/initiative membership paths
+    // bypassing the authority-checked campaign membership path
     // (`graph/system-managed-relationships.ts` has the full rationale). Legitimate campaign IaC
     // membership goes exclusively through the authority-checked `campaign.properties.targets`
-    // declaration (`assertCampaignTargetsWithinAuthority`, above); initiative IaC membership is not
-    // supported (add members via `POST /initiatives/{id}/campaigns` / `scp initiative add-campaign`,
-    // which run the both-endpoint authority check).
+    // declaration (`assertCampaignTargetsWithinAuthority`, above).
     if (isSystemManagedRelationshipType(entry.typeId)) {
       throw forbidden(
         `relationship type '${entry.typeId}' is system-managed and cannot be created or deleted via an IaC plan/apply — ` +
@@ -1035,6 +1176,46 @@ export async function prepareApplyChecks(
     const to = await resolveEndpoint(entry.toUrn);
     checks.push({ permission: "relationship:write", scopeObjectId: from.scopeObjectId });
     checks.push({ permission: "relationship:write", scopeObjectId: to.scopeObjectId });
+
+    // THE `governance:move` TWIN FOR ROUTE 2 — the SECOND half of door (b), and it was missing.
+    //
+    // The twin above guards `objects[].domainId` (containment route 1). A manifest reaches the
+    // SAME move through route 2: a `contains` relationship entry. `contains` is not system-managed
+    // (`graph/system-managed-relationships.ts` lists `approves`/`coordinates`/`annotates` only), so
+    // the refusal above does not touch it, and `executePlanDiff` mints it — and prunes it — from
+    // the manifest verbatim. That is exactly what a manifest's `component.service` change compiles
+    // to (`plan-diff.ts`: a `contains` create plus a prune-delete), so without this, door (c)
+    // (`components-repo.ts::setComponentService`, `routes/relationships.ts`) shipped INERT on IaC
+    // and an Operator holding `relationship:write` could perform through `POST /plans/{id}/apply`
+    // the very move the HTTP doors refuse them. #244's lesson repeated one loop lower: the twin was
+    // added where the first hole was found rather than to the whole class.
+    //
+    // Endpoints, matching `routes/relationships.ts` exactly:
+    //   create → the child is the `to`, the destination container is the `from` (:104);
+    //   delete → the child is the `to`, the destination is the ORG ROOT (`null`), because losing a
+    //            `contains` parent drops the row back onto its `domain_id` route (:252).
+    // Thrown EAGERLY for the reason the route-1 twin above is: the demand is conditional and its
+    // refusal names a rung, neither of which a `{permission, scopeObjectId}` pair can carry.
+    // A MISSING `id` MEANS "created by THIS apply" (`ObjectResolution.id` is unset for a `create`
+    // entry until `executePlanDiff` runs it), and that decides both halves:
+    //   - `to.id` unset → the child is being created here, so there is no prior governance reach for
+    //     it to leave. A create is not a move; door (a) does not gate a create either
+    //     (`resolveDeclaredContainmentParent` runs on an object that already exists), and
+    //     `POST /discovery/accept` carves out the same shape for the same reason. Gating it would
+    //     refuse the ordinary "new service and its new components" manifest under any enabled rung.
+    //   - `from.id` unset → the destination CONTAINER is being created here; it can carry no rung of
+    //     its own yet, and its reach is exactly its declared parent's, which is what `scopeObjectId`
+    //     already holds (`entry.target?.domainId ?? orgId`). So the destination chain is checked at
+    //     that parent rather than skipped.
+    if (entry.typeId === CONTAINS_TYPE_ID && to.id !== undefined) {
+      await assertGovernanceMoveAdmits(tx, {
+        orgId,
+        subjectObjectId: actorObjectId,
+        movedObjectId: to.id,
+        destinationObjectId: entry.action === "delete" ? null : (from.id ?? from.scopeObjectId),
+        permissionSetForExplain: "relationship:write"
+      });
+    }
   }
 
   // C1 — `object:write` at the OWNING object, the identical bar
@@ -1085,6 +1266,28 @@ export async function prepareApplyChecks(
     for (const entry of producerEntries) {
       if (entry.action !== "delete") await resolveEndpoint(entry.producerUrn);
     }
+  }
+
+  // `governance:move` RUNGS — `policy:write` AT-OR-ABOVE THE SUBJECT, per entry.
+  //
+  // The pair is `governanceMoveRungScopeCheck`'s, imported rather than restated so this door and
+  // `PUT /governance/move-enforcement/rungs/{idOrUrn}` cannot come to require different things. It is
+  // per-subject and not one org-root check (unlike producers, whose blast radius really is org-wide):
+  // a rung's reach is exactly the subtree under its container, and `authorize` expands strictly
+  // UPWARD, so a narrowly-bound Administrator can govern their own service and an org-wide one still
+  // passes everywhere.
+  //
+  // `noop` entries are exempt, matching every other loop here: a re-apply that changes nothing must
+  // not demand authority the first apply already exercised.
+  //
+  // A `create` whose subject THIS PLAN creates resolves to the pending entry — no id yet, and
+  // `scopeObjectId` is the declared containment parent (`entry.target?.domainId ?? orgId`). That is
+  // the right scope and not a weaker one: authority expands upward, so `policy:write` at-or-above the
+  // parent is `policy:write` at-or-above a child of it.
+  for (const entry of diff.governanceMoveRungs ?? []) {
+    if (entry.action === "noop") continue;
+    const subject = await resolveEndpoint(entry.subjectUrn);
+    checks.push(governanceMoveRungScopeCheck(subject.scopeObjectId));
   }
 
   for (const entry of diff.executorBindings ?? []) {
@@ -1464,6 +1667,32 @@ export async function executePlanDiff(
   }
 
   for (const entry of diff.sourceMappings ?? []) {
+    if (entry.action === "update") {
+      // §10.6 — the in-place convergence of the ONE non-identity attribute the diff manages. Every
+      // row sharing the tuple, for the same reason `deleteSourceMappingsMatching` takes them all: a
+      // byte-identical sibling left behind would re-propose this update on every plan forever. A
+      // plan stored without a scope key (`undefined`) cannot have produced an `update` verdict, so
+      // reading it as null here is unreachable rather than a silent clear.
+      const converged = await setSourceMappingScopeMatching(
+        tx,
+        {
+          orgId,
+          componentObjectId: endpointId(entry.componentUrn),
+          sourceKind: entry.sourceKind,
+          repoPattern: entry.repoPattern,
+          pathPattern: entry.pathPattern,
+          refPattern: entry.refPattern,
+          type: entry.type
+        },
+        entry.scope ?? null
+      );
+      if (converged === 0) {
+        throw notFound(
+          `no live source mapping '${entry.sourceKind}' -> '${entry.componentUrn}' (${entry.type}) to update`
+        );
+      }
+      continue;
+    }
     if (entry.action !== "create") continue;
     await createSourceMapping(tx, {
       orgId,
@@ -1473,7 +1702,13 @@ export async function executePlanDiff(
       ...(entry.refPattern !== null ? { refPattern: entry.refPattern } : {}),
       componentIdOrUrn: endpointId(entry.componentUrn),
       type: entry.type,
-      ...(entry.classification !== null ? { classification: entry.classification } : {})
+      ...(entry.classification !== null ? { classification: entry.classification } : {}),
+      ...(entry.mirrorOfShared ? { mirrorOfShared: true } : {}),
+      // `createSourceMapping` defaults `enabled` to `true`, so only pass it through when the plan
+      // says the row should be created already-paused.
+      ...(entry.enabled === false ? { enabled: false } : {}),
+      // Declared reach (§10.6) — written as the plan showed it; absent/null ⇒ not declared.
+      ...(entry.scope ? { scope: entry.scope } : {})
     });
   }
 
@@ -1593,6 +1828,76 @@ export async function executePlanDiff(
       requestId,
       key: { ecosystem: entry.ecosystem, coordinate: entry.coordinate },
       producerObjectId: endpointId(entry.producerUrn)
+    });
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // `governance:move` RUNGS (ADR-0038 §2; proposal governance-reach-on-containment-move.md §9.6 Q4).
+  //
+  // POSITION IS LOAD-BEARING AT BOTH ENDS, the same sandwich the producer block above sits in:
+  //  - AFTER object creates, because "create this service and govern moves under it" is the ordinary
+  //    first manifest and the subject has no id until then.
+  //  - BEFORE object deletes, because `deleteObject` is a SOFT delete and `governance_move_rungs` has
+  //    no `deleted_at` of its own. A rung left behind a tombstoned container is a bar nobody can see
+  //    (it is outside every list read's join and outside every future plan's ownership pool) that
+  //    would spring back to life on any object restore.
+  //
+  // EACH ENTRY GOES THROUGH THE SAME FUNCTION THE VERB CALLS
+  // (`governance/move-rung-write.ts`), so this door writes the whole act — row, Decision, audit
+  // event — or none of it. Nothing here reaches `governance_move_rungs` directly, and that is the
+  // point: a second writer that wrote only the row would make
+  // `GET /decisions?kind=governance.move_enforcement` silently false for exactly the rungs an
+  // auditor came looking for (charter principle 6).
+  //
+  // Deletes before creates, mirroring every other collection here — and unlike the producers', this
+  // ordering CAN matter: identity is the subject, and disabling a rung above before enabling one
+  // below is precisely the sequence the monotone refusal permits (the reverse order 409s).
+  //
+  // NO STALE-PLAN HOLDER CHECK. The producers' `assertPlannedProducerHolder` exists because a
+  // coordinate can change hands between plan and apply with no row deleted. A rung cannot change
+  // hands: it is enabled at its subject or it is not, both states are re-read here, and each of the
+  // two mismatches has its own honest failure below — a create finds the upsert idempotent, and a
+  // delete that lost its row 404s as a prune miss.
+  for (const entry of diff.governanceMoveRungs ?? []) {
+    if (entry.action !== "delete") continue;
+    // Resolved BY ID (`endpointId`), not by URN, so the subject's `typeId` and `name` come from the
+    // row this apply is actually about. The tier is DERIVED here exactly as the HTTP door derives
+    // it — a manifest never names one.
+    const subject = await getObjectByIdOrUrnAnyType(tx, orgId, endpointId(entry.subjectUrn));
+    const tier = assertRungSubjectType(subject.typeId, entry.subjectUrn);
+    // The same shape as every other apply-time prune miss: the rung went away between plan and
+    // apply. Refusing beats silently reporting a disable that disabled nothing.
+    const live = await listGovernanceMoveRungs(tx, orgId);
+    if (!live.some((rung) => rung.subjectObjectId === subject.id)) {
+      throw notFound(
+        `governance:move enforcement is not enabled at '${entry.subjectUrn}' — there is no rung ` +
+          `here to disable (apply-time prune)`
+      );
+    }
+    // A disable refused by an enabled upper rung throws the verb's own 409, inside this
+    // transaction, so the whole apply rolls back rather than half-converging.
+    await disableGovernanceMoveRungWithEffects(tx, {
+      orgId,
+      actorObjectId,
+      requestId,
+      subject: { id: subject.id, name: subject.name },
+      tier
+    });
+  }
+
+  for (const entry of diff.governanceMoveRungs ?? []) {
+    if (entry.action !== "create") continue;
+    const subject = await getObjectByIdOrUrnAnyType(tx, orgId, endpointId(entry.subjectUrn));
+    const tier = assertRungSubjectType(subject.typeId, entry.subjectUrn);
+    // `enableGovernanceMoveRung` is an upsert, so a `create` that raced another enabler converges
+    // rather than 409s — re-stating an enabled rung is what `scp apply` does routinely, and the
+    // end state is the one the reviewed plan described either way.
+    await enableGovernanceMoveRungWithEffects(tx, {
+      orgId,
+      actorObjectId,
+      requestId,
+      subject: { id: subject.id, name: subject.name },
+      tier
     });
   }
 

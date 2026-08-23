@@ -361,6 +361,37 @@ export async function listDependencyLineProducersForComponents(
 }
 
 /**
+ * The declarations for a SET OF COORDINATES in one round trip — the inventory read surface's batched
+ * producer hydration (`dependency-read-surface.ts`): a page of lines names its coordinates, and each
+ * row's `producer` is the declaration for that row's `(ecosystem, coordinate)`, or none.
+ *
+ * `IN` over `coordinate` inside the `org_id` prefix of the primary key, then the ecosystem is
+ * matched in JS — coordinates are ecosystem-native and rarely collide across ecosystems, and a
+ * tuple `IN` buys nothing over that here. Byte equality on the coordinate, as everywhere in this
+ * table. Empty keys ⇒ empty result, no scan.
+ */
+export async function listDependencyLineProducersForKeys(
+  tx: TenantTx,
+  orgId: string,
+  keys: readonly DependencyLineProducerKey[]
+): Promise<DependencyLineProducer[]> {
+  if (keys.length === 0) return [];
+  const wanted = new Set(keys.map((k) => `${k.ecosystem}\u0000${k.coordinate}`));
+  const rows = await tx
+    .select()
+    .from(dependencyLineProducers)
+    .where(
+      and(
+        eq(dependencyLineProducers.orgId, orgId),
+        inArray(dependencyLineProducers.coordinate, [...new Set(keys.map((k) => k.coordinate))])
+      )
+    );
+  return rows
+    .filter((r) => wanted.has(`${r.ecosystem}\u0000${r.coordinate}`))
+    .map(toDependencyLineProducer);
+}
+
+/**
  * EVERY MAJOR LINE of one coordinate — the set a producer declaration covers, and the set whose
  * heads both verbs clear.
  *

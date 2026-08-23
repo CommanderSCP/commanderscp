@@ -1,4 +1,3 @@
-import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import type { GraphObject } from "@scp/schemas";
 import { client } from "../lib/client";
@@ -10,6 +9,8 @@ import {
   type GraphCanvasNode
 } from "../components/graph/GraphCanvas";
 import { GraphLegend } from "../components/graph/GraphLegend";
+import { QueryErrorNotice } from "../components/query-error";
+import { PageHeader } from "../components/ui/page-header";
 
 /** Relationship types that form the component-to-component connection topology. */
 const LINK_TYPES = ["consumes", "depends_on"];
@@ -52,16 +53,28 @@ export function ComponentGraphPage(): React.JSX.Element {
       const service = await client.services.get(serviceId);
 
       // 1. This service's components (real `contains` children).
+      //
+      // maxDepth 2, NOT 1: containment is `service -> [assembly] -> component`, and the assembly
+      // rung is optional. At depth 1 a service whose components all sit under an assembly returned
+      // only the assembly, which the `typeId === "component"` filter then dropped — so that service
+      // rendered a completely empty component graph while genuinely having components one hop
+      // further down. Depth 2 covers both shapes; the ladder is capped at three rungs server-side
+      // (`assembly -> assembly` is refused outright), so there is no deeper case to miss.
       const contained = await client.graph.traverse({
         objectId: serviceId,
         direction: "out",
         relTypes: ["contains"],
-        maxDepth: 1
+        maxDepth: 2
       });
       const components = contained.objects.filter(
         (o) => o.typeId === "component" && o.id !== serviceId
       );
+      const assemblies = contained.objects.filter((o) => o.typeId === "assembly");
       const componentIds = new Set(components.map((c) => c.id));
+      // The containment edges themselves are what the canvas reads to decide colour groups — a
+      // component under an assembly takes the assembly's colour, a component held directly by the
+      // service gets its own (lib/graph-visual.ts `deriveGroupIds`).
+      const containsEdges = contained.edges.filter((e) => e.typeId === "contains");
 
       if (components.length === 0) {
         return { serviceName: service.name, componentCount: 0, data: { objects: [], edges: [] } };
@@ -133,6 +146,12 @@ export function ComponentGraphPage(): React.JSX.Element {
       );
 
       const objects: GraphCanvasNode[] = [
+        // The service itself. It is the SCOPE ROOT, and a root that is only in the node set via
+        // `rootId` has no name and no type — it rendered as an unnamed default circle labelled with
+        // a truncated uuid. Including it as a real node gives it its shape, its name, and the
+        // containment edges that make the colour grouping resolve to its direct children.
+        { id: service.id, name: service.name, typeId: service.typeId },
+        ...assemblies.map((a) => ({ id: a.id, name: a.name, typeId: a.typeId })),
         ...components.map((c) => ({ id: c.id, name: c.name, typeId: c.typeId })),
         ...[...externalIds].map((id): GraphCanvasNode => {
           const name = objById.get(id)?.name ?? id.slice(0, 8);
@@ -146,13 +165,21 @@ export function ComponentGraphPage(): React.JSX.Element {
         })
       ];
 
-      const canvasEdges: GraphCanvasEdge[] = edges.map((e) => ({
-        id: e.id,
-        fromId: e.fromId,
-        toId: e.toId,
-        typeId: e.typeId,
-        crossService: !componentIds.has(e.fromId) || !componentIds.has(e.toId)
-      }));
+      const canvasEdges: GraphCanvasEdge[] = [
+        ...containsEdges.map((e) => ({
+          id: e.id,
+          fromId: e.fromId,
+          toId: e.toId,
+          typeId: e.typeId
+        })),
+        ...edges.map((e) => ({
+          id: e.id,
+          fromId: e.fromId,
+          toId: e.toId,
+          typeId: e.typeId,
+          crossService: !componentIds.has(e.fromId) || !componentIds.has(e.toId)
+        }))
+      ];
 
       return {
         serviceName: service.name,
@@ -166,27 +193,24 @@ export function ComponentGraphPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <Link to="/graph" className="text-xs text-slate-500 hover:text-slate-700">
-            ← Service graph
-          </Link>
-          <h1 className="text-2xl font-semibold text-slate-900">
-            Components{serviceName ? ` · ${serviceName}` : ""}
-          </h1>
-          <p className="text-sm text-slate-500">
-            This service's components and their links, plus cross-service links (dashed) to other
-            services' components.
-          </p>
-        </div>
-        <GraphLegend
-          nodes={[
-            { label: "Component", color: "#7c3aed" },
-            { label: "Other service (external)", color: "#94a3b8", dashed: true }
-          ]}
-          edges={[{ label: "internal link" }, { label: "cross-service", dashed: true }]}
-        />
-      </div>
+      <PageHeader
+        title={`Components${serviceName ? ` · ${serviceName}` : ""}`}
+        description="This service's components and their links, plus cross-service links (dashed) to other services' components."
+        backTo="/graph"
+        backLabel="Service graph"
+        actions={
+          <GraphLegend
+            shapes={[
+              { label: "Service", typeId: "service" },
+              { label: "Assembly", typeId: "assembly" },
+              { label: "Component", typeId: "component" }
+            ]}
+            nodes={[{ label: "Other service (external)", color: "#94a3b8", dashed: true }]}
+            edges={[{ label: "internal link" }, { label: "cross-service", dashed: true }]}
+            note="Colour groups components by the assembly (or service) that holds them."
+          />
+        }
+      />
 
       <div className="relative h-[32rem] rounded-lg border border-slate-200 bg-white">
         {graphQuery.isLoading && (
@@ -195,10 +219,8 @@ export function ComponentGraphPage(): React.JSX.Element {
           </div>
         )}
         {graphQuery.isError && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-red-600">
-            {graphQuery.error instanceof Error
-              ? graphQuery.error.message
-              : "Failed to load component graph"}
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <QueryErrorNotice error={graphQuery.error} what="the component graph" />
           </div>
         )}
         {graphQuery.data && graphQuery.data.componentCount === 0 && (
@@ -209,7 +231,11 @@ export function ComponentGraphPage(): React.JSX.Element {
             This service has no components yet.
           </div>
         )}
-        <GraphCanvas data={graphQuery.data?.data ?? { objects: [], edges: [] }} layout="cose" />
+        <GraphCanvas
+          data={graphQuery.data?.data ?? { objects: [], edges: [] }}
+          rootId={serviceId}
+          layout="cose"
+        />
       </div>
     </div>
   );

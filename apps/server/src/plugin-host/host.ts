@@ -73,6 +73,7 @@ import type {
   PluginHost,
   PluginHostInstanceConfig
 } from "./contract.js";
+import { resolveCallPolicy } from "./call-policy.js";
 import {
   encodeMessage,
   isErrorResponse,
@@ -102,7 +103,16 @@ const DEFAULT_SUBPROCESS_ENTRY_PATH = path.resolve(
 );
 
 export interface PluginHostOptions {
-  /** Per-call RPC budget (ms), including any wait-for-ready + one transparent retry. Default 10s. */
+  /**
+   * The HANG DETECTOR: per-call RPC budget (ms), including any wait-for-ready + one transparent
+   * retry. Default 10s.
+   *
+   * NOT A UNIVERSAL BUDGET SINCE M23.1c. It applies to every method that is supposed to be fast, and
+   * a managed executor's `trigger` — the one method that legitimately runs a container to completion
+   * — derives its own from the instance's resolved `timeoutMs` instead (`call-policy.ts`). Do not
+   * "fix" a slow managed run by raising this: doing so blinds the host to a wedged `status()` on
+   * every plugin in the product, which is the thing this number is for.
+   */
   callTimeoutMs?: number;
   /** First restart delay after a crash (ms), doubled per consecutive crash. Default 200ms. */
   restartBackoffBaseMs?: number;
@@ -237,6 +247,52 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Kills the WHOLE process group the plugin subprocess leads, not just that one PID.
+ *
+ * WHY. The child is spawned `detached: true` below specifically so it becomes its own process
+ * group leader — anything IT execs (`runner-launcher`'s `execFileAsync(dockerBinary, …)`, one
+ * `docker create`/`cp`/`start`/`rm` per step) inherits THAT group by default, not this host
+ * process's. A plain `child.kill(signal)` therefore only ever hit the plugin's own event loop;
+ * a `docker start -a` it had already spawned survived every SIGKILL this file issues — on a
+ * genuine hang-timeout in production exactly as on `killInstanceForTest` in a test — as an
+ * ownerless process on the host, still holding stdio open, until the container it wraps finished
+ * on its own. `managed-trigger-budget.test.ts`'s ENOTEMPTY flake was that same orphan's startup
+ * preamble (a `docker create`/`start` stub unconditionally does `mkdir -p`+append-log on every
+ * invocation, orphan or not) landing mid-walk of a directory `afterEach` was already removing —
+ * a symptom of this leak, not a test-only race to retry past.
+ *
+ * `-child.pid` is the POSIX process-group-kill form of `process.kill` (the negated pid addresses
+ * the group `detached: true` made this child the leader of, not the single process). Falls back
+ * to the single-process kill when the child never got a pid (already gone) or the platform has no
+ * process groups (Windows). Two error codes are swallowed rather than thrown, both MEASURED, not
+ * guessed — `host.test.ts`'s own CRITICAL #4 case (a second kill, from `stop()`'s `tearDown`,
+ * racing the line-guard's own already-issued kill of the same instance) reproduced the second one
+ * within one `--force` test loop:
+ *   - `ESRCH` — the group is already empty (child and everything it spawned are already gone).
+ *   - `EPERM` — on macOS/BSD, `kill(-pid, …)` on a pid whose process (and process GROUP) has
+ *     ALREADY EXITED and been reaped can resolve against a DIFFERENT, unrelated process group that
+ *     has since reused the same numeric id, which this process has no permission to signal. That
+ *     is a races-with-reaping artifact of asking twice, not a real permission failure in our own
+ *     tree — the single-process kill below is attempted regardless, for the same reason the ESRCH
+ *     case falls through to it.
+ */
+function killInstanceProcess(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+  if (typeof child.pid === "number" && process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ESRCH" && code !== "EPERM") throw err;
+      // Already gone (ESRCH), or the pid/pgid has been reused by something we may not signal
+      // (EPERM, see above) — either way the single-process kill below is a harmless no-op or
+      // best-effort attempt, never a reason to crash the caller.
+    }
+  }
+  child.kill(signal);
+}
+
 export class SubprocessPluginHost implements PluginHost {
   private readonly opts: Required<
     Pick<
@@ -331,7 +387,7 @@ export class SubprocessPluginHost implements PluginHost {
     instance.stopped = true;
     if (instance.restartTimer) clearTimeout(instance.restartTimer);
     this.rejectAllPending(instance, new Error(why));
-    instance.child?.kill("SIGTERM");
+    if (instance.child) killInstanceProcess(instance.child, "SIGTERM");
   }
 
   /** Test-only: forcibly kills the currently-running child for `instanceId`, simulating a crash
@@ -341,7 +397,8 @@ export class SubprocessPluginHost implements PluginHost {
    *  access to the real PID from outside this class. No-ops if the instance isn't currently
    *  running (already mid-restart) — the point is to induce exactly one crash, not to assert one. */
   killInstanceForTest(instanceId: string): void {
-    this.instances.get(instanceId)?.child?.kill("SIGKILL");
+    const child = this.instances.get(instanceId)?.child;
+    if (child) killInstanceProcess(child, "SIGKILL");
   }
 
   executor(instanceId: string): ExecutorPluginClient {
@@ -492,7 +549,17 @@ export class SubprocessPluginHost implements PluginHost {
         ...(entryIsTypeScript ? ["--import", "tsx"] : []),
         this.opts.subprocessEntryPath
       ],
-      { env, stdio: ["pipe", "pipe", "pipe"] }
+      {
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        // `detached: true` makes this child the LEADER of its own new process group (POSIX;
+        // harmless — Node ignores it — on Windows) rather than a member of this host process's
+        // own group. That is what lets `killInstanceProcess` below target `-child.pid` and take
+        // down everything the plugin itself spawned (a `docker create`/`cp`/`start`/`rm` per
+        // runner-launcher step) in the same signal, instead of leaving those grandchildren as
+        // orphans once the plugin process it addressed is gone. See that function's doc comment.
+        detached: true
+      }
     ) as ChildProcessWithoutNullStreams;
 
     instance.child = child;
@@ -510,7 +577,7 @@ export class SubprocessPluginHost implements PluginHost {
       process.stderr.write(
         `[plugin-host] instance '${instance.config.id}' exceeded max line size (${this.opts.maxLineBytes} bytes) without a newline on stdout — killing as faulty\n`
       );
-      instance.child?.kill("SIGKILL");
+      if (instance.child) killInstanceProcess(instance.child, "SIGKILL");
     });
 
     const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -659,7 +726,14 @@ export class SubprocessPluginHost implements PluginHost {
         // A timeout means the plugin is hung, not necessarily crashed — kill it so the normal
         // exit handler reclaims it and restart-with-backoff kicks in, converting "hung forever"
         // into "will come back". `sendOnce`'s caller (`call`) still only sees a timeout error.
-        instance.child?.kill("SIGKILL");
+        //
+        // THIS SIGKILL IS WHY THE BUDGET HAS TO BE PER-METHOD (M23.1c). There is no `finally` here
+        // and there cannot be one: the cleanup that matters lives in the CHILD (the runner
+        // launcher's `rm -f`, `withRecordedOutcome`, managed-iac's `saveState`) and SIGKILL runs
+        // none of it. So the only defence is to never let this fire while a legitimate managed run
+        // is in progress — see `call-policy.ts`'s grace, which exists to guarantee the plugin's own
+        // inner `execFile` timeout is the one that wins.
+        if (instance.child) killInstanceProcess(instance.child, "SIGKILL");
         reject(
           new Error(
             `plugin '${instance.config.id}' call '${method}' timed out after ${timeoutMs}ms`
@@ -678,12 +752,32 @@ export class SubprocessPluginHost implements PluginHost {
    * for the respawned instance and retries exactly once more per crash, as long as time remains.
    * This is what makes `contract.ts`'s "callers never see a dead subprocess, only a
    * slower/retried call" true rather than aspirational.
+   *
+   * WITH ONE EXCLUSION, M23.1c: a managed executor's `trigger` is NOT retried. It is not idempotent
+   * from here — its ledger entry is written only after the run completes, so a retry re-enters a
+   * `tofu apply` that may still be in flight, and the retry's container name (derived from the same
+   * `idempotencyKey`) collides with the first run's and gets it torn down. That crash belongs to
+   * `reconcile.ts`, which has the Decision record and the backoff; it must not be swallowed here.
    */
   private async call(instanceId: string, method: string, params?: unknown): Promise<unknown> {
     const instance = this.instances.get(instanceId);
     if (!instance) throw new Error(`no plugin instance configured with id '${instanceId}'`);
 
-    const deadline = Date.now() + this.opts.callTimeoutMs;
+    // PER-METHOD, NOT ONE NUMBER FOR EVERYTHING (M23.1c). `opts.callTimeoutMs` stays the 10s HANG
+    // DETECTOR for `observe`/`status`/`abort`/`evaluate`/`send`/… — it is meaningful precisely
+    // because those are supposed to be fast. A managed executor's `trigger` is the one method that
+    // legitimately blocks for minutes (the charter's scoped execution exception runs its container
+    // synchronously), so its budget is derived from that instance's own resolved `timeoutMs` and its
+    // transparent crash-retry is switched OFF. See `call-policy.ts` for the measured consequences of
+    // the uniform 10s this replaces — an orphaned runner holding live credentials, and a second
+    // `tofu apply` issued while the first was still applying.
+    const policy = resolveCallPolicy({
+      module: instance.config.module,
+      config: instance.config.config,
+      method,
+      hangDetectorMs: this.opts.callTimeoutMs
+    });
+    const deadline = Date.now() + policy.budgetMs;
     for (;;) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
@@ -711,7 +805,11 @@ export class SubprocessPluginHost implements PluginHost {
       try {
         return await this.sendOnce(instance, method, params, remainingAfterReady);
       } catch (err) {
-        if (err instanceof PluginInstanceCrashedError && Date.now() < deadline) {
+        if (
+          err instanceof PluginInstanceCrashedError &&
+          policy.retryOnCrash &&
+          Date.now() < deadline
+        ) {
           // Give the exit handler's scheduled restart a moment to actually spawn before looping
           // back to waitForReady — otherwise the loop can spin on `instance.child === undefined`.
           await sleep(Math.min(10, Math.max(0, deadline - Date.now())));
