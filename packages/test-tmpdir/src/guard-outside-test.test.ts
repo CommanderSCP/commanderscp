@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 
 /**
  * THE REFUSING HALF of `assertInsideTest` (index.ts) — the guard that turns "per-test allocator
@@ -22,6 +22,28 @@ vi.mock("vitest/suite", async (importOriginal) => ({
 
 const PREFIX = join(tmpdir(), "scp-test-tmpdir-selftest-guard-");
 
+/**
+ * THIS FILE SWEEPS ITS OWN FIXTURE, and cannot delegate that to the allocator it is testing.
+ *
+ * `index.ts` registers its `afterEach`/`afterAll` sweeps at MODULE LOAD. Every `it()` below imports
+ * it with a DYNAMIC `await import("./index.js")` — deliberately, so the `vi.mock` above is in place
+ * first — which means those hooks are registered while the file is already RUNNING, after vitest
+ * finished collecting this file's hooks. They therefore never fire, and the one directory the third
+ * case legitimately creates survived the run: the repo's own tmpdir-leak gate caught it on CI
+ * (`scp-test-tmpdir-selftest-guard-*`) while a local run missed it, because turbo replayed this
+ * package from cache rather than executing it.
+ *
+ * That is the same shape as the defect the guard exists to catch — a cleanup that is registered and
+ * does not run — one level further in: here it is the SWEEP itself that was never installed. So the
+ * sweep here is explicit and local, and depends on nothing that has to be imported early.
+ */
+const created: string[] = [];
+afterAll(async () => {
+  const { rm } = await import("node:fs/promises");
+  await Promise.all(created.map((d) => rm(d, { recursive: true, force: true })));
+  created.length = 0;
+});
+
 describe("the per-test pair refuses to run outside a test", () => {
   it("mkdtempTracked throws, and names the ForFile variant to use instead", async () => {
     const { mkdtempTracked } = await import("./index.js");
@@ -37,6 +59,7 @@ describe("the per-test pair refuses to run outside a test", () => {
     const { existsSync } = await import("node:fs");
     const { mkdtempTrackedForFile } = await import("./index.js");
     const dir = await mkdtempTrackedForFile(PREFIX);
+    created.push(dir);
     expect(existsSync(dir)).toBe(true);
   });
 });
