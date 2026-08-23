@@ -1,10 +1,6 @@
 import type { TenantTx } from "../db/tenant-tx.js";
 import { containmentChain } from "../graph/containment.js";
-import {
-  activeFreezesInWindow,
-  filterFreezesByScopes,
-  type FreezeRow
-} from "./freezes-repo.js";
+import { activeFreezesInWindow, filterFreezesByScopes, type FreezeRow } from "./freezes-repo.js";
 
 /**
  * PER-TARGET FREEZE RESOLUTION — the primitive M25.2's per-target wave admission is built on
@@ -80,7 +76,8 @@ export async function freezesByTarget(
   // function. Do not move a containment walk above this line, and do not "optimise" it into the
   // loop: one query for the org is what makes a change with nothing frozen cost nothing.
   const active = await activeFreezesInWindow(tx, orgId, now);
-  if (active.length === 0) return targetObjectIds.map((id) => ({ targetObjectId: id, freezes: [] }));
+  if (active.length === 0)
+    return targetObjectIds.map((id) => ({ targetObjectId: id, freezes: [] }));
 
   const byTarget: TargetFreezes[] = [];
   for (const targetObjectId of targetObjectIds) {
