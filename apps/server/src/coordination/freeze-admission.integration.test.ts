@@ -4,7 +4,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import type { GraphObject } from "@scp/schemas";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { campaignWaveTargets, changes, decisions } from "../db/schema.js";
+import { campaignWaveTargets, changes, changeWaveTargets, decisions, freezes } from "../db/schema.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -18,6 +18,8 @@ import { activeFreezesForScopes, createFreeze } from "../governance/freezes-repo
 import { freezesByTarget, unionFreezes } from "../governance/freeze-scope.js";
 import { containmentScopeIds } from "../graph/containment.js";
 import { evaluateGovernanceGate } from "../governance/gate-orchestrator.js";
+import { evaluateWaveGate } from "./gates.js";
+
 import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { getLatestPlanForChange } from "./plan-service.js";
 import { evaluateFreezeHolds } from "./freeze-hold.js";
@@ -84,17 +86,24 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   let host: PluginHost;
   let triggered: { targetRef: string }[];
 
+  /** Targets whose executor REFUSES the trigger. Empty for every case that only needs the call log
+   *  (which is the only way to assert a held target's executor was never asked to do anything); a
+   *  case that needs a wave still holding `pending`/`triggering` targets AFTER the gate has run —
+   *  the only window in which a freeze can be declared MID-WAVE — puts them in here. */
+  const refuseTargets = new Set<string>();
+
   beforeAll(async () => {
+    const wrapped = withRefusingTrigger(createInMemoryFakeHost(executorConfig), (ref) =>
+      refuseTargets.has(ref)
+    );
     server = await listenTestServer();
-    // `() => false` refuses nothing — the wrapper is used purely for its call log, which is the
-    // only way to assert that a held target's executor was never asked to do anything.
-    const wrapped = withRefusingTrigger(createInMemoryFakeHost(executorConfig), () => false);
     host = wrapped.host;
     triggered = wrapped.calls;
   });
 
   beforeEach(async () => {
     executorConfig.forcePhase = {};
+    refuseTargets.clear();
     org = await createTestOrg(server, "freezeadmit");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     const place = (name: string) =>
@@ -190,6 +199,29 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
         createdByActorId: org.orgId,
         atomic: true
       })
+    );
+
+  /** Push every wave target's `updated_at` an hour into the past so reconcile's BACKOFF GATE (which
+   *  precedes the freeze seam, deliberately — invariant 5) lets a refused `triggering` target be
+   *  retried on the next tick. Deterministic where a real `sleep(2s)` is merely probable. */
+  const expireBackoff = () =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changeWaveTargets)
+        .set({ updatedAt: new Date(Date.now() - 3_600_000) })
+        .where(eq(changeWaveTargets.orgId, org.orgId))
+    );
+
+  /** Lift a freeze by moving its window into the past — expiry IS the window predicate and nothing
+   *  else (`freezes-repo.ts`), so this is exactly what the passage of time does. Written as SQL
+   *  because `DELETE`/`PATCH /api/v1/freezes/{id}` is M25.1 and has NOT SHIPPED; when it does, this
+   *  helper is the call site to move onto it. */
+  const liftFreeze = (freezeId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(freezes)
+        .set({ endsAt: new Date(Date.now() - 1_000) })
+        .where(and(eq(freezes.orgId, org.orgId), eq(freezes.id, freezeId)))
     );
 
   const firedFor = (placementId: string) =>
@@ -587,7 +619,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   // H — CRITICAL #2 PRESERVED. Replace `unionFreezes(byTarget)` with `byTarget[0].freezes` and the
   // first assertion goes red: the freeze covers only the SECOND target.
   // ============================================================================================
-  it("H: every active freeze must be overridden AT ITS OWN SCOPE, even one covering only target 2", async () => {
+  it("H: EVERY active freeze must be overridden at its OWN scope — a universal quantifier, tested with two", async () => {
     // Services created explicitly so the freeze's scope is a known id rather than one read back
     // out of the graph — the point of this case is WHICH scope was frozen.
     const svc = async (label: string) =>
@@ -597,8 +629,15 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     const first = await componentAt("crit2-first", [amer], firstService);
     const second = await componentAt("crit2-second", [amer], secondService);
     // Declared at the SECOND component's service, so it reaches target 2's placement through
-    // containment routes 3 then 2, and reaches target 1 not at all.
+    // containment routes 3 then 2, and reaches target 1 not at all. This one alone pins per-target
+    // RESOLUTION (replace `unionFreezes(byTarget)` with `byTarget[0].freezes` and arm (a) goes red).
     const frozen = await freezeAt(secondService, "second-service-freeze");
+    // TWO freezes, deliberately, and this is the half the case is named after. With one freeze the
+    // universal and the existential quantifier coincide, so flipping `checkFreeze`'s `every` to
+    // `some` left this case green and only the accept-edge test in `governance.integration.test.ts`
+    // noticed. Checking only `active[0]` was a shipped bug; the quantifier is what stops it, and a
+    // quantifier tested against a one-element set is not tested.
+    const alsoFrozen = await freezeAt(firstService, "first-service-freeze");
 
     const change = await admin.changes.propose({
       name: `crit2-${randomUUID().slice(0, 8)}`,
@@ -627,10 +666,10 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     // consulted only the first target's chain would report nothing frozen and allow.
     const noOverride = await gate(org.orgId);
     expect(noOverride.verdict).toBe("block");
-    expect(noOverride.inputContext.freeze).toMatchObject({
-      id: frozen.id,
-      scopeObjectId: secondService
-    });
+    expect(
+      [frozen.id, alsoFrozen.id],
+      "the block names one of the two active freezes"
+    ).toContain((noOverride.inputContext.freeze as { id: string }).id);
 
     // (b) AUTHORITY AT THE WRONG SCOPE IS NOT AUTHORITY. `freeze:override` at the FIRST service
     // says nothing about a freeze declared at the second — that is exactly the escalation checking
@@ -640,16 +679,35 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(rejected.verdict).toBe("block");
     expect(rejected.inputContext.overrideRejected).toEqual(expect.stringContaining(secondService));
 
-    // (c) AUTHORITY AT THE FREEZE'S OWN SCOPE IS. Same actor shape, same reason, one scope apart.
-    const rightScope = await createTestUser(server, org, [{ role: "Owner", scope: secondService }]);
-    const allowed = await gate(rightScope.objectId, { reason: "incident bridge approved" });
+    // (c) THE QUANTIFIER. Authority at the SECOND service overrides the freeze declared there and
+    // says nothing about the one at the first — so the change is STILL blocked. Flip `every` to
+    // `some` in `checkFreeze`'s loop and this arm goes green: one overridden freeze would be enough
+    // and the actor would ship past a freeze they hold no authority over. THIS is the arm the case
+    // is named after, and it needs two freezes to exist at all.
+    const secondOnly = await createTestUser(server, org, [{ role: "Owner", scope: secondService }]);
+    const stillBlocked = await gate(secondOnly.objectId, { reason: "incident bridge approved" });
+    expect(
+      stillBlocked.verdict,
+      "EVERY active freeze must be individually overridden — overriding one of two is not authority over the other"
+    ).toBe("block");
+    expect(stillBlocked.inputContext.overrideRejected).toEqual(
+      expect.stringContaining(firstService)
+    );
+
+    // (d) AUTHORITY AT BOTH SCOPES IS. Same actor shape, same reason, one role apart.
+    const bothScopes = await createTestUser(server, org, [
+      { role: "Owner", scope: firstService },
+      { role: "Owner", scope: secondService }
+    ]);
+    const allowed = await gate(bothScopes.objectId, { reason: "incident bridge approved" });
     expect(
       allowed.verdict,
-      "an override held at THAT freeze's own scope, with a reason, is what CRITICAL #2 requires and permits"
+      "an override held at EVERY active freeze's own scope, with a reason, is what CRITICAL #2 requires and permits"
     ).toBe("allow");
-    expect(allowed.freezeOverrides).toEqual([
-      { freezeId: frozen.id, reason: "incident bridge approved", scopeObjectId: secondService }
-    ]);
+    expect(
+      [...(allowed.freezeOverrides ?? [])].map((o) => o.freezeId).sort(),
+      "one audited override per freeze, not one for the set"
+    ).toEqual([frozen.id, alsoFrozen.id].sort());
   });
 
   // ============================================================================================
@@ -694,6 +752,15 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(Number(minted.rows[0]!.count)).toBe(1);
 
     // Explained on the CAMPAIGN, one row for the campaign rather than one per target.
+    // §1.8's third honesty defect, and the only one M25.2 itself CAUSES: a partially frozen
+    // campaign wave used to go `blocked` (the gate's whole-wave block verdict). It is now `running`
+    // so its unfrozen siblings can proceed, and without a freeze-aware status a 40-component
+    // campaign with one held target would read as ordinarily `active` for the length of the window.
+    expect(
+      (await admin.campaigns.get(campaign.id)).status,
+      "the lever works; the signal must not go missing with it"
+    ).toBe("blocked");
+
     const campaignHolds = await decisionsOfKind(campaign.id, "freeze_admission");
     expect(campaignHolds).toHaveLength(1);
     expect(campaignHolds[0]!.verdict).toBe("hold");
@@ -702,5 +769,378 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
         (h) => h.targetObjectId
       )
     ).toEqual([held.id]);
+  });
+
+  // ============================================================================================
+  // D5 AUTHORING DOOR — the escape hatch has to be REACHABLE, in the same increment as the
+  // loosening it mitigates.
+  // ============================================================================================
+  it("D5 door: `atomic` is settable through POST /api/v1/freezes and readable back", async () => {
+    // Owner decision D5 makes per-target admission the DEFAULT and applies it RETROACTIVELY to
+    // every freeze already authored. `atomic: true` is the mitigation the decision was taken on the
+    // strength of; if the only writer is the repo, an operator who needs all-or-nothing has no API,
+    // CLI or IaC expression for it and the loosening ships with its mitigation missing. That is the
+    // "component built, never installed" shape, so the door gets a test that exercises the door.
+    const app = await fourRegionComponent("door");
+    const change = await release("door", [app.id]);
+    const created = await admin.freezes.create({
+      scopeObjectId: amer.id,
+      name: "amer-atomic-via-api",
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+      reason: "door: authored the way an operator authors one",
+      atomic: true
+    });
+    expect(created.atomic, "the 201 body must report what was stored").toBe(true);
+    expect((await admin.freezes.get(created.id)).atomic).toBe(true);
+    expect(
+      (await admin.freezes.list()).items.find((f) => f.id === created.id)?.atomic,
+      "an operator must be able to SEE which freezes are atomic, not only set them"
+    ).toBe(true);
+
+    await tick(3);
+    // And it BEHAVES: the freeze covers only `amer`, and every sibling is parked.
+    for (const place of [amer, apac, emea, govcloud]) {
+      expect(firedFor(app.at(place))).toBe(0);
+    }
+    expect((await waves(change.id))[0]!.status).toBe("pending");
+  });
+
+  it("D5 door control: a freeze authored WITHOUT `atomic` is stored non-atomic", async () => {
+    // The paired direction — otherwise the case above passes against a column that is always true.
+    const created = await freezeAt(apac.id, "apac-default-atomicity");
+    expect(created.atomic).toBe(false);
+  });
+
+  // ============================================================================================
+  // MID-WAVE — the SECOND defect M25.2 claims to fix, and the one no case reached: every other
+  // fixture declares its freeze before the wave gate runs, so the gate could have done the work.
+  // ============================================================================================
+  it("mid-wave: a freeze declared AFTER the wave started still withholds the retry", async () => {
+    const app = await fourRegionComponent("midwave");
+    // `amer`'s executor refuses, so that target stays `triggering` after the gate has allowed and
+    // the wave is `running` — the only window in which "declared mid-wave" is expressible at all.
+    refuseTargets.add(app.at(amer));
+    const change = await release("midwave", [app.id]);
+    await tick(2);
+    expect((await waves(change.id))[0]!.status, "the gate saw NO freeze and allowed").toBe(
+      "running"
+    );
+    const firedBefore = firedFor(app.at(amer));
+    expect(firedBefore, "the refused target really was dispatched once").toBeGreaterThan(0);
+
+    // NOW the freeze — the wave gate has already fired and will never fire again for this wave.
+    await freezeAt(amer.id, "amer-declared-mid-wave");
+    await expireBackoff();
+    await tick(4);
+
+    expect(
+      firedFor(app.at(amer)),
+      "a freeze declared mid-wave must withhold the RETRY — the gate cannot, it fires once"
+    ).toBe(firedBefore);
+    expect(await decisionsOfKind(change.id, "freeze_admission")).toHaveLength(1);
+  });
+
+  it("mid-wave `atomic`: an atomic freeze declared mid-wave holds a sibling it does NOT cover", async () => {
+    const app = await fourRegionComponent("midatomic");
+    // TWO refused targets, so there is still an UNCOVERED `pending`/`triggering` sibling for the
+    // atomic union to reach when the freeze arrives. `emea`/`govcloud` ship normally.
+    refuseTargets.add(app.at(amer));
+    refuseTargets.add(app.at(apac));
+    await release("midatomic", [app.id]);
+    await tick(2);
+    const apacBefore = firedFor(app.at(apac));
+    expect(apacBefore).toBeGreaterThan(0);
+
+    // Covers `amer` ONLY. `atomic` means it holds every target of the wave regardless.
+    await atomicFreezeAt(amer.id, "amer-atomic-mid-wave");
+    await expireBackoff();
+    await tick(4);
+
+    expect(
+      firedFor(app.at(apac)),
+      "`atomic` restores the UNION — and the wave gate fires once, so only the per-tick hold can apply it after the wave started"
+    ).toBe(apacBefore);
+  });
+
+  it("mid-wave `atomic` control: a NON-atomic freeze declared mid-wave leaves the sibling alone", async () => {
+    const app = await fourRegionComponent("midnonatomic");
+    refuseTargets.add(app.at(amer));
+    refuseTargets.add(app.at(apac));
+    await release("midnonatomic", [app.id]);
+    await tick(2);
+    const apacBefore = firedFor(app.at(apac));
+
+    await freezeAt(amer.id, "amer-nonatomic-mid-wave");
+    await expireBackoff();
+    await tick(4);
+
+    expect(
+      firedFor(app.at(apac)),
+      "per-target admission: a freeze at amer says nothing about apac"
+    ).toBeGreaterThan(apacBefore);
+  });
+
+  // ============================================================================================
+  // D7'S QUALIFIER — a rollback is exempt where there is something to roll back, and only there.
+  // ============================================================================================
+  it("D7 qualifier: a rollback is NOT exempt at a target the original never dispatched", async () => {
+    // The composition per-target admission makes reachable for the first time: the freeze holds
+    // `amer` and the siblings SHIP, so one of them can fail, so a rollback can be minted over ALL
+    // FOUR of the original's targets — including the one the freeze successfully held. A bare
+    // `isRollback` exemption dispatches an unattended executor call into the frozen region to undo
+    // a release that never happened there.
+    const app = await fourRegionComponent("rbqual");
+    const original = await release("rbqual", [app.id]);
+    await freezeAt(amer.id, "amer-freeze-vs-nothing-to-undo");
+    await tick(2);
+    expect(firedFor(app.at(amer)), "the freeze held amer: nothing was ever dispatched there").toBe(
+      0
+    );
+    const apacFired = firedFor(app.at(apac));
+    expect(apacFired).toBeGreaterThan(0);
+
+    const rollback = await admin.changes.rollback(
+      original.id,
+      "integration: undo the three that shipped"
+    );
+    await tick(6);
+
+    // `amer` — nothing to undo, still frozen, still held.
+    expect(
+      firedFor(app.at(amer)),
+      "D7 exempts a rollback so it can undo a broken release; there is no broken release at a target the original never reached"
+    ).toBe(0);
+    const heldRollback = await decisionsOfKind(rollback.id, "freeze_admission");
+    expect(heldRollback).toHaveLength(1);
+    expect(
+      (heldRollback[0]!.inputContext as { held: { targetObjectId: string }[] }).held.map(
+        (h) => h.targetObjectId
+      )
+    ).toEqual([app.at(amer)]);
+
+    // `apac` — the original DID dispatch there, so the rollback proceeds. Both directions.
+    expect(
+      firedFor(app.at(apac)),
+      "the exemption still applies where the release actually landed — that is the whole of D7"
+    ).toBeGreaterThan(apacFired);
+  });
+
+  // ============================================================================================
+  // HOLD -> RELEASE (§1.5) — the clearing counterpart ADR-0028 does not have.
+  // ============================================================================================
+  it("release: when the window closes the hold is cleared with an `allow` row, exactly once", async () => {
+    const app = await fourRegionComponent("release");
+    const change = await release("release", [app.id]);
+    const frozen = await freezeAt(amer.id, "amer-release-freeze");
+
+    await tick(3);
+    const held = await decisionsOfKind(change.id, "freeze_admission");
+    expect(held).toHaveLength(1);
+    expect(held[0]!.verdict).toBe("hold");
+
+    await liftFreeze(frozen.id);
+    await tick(3);
+
+    const afterLift = await decisionsOfKind(change.id, "freeze_admission");
+    expect(
+      afterLift,
+      "a hold with no clearing counterpart still says `hold` long after it released — the defect routes/changes.ts already documents against ADR-0028"
+    ).toHaveLength(2);
+    expect(afterLift[1]!.verdict).toBe("allow");
+    expect(afterLift[1]!.inputContext).toMatchObject({ held: [] });
+    expect(firedFor(app.at(amer)), "and the target actually shipped").toBeGreaterThan(0);
+
+    // EXACTLY ONCE. The release must not become a per-tick writer of its own — that is ADR-0024
+    // rebuilt one verdict over.
+    await tick(20);
+    expect(await decisionsOfKind(change.id, "freeze_admission")).toHaveLength(2);
+  });
+
+  // ============================================================================================
+  // DEDUP, WITH ARRAYS LONG ENOUGH FOR THE SORTS TO MATTER. The single-held-target/single-freeze
+  // fixture made both sorts operate on 1-element arrays, so deleting them changed nothing.
+  // ============================================================================================
+  it("dedup (multi): two held targets under two freezes, with BOTH source orders reversed", async () => {
+    // THE FIXTURE IS THE TEST. The previous shape (one held target, one covering freeze) made both
+    // Decision sorts operate on ONE-ELEMENT arrays, so deleting them changed nothing and the
+    // mutation survived while three docblocks and this case's own banner claimed it was covered.
+    // Both sorts are now given input whose NATURAL order is the reverse of their sorted order:
+    //
+    //   * TARGETS. Placements are created govcloud -> emea -> apac -> amer, so their uuidv7 ids
+    //     ascend in that order — while the topology's wave lists them amer, apac, emea, govcloud.
+    //     `loadWavesWithTargets` orders by `created_at` with no tiebreak and every target of a wave
+    //     carries the same transaction timestamp, so the order reconcile sees is the wave's. Sorted
+    //     ascending is therefore the exact REVERSE of it.
+    //   * FREEZES. The atomic freeze is created FIRST (lowest id) and the plain one SECOND, and the
+    //     covering set for `apac` is built as [its own] ++ [the atomic ones] — i.e. highest id
+    //     first. Sorted ascending flips it.
+    //
+    // Delete either sort and the corresponding assertion below goes red. That matters because
+    // `restatesDecision` canonicalizes object KEYS only: array element order is significant, so an
+    // unsorted array plus a reordered query result is one new Decision row per second, for weeks —
+    // ADR-0024's measured 1.44 GB/day rebuilt from parts.
+    const app = await componentAt("dedup2", [govcloud, emea, apac, amer]);
+    // Both freezes are declared MID-WAVE, which is also the only way an `atomic` freeze can reach
+    // the per-target hold at all: declared before the gate, `partiallyFrozen` is false for an atomic
+    // freeze and the wave is blocked WHOLE, so no hold Decision is ever written. `amer` and `apac`
+    // are refused by their executor so they are still `triggering` when the freezes arrive; `emea`
+    // and `govcloud` shipped on the first tick and are past this seam, as they must be — a freeze
+    // cannot un-ring a trigger already made.
+    refuseTargets.add(app.at(amer));
+    refuseTargets.add(app.at(apac));
+    const change = await release("dedup2", [app.id]);
+    await tick(2);
+    expect((await waves(change.id))[0]!.status, "the gate saw no freeze and allowed").toBe("running");
+
+    const atomicFreeze = await atomicFreezeAt(amer.id, "amer-atomic-first");
+    const plainFreeze = await freezeAt(apac.id, "apac-plain-second");
+    expect(
+      atomicFreeze.id < plainFreeze.id,
+      "uuidv7 is monotonic: the atomic freeze must carry the LOWER id for the freeze-order assertion to bite"
+    ).toBe(true);
+    await expireBackoff();
+
+    await tick(3);
+    const [only] = await decisionsOfKind(change.id, "freeze_admission");
+    expect(only).toBeDefined();
+    const heldIn = (
+      only!.inputContext as {
+        held: { targetObjectId: string; freezes: { id: string }[] }[];
+      }
+    ).held;
+
+    // `atomic` restores the union, so `amer` (covered) and `apac` (not covered by the atomic
+    // freeze, only by its own) are both held — and the array must be in id order, not in the order
+    // the wave handed them over.
+    const waveOrder = [amer, apac].map((place) => app.at(place));
+    expect(heldIn.map((h) => h.targetObjectId)).toEqual([...waveOrder].sort());
+    expect(
+      heldIn.map((h) => h.targetObjectId),
+      "and that really is a different order from the one the loop produced"
+    ).not.toEqual(waveOrder);
+
+    const apacEntry = heldIn.find((h) => h.targetObjectId === app.at(apac))!;
+    expect(
+      apacEntry.freezes.map((f) => f.id),
+      "freezes sorted by id — `apac`'s own freeze is found first and carries the HIGHER id"
+    ).toEqual([atomicFreeze.id, plainFreeze.id]);
+
+    await tick(30);
+    expect(
+      await decisionsOfKind(change.id, "freeze_admission"),
+      "33 ticks, two held targets, two freezes: still one row"
+    ).toHaveLength(1);
+  });
+
+  // ============================================================================================
+  // A DEAD TARGET IS NOT HELD — terminalizing it is PROGRESS.
+  // ============================================================================================
+  it("tombstone: a frozen target whose object was deleted terminalizes instead of being held", async () => {
+    // FOUR regions, not one: a solo-target wave under a freeze is the ALL-FROZEN case, so the gate
+    // blocks it whole and the actuator is never reached at all. The defect lives on the PARTIAL
+    // path, which is the one per-target admission created.
+    const app = await fourRegionComponent("tombstone");
+    const change = await release("tombstone", [app.id]);
+    await freezeAt(amer.id, "amer-freeze-over-a-corpse");
+
+    await tick(2);
+    expect((await waveTarget(change.id, app.at(amer))).status, "held first").toBe("pending");
+    expect(await decisionsOfKind(change.id, "freeze_admission")).toHaveLength(1);
+
+    // A perfectly authorized delete, taken while the change is in flight and the region frozen.
+    const res = await server.app.inject({
+      method: "DELETE",
+      url: `/api/v1/components/${app.id}`,
+      headers: { authorization: `Bearer ${org.adminToken}` }
+    });
+    expect(res.statusCode).toBeLessThan(300);
+
+    await tick(4);
+
+    // `containmentChain` does not live-filter its BASE row, so the tombstoned placement still
+    // resolves a full chain and the freeze still "covers" it. Holding it would park a DEAD row for
+    // the length of the window — weeks are expressible — behind a Decision that says a freeze is
+    // holding it while the truth is that the object was deleted, and would defer the tombstone's
+    // own audit event and block Decision for exactly as long. Terminalizing it is PROGRESS, which
+    // is the ordering `campaign-reconcile.ts`'s seam already states for itself.
+    expect(
+      (await waveTarget(change.id, app.at(amer))).status,
+      "a dead target is not held"
+    ).toBe("target_deleted");
+    expect(firedFor(app.at(amer)), "and nothing was ever dispatched at it").toBe(0);
+  });
+
+  // ============================================================================================
+  // `GateVerdict.frozenTargets` — the wave-gate passthrough. Delete either line in `gates.ts` and
+  // this goes red; without it the field had no reader on either side of that file.
+  // ============================================================================================
+  it("the wave gate REPORTS which targets are frozen, through `evaluateWaveGate`", async () => {
+    const app = await fourRegionComponent("verdict");
+    const change = await release("verdict", [app.id]);
+    await freezeAt(amer.id, "amer-verdict-freeze");
+
+    const verdict = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      evaluateWaveGate(
+        tx,
+        {
+          orgId: org.orgId,
+          changeObjectId: change.id,
+          actorObjectId: org.orgId,
+          emergency: false,
+          topologyObjectId: topologyId,
+          waveIndex: 0,
+          targetObjectIds: [amer, apac, emea, govcloud].map((place) => app.at(place))
+        },
+        { sandbox: getSharedCelSandbox(), host: null }
+      )
+    );
+
+    expect(verdict.verdict, "partial admission: the gate stands aside").toBe("allow");
+    const reported = (verdict.frozenTargets ?? []).filter((e) => e.freezes.length > 0);
+    expect(
+      reported.map((e) => e.targetObjectId),
+      "the gate must be able to SAY which targets it stood aside for — an `allow` with no per-target detail explains nothing"
+    ).toEqual([app.at(amer)]);
+  });
+
+  // ============================================================================================
+  // §1.8 HONESTY — the lever works and the signal must not be missing.
+  // ============================================================================================
+  it("service board: a REGION freeze appears on the rows it actually holds", async () => {
+    const service = await admin.services.create({
+      name: `board-svc-${randomUUID().slice(0, 8)}`
+    });
+    const app = await componentAt("boardcomp", [amer, apac], service.id);
+    const frozen = await freezeAt(amer.id, "amer-board-freeze");
+
+    const board = await admin.services.board(service.id);
+    const row = board.rows.find((r) => r.component.id === app.id);
+    expect(
+      row?.activeFreeze?.id,
+      "a deployment-target-scoped freeze sits on a PLACEMENT's containment chain, never on a component's — an exact-scope map finds it on no row at all"
+    ).toBe(frozen.id);
+
+    // And the service tier, through containment rather than exact membership.
+    const serviceWide = await freezeAt(service.id, "service-board-freeze");
+    const after = await admin.services.board(service.id);
+    expect(after.serviceFreeze).not.toBeNull();
+    expect(
+      after.rows.find((r) => r.component.id === app.id)?.activeFreeze,
+      "a service-scoped freeze reaches every component under it"
+    ).not.toBeNull();
+    expect([frozen.id, serviceWide.id]).toContain(
+      after.rows.find((r) => r.component.id === app.id)?.activeFreeze?.id
+    );
+  });
+
+  it("service board control: with nothing frozen, no row claims a freeze", async () => {
+    const service = await admin.services.create({
+      name: `board-clean-${randomUUID().slice(0, 8)}`
+    });
+    const app = await componentAt("boardclean", [amer], service.id);
+    const board = await admin.services.board(service.id);
+    expect(board.serviceFreeze).toBeNull();
+    expect(board.rows.find((r) => r.component.id === app.id)?.activeFreeze).toBeNull();
   });
 });

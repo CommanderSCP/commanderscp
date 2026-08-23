@@ -22,7 +22,12 @@ import {
   evaluateStageDependencies,
   type StageDependencyVerdict
 } from "./stage-dependency-hold.js";
-import { describeFreezeHold, evaluateFreezeHolds, type FreezeHoldVerdict } from "./freeze-hold.js";
+import {
+  describeFreezeHold,
+  describeHeldTargets,
+  evaluateFreezeHolds,
+  type FreezeHoldVerdict
+} from "./freeze-hold.js";
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
 import {
@@ -1570,14 +1575,7 @@ async function recordFreezeAdmissionHold(
   activeWave: { id: string; waveIndex: number },
   frozenTargets: FreezeHoldVerdict[]
 ): Promise<void> {
-  const held = [...frozenTargets]
-    .sort((a, b) => a.targetObjectId.localeCompare(b.targetObjectId))
-    .map((entry) => ({
-      targetObjectId: entry.targetObjectId,
-      componentObjectId: entry.stage?.componentObjectId ?? null,
-      deploymentTargetObjectId: entry.stage?.deploymentTargetObjectId ?? null,
-      freezes: entry.freezes
-    }));
+  const held = describeHeldTargets(frozenTargets);
 
   const firstHold = await withTenantTx(db, orgId, async (tx) => {
     const recorded = await insertDecisionIfChanged(tx, {

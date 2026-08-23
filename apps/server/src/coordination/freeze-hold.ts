@@ -164,6 +164,44 @@ export async function evaluateFreezeHolds(
   return holds;
 }
 
+/** One entry of a `freeze_admission` Decision's `inputContext.held`. */
+export interface HeldTargetRecord {
+  targetObjectId: string;
+  componentObjectId: string | null;
+  deploymentTargetObjectId: string | null;
+  freezes: FreezeHoldVerdict["freezes"];
+}
+
+/**
+ * THE `held` ARRAY OF THE `freeze_admission` DECISION — one projection, shared by BOTH recorders
+ * (`reconcile.ts`'s `recordFreezeAdmissionHold` and `campaign-reconcile.ts`'s campaign-subject
+ * twin), rather than the same six lines written out twice.
+ *
+ * SORTED BY `targetObjectId`, AND THE SORT IS THE POINT. `insertDecisionIfChanged` compares a
+ * candidate against the latest row of the same `(subject_id, kind)` and `restatesDecision`
+ * canonicalizes object KEYS only — array element ORDER is significant. The order this receives is
+ * the order reconcile's per-target loop pushed, which comes from `loadWavesWithTargets`'s
+ * `ORDER BY created_at` with NO TIEBREAK over rows that all carry the same transaction timestamp,
+ * on a table those rows are UPDATEd in every tick. So the input order is genuinely not stable, and
+ * an unstable `held` array is one new Decision row per second for the length of the freeze window —
+ * ADR-0024's measured 1.44 GB/day rebuilt from parts.
+ *
+ * It is a separate exported function because the integration fixture cannot perturb that input
+ * order on demand (a wave's placements are created monotonically, so the loop's order and id order
+ * coincide), and a sort tested only against input that is already sorted is not tested. Its unit
+ * test hands it a deliberately descending list.
+ */
+export function describeHeldTargets(frozenTargets: FreezeHoldVerdict[]): HeldTargetRecord[] {
+  return [...frozenTargets]
+    .sort((a, b) => a.targetObjectId.localeCompare(b.targetObjectId))
+    .map((entry) => ({
+      targetObjectId: entry.targetObjectId,
+      componentObjectId: entry.stage?.componentObjectId ?? null,
+      deploymentTargetObjectId: entry.stage?.deploymentTargetObjectId ?? null,
+      freezes: entry.freezes
+    }));
+}
+
 /** The Decision-shaped projection of a covering freeze set: ids, the scope it was declared at, its
  *  operator-facing name, and the WINDOW BOUNDARY — never `now`.
  *

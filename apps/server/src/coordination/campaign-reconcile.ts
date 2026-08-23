@@ -14,7 +14,12 @@ import {
   insertDecisionIfChanged,
   latestDecisionForSubjectKind
 } from "./decisions-repo.js";
-import { describeFreezeHold, evaluateFreezeHolds, type FreezeHoldVerdict } from "./freeze-hold.js";
+import {
+  describeFreezeHold,
+  describeHeldTargets,
+  evaluateFreezeHolds,
+  type FreezeHoldVerdict
+} from "./freeze-hold.js";
 import { proposeChange, typeOf } from "./changes-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -623,14 +628,7 @@ async function recordCampaignFreezeAdmissionHold(
   activeWave: { id: string; waveIndex: number },
   frozenTargets: FreezeHoldVerdict[]
 ): Promise<void> {
-  const held = [...frozenTargets]
-    .sort((a, b) => a.targetObjectId.localeCompare(b.targetObjectId))
-    .map((entry) => ({
-      targetObjectId: entry.targetObjectId,
-      componentObjectId: entry.stage?.componentObjectId ?? null,
-      deploymentTargetObjectId: entry.stage?.deploymentTargetObjectId ?? null,
-      freezes: entry.freezes
-    }));
+  const held = describeHeldTargets(frozenTargets);
 
   const recorded = await withTenantTx(db, orgId, (tx) =>
     insertDecisionIfChanged(tx, {
