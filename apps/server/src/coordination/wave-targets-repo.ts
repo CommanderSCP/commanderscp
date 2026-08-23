@@ -1,4 +1,15 @@
-import { and, desc, eq, getTableColumns, inArray, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  getTableColumns,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql
+} from "drizzle-orm";
 import type { ExecutionStatus } from "@scp/plugin-api";
 import type { ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -582,6 +593,62 @@ export async function findLatestSucceededExecution(
  *  state handle, and passing one produced by a DIFFERENT executor into this instance's rollback
  *  `trigger()` is meaningless (and dangerous). When the original ran on another executor, no row
  *  matches and the rollback carries a null `priorStateRef`. */
+/**
+ * DID THE ORIGINAL CHANGE EVER HAND THIS TARGET TO AN EXECUTOR? — the question owner decision D7's
+ * rollback exemption turns out to need, and the one that keeps it from becoming a door.
+ *
+ * D7 exempts rollbacks from freezes because holding a rollback pins a BROKEN RELEASE in place for
+ * the whole window. That reasoning is about a target the broken release actually reached. Per-target
+ * admission (M25.2) makes the other case reachable for the first time: a wave of four regions with a
+ * freeze over `amer` now SHIPS the other three, so one of them can FAIL, so an `autoRollbackOnFailure`
+ * policy can mint a rollback whose targets are ALL FOUR of the original's — including `amer`, which
+ * the freeze successfully held and which never received the change. Under a bare `isRollback`
+ * exemption SCP then dispatches an unattended `rollback` trigger into a scope under a declared
+ * freeze, to undo a release that never happened there. `argocd` and `managed-iac` fail closed on the
+ * resulting null `priorStateRef`; `pipeline-generic` and `github` dispatch the workflow anyway.
+ *
+ * So the exemption is qualified by this predicate rather than by the change's kind alone: there is
+ * nothing to roll back at a target the original never dispatched, D7's rationale does not reach it,
+ * and it stays held like any other frozen target until the window closes. This REFUSES more than
+ * D7's letter and permits nothing D7 does not — and pre-M25.2 that target was freeze-blocked too, so
+ * it is not a regression on any behaviour that ever shipped.
+ *
+ * "DISPATCHED" IS `attempt > 0` OR A NON-NULL `executor_ref`, not `status`, and the two arms are
+ * both needed. `claimWaveTargetForTriggering` increments `attempt` and sets `triggering` BEFORE the
+ * executor call, so a trigger that was made and then THREW carries `attempt: 1` with a null ref —
+ * that call still reached the executor and may well have started something. `markWaveTargetTriggered`
+ * writes the ref on success. A target terminalized by `blockWaveTarget` (`no_executor`,
+ * `target_deleted`) touched neither, which is correct: nothing was dispatched there either.
+ *
+ * NOT SCOPED TO AN EXECUTOR INSTANCE, unlike `findOriginalWaveTarget` above — that one is choosing a
+ * `priorStateRef` it must be able to interpret, this one is asking a yes/no question about history,
+ * and narrowing it by plugin instance would answer "no" for a target dispatched under an executor
+ * that has since been rebound. "No" is the answer that HOLDS, so a false "no" is the safe direction,
+ * but an unnecessary one.
+ */
+export async function originalChangeDispatchedTarget(
+  tx: TenantTx,
+  orgId: string,
+  originalChangeObjectId: string,
+  targetObjectId: string
+): Promise<boolean> {
+  const rows = await tx
+    .select({ id: changeWaveTargets.id })
+    .from(changeWaveTargets)
+    .innerJoin(changeWaves, eq(changeWaveTargets.waveId, changeWaves.id))
+    .innerJoin(changePlans, eq(changeWaves.planId, changePlans.id))
+    .where(
+      and(
+        eq(changeWaveTargets.orgId, orgId),
+        eq(changePlans.changeObjectId, originalChangeObjectId),
+        eq(changeWaveTargets.targetObjectId, targetObjectId),
+        or(gt(changeWaveTargets.attempt, 0), isNotNull(changeWaveTargets.executorRef))
+      )
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
 export async function findOriginalWaveTarget(
   tx: TenantTx,
   orgId: string,

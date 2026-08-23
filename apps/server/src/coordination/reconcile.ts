@@ -48,6 +48,7 @@ import {
   markWaveTargetTriggerFailed,
   markWaveTerminal,
   observedStateFrom,
+  originalChangeDispatchedTarget,
   updateWaveTargetObserved
 } from "./wave-targets-repo.js";
 import {
@@ -62,7 +63,11 @@ import { appendAuditEvent } from "../audit/audit-repo.js";
 import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
 import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
-import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
+import {
+  insertDecision,
+  insertDecisionIfChanged,
+  latestDecisionForSubjectKind
+} from "./decisions-repo.js";
 import { describeError } from "../errors.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
@@ -962,6 +967,34 @@ async function reconcileExecutingChange(
       })
     ));
 
+  /**
+   * THE ONE QUALIFIER ON D7'S ROLLBACK EXEMPTION — see `originalChangeDispatchedTarget`.
+   *
+   * `false` for every non-rollback change WITHOUT touching the database, so the ordinary path pays
+   * nothing; and for a rollback it is asked ONLY about a target a freeze is actually holding, which
+   * is the rarest shape on this loop. Memoised per target per tick alongside the hold map itself,
+   * because a rollback whose whole wave is frozen would otherwise re-ask once per target per tick
+   * for the length of the window.
+   */
+  const rollbackUndoable = new Map<string, boolean>();
+  const rollbackHasSomethingToUndoAt = async (targetObjectId: string): Promise<boolean> => {
+    if (!isRollback || !change.rollbackOfObjectId) return false;
+    const memo = rollbackUndoable.get(targetObjectId);
+    if (memo !== undefined) return memo;
+    const dispatched = await withTenantTx(db, orgId, (tx) =>
+      originalChangeDispatchedTarget(tx, orgId, change.rollbackOfObjectId!, targetObjectId)
+    );
+    rollbackUndoable.set(targetObjectId, dispatched);
+    return dispatched;
+  };
+
+  /** Did any target of this wave reach `triggerWaveTarget` on this tick? The release condition for
+   *  the freeze hold's Decision — see `clearFreezeAdmissionHold`. Set BEFORE the call rather than
+   *  after it, because a trigger that THREW still handed the target to its executor (the attempt is
+   *  durable and the executor may well have started something), and a hold that stayed on record
+   *  after that would be the same stale row this release exists to end. */
+  let anyTargetTriggered = false;
+
   /** Every target held this tick, with the verdict that held it — collected across the whole loop so
    *  ONE Decision covers the change rather than one per target. That is not tidiness: `decisions`
    *  are deduped per `(subject_id, kind)` on the LATEST row, so per-target rows for a multi-target
@@ -1054,13 +1087,20 @@ async function reconcileExecutingChange(
       //   2. BEFORE `triggerWaveTarget`. No advisory trigger-claim lock is taken and no executor
       //      binding is re-read for a call we are not going to make. `attempt` therefore stays 0 on
       //      a target held from its first tick, which is what the actuator test measures.
-      //   3. `!isRollback` (owner decision D7). `evaluateLifecycleGate` already exempts rollbacks
-      //      (`gates.ts` — DESIGN §9.4, "no human-review step to wait for"), but
-      //      `EvaluateWaveGateContext` carries no `isRollback` at all, so a rollback's wave targets
-      //      were freeze-blocked. Holding a rollback pins a BROKEN RELEASE in place for the whole
-      //      window — the one change a freeze most wants to let through. This is a change that
-      //      newly permits, which is why it is an owner decision and gets a test in both
-      //      directions.
+      //   3. THE ROLLBACK EXEMPTION (owner decision D7), AND ITS ONE QUALIFIER.
+      //      `evaluateLifecycleGate` already exempts rollbacks (`gates.ts` — DESIGN §9.4, "no
+      //      human-review step to wait for"), but `EvaluateWaveGateContext` carried no `isRollback`
+      //      at all, so a rollback's wave targets were freeze-blocked. Holding a rollback pins a
+      //      BROKEN RELEASE in place for the whole window — the one change a freeze most wants to
+      //      let through. This is a change that newly permits, which is why it is an owner decision
+      //      and gets a test in both directions.
+      //
+      //      The qualifier is `rollbackHasSomethingToUndoAt` below: D7's reasoning is about a
+      //      target the broken release ACTUALLY REACHED, and per-target admission makes the other
+      //      case reachable for the first time (freeze holds `amer`, a sibling ships and fails,
+      //      `autoRollbackOnFailure` mints a rollback over ALL FOUR original targets). Exempting
+      //      `amer` there would dispatch an unattended executor call into a declared freeze to undo
+      //      a release that never happened. See that function for the full chain.
       //   4. BEFORE THE STAGE-DEPENDENCY HOLD. Only one `continue` can fire, so the two hold sets
       //      are DISJOINT BY CONSTRUCTION — which is exactly what the terminalization arithmetic at
       //      the bottom of this loop depends on. Stated consequence: a target that is both frozen
@@ -1073,12 +1113,10 @@ async function reconcileExecutingChange(
       //      the RETRY, not the original call. That is the honest boundary of what a freeze buys,
       //      and for a `pending` target — every first trigger, the case this is about — `backoffMs`
       //      is 0 and the two orders are identical anyway.
-      if (!isRollback) {
-        const frozen = (await loadFreezeHolds()).get(target.targetObjectId);
-        if (frozen) {
-          frozenTargets.push(frozen);
-          continue;
-        }
+      const frozen = (await loadFreezeHolds()).get(target.targetObjectId);
+      if (frozen && !(await rollbackHasSomethingToUndoAt(target.targetObjectId))) {
+        frozenTargets.push(frozen);
+        continue;
       }
 
       // STAGE-DEPENDENCY HOLD (ADR-0028 decision 2) — withhold this target's trigger while a
@@ -1154,6 +1192,10 @@ async function reconcileExecutingChange(
         }
       }
       try {
+        // `anyTargetTriggered` is what gates the freeze hold's RELEASE row below (§1.5): a hold
+        // clears on the tick a previously-held target actually reaches its executor, which is the
+        // one tick on which "the window closed" is an observation rather than a guess.
+        anyTargetTriggered = true;
         await triggerWaveTarget(
           db,
           orgId,
@@ -1257,6 +1299,8 @@ async function reconcileExecutingChange(
 
   if (frozenTargets.length > 0) {
     await recordFreezeAdmissionHold(db, orgId, change, activeWave, frozenTargets);
+  } else if (anyTargetTriggered) {
+    await clearFreezeAdmissionHold(db, orgId, change, activeWave);
   }
 
   // TERMINALIZATION, IN TWO RULES RATHER THAN ONE — because a held target is in flight (invariant 1
@@ -1564,6 +1608,75 @@ async function recordFreezeAdmissionHold(
       `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by an active freeze — decision ${firstHold.decision.id} (scp decision get ${firstHold.decision.id}); re-evaluated every tick until the window closes`
     );
   }
+}
+
+/**
+ * HOLD -> RELEASE (proposal §1.5) — the clearing counterpart ADR-0028's stage-dependency hold does
+ * NOT have, and the omission `routes/changes.ts` had to work around.
+ *
+ * THE DEFECT THIS EXISTS TO PREVENT, stated verbatim by the file that already hit it
+ * (`routes/changes.ts`, on the `stage_dependency` Decision): *"that row is a historical record with
+ * no clearing counterpart, so it still says `hold` long after the hold released"*. A freeze holds
+ * `amer` for two hours, the window closes, `amer` ships, the change completes — and the newest
+ * `freeze_admission` row for that change still reads `hold`, naming a freeze whose `endsAt` is in
+ * the past, with nothing in `scp change explain` contradicting it. ADR-0028 paid for that lesson by
+ * adding a re-evaluated `resolveStageDependencyStatus` beside the raw Decision list; M25.2 copied
+ * the hold's shape from that seam, so it copies the fix too — in the cheaper of the two available
+ * forms, because a freeze hold (unlike a dependency) has an unambiguous release EVENT to hang a row
+ * on: the tick a target actually reached its executor with nothing held.
+ *
+ * THREE GUARDS, so this cannot become a writer:
+ *
+ *   1. It is called ONLY on a tick where `frozenTargets` is empty AND some target triggered. A
+ *      change that was never held never reaches this function at all.
+ *   2. It READS the latest `(subject_id, kind)` row first and returns unless that row is a `hold`.
+ *      So the release is written at most once per hold, not once per subsequent trigger.
+ *   3. `insertDecisionIfChanged` is used anyway, so even if both guards were somehow defeated the
+ *      second identical release would be suppressed. Belt, braces, and the ADR-0024 lesson.
+ *
+ * NO CURSOR BUMP, deliberately, and it is the one function in this file's Decision-writing family
+ * without one: reaching here means a target was triggered on this very tick, so
+ * `markWaveTargetTriggered` has already written `change_wave_targets` and the terminalization
+ * arithmetic below bumps `reconcile_cursor_at` for a wave still in flight. There is no
+ * not-advanced path here to starve. `candidate-loop-registry.test.ts` counts the bumps that DO
+ * exist; this function is deliberately absent from its `bumpIn` list.
+ *
+ * `held: []` AND THE SAME `kind`, so `scp change explain` shows the pair — hold, then release —
+ * under one filter rather than making an operator correlate two vocabularies. `verdict: "allow"`
+ * (never `"block"`, for the reason `recordFreezeAdmissionHold` states at length).
+ */
+async function clearFreezeAdmissionHold(
+  db: Db,
+  orgId: string,
+  change: ChangeRow,
+  activeWave: { id: string; waveIndex: number }
+): Promise<void> {
+  await withTenantTx(db, orgId, async (tx) => {
+    const latest = await latestDecisionForSubjectKind(
+      tx,
+      orgId,
+      change.objectId,
+      "freeze_admission"
+    );
+    if (!latest || latest.verdict !== "hold") return;
+    await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "freeze_admission",
+      subjectId: change.objectId,
+      verdict: "allow",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held: [] },
+      reasonTree: {
+        summary:
+          "no wave target is held by a freeze any more — the window closed (or the freeze was " +
+          "lifted) and the previously-held target has been handed to its executor",
+        releases: latest.id
+      }
+    });
+  }).catch((err) => {
+    // Best effort, exactly like the hold's own logging: failing to record that a hold RELEASED must
+    // never fail the tick that released it. The next trigger on this change retries.
+    logChangeError(orgId, change, "freeze-admission-release", err);
+  });
 }
 
 /**
