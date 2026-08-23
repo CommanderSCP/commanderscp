@@ -24,6 +24,10 @@ export interface FreezeRow {
   reason: string;
   createdByActorId: string;
   createdAt: Date;
+  /** M25.2 / owner decision D5 — `true` parks the WHOLE wave (pre-M25.2 behaviour), `false` (the
+   *  default) admits the wave's uncovered targets and holds only the covered ones. Read in exactly
+   *  one place: `gate-orchestrator.ts`'s `partiallyFrozen` predicate. */
+  atomic: boolean;
 }
 
 export interface CreateFreezeInput {
@@ -34,6 +38,10 @@ export interface CreateFreezeInput {
   endsAt: Date;
   reason: string;
   createdByActorId: string;
+  /** Defaults to `false` — see `freezes.atomic` (drizzle/0077). NOT yet reachable from
+   *  `POST /api/v1/freezes`: M25.2 holds no codegen slot, so the request schema is untouched and
+   *  this input exists for the authoring surface that follows it. */
+  atomic?: boolean | undefined;
 }
 
 export async function createFreeze(tx: TenantTx, input: CreateFreezeInput): Promise<FreezeRow> {
@@ -50,7 +58,8 @@ export async function createFreeze(tx: TenantTx, input: CreateFreezeInput): Prom
       startsAt: input.startsAt,
       endsAt: input.endsAt,
       reason: input.reason,
-      createdByActorId: input.createdByActorId
+      createdByActorId: input.createdByActorId,
+      atomic: input.atomic ?? false
     })
     .returning();
   return row as FreezeRow;
@@ -71,16 +80,69 @@ export async function listFreezes(tx: TenantTx, orgId: string): Promise<FreezeRo
   return rows as FreezeRow[];
 }
 
+/**
+ * EVERY freeze in the org whose window covers `at` — no scope filter at all.
+ *
+ * THE ONLY PLACE THAT KNOWS THE WINDOW PREDICATE (`starts_at <= at < ends_at`), and that is the
+ * whole reason it is a function rather than an inlined `where`. `graph/containment.ts`'s header
+ * records what a second copy of one idea costs here specifically: three row-returning copies of the
+ * containment walk drifted, one of them kept a `domain_id`-only walk, and a service-scoped freeze
+ * failed OPEN as a result. A second copy of the *window* predicate is the same hazard one column
+ * over — the half-open boundary (`lte` on the start, `gt` on the end) is exactly the kind of detail
+ * two copies stop agreeing about, and both directions of that disagreement are silent.
+ *
+ * Served by the `freezes_org_window` index. Returns [] for an org with no active freeze, which is
+ * the overwhelmingly common case and the one `freeze-scope.ts`'s INERTNESS property is built on:
+ * this query runs before any containment walk, so an org with nothing frozen pays one indexed read
+ * per change per tick and not a single graph traversal.
+ *
+ * EXPIRY IS THIS PREDICATE AND NOTHING ELSE. There is no sweeper and no status column: the first
+ * tick after `ends_at` a freeze simply stops being returned here. See `scan-override-grants.ts`,
+ * which followed this file for the same reason.
+ */
+export async function activeFreezesInWindow(
+  tx: TenantTx,
+  orgId: string,
+  at: Date
+): Promise<FreezeRow[]> {
+  const rows = await tx
+    .select()
+    .from(freezes)
+    .where(and(eq(freezes.orgId, orgId), lte(freezes.startsAt, at), gt(freezes.endsAt, at)));
+  return rows as FreezeRow[];
+}
+
+/**
+ * THE MEMBERSHIP RULE — pure, no database, unit-testable on its own.
+ *
+ * EXACT-SET MEMBERSHIP, NOT CONTAINMENT, and that contract is the dangerous half of this file: this
+ * function does no walking whatsoever, so any id the caller omits from `scopeObjectIds` is a freeze
+ * that silently does not block. Callers must build the set with `graph/containment.ts`'s
+ * `containmentScopeIds` (or, per target, `containmentChain`), which walks BOTH containment routes.
+ * A caller that hand-rolled a `domain_id`-only walk omitted the target's SERVICE, and a
+ * service-scoped freeze failed OPEN — the incident `graph/containment.ts` exists to have ended. If
+ * you give this function ids from anywhere else, walk every route first.
+ */
+export function filterFreezesByScopes(rows: FreezeRow[], scopeObjectIds: string[]): FreezeRow[] {
+  if (scopeObjectIds.length === 0) return [];
+  const scopes = new Set(scopeObjectIds);
+  return rows.filter((f) => scopes.has(f.scopeObjectId));
+}
+
 /** Freezes active RIGHT NOW (`at`) whose scope is one of `scopeObjectIds` — the caller passes the
  *  target's full containment chain (org/domain/service/component ids) so a freeze declared at any
  *  containment level is found regardless of which exact object the gate check is evaluating.
  *
- *  That contract is EXACT-SET MEMBERSHIP, not containment: this function does no walking of its own,
- *  so any id the caller omits is a freeze that silently does not block. The sole caller
- *  (`gate-orchestrator.ts`'s `checkFreeze`) must build `scopeObjectIds` with
- *  `graph/containment.ts`'s `containmentScopeIds`, which walks both routes. It previously hand-rolled
- *  a domain_id-only walk, omitting the target's SERVICE — so a service-scoped freeze failed OPEN.
- *  If you give this function ids from anywhere else, walk both routes first. */
+ *  THE COMPOSITION of the two functions above, and byte-identical in behaviour to the single
+ *  function it replaced: same half-open window, same exact-set membership, same empty-input short
+ *  circuit, same order (the window query has no `ORDER BY` and the filter preserves whatever it
+ *  returns — `checkFreeze`'s override loop is order-independent by construction and must stay so).
+ *  Read `filterFreezesByScopes`'s warning before calling it: this function inherits every word of
+ *  it, including that any omitted id is a freeze that silently does not block.
+ *
+ *  `governance/freeze-scope.ts`'s `freezesByTarget` answers the SAME question per target, and the
+ *  two are set-equal by construction because `containmentScopeIds` IS the union of the per-target
+ *  chains. That equality is pinned by a test; if you change either, change both. */
 export async function activeFreezesForScopes(
   tx: TenantTx,
   orgId: string,
@@ -88,9 +150,5 @@ export async function activeFreezesForScopes(
   at: Date
 ): Promise<FreezeRow[]> {
   if (scopeObjectIds.length === 0) return [];
-  const rows = await tx
-    .select()
-    .from(freezes)
-    .where(and(eq(freezes.orgId, orgId), lte(freezes.startsAt, at), gt(freezes.endsAt, at)));
-  return (rows as FreezeRow[]).filter((f) => scopeObjectIds.includes(f.scopeObjectId));
+  return filterFreezesByScopes(await activeFreezesInWindow(tx, orgId, at), scopeObjectIds);
 }
