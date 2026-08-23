@@ -1,7 +1,8 @@
 import type { TenantTx } from "../db/tenant-tx.js";
-import { freezesByTarget } from "../governance/freeze-scope.js";
+import { freezesByTarget, unionFreezes } from "../governance/freeze-scope.js";
 import type { FreezeRow } from "../governance/freezes-repo.js";
 import { resolvePlacementPair } from "./stage-dependency-hold.js";
+import { readTargetLiveness } from "./target-liveness.js";
 
 /**
  * M25.2 — THE FREEZE HOLD, PREDICATE HALF.
@@ -60,11 +61,22 @@ export interface FreezeHoldVerdict {
    *  holds a component-shaped target exactly as well as a placement-shaped one, because the
    *  containment chain covers both. Purely for the Decision's explanation. */
   stage: { componentObjectId: string; deploymentTargetObjectId: string } | null;
-  /** Every active freeze covering this target, sorted by id. SORTED IS LOAD-BEARING: this array
+  /** Every active freeze holding this target, sorted by id. SORTED IS LOAD-BEARING: this array
    *  goes verbatim into a Decision's `inputContext`, and an unsorted array would let a reordered
    *  query result make an unchanged situation look new to `insertDecisionIfChanged` — one new row
-   *  per tick, which is ADR-0024's measured 1.44 GB/day rebuilt from parts. */
-  freezes: { id: string; scopeObjectId: string; name: string | null; endsAt: string }[];
+   *  per tick, which is ADR-0024's measured 1.44 GB/day rebuilt from parts.
+   *
+   *  HOLDING, not merely covering: under an `atomic` freeze (below) a target this array names may
+   *  be one the freeze does not cover at all — it is held because a SIBLING is covered. `atomic` is
+   *  carried per freeze so the Decision says which, rather than leaving an operator to work out why
+   *  a scope nothing froze stopped moving. */
+  freezes: {
+    id: string;
+    scopeObjectId: string;
+    name: string | null;
+    endsAt: string;
+    atomic: boolean;
+  }[];
 }
 
 /**
@@ -92,8 +104,53 @@ export async function evaluateFreezeHolds(
 
   const byTarget = await freezesByTarget(tx, orgId, targetObjectIds, input.now ?? new Date());
 
+  // ============================================================================================
+  // `atomic` — OWNER DECISION D5, READ HERE AND NOT ONLY AT THE GATE
+  // ============================================================================================
+  // An `atomic` freeze restores the union: covering ANY one target of the set freezes EVERY target
+  // of it (drizzle/0077, proposal §1.6). `gate-orchestrator.ts`'s `partiallyFrozen` already honours
+  // that — but the wave gate fires EXACTLY ONCE, on `pending -> running`, so a gate-only reader
+  // makes `atomic` silently degrade to per-target admission for every freeze that opens after the
+  // wave started. That is the second of the two defects M25.2 exists to fix, applied to the
+  // per-target dimension and not to this one; and the case is not exotic — a target held by
+  // ADR-0028's stage-dependency hold, or backed off after a refused trigger, is still `pending`
+  // when an operator declares the incident freeze, and it is exactly the target `atomic` is about.
+  //
+  // A target held ONLY because a sibling is covered still gets the covering freezes in its own
+  // `freezes` array (deduped, and each carrying `atomic`), so the Decision names what is holding it
+  // rather than reporting an empty reason for a scope nothing froze.
+  const atomicFreezes = unionFreezes(byTarget).filter((f) => f.atomic);
+
   for (const entry of byTarget) {
-    if (entry.freezes.length === 0) continue;
+    const holding =
+      atomicFreezes.length === 0
+        ? entry.freezes
+        : unionFreezes([{ targetObjectId: entry.targetObjectId, freezes: entry.freezes }, { targetObjectId: entry.targetObjectId, freezes: atomicFreezes }]);
+    if (holding.length === 0) continue;
+
+    // ==========================================================================================
+    // A DEAD TARGET IS NOT HELD — the ordering `campaign-reconcile.ts`'s seam already states, made
+    // true on the change side too.
+    // ==========================================================================================
+    // `reconcile.ts` places its freeze `continue` BEFORE `triggerWaveTarget` (so no trigger-claim
+    // lock is taken for a call it will not make), and the target-liveness gate lives INSIDE
+    // `triggerWaveTarget`. Without this check a tombstoned target that a freeze happens to cover is
+    // HELD instead of terminalized: the row sits `pending` for the length of the window — weeks are
+    // expressible — carrying a Decision that says a freeze is holding it, while the truth is that
+    // the object was deleted. `wave_target_tombstoned`'s audit event and block Decision are
+    // deferred for the same length of time. The explanation is not merely absent, it is WRONG, and
+    // terminalizing a dead row is PROGRESS. `containmentChain` does not filter `deleted_at` on its
+    // BASE row (only on ancestors), so a soft-deleted placement resolves a full chain and would
+    // otherwise look perfectly coverable.
+    //
+    // Costs one indexed read per COVERED target per tick and nothing at all otherwise: an org with
+    // no active freeze never reaches this loop body (`freezesByTarget` returned every target with
+    // no freezes without walking anything). A THROWN read is not a deletion — `readTargetLiveness`
+    // has no catch, so a database blip propagates and the target is retried next tick with nothing
+    // terminalized and nothing dispatched.
+    const liveness = await readTargetLiveness(tx, orgId, entry.targetObjectId);
+    if (!liveness.live) continue;
+
     // The placement pair is resolved ONLY for a target that is actually held — one extra read per
     // HELD target per tick, never one per target. A change with nothing frozen (the common case)
     // has already returned above without reaching this loop body at all.
@@ -101,7 +158,7 @@ export async function evaluateFreezeHolds(
     holds.set(entry.targetObjectId, {
       targetObjectId: entry.targetObjectId,
       stage,
-      freezes: describeFreezes(entry.freezes)
+      freezes: describeFreezes(holding)
     });
   }
   return holds;
@@ -124,7 +181,8 @@ function describeFreezes(freezes: FreezeRow[]): FreezeHoldVerdict["freezes"] {
       id: f.id,
       scopeObjectId: f.scopeObjectId,
       name: f.name,
-      endsAt: f.endsAt.toISOString()
+      endsAt: f.endsAt.toISOString(),
+      atomic: f.atomic
     }));
 }
 
@@ -134,6 +192,7 @@ export function describeFreezeHold(verdict: FreezeHoldVerdict): string {
     .map(
       (f) =>
         `freeze '${f.name ?? f.id}' at ${f.scopeObjectId} until ${f.endsAt}` +
+        (f.atomic ? " (atomic — it holds EVERY target of the wave, covered or not)" : "") +
         ` — target ${verdict.targetObjectId} is not triggered while it stands`
     )
     .join("; ");
