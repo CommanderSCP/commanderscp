@@ -98,7 +98,9 @@ describe("domain-local UI (M20 / ADR-0031)", () => {
         }}
       />
     );
-    expect(inherited).toContain("Inherited at create from urn:scp:default:service:secure-partition");
+    expect(inherited).toContain(
+      "Inherited at create from urn:scp:default:service:secure-partition"
+    );
     expect(inherited).toContain("historical provenance");
     expect(inherited).not.toContain("Declared directly");
   });
@@ -138,10 +140,19 @@ describe("domain-local UI (M20 / ADR-0031)", () => {
   });
 
   it("publish card renders NOTHING for a shared object — gating is the object's own bit", () => {
-    expect(renderWithQueryClient(<DomainLocalPublishCard object={SHARED} typeId="component" invalidateKeys={[]} />)).toBe("");
+    expect(
+      renderWithQueryClient(
+        <DomainLocalPublishCard object={SHARED} typeId="component" invalidateKeys={[]} />
+      )
+    ).toBe("");
     // `domainLocal` absent (older payload) must behave as shared, not throw or render.
-    const { domainLocal: _omitted, ...withoutBit } = SHARED;
-    expect(renderWithQueryClient(<DomainLocalPublishCard object={withoutBit} typeId="component" invalidateKeys={[]} />)).toBe("");
+    const { domainLocal: omitted, ...withoutBit } = SHARED;
+    void omitted; // the destructure exists to OMIT the field; void marks the binding deliberate
+    expect(
+      renderWithQueryClient(
+        <DomainLocalPublishCard object={withoutBit} typeId="component" invalidateKeys={[]} />
+      )
+    ).toBe("");
   });
 
   it("publish card offers the verb for a domain-local object, and no inverse anywhere", () => {
@@ -219,7 +230,8 @@ describe("domain-local UI (M20 / ADR-0031)", () => {
     // A well-formed urn whose type is simply not a routed registry.
     const unroutedType = renderToStaticMarkup(
       <EndpointName
-        edge={{ ...base, otherEndpointUrn: "urn:scp:default:not-a-registry:something" }} />
+        edge={{ ...base, otherEndpointUrn: "urn:scp:default:not-a-registry:something" }}
+      />
     );
     for (const html of [degradedToday, degradedSentinel, unroutedType]) {
       expect(html).not.toContain("<a ");

@@ -216,7 +216,10 @@ export function CampaignListPage(): React.JSX.Element {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <label htmlFor="campaign-description" className="text-sm font-medium text-slate-700">
+                <label
+                  htmlFor="campaign-description"
+                  className="text-sm font-medium text-slate-700"
+                >
                   Description (optional)
                 </label>
                 <Input

@@ -686,7 +686,7 @@ export async function computeDiffForManifest(
   // there is nothing to converge and nothing to prune, and reading a prune pool we must never act on
   // would only invite a later edit to act on it.
   // ---------------------------------------------------------------------------------------
-  let managedGovernanceMoveRungs: string[] = [];
+  const managedGovernanceMoveRungs: string[] = [];
   if (resolvedRungSubjectUrns !== null) {
     const owned = new Set(ownedIdList);
     for (const rung of await listGovernanceMoveRungs(tx, orgId)) {

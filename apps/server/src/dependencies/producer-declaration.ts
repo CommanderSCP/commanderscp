@@ -186,7 +186,10 @@ export async function namesForObjectIds(
 }
 
 /** `{objectId, name}` for each id, in the ids' order; unknown ids name `""`. */
-export function refsForIds(ids: readonly string[], names: Map<string, string>): DependencyObjectRef[] {
+export function refsForIds(
+  ids: readonly string[],
+  names: Map<string, string>
+): DependencyObjectRef[] {
   return ids.map((objectId) => ({ objectId, name: names.get(objectId) ?? "" }));
 }
 

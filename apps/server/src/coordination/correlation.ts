@@ -237,7 +237,8 @@ export async function matchComponentForSource(
     // timed close re-opens automatically and on time with no timer job to fail. Once the bound
     // has passed the row routes again even though `enabled` still reads false: the bound IS the
     // re-open, and the wire's `effectivelyEnabled` says so.
-    if (!row.enabled && (row.disabledUntil === null || row.disabledUntil.getTime() > Date.now())) continue;
+    if (!row.enabled && (row.disabledUntil === null || row.disabledUntil.getTime() > Date.now()))
+      continue;
     if (row.repoPattern && (!hint.repo || !globMatch(row.repoPattern, hint.repo))) continue;
     if (row.pathPattern && !matchesAnyPath(row.pathPattern, hint)) continue;
     // FAIL-CLOSED on an unknown ref, the same rule as `repoPattern` above and `matchesAnyPath`

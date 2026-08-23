@@ -186,16 +186,26 @@ describe("connectableKinds: derived from the server's own manifest catalog", () 
 
 describe("runConfigFields: per-run config, never the system-level fields", () => {
   it("gitea: owner+repo required (from the schema), serverUrl/tokenSecretKey/baseUrl excluded", () => {
-    const fields = runConfigFields({ kind: "gitea", discoveryModule: "gitea-discovery", manifest: GITEA_DISCOVERY });
+    const fields = runConfigFields({
+      kind: "gitea",
+      discoveryModule: "gitea-discovery",
+      manifest: GITEA_DISCOVERY
+    });
     const names = fields.map((f: { name: string }) => f.name).sort();
     expect(names).toEqual(["defaultWorkflowId", "owner", "repo"]);
     expect(fields.find((f: { name: string }) => f.name === "owner")?.required).toBe(true);
     expect(fields.find((f: { name: string }) => f.name === "repo")?.required).toBe(true);
-    expect(fields.find((f: { name: string }) => f.name === "defaultWorkflowId")?.required).toBe(false);
+    expect(fields.find((f: { name: string }) => f.name === "defaultWorkflowId")?.required).toBe(
+      false
+    );
   });
 
   it("gitlab: owner+repo required by the CLIENT override, since the schema declares none", () => {
-    const fields = runConfigFields({ kind: "gitlab", discoveryModule: "gitlab-discovery", manifest: GITLAB_DISCOVERY });
+    const fields = runConfigFields({
+      kind: "gitlab",
+      discoveryModule: "gitlab-discovery",
+      manifest: GITLAB_DISCOVERY
+    });
     expect(fields.find((f: { name: string }) => f.name === "owner")?.required).toBe(true);
     expect(fields.find((f: { name: string }) => f.name === "repo")?.required).toBe(true);
     expect(fields.find((f: { name: string }) => f.name === "projectPath")?.required).toBe(false);
@@ -231,19 +241,28 @@ describe("ReviewStepGeneric: target rows appear only when the proposal carries t
     };
     const doors = doorsDouble();
     const view = render(
-      withQueryClient(<ReviewStepGeneric proposal={withTarget} doors={doors} onImported={() => {}} />)
+      withQueryClient(
+        <ReviewStepGeneric proposal={withTarget} doors={doors} onImported={() => {}} />
+      )
     );
     expect(view.html()).toContain("connect-object-group-deployment-target");
     expect(view.html()).toContain("prod-us");
     // Same treatment as components: a checkbox per row (relationships is empty, so skip is offered).
-    expect(view.container.querySelectorAll('[data-testid="connect-object-checkbox"]').length).toBe(2);
+    expect(view.container.querySelectorAll('[data-testid="connect-object-checkbox"]').length).toBe(
+      2
+    );
     view.unmount();
   });
 
   it("renders NO target section when the discovery result carries none", () => {
-    const noTarget: DiscoveryProposal = { objects: [{ typeId: "component", name: "api" }], relationships: [] };
+    const noTarget: DiscoveryProposal = {
+      objects: [{ typeId: "component", name: "api" }],
+      relationships: []
+    };
     const html = renderToStaticMarkup(
-      withQueryClient(<ReviewStepGeneric proposal={noTarget} doors={doorsDouble()} onImported={() => {}} />)
+      withQueryClient(
+        <ReviewStepGeneric proposal={noTarget} doors={doorsDouble()} onImported={() => {}} />
+      )
     );
     expect(html).not.toContain("connect-object-group-deployment-target");
     expect(html).toContain("connect-object-group-component");
@@ -258,7 +277,9 @@ describe("ReviewStepGeneric: target rows appear only when the proposal carries t
       relationships: [{ typeId: "part_of", fromUrn: "urn:a", toUrn: "urn:b" }]
     };
     const html = renderToStaticMarkup(
-      withQueryClient(<ReviewStepGeneric proposal={linked} doors={doorsDouble()} onImported={() => {}} />)
+      withQueryClient(
+        <ReviewStepGeneric proposal={linked} doors={doorsDouble()} onImported={() => {}} />
+      )
     );
     expect(html).not.toContain('data-testid="connect-object-checkbox"');
     expect(html).toContain("connect-skip-unavailable");
@@ -284,12 +305,19 @@ describe("filterProposal: skipping an object drops only ITS bindings/sourceMappi
     };
     const filtered = filterProposal(proposal, new Set([1]));
     expect(filtered.objects.map((o: { name: string }) => o.name)).toEqual(["keep-me"]);
-    expect(filtered.bindings?.map((b: { objectName: string }) => b.objectName)).toEqual(["keep-me"]);
-    expect(filtered.sourceMappings?.map((m: { objectName: string }) => m.objectName)).toEqual(["keep-me"]);
+    expect(filtered.bindings?.map((b: { objectName: string }) => b.objectName)).toEqual([
+      "keep-me"
+    ]);
+    expect(filtered.sourceMappings?.map((m: { objectName: string }) => m.objectName)).toEqual([
+      "keep-me"
+    ]);
   });
 
   it("is a no-op (same object identity semantics) when nothing is unchecked", () => {
-    const proposal: DiscoveryProposal = { objects: [{ typeId: "component", name: "a" }], relationships: [] };
+    const proposal: DiscoveryProposal = {
+      objects: [{ typeId: "component", name: "a" }],
+      relationships: []
+    };
     expect(filterProposal(proposal, new Set())).toEqual(proposal);
   });
 });
@@ -355,7 +383,9 @@ describe("ImportSummaryGeneric / triage: appears exactly when there are orphaned
   });
 
   it("shows the orphan notice with no triage rows when nothing imported is a component", () => {
-    const submitted: DiscoveryProposal["objects"] = [{ typeId: "deployment-target", name: "prod-us" }];
+    const submitted: DiscoveryProposal["objects"] = [
+      { typeId: "deployment-target", name: "prod-us" }
+    ];
     const html = renderToStaticMarkup(
       withQueryClient(
         <ImportSummaryGeneric
@@ -383,7 +413,11 @@ describe("RegisterStepGeneric: the secret still reaches putSecret and nowhere el
     const view = render(
       withQueryClient(
         <RegisterStepGeneric
-          connectable={{ kind: "gitea", discoveryModule: "gitea-discovery", manifest: GITEA_DISCOVERY }}
+          connectable={{
+            kind: "gitea",
+            discoveryModule: "gitea-discovery",
+            manifest: GITEA_DISCOVERY
+          }}
           doors={doors}
           existing={[]}
           onRegistered={onRegistered}
@@ -395,7 +429,10 @@ describe("RegisterStepGeneric: the secret still reaches putSecret and nowhere el
     expect(secretInput.type).toBe("password");
 
     typeInto(view.byTestId("connect-name-input") as HTMLInputElement, "gitea1");
-    typeInto(view.byTestId("connect-server-url-input") as HTMLInputElement, "https://gitea.example.com");
+    typeInto(
+      view.byTestId("connect-server-url-input") as HTMLInputElement,
+      "https://gitea.example.com"
+    );
     typeInto(secretInput, SENTINEL);
 
     view.click("connect-register-submit");
@@ -427,7 +464,11 @@ describe("EnumerateStepGeneric: run config assembly", () => {
     const view = render(
       withQueryClient(
         <EnumerateStepGeneric
-          connectable={{ kind: "gitea", discoveryModule: "gitea-discovery", manifest: GITEA_DISCOVERY }}
+          connectable={{
+            kind: "gitea",
+            discoveryModule: "gitea-discovery",
+            manifest: GITEA_DISCOVERY
+          }}
           doors={doors}
           system={system}
           onProposal={() => {}}

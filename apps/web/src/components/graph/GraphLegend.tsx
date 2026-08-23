@@ -104,11 +104,7 @@ export function GraphLegend({
           return (
             <span key={s.label} className="flex items-center gap-1.5">
               {Icon ? (
-                <Icon
-                  className="size-3 text-slate-500"
-                  strokeWidth={2}
-                  aria-hidden="true"
-                />
+                <Icon className="size-3 text-slate-500" strokeWidth={2} aria-hidden="true" />
               ) : (
                 <span className="inline-block h-3 w-3" style={shapeStyle(shape)} />
               )}

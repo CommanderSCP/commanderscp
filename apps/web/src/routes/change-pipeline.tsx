@@ -344,7 +344,9 @@ export function ChangePipelinePage(): React.JSX.Element {
             {change.correlationKey && (
               <>
                 {" · Correlation key: "}
-                <span className="break-all font-mono text-xs text-slate-600">{change.correlationKey}</span>
+                <span className="break-all font-mono text-xs text-slate-600">
+                  {change.correlationKey}
+                </span>
               </>
             )}
           </>

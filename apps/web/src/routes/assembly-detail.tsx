@@ -169,7 +169,12 @@ export function AssemblyBoardPage(): React.JSX.Element {
         backLabel="Assemblies"
       />
 
-      <StatCard label="Components" value={components.length} icon={ComponentCrate} className="w-fit" />
+      <StatCard
+        label="Components"
+        value={components.length}
+        icon={ComponentCrate}
+        className="w-fit"
+      />
 
       <Card>
         <CardContent className="pt-6">

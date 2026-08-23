@@ -73,9 +73,19 @@ export function DashboardPage(): React.JSX.Element {
                     className="flex items-center gap-3 px-4 py-3 text-sm hover:bg-slate-50"
                     data-testid="dashboard-service-link"
                   >
-                    <ServiceGuidon className="size-4 shrink-0 text-slate-400" strokeWidth={1.75} aria-hidden="true" />
-                    <span className="flex-1 truncate font-medium text-slate-900">{service.name}</span>
-                    <ArrowRight className="size-4 shrink-0 text-slate-400" strokeWidth={2} aria-hidden="true" />
+                    <ServiceGuidon
+                      className="size-4 shrink-0 text-slate-400"
+                      strokeWidth={1.75}
+                      aria-hidden="true"
+                    />
+                    <span className="flex-1 truncate font-medium text-slate-900">
+                      {service.name}
+                    </span>
+                    <ArrowRight
+                      className="size-4 shrink-0 text-slate-400"
+                      strokeWidth={2}
+                      aria-hidden="true"
+                    />
                   </Link>
                 </li>
               ))}

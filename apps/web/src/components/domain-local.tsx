@@ -10,13 +10,7 @@ import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Notice } from "./ui/notice";
 import { Alert } from "./ui/alert";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from "./ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 
 /**
  * M20 (ADR-0031) — the three UI surfaces of a domain-local object: the badge, the create-form
@@ -92,13 +86,13 @@ export function DomainLocalCreateField({
         Domain-local — never federates
       </label>
       <p className="pl-6 text-xs text-slate-500">
-        Its existence never leaves this security domain: nothing about it is journaled to
-        federation peers (ADR-0031). Declaring this requires the <code>federation:write</code>{" "}
-        permission. Immutable once set — the only way out is the one-way publish action on its
-        detail page; the reverse (shared → domain-local) is refused permanently, because
-        federation has no un-send. Declared on a domain, service or assembly, it propagates:
-        anything created inside inherits it at create. Existing objects are never retrofitted —
-        only objects created after the declaration inherit.
+        Its existence never leaves this security domain: nothing about it is journaled to federation
+        peers (ADR-0031). Declaring this requires the <code>federation:write</code> permission.
+        Immutable once set — the only way out is the one-way publish action on its detail page; the
+        reverse (shared → domain-local) is refused permanently, because federation has no un-send.
+        Declared on a domain, service or assembly, it propagates: anything created inside inherits
+        it at create. Existing objects are never retrofitted — only objects created after the
+        declaration inherit.
       </p>
     </div>
   );
@@ -124,9 +118,9 @@ export function PublishConfirmBody(): React.JSX.Element {
         moment.
       </p>
       <p>
-        Order matters (M20.6): an object inside a still-domain-local container cannot be published
-        — publish its containers first; a refused publish names them. And publishing a container
-        does not publish its children — each child is its own explicit decision.
+        Order matters (M20.6): an object inside a still-domain-local container cannot be published —
+        publish its containers first; a refused publish names them. And publishing a container does
+        not publish its children — each child is its own explicit decision.
       </p>
     </div>
   );

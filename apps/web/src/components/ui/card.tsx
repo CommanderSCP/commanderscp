@@ -39,7 +39,9 @@ export function Card({ className, size = "default", ...props }: CardProps) {
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   const size = React.useContext(CardSizeContext);
-  return <div className={cn("flex flex-col space-y-1.5", HEADER_PAD[size], className)} {...props} />;
+  return (
+    <div className={cn("flex flex-col space-y-1.5", HEADER_PAD[size], className)} {...props} />
+  );
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {

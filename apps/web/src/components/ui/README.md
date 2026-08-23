@@ -7,26 +7,26 @@ spec.
 
 ## Typography scale (§1.3 — no other title/heading classes permitted)
 
-| Role | Classes |
-|---|---|
-| Page title (h1, only inside PageHeader) | `text-2xl font-semibold tracking-tight text-slate-900` |
-| Page description | `text-sm text-slate-500` |
-| Section heading (CardTitle, h2) | `text-sm font-semibold text-slate-900` |
-| Eyebrow / section label (SectionLabel) | `text-xs font-medium uppercase tracking-wide text-slate-500` (slate-500, **never** slate-400) |
-| Body | `text-sm text-slate-700` |
-| Emphasis value (stat numbers) | `text-2xl font-semibold tabular-nums text-slate-900` |
-| Caption / meta / timestamps | `text-xs text-slate-500` |
-| Mono (URNs, ids, versions) | `font-mono text-xs text-slate-600` |
+| Role                                    | Classes                                                                                       |
+| --------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Page title (h1, only inside PageHeader) | `text-2xl font-semibold tracking-tight text-slate-900`                                        |
+| Page description                        | `text-sm text-slate-500`                                                                      |
+| Section heading (CardTitle, h2)         | `text-sm font-semibold text-slate-900`                                                        |
+| Eyebrow / section label (SectionLabel)  | `text-xs font-medium uppercase tracking-wide text-slate-500` (slate-500, **never** slate-400) |
+| Body                                    | `text-sm text-slate-700`                                                                      |
+| Emphasis value (stat numbers)           | `text-2xl font-semibold tabular-nums text-slate-900`                                          |
+| Caption / meta / timestamps             | `text-xs text-slate-500`                                                                      |
+| Mono (URNs, ids, versions)              | `font-mono text-xs text-slate-600`                                                            |
 
 ## Status tones (§1.5 — used by Badge, Alert, StatCard badges, table state cells)
 
-| Tone | Classes (Badge) | Meaning |
-|---|---|---|
-| `neutral` | `bg-slate-100 text-slate-700 border-transparent` | inert/categorical (roles, kinds — never dates) |
-| `info` | `bg-blue-50 text-blue-700 border-blue-200` | in progress, validating |
-| `success` | `bg-emerald-50 text-emerald-700 border-emerald-200` | succeeded, healthy, applied |
-| `warning` | `bg-amber-50 text-amber-800 border-amber-200` | needs attention, degraded, frozen |
-| `danger` | `bg-red-50 text-red-700 border-red-200` | failed, blocked, emergency |
+| Tone      | Classes (Badge)                                             | Meaning                                                            |
+| --------- | ----------------------------------------------------------- | ------------------------------------------------------------------ |
+| `neutral` | `bg-slate-100 text-slate-700 border-transparent`            | inert/categorical (roles, kinds — never dates)                     |
+| `info`    | `bg-blue-50 text-blue-700 border-blue-200`                  | in progress, validating                                            |
+| `success` | `bg-emerald-50 text-emerald-700 border-emerald-200`         | succeeded, healthy, applied                                        |
+| `warning` | `bg-amber-50 text-amber-800 border-amber-200`               | needs attention, degraded, frozen                                  |
+| `danger`  | `bg-red-50 text-red-700 border-red-200`                     | failed, blocked, emergency                                         |
 | `unknown` | `bg-amber-50 text-amber-700 border-amber-300 border-dashed` | unobservable where an operator should notice (test-pinned classes) |
 
 Structurally-expected absence is NOT a badge: render `—` in `text-slate-400` with a `title=""`
@@ -64,7 +64,12 @@ plus this badge reading "unnamed" (design-system.md §6.4) — never a bare id w
 never silently in one cell of a row while a sibling cell in the same row stays silent.
 
 ```tsx
-<Badge variant="unknown" icon={Info} data-testid="board-change-visibility-unknown" title="Full sentence lives here.">
+<Badge
+  variant="unknown"
+  icon={Info}
+  data-testid="board-change-visibility-unknown"
+  title="Full sentence lives here."
+>
   Change visibility limited
 </Badge>
 ```
@@ -75,7 +80,9 @@ Props: `variant` (`default` army-olive primary | `outline` | `ghost` | `destruct
 `size` (`default|sm|lg|icon`), `icon?: LucideIcon` (leading, `size-4`), plus button props.
 
 ```tsx
-<Button variant="outline" size="sm" icon={ArrowRight}>Open pipeline</Button>
+<Button variant="outline" size="sm" icon={ArrowRight}>
+  Open pipeline
+</Button>
 ```
 
 ## Input — `input.tsx` / Select — `select.tsx`
@@ -86,8 +93,12 @@ Unchanged APIs (Input = input props; Select = Radix compound: `Select`, `SelectT
 
 ```tsx
 <Select value={v} onValueChange={setV}>
-  <SelectTrigger><SelectValue placeholder="Pick one" /></SelectTrigger>
-  <SelectContent><SelectItem value="a">A</SelectItem></SelectContent>
+  <SelectTrigger>
+    <SelectValue placeholder="Pick one" />
+  </SelectTrigger>
+  <SelectContent>
+    <SelectItem value="a">A</SelectItem>
+  </SelectContent>
 </Select>
 ```
 
@@ -99,7 +110,9 @@ override CardContent padding. Compound: `CardHeader`, `CardTitle` (section-headi
 
 ```tsx
 <Card size="compact">
-  <CardHeader><CardTitle>Components</CardTitle></CardHeader>
+  <CardHeader>
+    <CardTitle>Components</CardTitle>
+  </CardHeader>
   <CardContent>…</CardContent>
 </Card>
 ```
@@ -128,7 +141,9 @@ none), children, plus div props (`role`, `data-testid` pass through). Query fail
 `QueryErrorNotice` (which renders through Alert), not a bare Alert.
 
 ```tsx
-<Alert tone="warning" title="Frozen">Deploys to this stage are paused.</Alert>
+<Alert tone="warning" title="Frozen">
+  Deploys to this stage are paused.
+</Alert>
 ```
 
 ## StatCard — `stat-card.tsx`
@@ -138,7 +153,13 @@ Props: `label` (eyebrow), `value?` (omit when unknown — never show a fabricate
 `hint?` (caption), `className?`, `data-testid?`.
 
 ```tsx
-<StatCard label="Services" value={services?.items.length} icon={Layers} to="/$basePath" params={{ basePath: "services" }} />
+<StatCard
+  label="Services"
+  value={services?.items.length}
+  icon={Layers}
+  to="/$basePath"
+  params={{ basePath: "services" }}
+/>
 ```
 
 ## SectionLabel — `section-label.tsx`
@@ -157,10 +178,17 @@ Props: `items: { label, value, tooltip?, mono? }[]`, `columns?: 1|2` (2 collapse
 URNs/ids.
 
 ```tsx
-<KeyValueList columns={2} items={[
-  { label: "URN", value: outpost.urn, mono: true },
-  { label: "Applied", value: "—", tooltip: "No sync has completed yet, so nothing has been applied." }
-]} />
+<KeyValueList
+  columns={2}
+  items={[
+    { label: "URN", value: outpost.urn, mono: true },
+    {
+      label: "Applied",
+      value: "—",
+      tooltip: "No sync has completed yet, so nothing has been applied."
+    }
+  ]}
+/>
 ```
 
 ## EmptyState — `empty-state.tsx`
@@ -184,7 +212,9 @@ Props: `tone: "success"|"danger"`, children, plus `<p>` props. One-line MUTATION
 (approve flows, dialog submits) — failed reads always use `QueryErrorNotice`.
 
 ```tsx
-<Notice tone="success" data-testid="device-approved">Device approved.</Notice>
+<Notice tone="success" data-testid="device-approved">
+  Device approved.
+</Notice>
 ```
 
 ## Dialog — `dialog.tsx`
@@ -202,8 +232,16 @@ Compound, unchanged API: `Table` (self-wraps in `overflow-x-auto rounded-lg bord
 
 ```tsx
 <Table>
-  <TableHeader><TableRow><TableHead>Name</TableHead></TableRow></TableHeader>
-  <TableBody><TableRow><TableCell>gateway</TableCell></TableRow></TableBody>
+  <TableHeader>
+    <TableRow>
+      <TableHead>Name</TableHead>
+    </TableRow>
+  </TableHeader>
+  <TableBody>
+    <TableRow>
+      <TableCell>gateway</TableCell>
+    </TableRow>
+  </TableBody>
 </Table>
 ```
 

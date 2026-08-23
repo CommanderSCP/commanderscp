@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChangeState } from "@scp/schemas";
-import {
-  computeCampaignStatus,
-  type CampaignWaveStatusInput
-} from "./campaign-status.js";
+import { computeCampaignStatus, type CampaignWaveStatusInput } from "./campaign-status.js";
 
 /** Shorthand: one wave with N targets, each carrying the given member-change state. */
 function wave(

@@ -62,7 +62,8 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
   // self-maintained or domain-local service is this domain's own — nothing ahead of it. Read from
   // the board's `service.maintainedBy`/`domainLocal`, never inferred.
   const upstream = board.service.maintainedBy;
-  const hasCommanderInput = !upstream.isSelf && upstream.domainId !== null && !board.service.domainLocal;
+  const hasCommanderInput =
+    !upstream.isSelf && upstream.domainId !== null && !board.service.domainLocal;
 
   return (
     <div className="space-y-4" data-testid="service-infrastructure">
@@ -82,7 +83,9 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
                 <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
               )}
               <span className="font-medium">{upstream.name ?? upstream.domainId}</span>
-              <span className="text-slate-500">— shared inputs (source: the commander); anything bound here is domain-specific</span>
+              <span className="text-slate-500">
+                — shared inputs (source: the commander); anything bound here is domain-specific
+              </span>
             </span>
           ) : board.service.domainLocal ? (
             <span className="text-xs text-slate-500" data-testid="service-infra-no-upstream">
@@ -101,7 +104,11 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
           <CardContent className="flex items-center gap-1.5 py-6 text-sm text-slate-600">
             Nothing bound at the service — every pipeline here is declared per component.
             <span title="Infrastructure that serves the whole service — a cluster, a shared database — can be bound once on the service instead, and it will drive every component under it.">
-              <Info className="size-3.5 shrink-0 text-slate-400" strokeWidth={1.75} aria-hidden="true" />
+              <Info
+                className="size-3.5 shrink-0 text-slate-400"
+                strokeWidth={1.75}
+                aria-hidden="true"
+              />
             </span>
           </CardContent>
         </Card>
@@ -130,7 +137,11 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
                     >
                       <span className="font-mono">{b.externalRef || "—"}</span>
                       {b.executionSystemName ? ` @ ${b.executionSystemName}` : ""}
-                      <ExternalLink className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                      <ExternalLink
+                        className="size-3.5 shrink-0"
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      />
                     </a>
                   ) : (
                     <>

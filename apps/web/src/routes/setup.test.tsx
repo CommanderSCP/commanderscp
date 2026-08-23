@@ -78,8 +78,13 @@ describe("buildChecklistRows — the honesty math behind every count", () => {
   });
 
   it("placements hint pluralizes a single target correctly (copy rule 6)", () => {
-    const rows = buildChecklistRows({ deploymentTargets: { items: [{}] }, placements: { items: [] } });
-    expect(rows.find((r) => r.key === "placements")?.hint).toContain("across 1 deployment target —");
+    const rows = buildChecklistRows({
+      deploymentTargets: { items: [{}] },
+      placements: { items: [] }
+    });
+    expect(rows.find((r) => r.key === "placements")?.hint).toContain(
+      "across 1 deployment target —"
+    );
   });
 
   it("placements hint is ABSENT while targets haven't loaded — never claims 'across 0'", () => {
@@ -90,7 +95,13 @@ describe("buildChecklistRows — the honesty math behind every count", () => {
   it("domain-local: counts the CLIENT-SIDE filter over the fetched sample, labeled 'of the first N'", () => {
     const rows = buildChecklistRows({
       componentsSample: {
-        items: [{ domainLocal: true }, { domainLocal: false }, { domainLocal: true }, { domainLocal: false }, { domainLocal: false }]
+        items: [
+          { domainLocal: true },
+          { domainLocal: false },
+          { domainLocal: true },
+          { domainLocal: false },
+          { domainLocal: false }
+        ]
       }
     });
     const row = rows.find((r) => r.key === "domain-local")!;
@@ -104,7 +115,9 @@ describe("buildChecklistRows — the honesty math behind every count", () => {
   });
 
   it("source mappings: the total is withheld until EVERY kind has resolved — no partial under-report", () => {
-    const rows = buildChecklistRows({ sourceMappingCounts: { github: 3 } /* gitea/gitlab missing */ });
+    const rows = buildChecklistRows({
+      sourceMappingCounts: { github: 3 } /* gitea/gitlab missing */
+    });
     // Caller (SetupPage) only ever passes `sourceMappingCounts` once every kind resolved — but this
     // pure function still reduces over MISSING keys as 0 rather than throwing, so a caller mistake
     // degrades to an undercount instead of a crash. The intended, fully-resolved shape is asserted
@@ -197,15 +210,42 @@ describe("freezeWindowStatus / activeAndUpcomingFreezes", () => {
   }
 
   it("classifies upcoming / active / past off startsAt/endsAt", () => {
-    expect(freezeWindowStatus(freeze({ startsAt: "2026-08-20T00:00:00.000Z", endsAt: "2026-08-21T00:00:00.000Z" }), NOW)).toBe("upcoming");
-    expect(freezeWindowStatus(freeze({ startsAt: "2026-08-13T00:00:00.000Z", endsAt: "2026-08-14T00:00:00.000Z" }), NOW)).toBe("active");
-    expect(freezeWindowStatus(freeze({ startsAt: "2026-08-01T00:00:00.000Z", endsAt: "2026-08-02T00:00:00.000Z" }), NOW)).toBe("past");
+    expect(
+      freezeWindowStatus(
+        freeze({ startsAt: "2026-08-20T00:00:00.000Z", endsAt: "2026-08-21T00:00:00.000Z" }),
+        NOW
+      )
+    ).toBe("upcoming");
+    expect(
+      freezeWindowStatus(
+        freeze({ startsAt: "2026-08-13T00:00:00.000Z", endsAt: "2026-08-14T00:00:00.000Z" }),
+        NOW
+      )
+    ).toBe("active");
+    expect(
+      freezeWindowStatus(
+        freeze({ startsAt: "2026-08-01T00:00:00.000Z", endsAt: "2026-08-02T00:00:00.000Z" }),
+        NOW
+      )
+    ).toBe("past");
   });
 
   it("drops PAST freezes and sorts the rest soonest-first", () => {
-    const upcoming = freeze({ id: "11111111-1111-4111-8111-111111111111", startsAt: "2026-09-01T00:00:00.000Z", endsAt: "2026-09-02T00:00:00.000Z" });
-    const active = freeze({ id: "22222222-2222-4222-8222-222222222222", startsAt: "2026-08-13T00:00:00.000Z", endsAt: "2026-08-14T00:00:00.000Z" });
-    const past = freeze({ id: "33333333-3333-4333-8333-333333333333", startsAt: "2026-01-01T00:00:00.000Z", endsAt: "2026-01-02T00:00:00.000Z" });
+    const upcoming = freeze({
+      id: "11111111-1111-4111-8111-111111111111",
+      startsAt: "2026-09-01T00:00:00.000Z",
+      endsAt: "2026-09-02T00:00:00.000Z"
+    });
+    const active = freeze({
+      id: "22222222-2222-4222-8222-222222222222",
+      startsAt: "2026-08-13T00:00:00.000Z",
+      endsAt: "2026-08-14T00:00:00.000Z"
+    });
+    const past = freeze({
+      id: "33333333-3333-4333-8333-333333333333",
+      startsAt: "2026-01-01T00:00:00.000Z",
+      endsAt: "2026-01-02T00:00:00.000Z"
+    });
     const result = activeAndUpcomingFreezes([upcoming, past, active], NOW);
     expect(result.map((f) => f.id)).toEqual([active.id, upcoming.id]);
   });
@@ -224,18 +264,27 @@ describe("FreezeRow — the no-early-lift claim", () => {
   };
 
   it("states, in the row's own tooltip, that the freeze lifts only at its endsAt and there is no early-lift control", () => {
-    const html = renderToStaticMarkup(<FreezeRow freeze={ROW_FREEZE} now={new Date("2026-08-14T00:00:00.000Z")} />);
+    const html = renderToStaticMarkup(
+      <FreezeRow freeze={ROW_FREEZE} now={new Date("2026-08-14T00:00:00.000Z")} />
+    );
     expect(html).toMatch(/no early-lift or delete control yet/i);
     expect(html).toMatch(/lifts automatically at its end time/i);
   });
 
   it("offers no lift/delete control at all — there is no button in a freeze row", () => {
-    const html = renderToStaticMarkup(<FreezeRow freeze={ROW_FREEZE} now={new Date("2026-08-14T00:00:00.000Z")} />);
+    const html = renderToStaticMarkup(
+      <FreezeRow freeze={ROW_FREEZE} now={new Date("2026-08-14T00:00:00.000Z")} />
+    );
     expect(html).not.toContain("<button");
   });
 
   it("an untitled freeze (nullable `name`) still renders, never crashes or drops the row", () => {
-    const html = renderToStaticMarkup(<FreezeRow freeze={{ ...ROW_FREEZE, name: null }} now={new Date("2026-08-14T00:00:00.000Z")} />);
+    const html = renderToStaticMarkup(
+      <FreezeRow
+        freeze={{ ...ROW_FREEZE, name: null }}
+        now={new Date("2026-08-14T00:00:00.000Z")}
+      />
+    );
     expect(html).toContain("Untitled freeze");
   });
 });
@@ -273,7 +322,12 @@ describe("buildCreateFreezePayload", () => {
 describe("DeclareFreezeForm — exactly CreateFreezeRequest's fields, nothing invented", () => {
   function render(): string {
     return renderToStaticMarkup(
-      <DeclareFreezeForm value={emptyFreezeForm()} onChange={() => {}} onSubmit={() => {}} pending={false} />
+      <DeclareFreezeForm
+        value={emptyFreezeForm()}
+        onChange={() => {}}
+        onSubmit={() => {}}
+        pending={false}
+      />
     );
   }
 

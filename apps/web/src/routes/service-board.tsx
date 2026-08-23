@@ -592,7 +592,10 @@ export function BoardAssemblies({ assemblies }: { assemblies: ServiceBoardAssemb
                   {a.componentCount} component{a.componentCount === 1 ? "" : "s"}
                 </TableCell>
                 <TableCell className="text-right">
-                  <LinkButton to="/$basePath/$idOrUrn" params={{ basePath: "assemblies", idOrUrn: a.id }}>
+                  <LinkButton
+                    to="/$basePath/$idOrUrn"
+                    params={{ basePath: "assemblies", idOrUrn: a.id }}
+                  >
                     Open
                   </LinkButton>
                 </TableCell>
@@ -627,10 +630,7 @@ export function ServiceBoardPage(): React.JSX.Element {
 
   const board = boardQuery.data;
   const { service, rows, summary, serviceFreeze } = board;
-  const componentsBelowAssemblies = board.childAssemblies.reduce(
-    (n, a) => n + a.componentCount,
-    0
-  );
+  const componentsBelowAssemblies = board.childAssemblies.reduce((n, a) => n + a.componentCount, 0);
   // BOARD-LEVEL unknowns (as opposed to a row's own): today, freeze visibility on a federated
   // deployment. Freezes never ride the sync journal in either direction, so on an instance with a
   // federation peer NO row's "not frozen" — driven here or not — can be read as "no freeze applies".

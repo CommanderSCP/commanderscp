@@ -24,7 +24,13 @@ import { PageHeader } from "../components/ui/page-header";
 import { Alert } from "../components/ui/alert";
 import { SectionLabel } from "../components/ui/section-label";
 import { SkeletonRows } from "../components/ui/skeleton";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../components/ui/select";
 import {
   Table,
   TableBody,
@@ -168,11 +174,7 @@ function errorMessageOf(error: unknown): string {
  * Discovery only ever proposes CREATEs (`DiscoveryProposalSchema` has no update/delete shape), so
  * every row's action reads "create".
  */
-function DiscoveryProposalReview({
-  proposal
-}: {
-  proposal: DiscoveryProposal;
-}): React.JSX.Element {
+function DiscoveryProposalReview({ proposal }: { proposal: DiscoveryProposal }): React.JSX.Element {
   const [showRaw, setShowRaw] = useState(false);
   const objectCount = proposal.objects.length;
   const relCount = proposal.relationships.length;
@@ -300,8 +302,8 @@ export function ExecutorBindingTypeField({
         </SelectContent>
       </Select>
       <p className="text-xs text-slate-500">
-        Routes which pipeline this binding drives: build turns source into an artifact (image,
-        rpm, deb, npm), infrastructure stands up substrate, configuration applies a GitOps sync.
+        Routes which pipeline this binding drives: build turns source into an artifact (image, rpm,
+        deb, npm), infrastructure stands up substrate, configuration applies a GitOps sync.
       </p>
     </div>
   );
@@ -557,8 +559,8 @@ export function PluginsPage(): React.JSX.Element {
       />
       <p className="-mt-4 text-xs text-slate-500">
         Secrets referenced by a binding are managed separately (
-        <code className="rounded bg-slate-100 px-1 py-0.5">scp secret put</code>) and never appear in
-        this form.
+        <code className="rounded bg-slate-100 px-1 py-0.5">scp secret put</code>) and never appear
+        in this form.
       </p>
 
       {/* M19.1 — the launch point for the "Connect Argo CD" wizard. This page configures a plugin
@@ -590,7 +592,9 @@ export function PluginsPage(): React.JSX.Element {
       </Card>
 
       {manifestsQuery.isLoading && <SkeletonRows n={3} />}
-      {manifestsQuery.isError && <Alert tone="danger">{errorMessageOf(manifestsQuery.error)}</Alert>}
+      {manifestsQuery.isError && (
+        <Alert tone="danger">{errorMessageOf(manifestsQuery.error)}</Alert>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {manifestsQuery.data?.items.map((manifest) => (

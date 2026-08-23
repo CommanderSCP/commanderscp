@@ -52,9 +52,7 @@ export function PageHeader({
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{title}</h1>
           {description !== undefined && <p className="text-sm text-slate-500">{description}</p>}
         </div>
-        {actions !== undefined && (
-          <div className="flex shrink-0 items-center gap-2">{actions}</div>
-        )}
+        {actions !== undefined && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
       </div>
       {meta !== undefined && (
         <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500">{meta}</div>

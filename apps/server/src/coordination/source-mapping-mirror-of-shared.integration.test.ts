@@ -107,6 +107,10 @@ describe("source mapping: declared mirror-of-shared provenance (outpost-ui.md §
     // key ever appears here, the inertness guarantee has been broken at the root.
     expect(a).not.toHaveProperty("mirrorOfShared");
     expect(b).not.toHaveProperty("mirrorOfShared");
-    expect(a).toEqual({ componentObjectId: withMarker.id, type: "infrastructure", classification: null });
+    expect(a).toEqual({
+      componentObjectId: withMarker.id,
+      type: "infrastructure",
+      classification: null
+    });
   });
 });

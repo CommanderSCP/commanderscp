@@ -562,7 +562,9 @@ describe("placement-aware binding resolution", () => {
       name: `local-asvc-${randomUUID().slice(0, 8)}`,
       domainLocal: true
     });
-    const assembly = await admin.assemblies.create({ name: `local-asm-${randomUUID().slice(0, 8)}` });
+    const assembly = await admin.assemblies.create({
+      name: `local-asm-${randomUUID().slice(0, 8)}`
+    });
     // service contains assembly (route 2), assembly contains component: use the same doors the
     // fixture and the ancestor-rung tests use.
     await admin.relationships.create({

@@ -70,7 +70,10 @@ export function IdentityPage(): React.JSX.Element {
                 <p className="text-sm text-slate-500">No {registry.label.toLowerCase()} yet.</p>
               )}
               {preview.length > 0 && (
-                <ul className="flex flex-col gap-1" data-testid={`identity-preview-${registry.basePath}`}>
+                <ul
+                  className="flex flex-col gap-1"
+                  data-testid={`identity-preview-${registry.basePath}`}
+                >
                   {preview.map((item) => (
                     <li key={item.id}>
                       <Link

@@ -70,7 +70,11 @@ describe("deriveGroupIds: colour is decided at the highest level in scope", () =
   });
 
   it("terminates on a containment cycle instead of hanging the render", () => {
-    const g = deriveGroupIds([{ id: "x" }, { id: "y" }], [contains("x", "y"), contains("y", "x")], undefined);
+    const g = deriveGroupIds(
+      [{ id: "x" }, { id: "y" }],
+      [contains("x", "y"), contains("y", "x")],
+      undefined
+    );
     expect(g.get("x")).toBeDefined();
     expect(g.get("y")).toBeDefined();
   });

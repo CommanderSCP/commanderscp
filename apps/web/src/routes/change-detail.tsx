@@ -190,7 +190,9 @@ export function ChangeDetailPage(): React.JSX.Element {
             {change.correlationKey && (
               <>
                 {" · Correlation key: "}
-                <span className="break-all font-mono text-xs text-slate-600">{change.correlationKey}</span>
+                <span className="break-all font-mono text-xs text-slate-600">
+                  {change.correlationKey}
+                </span>
               </>
             )}
           </>
@@ -347,7 +349,12 @@ export function ChangeDetailPage(): React.JSX.Element {
                   <div key={wave.id} className="flex w-full flex-col items-center gap-1">
                     {/* `testIdPrefix="wave"` keeps this tab's historical `wave-card` /
                         `wave-status-badge` / `wave-target-row` testids on the same elements. */}
-                    <PipelineWaveCard wave={wave} waveNumber={index + 1} testIdPrefix="wave" nameOf={(tid) => targetNames.get(tid)?.name} />
+                    <PipelineWaveCard
+                      wave={wave}
+                      waveNumber={index + 1}
+                      testIdPrefix="wave"
+                      nameOf={(tid) => targetNames.get(tid)?.name}
+                    />
                     {promo && <PromotionArrow state={promo.state} label={promo.label} />}
                   </div>
                 );
@@ -465,7 +472,9 @@ export function ChangeDetailPage(): React.JSX.Element {
                   data-testid="control-run-row"
                 >
                   <div className="flex min-w-0 items-center justify-between gap-2">
-                    <span className="break-all font-mono text-xs text-slate-900">{run.controlObjectId}</span>
+                    <span className="break-all font-mono text-xs text-slate-900">
+                      {run.controlObjectId}
+                    </span>
                     <Badge
                       variant={
                         run.status === "pass"

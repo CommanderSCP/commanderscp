@@ -26,7 +26,12 @@ export function useObjectNames(ids: readonly string[]): Map<string, ResolvedObje
     queries: unique.map((id) => ({
       queryKey: ["object-name", id],
       queryFn: () =>
-        client.graph.traverse({ objectId: id, direction: "out", relTypes: ["contains"], maxDepth: 1 }),
+        client.graph.traverse({
+          objectId: id,
+          direction: "out",
+          relTypes: ["contains"],
+          maxDepth: 1
+        }),
       staleTime: 60_000
     }))
   });

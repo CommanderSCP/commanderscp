@@ -94,7 +94,8 @@ export interface PipelineWaveTargetLinks {
 function pipelineKinds(wave: PipelineWaveLike): { category: string; type: string }[] {
   const seen = new Map<string, { category: string; type: string }>();
   for (const t of wave.targets) {
-    if (t.category && t.type) seen.set(`${t.category}::${t.type}`, { category: t.category, type: t.type });
+    if (t.category && t.type)
+      seen.set(`${t.category}::${t.type}`, { category: t.category, type: t.type });
   }
   return [...seen.values()];
 }
@@ -159,9 +160,14 @@ function TargetName({
     <Link
       to="/components/$idOrUrn"
       params={{ idOrUrn: target.targetObjectId }}
-      className={cn("min-w-0 break-all rounded font-medium text-slate-900 underline-offset-2 hover:underline", focusRing)}
+      className={cn(
+        "min-w-0 break-all rounded font-medium text-slate-900 underline-offset-2 hover:underline",
+        focusRing
+      )}
     >
-      {label ?? <span className="break-all font-mono text-xs text-slate-600">{target.targetObjectId}</span>}
+      {label ?? (
+        <span className="break-all font-mono text-xs text-slate-600">{target.targetObjectId}</span>
+      )}
     </Link>
   );
 }
@@ -389,7 +395,9 @@ export function PipelineWaveCard({
                 {typeof target.attempt === "number" && (
                   <span>
                     attempt {target.attempt}
-                    {target.lastObservedAt ? ` · last observed ${formatDate(target.lastObservedAt)}` : ""}
+                    {target.lastObservedAt
+                      ? ` · last observed ${formatDate(target.lastObservedAt)}`
+                      : ""}
                   </span>
                 )}
                 {links.executorRef && (
@@ -410,7 +418,9 @@ export function PipelineWaveCard({
                         <ExternalLink className="size-3.5" strokeWidth={2} aria-hidden="true" />
                       </a>
                     ) : (
-                      <span className="break-all font-mono text-slate-700">{links.executorRef}</span>
+                      <span className="break-all font-mono text-slate-700">
+                        {links.executorRef}
+                      </span>
                     )}
                   </span>
                 )}
@@ -444,7 +454,9 @@ export function PipelineWaveCard({
             </div>
           );
         })}
-        {wave.targets.length === 0 && <p className="text-xs text-slate-500">No targets in this wave.</p>}
+        {wave.targets.length === 0 && (
+          <p className="text-xs text-slate-500">No targets in this wave.</p>
+        )}
       </CardContent>
     </Card>
   );

@@ -140,7 +140,9 @@ export function PromotionArrow({
       {isSwitch && (
         // The switch says its state in words too — colour alone must not carry it (a11y, and the
         // "closed" slate is close to `pending`'s slate on a bad monitor).
-        <span className={`mt-0.5 text-[10px] font-medium uppercase tracking-wide ${inert ? "text-red-700" : "text-green-700"}`}>
+        <span
+          className={`mt-0.5 text-[10px] font-medium uppercase tracking-wide ${inert ? "text-red-700" : "text-green-700"}`}
+        >
           {busy ? "…" : inert ? "closed" : "open"}
         </span>
       )}

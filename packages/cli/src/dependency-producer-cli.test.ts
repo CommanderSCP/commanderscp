@@ -178,8 +178,11 @@ describe("the producer-declaration CLI formatters", () => {
       "-"
     );
     expect(
-      dependencyProducerLineRow({ ...impact, subscribedComponentObjectIds: [], subscribedComponents: [] })
-        .subscribedNames
+      dependencyProducerLineRow({
+        ...impact,
+        subscribedComponentObjectIds: [],
+        subscribedComponents: []
+      }).subscribedNames
     ).toBe("-");
   });
 

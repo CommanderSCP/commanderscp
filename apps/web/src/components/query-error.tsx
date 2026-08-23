@@ -76,16 +76,20 @@ export function QueryErrorNotice({
     >
       {isContract && (
         <p className="mt-1" data-testid="query-error-contract">
-          This instance answered <code className="break-words font-mono">{error.operation}</code> with a body
-          that does not match the API contract this UI was built from — most likely a version skew
-          between this UI and the instance. Nothing below is a network or permission failure.
+          This instance answered <code className="break-words font-mono">{error.operation}</code>{" "}
+          with a body that does not match the API contract this UI was built from — most likely a
+          version skew between this UI and the instance. Nothing below is a network or permission
+          failure.
         </p>
       )}
       <p className="mt-1 break-words font-mono text-xs" data-testid="query-error-detail">
         {queryErrorMessage(error)}
       </p>
       {isContract && error.issues.length > 0 && (
-        <ul className="mt-1 list-disc break-words pl-5 font-mono text-xs" data-testid="query-error-fields">
+        <ul
+          className="mt-1 list-disc break-words pl-5 font-mono text-xs"
+          data-testid="query-error-fields"
+        >
           {error.issues.map((issue) => (
             <li key={`${issue.path}:${issue.code ?? ""}:${issue.message}`}>
               {issue.path} — {issue.code ?? "invalid"}: {issue.message}

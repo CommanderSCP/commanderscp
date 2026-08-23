@@ -224,55 +224,55 @@ export function RegistryListPage(): React.JSX.Element {
           onSubmit={handleCreate}
         >
           <div className="flex items-end gap-2">
-          <div className="flex flex-1 flex-col gap-1.5">
-            <label htmlFor="new-name" className="text-sm font-medium text-slate-700">
-              Name
-            </label>
-            <Input
-              id="new-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              data-testid="new-name-input"
-            />
-          </div>
-          {serviceMember && (
             <div className="flex flex-1 flex-col gap-1.5">
-              <label htmlFor="new-service" className="text-sm font-medium text-slate-700">
-                Service
+              <label htmlFor="new-name" className="text-sm font-medium text-slate-700">
+                Name
               </label>
-              <Select value={serviceId} onValueChange={setServiceId} required>
-                <SelectTrigger id="new-service" data-testid="new-service-select">
-                  <SelectValue placeholder="Select a service…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(servicesQuery.data?.items ?? []).map((svc) => (
-                    <SelectItem key={svc.id} value={svc.id}>
-                      {svc.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {servicesQuery.data && servicesQuery.data.items.length === 0 && (
-                <p className="text-xs text-amber-700" data-testid="no-services-hint">
-                  Create a service first — a component must belong to one.
-                </p>
-              )}
+              <Input
+                id="new-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                data-testid="new-name-input"
+              />
             </div>
-          )}
-          <ParentDomainField
-            show={isDomainsRegistry}
-            value={parentDomainId}
-            onChange={setParentDomainId}
-            options={domainsQuery.data?.items ?? []}
-          />
-          <Button
-            type="submit"
-            disabled={createMutation.isPending || (serviceMember && !serviceId)}
-            data-testid="submit-create"
-          >
-            {createMutation.isPending ? "Creating…" : "Create"}
-          </Button>
+            {serviceMember && (
+              <div className="flex flex-1 flex-col gap-1.5">
+                <label htmlFor="new-service" className="text-sm font-medium text-slate-700">
+                  Service
+                </label>
+                <Select value={serviceId} onValueChange={setServiceId} required>
+                  <SelectTrigger id="new-service" data-testid="new-service-select">
+                    <SelectValue placeholder="Select a service…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(servicesQuery.data?.items ?? []).map((svc) => (
+                      <SelectItem key={svc.id} value={svc.id}>
+                        {svc.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {servicesQuery.data && servicesQuery.data.items.length === 0 && (
+                  <p className="text-xs text-amber-700" data-testid="no-services-hint">
+                    Create a service first — a component must belong to one.
+                  </p>
+                )}
+              </div>
+            )}
+            <ParentDomainField
+              show={isDomainsRegistry}
+              value={parentDomainId}
+              onChange={setParentDomainId}
+              options={domainsQuery.data?.items ?? []}
+            />
+            <Button
+              type="submit"
+              disabled={createMutation.isPending || (serviceMember && !serviceId)}
+              data-testid="submit-create"
+            >
+              {createMutation.isPending ? "Creating…" : "Create"}
+            </Button>
           </div>
           <DomainLocalCreateField checked={domainLocal} onChange={setDomainLocal} />
         </form>
@@ -340,7 +340,10 @@ export function RegistryListPage(): React.JSX.Element {
                     initialised): em-dash with the reason. */}
                 <TableCell className="text-xs">
                   {!ownDomainId ? (
-                    <span className="text-slate-400" title="Federation isn't initialised, so ownership can't be attributed yet.">
+                    <span
+                      className="text-slate-400"
+                      title="Federation isn't initialised, so ownership can't be attributed yet."
+                    >
                       —
                     </span>
                   ) : item.originDomainId === ownDomainId ? (

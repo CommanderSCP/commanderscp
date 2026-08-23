@@ -16,7 +16,7 @@ import { cn } from "../../lib/utils";
  * end of group E (spec §2.2).
  */
 const badgeVariants = cva(
-    // whitespace-nowrap: a rounded-full pill that wraps to two or three lines renders as an egg
+  // whitespace-nowrap: a rounded-full pill that wraps to two or three lines renders as an egg
   // (owner bug report, 2026-08-11 — the outposts table). A badge is a label; if its text is long
   // enough to wrap, the copy is wrong, not the layout.
   "inline-flex items-center gap-1 whitespace-nowrap rounded-full border font-medium transition-colors",

@@ -69,11 +69,7 @@ describe("source mapping: enabled (the pause switch, migration 0063)", () => {
     expect(declaredOff.enabled).toBe(false);
 
     // Flip the declared-off one ON.
-    const flippedOn = await admin.changeSources.setMappingEnabled(
-      sourceKind,
-      declaredOff.id,
-      true
-    );
+    const flippedOn = await admin.changeSources.setMappingEnabled(sourceKind, declaredOff.id, true);
     expect(flippedOn.enabled).toBe(true);
     expect(flippedOn.id).toBe(declaredOff.id);
 
@@ -157,8 +153,12 @@ describe("source mapping: enabled (the pause switch, migration 0063)", () => {
     const inThePast = new Date(Date.now() - 60_000).toISOString();
     const lapsed = await admin.changeSources.setMappingEnabled(sourceKind, m.id, false, inThePast);
     expect(lapsed.enabled, "declared intent is still 'closed'").toBe(false);
-    expect(lapsed.effectivelyEnabled, "…but the bound has passed, so it is OPEN at read time").toBe(true);
-    await expect(match(sourceKind, repo)).resolves.toMatchObject({ componentObjectId: component.id });
+    expect(lapsed.effectivelyEnabled, "…but the bound has passed, so it is OPEN at read time").toBe(
+      true
+    );
+    await expect(match(sourceKind, repo)).resolves.toMatchObject({
+      componentObjectId: component.id
+    });
 
     // 3) Manual close (no bound) stays closed regardless of the clock.
     const manual = await admin.changeSources.setMappingEnabled(sourceKind, m.id, false, null);
@@ -169,8 +169,13 @@ describe("source mapping: enabled (the pause switch, migration 0063)", () => {
     // 4) Re-open by hand clears the bound entirely — a stale bound must not linger on an open row.
     const reopened = await admin.changeSources.setMappingEnabled(sourceKind, m.id, true, inAnHour);
     expect(reopened.enabled).toBe(true);
-    expect(reopened.disabledUntil, "a bound sent with enabled:true is ignored AND cleared").toBeNull();
+    expect(
+      reopened.disabledUntil,
+      "a bound sent with enabled:true is ignored AND cleared"
+    ).toBeNull();
     expect(reopened.effectivelyEnabled).toBe(true);
-    await expect(match(sourceKind, repo)).resolves.toMatchObject({ componentObjectId: component.id });
+    await expect(match(sourceKind, repo)).resolves.toMatchObject({
+      componentObjectId: component.id
+    });
   });
 });

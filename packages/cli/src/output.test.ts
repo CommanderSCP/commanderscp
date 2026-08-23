@@ -50,9 +50,13 @@ describe("tableLines: the `scp federation import` result (numeric columns) rende
     expect(lines).toHaveLength(2);
     const [header, row] = lines as [string, string];
     expect(header).toBe(
-      ["PEERDOMAINID".padEnd(36), "APPLIEDENTRIES", "SKIPPEDENTRIES", "LASTAPPLIEDSEQUENCE", "KIND"].join(
-        "  "
-      )
+      [
+        "PEERDOMAINID".padEnd(36),
+        "APPLIEDENTRIES",
+        "SKIPPEDENTRIES",
+        "LASTAPPLIEDSEQUENCE",
+        "KIND"
+      ].join("  ")
     );
     // Numeric cells are text now; 0 is printed, not blanked.
     expect(row).toContain("019fece9-92b3-77f2-ba05-6ddb3aaf0791  0");

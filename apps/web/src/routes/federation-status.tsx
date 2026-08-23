@@ -28,8 +28,6 @@ function formatDateTime(value: string | null): string {
   return new Date(value).toLocaleString();
 }
 
-
-
 function transferStatusBadge(status: string): React.JSX.Element {
   const variant = status === "confirmed" ? "success" : status === "submitted" ? "info" : "neutral";
   return (
@@ -310,11 +308,14 @@ function FederationInitForm(): React.JSX.Element {
       </form>
       {initMutation.isError && (
         <Notice tone="danger">
-          {initMutation.error instanceof Error ? initMutation.error.message : "Initialization failed"}
+          {initMutation.error instanceof Error
+            ? initMutation.error.message
+            : "Initialization failed"}
         </Notice>
       )}
       <p className="text-xs text-slate-500">
-        Also available as <code className="rounded bg-slate-100 px-1 py-0.5">scp federation init</code>.
+        Also available as{" "}
+        <code className="rounded bg-slate-100 px-1 py-0.5">scp federation init</code>.
       </p>
     </div>
   );

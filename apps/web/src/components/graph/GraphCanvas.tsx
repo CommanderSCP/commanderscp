@@ -100,7 +100,13 @@ function fitAndClamp(cy: Core): void {
  */
 const LAYOUT_OPTIONS: Record<string, Record<string, unknown>> = {
   concentric: { minNodeSpacing: 70, avoidOverlap: true, padding: 40 },
-  cose: { idealEdgeLength: 130, nodeRepulsion: 14000, nodeOverlap: 24, padding: 40, animate: false },
+  cose: {
+    idealEdgeLength: 130,
+    nodeRepulsion: 14000,
+    nodeOverlap: 24,
+    padding: 40,
+    animate: false
+  },
   breadthfirst: { spacingFactor: 1.5, padding: 40 },
   grid: { avoidOverlap: true, spacingFactor: 1.4, padding: 40 },
   circle: { avoidOverlap: true, spacingFactor: 1.3, padding: 40 }

@@ -17,7 +17,13 @@ import { Input } from "../components/ui/input";
 import { Notice } from "../components/ui/notice";
 import { PageHeader } from "../components/ui/page-header";
 import { SectionLabel } from "../components/ui/section-label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../components/ui/select";
 import { SkeletonRows } from "../components/ui/skeleton";
 import { QueryErrorNotice, queryErrorMessage } from "../components/query-error";
 import { ConnectArgoCdPage, normalizeServerUrl } from "./connect-argocd";
@@ -140,7 +146,11 @@ export function runConfigFields({ kind, manifest }: ConnectableKind): RunField[]
     .map((name) => ({ name, required: required.has(name), type: schema.properties?.[name]?.type }));
 }
 
-const DISPLAY_NAME: Record<string, string> = { gitea: "Gitea", gitlab: "GitLab", argocd: "Argo CD" };
+const DISPLAY_NAME: Record<string, string> = {
+  gitea: "Gitea",
+  gitlab: "GitLab",
+  argocd: "Argo CD"
+};
 
 function displayName(kind: string): string {
   return DISPLAY_NAME[kind] ?? kind.charAt(0).toUpperCase() + kind.slice(1);
@@ -241,12 +251,15 @@ export function RegisterStepGeneric({
   existing: GraphObject[];
   onRegistered: (system: GraphObject) => void;
 }): React.JSX.Element {
-  const [draft, setDraft] = useState<GenericConnectDraft>(() => emptyGenericDraft(connectable.kind));
+  const [draft, setDraft] = useState<GenericConnectDraft>(() =>
+    emptyGenericDraft(connectable.kind)
+  );
 
   const register = useMutation({
     // NO ARGUMENT — same reason as `connect-argocd.tsx`'s `RegisterStep`: `mutate(vars)` would park
     // the secret in the TanStack mutation cache for the observer's lifetime.
-    mutationFn: async (): Promise<GraphObject> => registerGenericSystem(doors, connectable.kind, draft),
+    mutationFn: async (): Promise<GraphObject> =>
+      registerGenericSystem(doors, connectable.kind, draft),
     onSuccess: (system) => {
       setDraft((prev) => ({ ...prev, secretValue: "" }));
       onRegistered(system);
@@ -365,7 +378,9 @@ export function RegisterStepGeneric({
                 }
               />
               <span>
-                <span className="font-medium">This {name} is reachable only at a private / in-cluster address</span>
+                <span className="font-medium">
+                  This {name} is reachable only at a private / in-cluster address
+                </span>
                 <span className="mt-1 block text-xs text-slate-700">
                   This is a <strong>declaration, not a grant</strong>: your operator must also list
                   this host in <code className="font-mono">SCP_INTERNAL_EGRESS_HOSTS</code>, or
@@ -382,7 +397,11 @@ export function RegisterStepGeneric({
           )}
 
           <div>
-            <Button type="submit" disabled={register.isPending} data-testid="connect-register-submit">
+            <Button
+              type="submit"
+              disabled={register.isPending}
+              data-testid="connect-register-submit"
+            >
               {register.isPending ? "Registering…" : "Register and continue"}
             </Button>
           </div>
@@ -418,7 +437,8 @@ export function EnumerateStepGeneric({
       for (const field of fields) {
         const raw = values[field.name];
         if (raw === undefined || raw === "") continue;
-        config[field.name] = field.type === "integer" || field.type === "number" ? Number(raw) : raw;
+        config[field.name] =
+          field.type === "integer" || field.type === "number" ? Number(raw) : raw;
       }
       return doors.runDiscovery(connectable.discoveryModule, system.name, config);
     },
@@ -445,7 +465,10 @@ export function EnumerateStepGeneric({
         <form className="flex flex-col gap-3" onSubmit={submit}>
           {fields.map((field) => (
             <div key={field.name} className="flex flex-col gap-1.5">
-              <label htmlFor={`connect-run-${field.name}`} className="text-sm font-medium text-slate-700">
+              <label
+                htmlFor={`connect-run-${field.name}`}
+                className="text-sm font-medium text-slate-700"
+              >
                 {fieldLabel(field.name)}
                 {field.required && <span className="text-red-600"> *</span>}
               </label>
@@ -473,7 +496,11 @@ export function EnumerateStepGeneric({
           )}
 
           <div className="flex gap-2">
-            <Button type="submit" disabled={enumerate.isPending} data-testid="connect-enumerate-submit">
+            <Button
+              type="submit"
+              disabled={enumerate.isPending}
+              data-testid="connect-enumerate-submit"
+            >
               {enumerate.isPending ? "Enumerating…" : "Enumerate"}
             </Button>
             <Button type="button" variant="outline" onClick={onBack}>
@@ -531,7 +558,10 @@ function sectionTitle(typeId: string): string {
  * resolving it. That is the "do not fake it client-side" boundary for B4/B3 skip: real, but only
  * where it is safe.
  */
-export function filterProposal(proposal: DiscoveryProposal, uncheckedIndices: Set<number>): DiscoveryProposal {
+export function filterProposal(
+  proposal: DiscoveryProposal,
+  uncheckedIndices: Set<number>
+): DiscoveryProposal {
   if (uncheckedIndices.size === 0) return proposal;
   const keptObjects = proposal.objects.filter((_, index) => !uncheckedIndices.has(index));
   const keptNames = new Set(keptObjects.map((object) => object.name));
@@ -558,7 +588,10 @@ export function ReviewStepGeneric({
   const canSkip = proposal.relationships.length === 0;
 
   const accept = useMutation({
-    mutationFn: async (): Promise<{ result: AcceptDiscoveryResponse; submitted: ProposalObject[] }> => {
+    mutationFn: async (): Promise<{
+      result: AcceptDiscoveryResponse;
+      submitted: ProposalObject[];
+    }> => {
       const submission = canSkip ? filterProposal(proposal, uncheckedIndices) : proposal;
       const result = await doors.acceptProposal(submission);
       return { result, submitted: submission.objects };
@@ -604,7 +637,11 @@ export function ReviewStepGeneric({
           </p>
         ) : (
           groupObjectsByType(proposal.objects).map(([typeId, indices]) => (
-            <div key={typeId} className="flex flex-col gap-1.5" data-testid={`connect-object-group-${typeId}`}>
+            <div
+              key={typeId}
+              className="flex flex-col gap-1.5"
+              data-testid={`connect-object-group-${typeId}`}
+            >
               <SectionLabel as="h3">{sectionTitle(typeId)}</SectionLabel>
               <ul className="divide-y divide-slate-100 overflow-auto rounded border border-slate-200 text-sm">
                 {indices.map((index) => {
@@ -679,7 +716,10 @@ interface ImportedRow {
  * triage list below name and link each imported component; without it "the accept response names
  * them" (the section G4 instruction) would not be possible at all.
  */
-export function zipCreatedObjects(submitted: ProposalObject[], result: AcceptDiscoveryResponse): ImportedRow[] {
+export function zipCreatedObjects(
+  submitted: ProposalObject[],
+  result: AcceptDiscoveryResponse
+): ImportedRow[] {
   return submitted.map((object, index) => ({
     typeId: object.typeId,
     name: object.name,
@@ -746,8 +786,17 @@ function TriageRow({
   );
 }
 
-function TriageSection({ components, doors }: { components: ImportedRow[]; doors: ConnectKindDoors }): React.JSX.Element {
-  const servicesQuery = useQuery({ queryKey: ["connect-triage-services"], queryFn: doors.listServices });
+function TriageSection({
+  components,
+  doors
+}: {
+  components: ImportedRow[];
+  doors: ConnectKindDoors;
+}): React.JSX.Element {
+  const servicesQuery = useQuery({
+    queryKey: ["connect-triage-services"],
+    queryFn: doors.listServices
+  });
 
   return (
     <div className="flex flex-col gap-3" data-testid="connect-triage">
@@ -773,7 +822,6 @@ function TriageSection({ components, doors }: { components: ImportedRow[]; doors
 }
 
 export function ImportSummaryGeneric({
-  kind,
   systemName,
   result,
   submitted,
@@ -795,7 +843,9 @@ export function ImportSummaryGeneric({
   // Same hazard-3 discipline as `connect-argocd.tsx`'s `ImportSummary`: read off the RESPONSE,
   // never a belief about what a discovery plugin emits.
   const orphan = relationships === 0;
-  const components = zipCreatedObjects(submitted, result).filter((row) => row.typeId === "component");
+  const components = zipCreatedObjects(submitted, result).filter(
+    (row) => row.typeId === "component"
+  );
 
   return (
     <Card data-testid="connect-summary-card">
@@ -822,8 +872,9 @@ export function ImportSummaryGeneric({
               <p className="font-medium">These aren&apos;t part of any service yet.</p>
               <p className="mt-1">
                 The import created no graph relationships, so nothing links the new objects to a
-                service, an owner or a dependency by design — coordination already works through
-                the executor bindings above. {components.length > 0 && "Assign each component below, or come back to it later."}
+                service, an owner or a dependency by design — coordination already works through the
+                executor bindings above.{" "}
+                {components.length > 0 && "Assign each component below, or come back to it later."}
               </p>
             </div>
             {components.length > 0 && <TriageSection components={components} doors={doors} />}
@@ -856,9 +907,10 @@ export function ConnectGenericPage({
 }): React.JSX.Element {
   const [system, setSystem] = useState<GraphObject | null>(null);
   const [proposal, setProposal] = useState<DiscoveryProposal | null>(null);
-  const [imported, setImported] = useState<{ result: AcceptDiscoveryResponse; submitted: ProposalObject[] } | null>(
-    null
-  );
+  const [imported, setImported] = useState<{
+    result: AcceptDiscoveryResponse;
+    submitted: ProposalObject[];
+  } | null>(null);
 
   const manifestsQuery = useQuery({
     queryKey: ["plugin-manifests"],
@@ -875,7 +927,11 @@ export function ConnectGenericPage({
   }
   if (manifestsQuery.isError) {
     return (
-      <QueryErrorNotice error={manifestsQuery.error} what="the plugin catalog" testId="connect-manifests-error" />
+      <QueryErrorNotice
+        error={manifestsQuery.error}
+        what="the plugin catalog"
+        testId="connect-manifests-error"
+      />
     );
   }
 

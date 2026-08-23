@@ -23,7 +23,11 @@ export const SelectTrigger = React.forwardRef<
     {children}
     {/* §2.12: the one chevron for every Select — lucide `ChevronDown`, never a `▾` literal. */}
     <SelectPrimitive.Icon asChild>
-      <ChevronDown className="ml-2 size-4 shrink-0 text-slate-500" strokeWidth={2} aria-hidden="true" />
+      <ChevronDown
+        className="ml-2 size-4 shrink-0 text-slate-500"
+        strokeWidth={2}
+        aria-hidden="true"
+      />
     </SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>
 ));

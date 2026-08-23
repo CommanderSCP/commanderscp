@@ -81,9 +81,7 @@ export function heldInputsSummary(
 
 /** The caption beside a shared component on a target card — the held count first (a fact), then
  *  ONLY the declared labels that occur; a component with no declared labels reads just the count. */
-export function heldInputsCaption(
-  summary: ReturnType<typeof heldInputsSummary>
-): string {
+export function heldInputsCaption(summary: ReturnType<typeof heldInputsSummary>): string {
   if (summary.held === 0) return "shared · no inputs held here yet";
   const labels: string[] = [];
   if (summary.domain > 0) labels.push(`${summary.domain} domain-specific`);
@@ -136,9 +134,7 @@ export function OutpostDashboardPage(): React.JSX.Element {
   const allTargets = targetsQuery.data?.items ?? [];
   // READ: ours = origin matches self. Null self (federation not initialised) → nothing is ours,
   // and the empty state below says why rather than pretending every target is ours.
-  const myTargets = selfDomainId
-    ? allTargets.filter((t) => t.originDomainId === selfDomainId)
-    : [];
+  const myTargets = selfDomainId ? allTargets.filter((t) => t.originDomainId === selfDomainId) : [];
   const foreignTargetCount = allTargets.length - myTargets.length;
 
   const bindingQueries = useQueries({
@@ -159,7 +155,10 @@ export function OutpostDashboardPage(): React.JSX.Element {
   }
 
   const loading =
-    selfQuery.isLoading || targetsQuery.isLoading || placementsQuery.isLoading || componentsQuery.isLoading;
+    selfQuery.isLoading ||
+    targetsQuery.isLoading ||
+    placementsQuery.isLoading ||
+    componentsQuery.isLoading;
 
   const domainLocalComponents = (componentsQuery.data?.items ?? []).filter((c) => c.domainLocal);
   const iacCacBindings = bindingQueries
@@ -169,13 +168,16 @@ export function OutpostDashboardPage(): React.JSX.Element {
   const allMappings = mappingQueries.flatMap((q) => q.data?.items ?? []);
   // Component ids placed on THIS outpost's targets.
   const placedHere = new Set(
-    myTargets.flatMap((t) => (placementsByTarget.get(t.id) ?? []).map((p) => placementIds(p).componentId)).filter(Boolean)
+    myTargets
+      .flatMap((t) => (placementsByTarget.get(t.id) ?? []).map((p) => placementIds(p).componentId))
+      .filter(Boolean)
   );
   // Inputs held here per component: its mappings held on this instance (any kind, any Type).
   // Bindings on the TARGET are the target's, and already counted in the target card. Counted per
   // COMPONENT (the owner's unit), not per row; the declared labels ride along (§10.6).
   const componentsWithHeldInputs = new Set<string>();
-  for (const m of allMappings) if (placedHere.has(m.componentObjectId)) componentsWithHeldInputs.add(m.componentObjectId);
+  for (const m of allMappings)
+    if (placedHere.has(m.componentObjectId)) componentsWithHeldInputs.add(m.componentObjectId);
   const mappingsByComponent = new Map<string, SourceMapping[]>();
   for (const m of allMappings) {
     const list = mappingsByComponent.get(m.componentObjectId) ?? [];
@@ -191,8 +193,8 @@ export function OutpostDashboardPage(): React.JSX.Element {
           selfQuery.data?.name ? (
             <span className="flex items-center gap-1.5">
               <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
-              {selfQuery.data.name} — the targets this outpost controls, what runs on them, and
-              this domain&apos;s own inputs to their pipelines.
+              {selfQuery.data.name} — the targets this outpost controls, what runs on them, and this
+              domain&apos;s own inputs to their pipelines.
             </span>
           ) : undefined
         }
@@ -244,7 +246,10 @@ export function OutpostDashboardPage(): React.JSX.Element {
                 }
                 data-testid="outpost-no-targets"
                 action={
-                  <Link to="/setup" className="inline-flex items-center gap-1 text-sm font-medium text-army-700 hover:underline">
+                  <Link
+                    to="/setup"
+                    className="inline-flex items-center gap-1 text-sm font-medium text-army-700 hover:underline"
+                  >
                     Open Setup <ArrowRight className="size-4" strokeWidth={2} aria-hidden="true" />
                   </Link>
                 }
@@ -356,7 +361,11 @@ function TargetCard({
                           {component.name}
                         </Link>
                         {component.domainLocal ? (
-                          <Badge variant="neutral" icon={EyeOff} title="Domain-local component (ADR-0031) — genuinely domain-only; its repos are the whole source, no commander input.">
+                          <Badge
+                            variant="neutral"
+                            icon={EyeOff}
+                            title="Domain-local component (ADR-0031) — genuinely domain-only; its repos are the whole source, no commander input."
+                          >
                             domain-local
                           </Badge>
                         ) : (
@@ -374,7 +383,10 @@ function TargetCard({
                     ) : (
                       // The placement names a component this page's first-100 fetch didn't
                       // include (or a since-deleted one) — say so, don't invent a name.
-                      <span className="font-mono text-xs text-slate-500" title="Component not in the fetched page.">
+                      <span
+                        className="font-mono text-xs text-slate-500"
+                        title="Component not in the fetched page."
+                      >
                         {componentId ?? "(unnamed component)"}
                       </span>
                     )}
@@ -390,16 +402,22 @@ function TargetCard({
             <SkeletonRows n={1} />
           ) : iacCac.length === 0 ? (
             <p className="text-slate-500" data-testid="outpost-target-no-iac-cac">
-              No infrastructure or configuration pipeline is bound at this target — its substrate and
-              config are managed elsewhere, or not by CommanderSCP.
+              No infrastructure or configuration pipeline is bound at this target — its substrate
+              and config are managed elsewhere, or not by CommanderSCP.
             </p>
           ) : (
             <ul className="flex flex-col gap-1">
               {iacCac.map((b) => (
-                <li key={`${b.targetObjectId}-${b.type}`} className="flex items-center gap-2" data-testid="outpost-iac-cac-binding">
+                <li
+                  key={`${b.targetObjectId}-${b.type}`}
+                  className="flex items-center gap-2"
+                  data-testid="outpost-iac-cac-binding"
+                >
                   <Badge variant="neutral">{b.type}</Badge>
                   <span className="text-slate-700">{b.pluginModule}</span>
-                  {b.externalRef && <span className="font-mono text-xs text-slate-500">{b.externalRef}</span>}
+                  {b.externalRef && (
+                    <span className="font-mono text-xs text-slate-500">{b.externalRef}</span>
+                  )}
                 </li>
               ))}
             </ul>

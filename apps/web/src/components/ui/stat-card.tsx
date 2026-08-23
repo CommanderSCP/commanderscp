@@ -56,7 +56,11 @@ export function StatCard({
         <div className="flex items-start justify-between gap-2">
           <SectionLabel>{label}</SectionLabel>
           {Icon && (
-            <Icon className="size-5 shrink-0 text-slate-400" strokeWidth={1.75} aria-hidden="true" />
+            <Icon
+              className="size-5 shrink-0 text-slate-400"
+              strokeWidth={1.75}
+              aria-hidden="true"
+            />
           )}
         </div>
         {value !== undefined && (

@@ -388,7 +388,10 @@ describe("a component's pipeline is continuous", () => {
 
     const p = await pipelineOf(component.id);
     const infra = p.stages[0]!.bindings.find((b) => b.type === "infrastructure");
-    expect(infra, "the component-rung infrastructure binding must surface at the stage").toBeDefined();
+    expect(
+      infra,
+      "the component-rung infrastructure binding must surface at the stage"
+    ).toBeDefined();
     expect(infra!.externalRef).toBe("own-bucket-iac");
     expect(
       (infra as { resolvedVia?: string }).resolvedVia,

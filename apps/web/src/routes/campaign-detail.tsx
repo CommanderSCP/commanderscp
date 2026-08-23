@@ -169,7 +169,12 @@ export function CampaignDetailPage(): React.JSX.Element {
                     {/* `testIdPrefix="campaign-wave"` reproduces the wave board's historical
                         `campaign-wave-card` / `campaign-wave-status-badge` /
                         `campaign-wave-target-row` testids on the same elements. */}
-                    <PipelineWaveCard wave={wave} waveNumber={index + 1} testIdPrefix="campaign-wave" nameOf={(tid) => targetNames.get(tid)?.name} />
+                    <PipelineWaveCard
+                      wave={wave}
+                      waveNumber={index + 1}
+                      testIdPrefix="campaign-wave"
+                      nameOf={(tid) => targetNames.get(tid)?.name}
+                    />
                     {promo && <PromotionArrow state={promo.state} label={promo.label} />}
                   </div>
                 );

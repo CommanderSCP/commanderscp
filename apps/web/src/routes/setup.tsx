@@ -201,7 +201,11 @@ function ChecklistRow({ row }: { row: ChecklistRowView }): React.JSX.Element {
   return (
     <div className="flex items-center justify-between gap-4 py-3" data-testid={row.testId}>
       <div className="flex items-start gap-3">
-        <Icon className="mt-0.5 size-4 shrink-0 text-slate-400" strokeWidth={2} aria-hidden="true" />
+        <Icon
+          className="mt-0.5 size-4 shrink-0 text-slate-400"
+          strokeWidth={2}
+          aria-hidden="true"
+        />
         <div>
           <p className="text-sm font-medium text-slate-900">{row.label}</p>
           <p className="text-xs text-slate-500">{row.description}</p>
@@ -233,7 +237,9 @@ export function SetupChecklistCard({ data }: { data: SetupChecklistData }): Reac
     <Card data-testid="setup-checklist-card">
       <CardHeader>
         <CardTitle>Setup checklist</CardTitle>
-        <CardDescription>What this domain has connected, placed, and mapped so far.</CardDescription>
+        <CardDescription>
+          What this domain has connected, placed, and mapped so far.
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col divide-y divide-slate-200">
         {rows.map((row) => (
@@ -283,7 +289,9 @@ export function FreezeRow({ freeze, now }: { freeze: Freeze; now: Date }): React
       title={`${NO_EARLY_LIFT_SENTENCE} Ends ${formatDate(freeze.endsAt)}.`}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium text-slate-900">{freeze.name ?? "Untitled freeze"}</span>
+        <span className="text-sm font-medium text-slate-900">
+          {freeze.name ?? "Untitled freeze"}
+        </span>
         <Badge variant={status === "active" ? "warning" : "neutral"}>
           {status === "active" ? "Active" : "Upcoming"}
         </Badge>
@@ -550,7 +558,11 @@ export function SetupPage(): React.JSX.Element {
           {freezesQuery.isLoading ? (
             <SkeletonRows n={2} />
           ) : freezesQuery.isError ? (
-            <QueryErrorNotice error={freezesQuery.error} what="freezes" testId="setup-freezes-error" />
+            <QueryErrorNotice
+              error={freezesQuery.error}
+              what="freezes"
+              testId="setup-freezes-error"
+            />
           ) : freezes && freezes.length === 0 ? (
             <EmptyState icon={Snowflake} message="No active or upcoming freezes yet." />
           ) : (
@@ -587,8 +599,8 @@ export function SetupPage(): React.JSX.Element {
         <CardContent className="flex flex-col gap-3">
           <p className="text-sm text-slate-700">
             An object declared to stay in this domain — directly, or inherited the moment it's
-            created inside a container already declared that way — is invisible everywhere else:
-            no federation peer is ever told it exists. The only way out is a deliberate, one-way
+            created inside a container already declared that way — is invisible everywhere else: no
+            federation peer is ever told it exists. The only way out is a deliberate, one-way
             publish, taken per object; there is no bulk or automatic promotion.
           </p>
           <div>
