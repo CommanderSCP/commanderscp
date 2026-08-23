@@ -1,6 +1,12 @@
 import type { TenantTx } from "../db/tenant-tx.js";
 import { containmentChain } from "../graph/containment.js";
+import { readStageCoordinate } from "../coordination/regional-executors.js";
 import { activeFreezesInWindow, filterFreezesByScopes, type FreezeRow } from "./freezes-repo.js";
+import {
+  activeInstanceFreezesInWindow,
+  instanceFreezeCovers,
+  type InstanceFreezeRow
+} from "./instance-freezes-repo.js";
 
 /**
  * PER-TARGET FREEZE RESOLUTION — the primitive M25.2's per-target wave admission is built on
@@ -45,12 +51,36 @@ import { activeFreezesInWindow, filterFreezesByScopes, type FreezeRow } from "./
  * it in its own transaction, exactly as `coordination/stage-dependency-hold.ts` does.
  */
 
-/** One wave target and every ACTIVE freeze covering it, at the instant asked about. `freezes` is
- *  empty for a target nothing covers — an entry is always present for every id passed in, so a
- *  caller can index the result without deciding what a missing key means. */
+/**
+ * ONE FREEZE IN FORCE, FROM EITHER TIER — the discriminated union every consumer of this module
+ * now handles (M25.3, owner decision D1).
+ *
+ * A DISCRIMINATED UNION AND NOT A FLATTENED ROW, deliberately. The two tiers differ in the one
+ * field authorization is decided on: an org freeze carries `scopeObjectId`, the object
+ * `freeze:override` is checked at; a platform freeze has none, because object ids are per-org rows
+ * and no id names anything in a second tenant. Flattening the two into one shape with a nullable
+ * `scopeObjectId` would let `checkFreeze`, `freeze-hold.ts` and the service board each read that
+ * null and decide for themselves what it means — and the natural guesses are all wrong (the
+ * proposal §2.2 names three: an org-root scope hands every org Administrator the lift of a
+ * platform freeze, a synthetic sentinel id makes it un-overridable BY ACCIDENT, and an operator
+ * token on the request cannot exist for the case that matters because wave-boundary gates run
+ * under `SYSTEM_ACTOR_ID` with no HTTP request in scope). With a union, TypeScript REFUSES to
+ * compile a consumer that reads `scopeObjectId` without first asking which tier it is holding.
+ *
+ * Every field the whole-change pipeline actually consumes — `id`, `name`, `endsAt`, `reason`,
+ * `atomic` — is present on BOTH arms with the same meaning, so the dedupe, the ordering, the
+ * `atomic` union and the Decision projections work across tiers with no per-tier branch at all.
+ */
+export type EffectiveFreeze =
+  | ({ tier: "org" } & FreezeRow)
+  | ({ tier: "platform" } & InstanceFreezeRow);
+
+/** One wave target and every ACTIVE freeze covering it, at the instant asked about, from BOTH
+ *  tiers. `freezes` is empty for a target nothing covers — an entry is always present for every id
+ *  passed in, so a caller can index the result without deciding what a missing key means. */
 export interface TargetFreezes {
   targetObjectId: string;
-  freezes: FreezeRow[];
+  freezes: EffectiveFreeze[];
 }
 
 /**
@@ -72,23 +102,65 @@ export async function freezesByTarget(
   targetObjectIds: string[],
   now: Date
 ): Promise<TargetFreezes[]> {
-  // PROPERTY 1 — INERTNESS. The org-wide window read comes FIRST and short-circuits the whole
-  // function. Do not move a containment walk above this line, and do not "optimise" it into the
-  // loop: one query for the org is what makes a change with nothing frozen cost nothing.
-  const active = await activeFreezesInWindow(tx, orgId, now);
-  if (active.length === 0)
+  // PROPERTY 1 — INERTNESS. BOTH window reads come FIRST and short-circuit the whole function
+  // together. Do not move a containment walk or a coordinate read above this line, and do not
+  // "optimise" either into the loop: two indexed queries are what make a change with nothing
+  // frozen cost nothing. M25.3 added exactly ONE query to this regime (the instance-tier window
+  // read, over a table that ships empty), and not a single graph traversal.
+  const orgActive = await activeFreezesInWindow(tx, orgId, now);
+  const instanceActive = await activeInstanceFreezesInWindow(tx, now);
+  if (orgActive.length === 0 && instanceActive.length === 0)
     return targetObjectIds.map((id) => ({ targetObjectId: id, freezes: [] }));
+
+  // The stage coordinate is read PER TARGET and only when some live instance freeze is actually
+  // addressed by one. A deployment-wide freeze (`matchAllEnvironments`) covers every target
+  // regardless of coordinate, so asking the graph where each target runs would be two reads per
+  // target per tick answering a question the matcher does not consult.
+  const coordinateAddressed = instanceActive.some((f) => !f.matchAllEnvironments);
 
   const byTarget: TargetFreezes[] = [];
   for (const targetObjectId of targetObjectIds) {
-    const chain = await containmentChain(tx, orgId, targetObjectId);
-    byTarget.push({
-      targetObjectId,
-      freezes: filterFreezesByScopes(
-        active,
+    const freezes: EffectiveFreeze[] = [];
+
+    // ==========================================================================================
+    // THE INSTANCE TIER FIRST — and the ORDER IS REPORTING, NOT SEMANTICS.
+    // ==========================================================================================
+    // `checkFreeze`'s loop is a universal quantifier and stays order-independent (`unionFreezes`
+    // says so and must keep being true). Platform freezes are listed first only so that when a
+    // change is covered by both tiers, the reason an operator reads names the one they cannot
+    // override rather than the one they can.
+    if (instanceActive.length > 0) {
+      // `readStageCoordinate` performs the placement -> deployment-target hop itself; without it a
+      // stage-shaped wave target (ADR-0026) declares nothing and an environment-addressed platform
+      // freeze silently matches NOTHING, indistinguishable from a freeze that was never declared.
+      const coordinate = coordinateAddressed
+        ? await readStageCoordinate(tx, orgId, targetObjectId)
+        : null;
+      for (const f of instanceActive) {
+        if (instanceFreezeCovers(f, coordinate)) freezes.push({ tier: "platform", ...f });
+      }
+    }
+
+    // ==========================================================================================
+    // THE ORG TIER — UNION, NOT OVERRIDE. A freeze is a PREDICATE and the merge is an OR.
+    // ==========================================================================================
+    // Note what this loop does NOT do: it never consults the instance tier before walking, and the
+    // instance tier never consults it. An org that declared nothing still gets every platform
+    // freeze (the empty org set contributes FALSE to an OR), and nothing an org can author
+    // subtracts from a platform freeze. The "floor" property lives entirely in the override rule
+    // (`instance_freezes.overridable`), never here. Contrast ADR-0016's scan floors, which merge
+    // by per-severity MIN because a threshold is a number.
+    if (orgActive.length > 0) {
+      const chain = await containmentChain(tx, orgId, targetObjectId);
+      for (const f of filterFreezesByScopes(
+        orgActive,
         chain.map((entry) => entry.id)
-      )
-    });
+      )) {
+        freezes.push({ tier: "org", ...f });
+      }
+    }
+
+    byTarget.push({ targetObjectId, freezes });
   }
   return byTarget;
 }
@@ -108,9 +180,9 @@ export async function freezesByTarget(
  * must stay order-independent. The stability is here so a Decision built from this list cannot
  * churn because a wave's targets came back in a different order.
  */
-export function unionFreezes(byTarget: TargetFreezes[]): FreezeRow[] {
+export function unionFreezes(byTarget: TargetFreezes[]): EffectiveFreeze[] {
   const seen = new Set<string>();
-  const union: FreezeRow[] = [];
+  const union: EffectiveFreeze[] = [];
   for (const entry of byTarget) {
     for (const freeze of entry.freezes) {
       if (seen.has(freeze.id)) continue;

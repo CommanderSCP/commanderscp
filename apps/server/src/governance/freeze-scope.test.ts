@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { filterFreezesByScopes, type FreezeRow } from "./freezes-repo.js";
-import { freezesByTarget, unionFreezes } from "./freeze-scope.js";
+import { instanceFreezeCovers, type InstanceFreezeRow } from "./instance-freezes-repo.js";
+import { freezesByTarget, unionFreezes, type EffectiveFreeze } from "./freeze-scope.js";
 
 /**
  * THE TWO PROPERTIES `freeze-scope.ts` DECLARES, measured without a database.
@@ -13,14 +14,26 @@ import { freezesByTarget, unionFreezes } from "./freeze-scope.js";
  * way) and `unionFreezes`'s dedupe/ordering (pure).
  *
  * THE FAKE `tx` IS THE INSTRUMENT, not a convenience. `containmentChain` is the only thing in this
- * module that calls `tx.execute`, and `activeFreezesInWindow` is the only thing that calls
- * `tx.select`, so counting the two calls distinguishes "walked nothing" from "walked and found
- * nothing" — which is exactly the distinction the inertness claim is about and exactly the one a
- * real database would hide.
+ * module that calls `tx.execute`, and the two window reads are the only things that call
+ * `tx.select` without a `.limit()`, so counting the calls distinguishes "walked nothing" from
+ * "walked and found nothing" — which is exactly the distinction the inertness claim is about and
+ * exactly the one a real database would hide.
+ *
+ * M25.3 ADDED A THIRD AND FOURTH QUERY SHAPE and the fake counts them separately, because the
+ * whole point of the inertness property is arithmetic: the instance-tier window read (`selects`,
+ * now 2 per call) and `readStageCoordinate`'s two `.limit(1)` lookups (`coordinateReads`, which
+ * must stay 0 unless a coordinate-ADDRESSED instance freeze is live). A fake that answered both
+ * window reads from one counter would report the post-M25.3 cost as unchanged, which is the
+ * vacuous version of this test.
  */
 
-function freeze(id: string, scopeObjectId: string, atomic = false): FreezeRow {
+/** The ORG arm of `EffectiveFreeze` — narrowed, so `filterFreezesByScopes` keeps its tag. */
+type OrgTierFreeze = Extract<EffectiveFreeze, { tier: "org" }>;
+
+function freeze(id: string, scopeObjectId: string, atomic = false): OrgTierFreeze {
   return {
+    // M25.3 — `freezesByTarget` now returns a TIER UNION; the org arm is what this fixture is.
+    tier: "org",
     id,
     orgId: "org",
     scopeObjectId,
@@ -48,16 +61,40 @@ function freeze(id: string, scopeObjectId: string, atomic = false): FreezeRow {
  * reports, IN THE ORDER `freezesByTarget` walks its targets — which the loop guarantees, and which
  * also means a fake that runs out of chains is a walk the test did not expect.
  */
-function countingTx(windowRows: FreezeRow[], chains: string[][] = []) {
-  const counts = { selects: 0, executes: 0 };
+function countingTx(
+  windowRows: EffectiveFreeze[],
+  chains: string[][] = [],
+  instanceRows: InstanceFreezeRow[] = []
+) {
+  const counts = { selects: 0, executes: 0, coordinateReads: 0 };
   const remaining = [...chains];
+  // `freezesByTarget` issues the ORG window read first and the INSTANCE window read second; the
+  // order is fixed by the function and asserted by the fake answering them in that order.
+  let windowRead = 0;
   const tx = {
     select: () => ({
       from: () => ({
-        where: () => {
-          counts.selects++;
-          return Promise.resolve(windowRows);
-        }
+        // Drizzle's builder is a THENABLE, so `await ...where(...)` and `...where(...).limit(1)`
+        // are two different terminations of one chain. Counting at the termination rather than at
+        // `where()` is what lets the fake tell a window read from a coordinate lookup.
+        where: () => ({
+          limit: () => {
+            counts.coordinateReads++;
+            // `[]` => "not a live placement" / "not a live deployment-target", which is what every
+            // target in this file is: `readStageCoordinate` returns null and only a
+            // `matchAllEnvironments` instance freeze can cover it.
+            return Promise.resolve([]);
+          },
+          then: (
+            resolve: (rows: unknown[]) => unknown,
+            reject: (err: unknown) => unknown
+          ): unknown => {
+            counts.selects++;
+            const rows = windowRead === 0 ? windowRows : instanceRows;
+            windowRead++;
+            return Promise.resolve(rows).then(resolve, reject);
+          }
+        })
       })
     }),
     execute: () => {
@@ -88,8 +125,11 @@ describe("freezesByTarget: INERTNESS (property 1)", () => {
     // ...and it cost ONE org-wide indexed read and not a single graph traversal. This is the
     // assertion the 1s tick depends on: move a containment walk above the short-circuit, or fold
     // the window read into the loop, and `executes` becomes 4.
-    expect(counts.selects).toBe(1);
+    // ...and it cost TWO org-wide indexed reads — one per tier, the instance one over a table that
+    // ships empty — and not a single graph traversal or coordinate lookup.
+    expect(counts.selects).toBe(2);
     expect(counts.executes).toBe(0);
+    expect(counts.coordinateReads).toBe(0);
   });
 
   it("DOES walk once per target the moment the org has one active freeze — the control", async () => {
@@ -99,8 +139,11 @@ describe("freezesByTarget: INERTNESS (property 1)", () => {
 
     await freezesByTarget(tx, "org", ["t1"], new Date());
 
-    expect(counts.selects).toBe(1);
+    expect(counts.selects).toBe(2);
     expect(counts.executes).toBe(1);
+    // Still ZERO coordinate reads: no instance freeze is live, so nothing asks where the target
+    // runs. This is the conjunct that keeps M25.3's cost off the org-tier path entirely.
+    expect(counts.coordinateReads).toBe(0);
   });
 
   it("returns an entry for EVERY target, covered or not — a caller never interprets a missing key", async () => {

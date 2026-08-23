@@ -25,7 +25,7 @@ import { getChange } from "./changes-repo.js";
 import { getLatestPlanForChange } from "./plan-service.js";
 import { latestBlockDecisionForSubject } from "./decisions-repo.js";
 import { listApprovalRequestsForChange } from "../governance/approvals-repo.js";
-import type { FreezeRow } from "../governance/freezes-repo.js";
+import type { EffectiveFreeze } from "../governance/freeze-scope.js";
 import { freezesByTarget } from "../governance/freeze-scope.js";
 import { listPlacementsForComponents } from "../graph/placements-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
@@ -301,7 +301,24 @@ async function latestChangeByComponent(
   return latest;
 }
 
-function toFreeze(f: FreezeRow): ServiceBoardFreeze {
+/**
+ * The board projection of a freeze from EITHER tier (M25.3).
+ *
+ * `ServiceBoardFreezeSchema` is `{ id: uuid, reason, endsAt }` and every one of the three is
+ * common to both arms of `EffectiveFreeze`, so a platform freeze projects with no schema change
+ * and no oasdiff exposure at all — which is precisely why `instance_freezes.id` is a real uuid
+ * rather than a synthetic `platform:<key>` (drizzle/0086). The board therefore SHOWS a platform
+ * freeze rather than rendering `activeFreeze: null` beside a component that cannot ship, which is
+ * the "the lever works and the signal is missing" defect M25.2 had to come back and fix once.
+ *
+ * The board does NOT distinguish the tiers on the wire, and that is a known limit rather than an
+ * oversight: adding a `tier` field to a published response object is an additive API change this
+ * increment does not own (the operator-door surfaces deliberately have no UI representation), and
+ * `reason` — which both tiers carry and both require to be non-empty — is what a board reader
+ * acts on. The tier IS distinguished everywhere a decision is made from it: the gate's block
+ * Decision, the hold Decision and `describeFreezeHold` all carry it.
+ */
+function toFreeze(f: EffectiveFreeze): ServiceBoardFreeze {
   return { id: f.id, reason: f.reason, endsAt: f.endsAt.toISOString() };
 }
 
@@ -653,7 +670,7 @@ export async function buildServiceBoard(
     placementsByComponent.set(p.componentObjectId, list);
   }
   const freezeLookupIds = [service.id, ...componentIds, ...placements.map((p) => p.placementId)];
-  const freezesByObjectId = new Map<string, FreezeRow[]>();
+  const freezesByObjectId = new Map<string, EffectiveFreeze[]>();
   for (const entry of await freezesByTarget(tx, orgId, freezeLookupIds, new Date())) {
     freezesByObjectId.set(entry.targetObjectId, entry.freezes);
   }
@@ -662,7 +679,7 @@ export async function buildServiceBoard(
    *  has no `ORDER BY`, so two freezes at one scope made the board's answer depend on the planner.
    *  The rule is "the one that keeps this row frozen LONGEST" (max `endsAt`, ties broken by id) —
    *  the honest single answer to "when can this ship again". */
-  const activeFreezeFor = (objectId: string): FreezeRow | undefined => {
+  const activeFreezeFor = (objectId: string): EffectiveFreeze | undefined => {
     const candidates = [
       ...(freezesByObjectId.get(objectId) ?? []),
       ...(placementsByComponent.get(objectId) ?? []).flatMap(

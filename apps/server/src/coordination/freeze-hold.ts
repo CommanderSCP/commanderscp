@@ -1,6 +1,9 @@
 import type { TenantTx } from "../db/tenant-tx.js";
-import { freezesByTarget, unionFreezes } from "../governance/freeze-scope.js";
-import type { FreezeRow } from "../governance/freezes-repo.js";
+import {
+  freezesByTarget,
+  unionFreezes,
+  type EffectiveFreeze
+} from "../governance/freeze-scope.js";
 import { resolvePlacementPair } from "./stage-dependency-hold.js";
 import { readTargetLiveness } from "./target-liveness.js";
 
@@ -72,7 +75,17 @@ export interface FreezeHoldVerdict {
    *  a scope nothing froze stopped moving. */
   freezes: {
     id: string;
-    scopeObjectId: string;
+    /** M25.3 — WHICH TIER DECLARED IT, and therefore which surface resolves `id`:
+     *  `GET /v1/freezes/{id}` for `org`, `GET /v1/instance/freezes` for `platform`. Not cosmetic:
+     *  without it a held-target Decision names an id that 404s on the only surface a reader would
+     *  try, and an operator cannot tell an org freeze they can lift from a platform freeze they
+     *  cannot. */
+    tier: "org" | "platform";
+    /** NULL for a platform freeze — that tier has no object id in any org's containment chain,
+     *  which is exactly why it addresses a stage coordinate (`match`) instead. */
+    scopeObjectId: string | null;
+    /** What a platform freeze matched; null for an org freeze, whose scope IS its address. */
+    match: { allEnvironments: boolean; environment: string | null; region: string | null } | null;
     name: string | null;
     endsAt: string;
     atomic: boolean;
@@ -215,12 +228,21 @@ export function describeHeldTargets(frozenTargets: FreezeHoldVerdict[]): HeldTar
  *  in production (ADR-0024). `reason` is deliberately absent for the same reason it is absent from
  *  the gate's version: it is free text that adds nothing an id does not already resolve, and it
  *  belongs in the reason tree, which the caller builds. */
-function describeFreezes(freezes: FreezeRow[]): FreezeHoldVerdict["freezes"] {
+function describeFreezes(freezes: EffectiveFreeze[]): FreezeHoldVerdict["freezes"] {
   return [...freezes]
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((f) => ({
       id: f.id,
-      scopeObjectId: f.scopeObjectId,
+      tier: f.tier,
+      scopeObjectId: f.tier === "platform" ? null : f.scopeObjectId,
+      match:
+        f.tier === "platform"
+          ? {
+              allEnvironments: f.matchAllEnvironments,
+              environment: f.matchEnvironment,
+              region: f.matchRegion
+            }
+          : null,
       name: f.name,
       endsAt: f.endsAt.toISOString(),
       atomic: f.atomic
@@ -232,9 +254,20 @@ export function describeFreezeHold(verdict: FreezeHoldVerdict): string {
   return verdict.freezes
     .map(
       (f) =>
-        `freeze '${f.name ?? f.id}' at ${f.scopeObjectId} until ${f.endsAt}` +
+        `freeze '${f.name ?? f.id}' at ${freezeAddress(f)} until ${f.endsAt}` +
         (f.atomic ? " (atomic — it holds EVERY target of the wave, covered or not)" : "") +
         ` — target ${verdict.targetObjectId} is not triggered while it stands`
     )
     .join("; ");
+}
+
+/** WHERE a freeze was declared, in one operator-readable phrase — the org tier's scope object id,
+ *  or the platform tier's stage coordinate. A platform freeze printed as "at null" would be the
+ *  hold explanation saying nothing in the one line an operator reads first. */
+function freezeAddress(f: FreezeHoldVerdict["freezes"][number]): string {
+  if (f.tier !== "platform") return String(f.scopeObjectId);
+  if (!f.match || f.match.allEnvironments) return "the whole deployment (platform tier)";
+  return f.match.region === null
+    ? `every region of '${f.match.environment}' (platform tier)`
+    : `'${f.match.environment}'/'${f.match.region}' (platform tier)`;
 }

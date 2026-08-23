@@ -434,7 +434,10 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     expect(
       partial.frozenTargets?.map((entry) => ({
         targetObjectId: entry.targetObjectId,
-        scopes: entry.freezes.map((f) => f.scopeObjectId)
+        // M25.3 made `EffectiveFreeze` a tier union; this case is entirely org-tier (no instance
+        // freeze exists on this instance), and narrowing here is what keeps that fact asserted
+        // rather than assumed — a platform freeze leaking into this wave would produce `null`.
+        scopes: entry.freezes.map((f) => (f.tier === "org" ? f.scopeObjectId : null))
       }))
     ).toEqual([
       { targetObjectId: placement.id, scopes: [frozenPlace.id] },
