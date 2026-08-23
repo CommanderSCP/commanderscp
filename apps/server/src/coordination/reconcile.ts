@@ -22,11 +22,7 @@ import {
   evaluateStageDependencies,
   type StageDependencyVerdict
 } from "./stage-dependency-hold.js";
-import {
-  describeFreezeHold,
-  evaluateFreezeHolds,
-  type FreezeHoldVerdict
-} from "./freeze-hold.js";
+import { describeFreezeHold, evaluateFreezeHolds, type FreezeHoldVerdict } from "./freeze-hold.js";
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
 import {
@@ -724,6 +720,20 @@ async function reconcileExecutingChange(
     return;
   }
 
+  /**
+   * IS THIS CHANGE A ROLLBACK? — read ONCE, above the wave gate, because BOTH freeze seams need it
+   * (owner decision D7) and two readings of one fact is how they drift.
+   *
+   * `evaluateLifecycleGate` has always exempted rollbacks at `validating->accepted` (DESIGN §9.4 —
+   * "no human-review step to wait for"). The WAVE boundary never learned the same fact, so a
+   * rollback of a broken release into a frozen scope was refused by the very mechanism meant to
+   * protect the scope — pinning the broken release in place for the whole window. D7 closes that at
+   * both places: the gate (below, via `EvaluateWaveGateContext.isRollback`) and the per-target hold
+   * (the actuator's `!isRollback`, further down). Both are needed and neither is sufficient: the
+   * gate covers the ALL-frozen wave, the actuator covers every partially-frozen one.
+   */
+  const isRollback = change.rollbackOfObjectId !== null;
+
   if (activeWave.status === "pending") {
     // MULTI-REPLICA SINGLE-FLIGHT (M8 hardening follow-up, adversarial review MINOR #5): the SAME
     // per-change advisory lock advanceProposedChanges/advanceEvaluatedChanges/
@@ -766,7 +776,8 @@ async function reconcileExecutingChange(
             emergency: change.emergency,
             topologyObjectId: plan.topologyObjectId,
             waveIndex: activeWave.waveIndex,
-            targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+            targetObjectIds: activeWave.targets.map((t) => t.targetObjectId),
+            isRollback
           },
           gateDeps
         );
@@ -874,7 +885,6 @@ async function reconcileExecutingChange(
   // independently-committed transaction rather than one giant per-wave transaction, triggering
   // target A and polling target B in the same tick can't half-commit anything: each target's
   // durable state is exactly as fresh as its own last transaction, no more and no less.
-  const isRollback = change.rollbackOfObjectId !== null;
   /**
    * Targets still in flight when this loop ends — HELD ONES INCLUDED. A count rather than the
    * `allTerminal` boolean it replaces, because the terminalization at the bottom has to tell

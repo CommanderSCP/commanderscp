@@ -179,6 +179,20 @@ export interface EvaluateWaveGateContext {
   topologyObjectId: string | null;
   waveIndex: number;
   targetObjectIds: string[];
+  /** True when this Change IS a rollback (`changes.rollback_of_object_id` set) — M25.2 / owner
+   *  decision D7, and NARROWER than the lifecycle edge's exemption: it lifts the FREEZE block only,
+   *  not the gate. Policies, controls and approvals are still evaluated for a rollback's wave.
+   *
+   *  This field did not exist before M25.2 and its absence was an oversight rather than a decision:
+   *  `evaluateLifecycleGate` has exempted rollbacks at `validating->accepted` since M4 (DESIGN
+   *  §9.4), but the wave boundary never learned the same fact, so an ALL-frozen wave refused the one
+   *  change a freeze most wants to let through — a rollback of a broken release, pinned in place for
+   *  the length of the window with `scp change rollback` as the only exit and that exit closed.
+   *
+   *  Defaults to `false` at every caller that does not set it; campaigns pass `false` explicitly,
+   *  because a campaign is not a rollback (campaign rollback mints its own per-member rollback
+   *  Changes, and each of those carries this flag on its own wave). */
+  isRollback?: boolean | undefined;
 }
 
 /**
@@ -215,7 +229,8 @@ export async function evaluateWaveGate(
     actorObjectId: ctx.actorObjectId,
     emergency: ctx.emergency,
     gateKind: "wave_boundary",
-    gateRef: { topologyObjectId: ctx.topologyObjectId, waveIndex: ctx.waveIndex }
+    gateRef: { topologyObjectId: ctx.topologyObjectId, waveIndex: ctx.waveIndex },
+    isRollback: ctx.isRollback ?? false
   });
 
   return {

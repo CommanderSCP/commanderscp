@@ -10,11 +10,7 @@ import { getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.j
 import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
 import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
-import {
-  describeFreezeHold,
-  evaluateFreezeHolds,
-  type FreezeHoldVerdict
-} from "./freeze-hold.js";
+import { describeFreezeHold, evaluateFreezeHolds, type FreezeHoldVerdict } from "./freeze-hold.js";
 import { proposeChange, typeOf } from "./changes-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -259,7 +255,11 @@ async function reconcileOneCampaign(
           emergency: false,
           topologyObjectId: plan!.topologyObjectId,
           waveIndex: activeWave.waveIndex,
-          targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+          targetObjectIds: activeWave.targets.map((t) => t.targetObjectId),
+          // EXPLICIT, not defaulted (M25.2 / D7): a campaign is never itself a rollback. Campaign
+          // rollback (`campaign-rollback.ts`) mints a per-member rollback CHANGE, and each of those
+          // carries the flag on its own wave, where the exemption belongs.
+          isRollback: false
         },
         gateDeps
       );
@@ -531,13 +531,7 @@ async function reconcileOneCampaign(
   }
 
   if (frozenTargets.length > 0) {
-    await recordCampaignFreezeAdmissionHold(
-      db,
-      orgId,
-      campaignObjectId,
-      activeWave,
-      frozenTargets
-    );
+    await recordCampaignFreezeAdmissionHold(db, orgId, campaignObjectId, activeWave, frozenTargets);
   }
 
   if (!allTerminal) return;

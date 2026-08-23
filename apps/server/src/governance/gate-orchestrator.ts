@@ -16,10 +16,7 @@ import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
 import type { FreezeRow } from "./freezes-repo.js";
 import { freezesByTarget, unionFreezes, type TargetFreezes } from "./freeze-scope.js";
 import { hasPermission } from "../authz/resolve.js";
-import {
-  containmentChain,
-  nearestAncestorOfKind
-} from "../graph/containment.js";
+import { containmentChain, nearestAncestorOfKind } from "../graph/containment.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { getChangeRow } from "../coordination/changes-repo.js";
 import {
@@ -59,6 +56,16 @@ export interface GateContext {
    *  "block" verdict so `coordination/transition.ts` writes the Decision + audit with a resolvable
    *  `decision_id`, exactly like every other block path (MAJOR #6). */
   overrideFreeze?: { reason: string } | undefined;
+  /** M25.2 / owner decision D7 — this Change IS a rollback, so an active freeze does not block it.
+   *  NARROW BY CONSTRUCTION: it lifts the FREEZE check and nothing else. Policies, controls and
+   *  approvals are evaluated for a rollback's wave exactly as before, because a rollback can still
+   *  be the wrong thing to ship and those mechanisms have humans behind them; a freeze is a calendar
+   *  window, and holding a rollback behind one pins a broken release in place until it closes.
+   *
+   *  Only ever set on the `wave_boundary` path. The `lifecycle_edge` path never sees a rollback at
+   *  all — `coordination/gates.ts` returns an unconditional allow for one BEFORE calling this
+   *  orchestrator (DESIGN §9.4). */
+  isRollback?: boolean | undefined;
 }
 
 /** One active freeze successfully overridden — `coordination/transition.ts` writes one
@@ -882,8 +889,18 @@ export async function evaluateGovernanceGate(
     frozenIds.length < ctx.targetObjectIds.length &&
     byTarget.every((e) => e.freezes.every((f) => !f.atomic));
 
+  // THE ROLLBACK EXEMPTION (owner decision D7) — the ALL-frozen half of it. `partiallyFrozen` above
+  // only stands the gate aside when some sibling is still admissible; a rollback whose every target
+  // is frozen has no admissible sibling and would be refused here, which is precisely the case D7 is
+  // about. `evaluateLifecycleGate` has exempted rollbacks since M4 and the wave boundary never
+  // learned the same fact — an oversight, not a decision, and the one that left `scp change
+  // rollback` as the documented exit from a stuck release while a freeze closed that exit.
+  //
+  // NARROW: it lifts the FREEZE block and nothing else. Execution continues into policy matching,
+  // controls and approvals below, all of which still apply to a rollback's wave.
+  const freezeExemptRollback = ctx.isRollback === true;
   const freezeCheck = await checkFreeze(tx, ctx, byTarget);
-  if (freezeCheck.blocked && !partiallyFrozen) {
+  if (freezeCheck.blocked && !partiallyFrozen && !freezeExemptRollback) {
     // Both a plain freeze block and a REJECTED override (missing reason / unauthorized for some
     // active freeze) land here as a "block" verdict — the caller (transition.ts) writes the
     // Decision + audit with `decision_id`, never a rolled-back raw 403 (MAJOR #6).
@@ -925,6 +942,14 @@ export async function evaluateGovernanceGate(
   // document, an emergency change proceeds ungated (verdict allow) but this is fully visible in
   // the reason tree/Decision either way — "everything still audited, retrospective Decision
   // trail produced" doesn't depend on something having blocked.
+  // VISIBLE, not silent (charter principle 6). A freeze that DID cover this wave and was stood
+  // aside is exactly the kind of thing an operator reading `scp change explain` must find, and a
+  // permit that leaves no trace is indistinguishable from a freeze that never matched.
+  const freezeNote =
+    freezeExemptRollback && freezeCheck.blocked
+      ? `rollback exempt from ${frozenIds.length} frozen target(s): ${freezeCheck.blocked.reason} (DESIGN §9.4 / owner decision D7 — holding a rollback pins a broken release in place for the whole window)`
+      : undefined;
+
   let emergencyNote: string | undefined;
   if (ctx.emergency) {
     const emergencyPolicies = effectivePolicies.filter((p) => p.emergencyPolicy);
@@ -1123,11 +1148,16 @@ export async function evaluateGovernanceGate(
       effectivePolicyCount: effectivePolicies.length,
       firedPolicyCount: fired.filter((fp) => fp.fired).length,
       ...(emergencyNote ? { emergency: emergencyNote } : {}),
+      ...(freezeNote ? { freezeExemptRollback: freezeNote } : {}),
       ...(freezeOverrides.length > 0 ? { freezeOverrides } : {}),
       ...(scanThresholdForDecision(effectiveScanThreshold) ?? {}),
       ...(scanExclusionsForDecision(effectiveScanExclusions) ?? {})
     },
-    reasonTree: { ...result.reasonTree, ...(emergencyNote ? { emergencyNote } : {}) },
+    reasonTree: {
+      ...result.reasonTree,
+      ...(emergencyNote ? { emergencyNote } : {}),
+      ...(freezeNote ? { freezeExemptRollback: freezeNote } : {})
+    },
     freezeOverrides: freezeOverrides.length > 0 ? freezeOverrides : undefined
   };
 }
