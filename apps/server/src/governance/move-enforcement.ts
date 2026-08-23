@@ -206,12 +206,18 @@ function toRung(row: {
   enabled_by_object_id: string;
   depth?: number;
 }): GovernanceMoveRung {
+  if (!(GOVERNANCE_MOVE_TIERS as readonly string[]).includes(row.tier)) {
+    // drizzle/0079's CHECK makes this unreachable in production — throwing costs nothing and keeps
+    // this comment true. A silent relabel to "org" would misreport a subtree's tier to an operator
+    // reading the lattice, which is worse than crashing loudly on data the CHECK should have refused.
+    throw new Error(
+      `governance_move_rungs row ${row.subject_object_id} carries tier "${row.tier}", which is not one of ${GOVERNANCE_MOVE_TIERS.join(", ")} — the migration 0079 CHECK should make this impossible`
+    );
+  }
   return {
     // The stored literal, never recomputed (drizzle/0079). Narrowed rather than cast so a row that
     // somehow escaped the CHECK is visible instead of silently mislabelled.
-    tier: (GOVERNANCE_MOVE_TIERS as readonly string[]).includes(row.tier)
-      ? (row.tier as GovernanceMoveTier)
-      : "org",
+    tier: row.tier as GovernanceMoveTier,
     subjectObjectId: row.subject_object_id,
     name: row.name ?? row.subject_object_id,
     enabledAt:
