@@ -354,7 +354,24 @@ describe("a tombstoned wave target is never driven", () => {
     const waveTarget = plan!.waves[0]!.targets[0]!;
     expect(waveTarget.targetObjectId).toBe(placement.id);
 
-    await deleteComponentViaApi(component.id as string);
+    // DELIBERATE FLIP (2026-08-18, ADR-0038 clause 5): the API delete of a component that still
+    // has a placement is now REFUSED with the blocker named — pinned here as the negative control —
+    // so the tombstoned-component-with-live-placement shape (a replica row, or any row predating
+    // the guard) is PLANTED below the doors instead. The liveness pin this case exists for is
+    // unchanged: reconcile must not drive a wave target whose component is dead.
+    const refusal = await server.app.inject({
+      method: "DELETE",
+      url: `/api/v1/components/${component.id as string}`,
+      headers: { authorization: `Bearer ${org.adminToken}` }
+    });
+    expect(refusal.statusCode, refusal.body).toBe(409);
+    expect(refusal.body).toContain("cannot delete");
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({ deletedAt: new Date() })
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.id, component.id as string)))
+    );
 
     // THE PREMISE, asserted rather than assumed: the placement OUTLIVES its component. Were the
     // cascade to start tombstoning placements, the second hop in `readTargetLiveness` would be dead
