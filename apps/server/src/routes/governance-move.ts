@@ -152,6 +152,15 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
   });
 
   // THE LIST READ — the whole lattice this org can act on, instance state included.
+  //
+  // AUTHORIZED AT THE ORG ROOT (`scopeObjectId: auth.orgId`), NOT at each rung's own subject. This
+  // is a narrower bar than the explain read's per-object `object:read` above: a domain-scoped
+  // Administrator who can enable/disable a rung on their own domain (a `policy:write`-at-that-scope
+  // act) may still lack `object:read` at the org root and so cannot list the org's whole lattice,
+  // including the rung they themselves just set. That is a server-authorization decision, not a bug
+  // this route comment fixes — flagged here so a UI consumer knows the 403 it may see is expected,
+  // not a wiring defect, and states the requirement instead of a caller having to infer it from the
+  // `authorize()` call below.
   typed.route({
     method: "GET",
     url: "/api/v1/governance/move-enforcement/rungs",
