@@ -8,6 +8,7 @@ import {
   listenTestServer,
   type ListeningTestServer
 } from "../test-support/harness.js";
+import { MANIFEST_BY_MODULE } from "../plugin-host/plugin-manifests.js";
 
 /**
  * M7 plugin-configuration surface (routes/executors.ts, routes/change-sources.ts's webhook-secret
@@ -809,5 +810,89 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       });
       expect(ok.pluginModule, module).toBe(module);
     }
+  });
+
+  /**
+   * M23.1c — THE TENANT-SETTABLE RUN BUDGET IS CAPPED, AT THE DOOR, ON EVERY MANAGED CLASS.
+   *
+   * All three managed manifests shipped `timeoutMs: { type: "integer", minimum: 1000 }` with NO
+   * maximum, and the value is settable by any org member with plain `object:write` on a Component.
+   * Two consequences, and the second is why the cap is a prerequisite rather than hygiene:
+   *
+   *  1. `execFile`'s `timeout` is the only thing that stops a wedged `docker start -a`. At 2^31 ms
+   *     (24.9 days) the runner is unkillable by its own timeout.
+   *  2. The plugin HOST now derives that module's `trigger` RPC budget from the same number
+   *     (`plugin-host/call-policy.ts`), so an unbounded config is an unbounded budget — and
+   *     `subprocess-entry.ts` answers one RPC at a time, so that instance's `status()`/`observe()`/
+   *     `abort()` would head-of-line block behind it for the duration.
+   *
+   * PROVEN AT THE HTTP WRITE DOOR, not against `validatePluginConfig`: a unit test cannot show that
+   * the door still calls it, and "a config schema that is authored but never registered" is exactly
+   * how this repo shipped a live RCE (see the `managed-scan` test above).
+   *
+   * MUTATION-PROVEN: delete `maximum` from `@scp/plugin-managed-iac`'s manifest and this test fails
+   * with "promise resolved … instead of rejecting" for that module — the 2^31 binding is STORED.
+   */
+  it("REJECTS an over-cap timeoutMs at the binding write door, on every managed module", async () => {
+    const org = await createTestOrg(server, "managed-timeout-cap");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    type Managed = "managed-iac" | "managed-scan" | "managed-dep";
+    const managedModules: Managed[] = ["managed-iac", "managed-scan", "managed-dep"];
+
+    /** The ceiling as the MANIFEST declares it — the one number the host and the door both read. */
+    const ceilingFor = (module: string): number => {
+      const schema = MANIFEST_BY_MODULE[module]?.configSchema as {
+        properties?: { timeoutMs?: { maximum?: unknown } };
+      };
+      const max = schema?.properties?.timeoutMs?.maximum;
+      expect(typeof max, `${module} publishes no timeoutMs maximum`).toBe("number");
+      return max as number;
+    };
+
+    for (const module of managedModules) {
+      const ceiling = ceilingFor(module);
+      // Independently bounded, so `maximum: Number.MAX_SAFE_INTEGER` could not pass this test.
+      expect(ceiling, `${module}'s ceiling is not a sane duration`).toBeLessThanOrEqual(
+        60 * 60_000
+      );
+
+      const component = await createTestComponent(admin, {
+        name: `comp-${randomUUID().slice(0, 8)}`
+      });
+
+      // REFUSED: the concrete value the defect record names, one past the ceiling, and below the
+      // floor (the bound that already existed — asserted so a bad edit cannot trade one for the
+      // other).
+      for (const timeoutMs of [2 ** 31, ceiling + 1, 999]) {
+        await expect(
+          admin.executors.putBinding(component.id, {
+            pluginModule: module,
+            pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+            config: { timeoutMs }
+          }),
+          `expected ${module} timeoutMs=${timeoutMs} to be rejected by PUT binding`
+        ).rejects.toBeInstanceOf(ScpApiError);
+      }
+
+      // ACCEPTED: the ceiling itself is admissible (inclusive), and so is an ordinary value. Without
+      // these, a schema that refused EVERY timeoutMs — breaking all three executors — would look
+      // identical to a working cap.
+      for (const timeoutMs of [ceiling, 60_000]) {
+        const ok = await admin.executors.putBinding(component.id, {
+          pluginModule: module,
+          pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+          config: { timeoutMs }
+        });
+        expect(ok.pluginModule, `${module} timeoutMs=${timeoutMs}`).toBe(module);
+      }
+    }
+
+    // THE OTHER DOORS ARE THE SAME FUNCTION, and that is deliberate rather than lucky:
+    // `validatePluginConfig` is the single gate all four write paths call (this route, the
+    // notification upsert, discovery-run, and `iac/plans-repo.ts`'s `assertInlineBindingsValid`),
+    // extracted out of this handler precisely because "a gate that lives inside one route handler
+    // is a gate the next write path silently doesn't have". The IaC-apply door's own coverage of
+    // that call for `managed-iac` is `plans.integration.test.ts`.
   });
 });

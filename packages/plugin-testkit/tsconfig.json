@@ -5,5 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src"],
-  "references": [{ "path": "../plugin-api" }]
+  "references": [{ "path": "../plugin-api" }, { "path": "../test-tmpdir" }]
 }

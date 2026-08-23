@@ -32,6 +32,7 @@ import type { PluginContext } from "@scp/plugin-api";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { getChange } from "../coordination/changes-repo.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
 import {
   insertControlRun,
   listControlRunsForChange,
@@ -481,6 +482,23 @@ export async function resolveScanExclusionsForChange(
 }
 
 /**
+ * A `runner.scan()` call that itself never produced a report — dispatch unavailable, an
+ * unresolvable pull ref, a launcher failure, anything `ManagedScanResult`'s `{ ok: false }` arm
+ * carries. Distinct from a `DepositRow` with `status: "fail"`: THAT is a real scan verdict (a
+ * digest mismatch or a threshold breach) and IS deposited as `control_runs` evidence. This is the
+ * opposite — no scan happened at all — and depositing it as scan EVIDENCE would misrepresent "we
+ * scanned and it failed" as "we could not scan", which `ScanEvidenceSchema`'s required
+ * `severityCounts` cannot even express honestly. Recorded as an AUDIT EVENT instead (charter
+ * principle 6), so the operator refused by E6's "no passing digest-bound evidence" can see WHY:
+ * a runner/dispatch error, not a scan that ran and found problems.
+ */
+interface RunnerFailure {
+  method: ScanMethod;
+  digest: string;
+  reason: string;
+}
+
+/**
  * Run the commander's promotion scan step for `changeIdOrUrn`, depositing managed-scan `control_runs`
  * rows so the UNCHANGED E6 gate (read next by `exportPromotionBundle`) has evidence to consume. A
  * no-op for a metadata-only promotion (no substantive artifacts) or an artifact already covered by
@@ -565,6 +583,7 @@ export async function runPromotionScanStep(
   // Phase B (no tx): pull + scan each planned artifact per method. Subprocesses (skopeo/docker) run
   // here, never while a pooled DB connection is held (the codebase-wide invariant, promotion-repo.ts).
   const deposits: DepositRow[] = [];
+  const runnerFailures: RunnerFailure[] = [];
   for (const { subject, methods } of plan.planned) {
     for (const method of methods) {
       const result = await runner.scan({
@@ -577,8 +596,12 @@ export async function runPromotionScanStep(
       });
       if (!result.ok) {
         // Runner/dispatch unavailable, or an unresolvable pull ref — produce NO passing evidence
-        // (fail-closed). We deposit nothing: E6 then refuses this artifact for lack of a passing,
-        // digest-bound outcome. Fabricating a pass here is exactly what the model forbids.
+        // (fail-closed). We deposit no CONTROL_RUN: E6 then refuses this artifact for lack of a
+        // passing, digest-bound outcome. Fabricating a pass here is exactly what the model
+        // forbids. `result.reason` is NOT discarded, though — recorded below as an audit event, so
+        // the refusal is diagnosable (a runner error, not a scan verdict) rather than a bare "no
+        // evidence" an operator cannot act on.
+        runnerFailures.push({ method, digest: subject.digest, reason: result.reason });
         continue;
       }
       const { report } = result;
@@ -686,9 +709,11 @@ export async function runPromotionScanStep(
     }
   }
 
-  if (deposits.length === 0) return;
+  if (deposits.length === 0 && runnerFailures.length === 0) return;
 
-  // Phase C (tx, write): deposit the managed-scan control_runs rows the UNCHANGED E6 gate reads next.
+  // Phase C (tx, write): deposit the managed-scan control_runs rows the UNCHANGED E6 gate reads
+  // next, AND record any runner failure as an audit event — same tx, same "written where the
+  // action happened" discipline as every other audited action in this codebase (DESIGN.md §4.3).
   await withTenantTx(db, input.orgId, async (tx) => {
     for (const d of deposits) {
       const run = await insertControlRun(tx, {
@@ -716,6 +741,19 @@ export async function runPromotionScanStep(
         method: d.method,
         capped: d.capped,
         excludedOrdinals: d.excludedOrdinals
+      });
+    }
+    // NOT control_runs — a runner failure is not scan EVIDENCE (see RunnerFailure's doc); it is an
+    // audit trail of WHY no evidence exists for this (method, digest), so a later "no passing
+    // digest-bound evidence" E6 refusal is diagnosable instead of a bare fail-closed dead end.
+    for (const f of runnerFailures) {
+      await appendAuditEvent(tx, {
+        orgId: input.orgId,
+        actorId: input.actorObjectId,
+        action: "federation.promotion.scan.runner_failed",
+        subjectId: plan.changeId,
+        reason: `managed-scan (${f.method}) for ${f.digest}: ${f.reason}`,
+        requestId: `federation-promotion-scan:${plan.changeId}:${f.method}:${f.digest}`
       });
     }
   });
@@ -912,7 +950,37 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
   };
 }
 
-function pluginCtx(runnerImage: string, networkMode: string): PluginContext {
+/**
+ * THE ONE IN-PROCESS CALLER OF A MANAGED EXECUTOR'S `trigger()`, and what makes that safe — MEDIUM
+ * (verification pass 5). Every other managed run crosses the subprocess plugin host, whose
+ * `resolveCallPolicy` budget expiry SIGKILLs the child; this one calls `plugin.trigger()` directly,
+ * INSIDE THE SERVER PROCESS, so there is no host, no budget and no SIGKILL of any kind. The only
+ * things bounding a commander-side promotion scan are the ones the launcher itself carries.
+ *
+ * TWO FACTS MAKE THAT ACCEPTABLE, AND BOTH WERE ACCIDENTS UNTIL THEY WERE WRITTEN DOWN HERE. Each
+ * now has a NAMED test, because "it happens to be true today" is how the next edit breaks it:
+ *
+ *  1. NO TENANT `timeoutMs` REACHES THIS PATH. `config` below is built entirely from
+ *     server-side operator settings — `runnerImage`, `networkMode` and `managedRunnerSettings()`'s
+ *     `dockerBinary` — with no binding row anywhere in it, so `managed-scan` falls back to its own
+ *     `DEFAULT_TIMEOUT_MS` (10 min) and the run is bounded by that. Even if a `timeoutMs` were added
+ *     here it could not run away: `@scp/runner-launcher`'s `clampRunTimeoutMs` caps every run at
+ *     `MANAGED_RUN_TIMEOUT_MAX_MS` inside `run()` itself. Pinned by "THE IN-PROCESS SCAN PATH
+ *     CARRIES NO TENANT-SETTABLE BUDGET" in `promotion-scan-step.test.ts`.
+ *  2. MANAGED-SCAN CARRIES NO CREDENTIAL. Its `RunnerSpec.secretEnv` is the literal `[]`, so no
+ *     transient `--env-file` is ever written on this path and there is nothing for a killed process
+ *     to leak — which matters here precisely because there is no SIGKILL story to reason about.
+ *     Pinned by `@scp/plugin-managed-scan`'s `launcher-seam.test.ts`, whose whole-spec
+ *     `toStrictEqual` includes `secretEnv: []`.
+ *
+ * A THIRD MANAGED PLUGIN CALLED FROM HERE WOULD INHERIT NEITHER. Route it through the plugin host
+ * rather than adding a second in-process caller.
+ *
+ * EXPORTED FOR THE TEST ABOVE and for nothing else: fact 1 is a property of the object this builds,
+ * and a test that re-derived the object instead of reading the one the product passes would be
+ * asserting its own fixture.
+ */
+export function pluginCtx(runnerImage: string, networkMode: string): PluginContext {
   return {
     orgId: "commander",
     scopeKey: "commander",

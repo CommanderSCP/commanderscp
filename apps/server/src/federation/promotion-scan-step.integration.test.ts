@@ -19,6 +19,7 @@ import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { ensureFederationSelf } from "./self-repo.js";
 import { pairPeer } from "./peers-repo.js";
 import { insertControlRun, listControlRunsForChange } from "../governance/controls-repo.js";
+import { listAuditEvents } from "../audit/audit-repo.js";
 import { exportPromotionBundle } from "./promotion-repo.js";
 import {
   MANAGED_SCAN_CONTROL_OBJECT_ID,
@@ -543,6 +544,17 @@ describe.runIf(await dockerAvailable())(
       return runs.filter((r) => r.controlObjectId === MANAGED_SCAN_CONTROL_OBJECT_ID);
     }
 
+    /** This change's `federation.promotion.scan.runner_failed` audit events (the whole org's audit
+     *  chain, filtered by subjectId — small enough per test that a single unpaged read is fine). */
+    async function runnerFailureAuditEventsFor(changeId: string) {
+      const { items } = await withTenantTx(domain.db, domain.orgId, (tx) =>
+        listAuditEvents(tx, domain.orgId, { limit: 1000 })
+      );
+      return items.filter(
+        (e) => e.action === "federation.promotion.scan.runner_failed" && e.subjectId === changeId
+      );
+    }
+
     // -------------------------------------------------------------------------------------------
     // (a) CLEAN — real container scan at export → digest-bound evidence → E6 passes → bundle exports.
     // -------------------------------------------------------------------------------------------
@@ -666,6 +678,38 @@ describe.runIf(await dockerAvailable())(
       if (!outcome.refused) throw new Error("expected fail-closed refusal");
       expect(outcome.decisionId).toMatch(/^[0-9a-f-]{36}$/);
       expect(await managedRunsFor(changeId)).toHaveLength(0);
+    }, 60_000);
+
+    // -------------------------------------------------------------------------------------------
+    // (d2) RUNNER FAILURE IS DIAGNOSABLE — a genuine `{ ok: false }` (dispatch error, not "no
+    // scanner assigned") deposits NO evidence, exactly as (d), but records WHY as an audit event
+    // instead of a bare silent `continue`. `promotion-scan-step.ts`'s Phase B used to discard
+    // `result.reason` entirely: an operator reading a "no passing digest-bound evidence" refusal
+    // had no way to tell a genuine scan failure apart from "the runner never even ran".
+    // -------------------------------------------------------------------------------------------
+    it("(d2) a runner/dispatch error deposits NO evidence but IS recorded as an audit event, reason intact", async () => {
+      const changeId = await proposeArtifactChange(cleanDigest, cleanRepo, "image");
+
+      let invoked = 0;
+      const failing: ManagedScanRunner = {
+        async scan(): Promise<ManagedScanResult> {
+          invoked += 1;
+          return { ok: false, reason: "docker cp: no such file or directory" };
+        }
+      };
+
+      const outcome = await exportToPeer(changeId, failing);
+      expect(invoked, "the runner must actually have been dispatched for this case").toBe(1);
+      // Fail-closed, UNCHANGED: still no passing evidence, still refused.
+      expect(outcome.refused).toBe(true);
+      if (!outcome.refused) throw new Error("expected fail-closed refusal");
+      expect(await managedRunsFor(changeId)).toHaveLength(0);
+
+      // ...but the WHY is now on the record, not discarded.
+      const events = await runnerFailureAuditEventsFor(changeId);
+      expect(events).toHaveLength(1);
+      expect(events[0]?.reason).toContain("docker cp: no such file or directory");
+      expect(events[0]?.subjectId).toBe(changeId);
     }, 60_000);
 
     // -------------------------------------------------------------------------------------------

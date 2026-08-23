@@ -1,4 +1,8 @@
 import { tmpdir } from "node:os";
+import type {
+  KubernetesLauncherSettings,
+  KubernetesRunnerPodConventions
+} from "@scp/runner-launcher";
 import { join } from "node:path";
 import { and, eq, exists, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
@@ -10,6 +14,7 @@ import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
+import { assertManagedTimeoutSchemas } from "../plugin-host/call-policy.js";
 import { assertEveryModuleHasManifest } from "../plugin-host/plugin-manifests.js";
 
 /** Stable plugin-instance id for an execution-system-backed binding — every binding that references
@@ -451,6 +456,23 @@ export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
 assertEveryModuleHasManifest(KNOWN_EXECUTOR_MODULES, "KNOWN_EXECUTOR_MODULES");
 
 /**
+ * AND THE SECOND PROPERTY OF THE SAME MANIFEST, checked in the same place and at the same moment,
+ * because the first one on its own is not enough (M23.1c).
+ *
+ * `assertEveryModuleHasManifest` above answers "may this module's config be validated at all". This
+ * answers "is the one tenant-settable number in that config BOUNDED" — and for the three managed
+ * classes it is load-bearing twice over: the plugin's `execFile` timeout is what stops a wedged
+ * runner, and the plugin HOST derives that module's `trigger` RPC budget from the very same bounds
+ * (`plugin-host/call-policy.ts`). All three shipped `{ type: "integer", minimum: 1000 }` with no
+ * ceiling, so a tenant with plain `object:write` on a Component could set 2^31 and remove both.
+ *
+ * Beside the allowlist, at module load, for the reason the assertion above it is: a missing ceiling
+ * is a defect the moment it is committed, and deleting one degrades SILENTLY (that module's trigger
+ * reverts to the 10s hang detector that SIGKILLs a live `tofu apply`) rather than failing anything.
+ */
+assertManagedTimeoutSchemas();
+
+/**
  * Exported (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6, "create-time module allowlist"): until
  * now this check ran ONLY here, at dispatch time (`resolveExecutorPluginInstance`, below) — a
  * binding with an unknown/wrong-kind `pluginModule` (e.g. `webhook-control`, a `ControlPlugin`, or
@@ -598,11 +620,231 @@ function managedRunnerDockerBinary(): string {
   return value && value.length > 0 ? value : "docker";
 }
 
+/**
+ * WHICH LAUNCHER ADAPTER EVERY MANAGED EXECUTOR USES (M23.2) — operator/server-governed, the same
+ * trust tier as `SCP_MANAGED_RUNNER_DOCKER_BINARY`, and EXPLICIT rather than detected.
+ *
+ * ANYTHING OTHER THAN THE EXACT STRING `"kubernetes"` IS DOCKER, including a typo. That direction is
+ * chosen deliberately: the failure mode of a mistyped value is "the deployment keeps doing what it
+ * did before", not "managed execution silently switches substrate". A Kubernetes deployment whose
+ * value did not take is diagnosable in one step — nothing works, and `scpd` ships no docker binary —
+ * whereas a compose deployment nudged onto Jobs it has no API server for is not.
+ */
+function managedRunnerLauncherKind(): "docker" | "kubernetes" {
+  return process.env.SCP_MANAGED_RUNNER_LAUNCHER?.trim() === "kubernetes" ? "kubernetes" : "docker";
+}
+
+/**
+ * THE KUBERNETES LAUNCHER'S DEPLOYMENT SETTINGS — read here, from the environment, for exactly the
+ * reason `managedDepServerSettings` gives: the plugin subprocess never sees `process.env`
+ * (`host.ts`'s `minimalChildEnv` strips it), so injected config is the ONLY channel these values
+ * have.
+ *
+ * THE WORKSPACE VOLUME IS A CLOSED UNION BUILT HERE, never operator-supplied JSON. This object lands
+ * verbatim inside a pod spec the worker POSTs with its own service-account token, so "whatever JSON
+ * the operator put in an env var" would be an arbitrary-volume-mount primitive wearing a config
+ * field's clothes — a `hostPath: /` away from reading the node. Two shapes, and only two: an RWX
+ * PersistentVolumeClaim (production; owner decision 5 makes RWX a documented prerequisite) and a
+ * host path (the kind-based test harness, which has no RWX storage class to offer).
+ *
+ * RETURNS `undefined` WHEN THE LAUNCHER IS DOCKER, so nothing about Kubernetes reaches a plugin on a
+ * compose deployment — and returns `undefined` when the launcher is Kubernetes and the settings are
+ * incomplete, so the resolver's named refusal is what an operator sees rather than a half-built
+ * manifest.
+ */
+/**
+ * THE DEPLOYMENT'S POD CONVENTIONS FOR THE RUNNER JOB (M23.5) — parsed into a CLOSED shape here,
+ * never handed through as operator JSON.
+ *
+ * THE CENSUS, NOT THE TWO FIELDS THAT WERE REPORTED. `deploy/helm` creates six pods. Five are Helm
+ * templates and every one of them sets `.Values.imagePullSecrets`, `.Values.image.pullPolicy` and a
+ * `resources` block, because a human wrote the same lines into each. The sixth — the runner Job — is
+ * built by `jobManifest()` from settings that described a namespace, a workspace and two booleans and
+ * nothing about the pod, so it inherited NONE of them. The missing thing was the channel; this is it.
+ *
+ * WHY IT IS PARSED RATHER THAN PASSED. These strings land verbatim inside a pod spec the worker
+ * POSTs with its own service-account token — the same reason `workspaceVolume` below is a closed
+ * union built here instead of operator JSON. The distinction that makes `resources` acceptable where
+ * a raw `volumes[]` would not be: a ResourceRequirements is a flat map of validated resource names to
+ * validated quantities, naming no path, no object and no host. The worst a malformed one can do is
+ * make the pod unschedulable.
+ *
+ * AND A MALFORMED VALUE THROWS RATHER THAN BEING DROPPED. A silently-dropped `imagePullSecret` is
+ * `ErrImagePull` minutes into a promotion with nothing anywhere naming the cause — which is the exact
+ * failure this whole block exists to end. The chart cannot produce one (it renders these from typed
+ * values); a hand-rolled deployment can, and it gets the variable name and the offending value.
+ */
+const DNS_1123_SUBDOMAIN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+/** A Kubernetes resource NAME: `cpu`, `memory`, `ephemeral-storage`, `nvidia.com/gpu`. */
+const K8S_RESOURCE_NAME = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(\/[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?$/;
+/** A Kubernetes QUANTITY: `250m`, `1`, `512Mi`, `1.5`, `2Gi`, `1e3`. Deliberately narrow — anything
+ *  this does not match is refused rather than sent to the API server to be rejected there. */
+const K8S_QUANTITY = /^[+-]?([0-9.]+)([eEinumkKMGTP]*[0-9]*)$/;
+
+const RUNNER_PULL_POLICIES = ["Always", "IfNotPresent", "Never"] as const;
+
+function refuseRunnerPodConvention(envVar: string, detail: string): never {
+  throw new Error(
+    `${envVar} is not a valid value for the Kubernetes runner launcher: ${detail}. ` +
+      `This variable lands verbatim in the pod spec of every managed run, so it is refused here ` +
+      `rather than dropped — a dropped pull secret is an ErrImagePull minutes into a promotion ` +
+      `with nothing naming the cause.`
+  );
+}
+
+function managedRunnerPodConventions(): KubernetesRunnerPodConventions | undefined {
+  const out: {
+    imagePullSecrets?: string[];
+    imagePullPolicy?: (typeof RUNNER_PULL_POLICIES)[number];
+    resources?: { requests?: Record<string, string>; limits?: Record<string, string> };
+  } = {};
+
+  const secretsRaw = process.env.SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS?.trim();
+  if (secretsRaw) {
+    const names = secretsRaw
+      .split(",")
+      .map((n) => n.trim())
+      .filter((n) => n.length > 0);
+    for (const name of names) {
+      if (name.length > 253 || !DNS_1123_SUBDOMAIN.test(name)) {
+        refuseRunnerPodConvention(
+          "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS",
+          `${JSON.stringify(name)} is not a Secret name (RFC 1123 subdomain, <=253 chars)`
+        );
+      }
+    }
+    if (names.length > 0) out.imagePullSecrets = names;
+  }
+
+  const policy = process.env.SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY?.trim();
+  if (policy) {
+    if (!(RUNNER_PULL_POLICIES as readonly string[]).includes(policy)) {
+      refuseRunnerPodConvention(
+        "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY",
+        `${JSON.stringify(policy)} is not one of ${RUNNER_PULL_POLICIES.join("|")}`
+      );
+    }
+    out.imagePullPolicy = policy as (typeof RUNNER_PULL_POLICIES)[number];
+  }
+
+  const resourcesRaw = process.env.SCP_MANAGED_RUNNER_K8S_RESOURCES?.trim();
+  if (resourcesRaw && resourcesRaw !== "{}" && resourcesRaw !== "null") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(resourcesRaw);
+    } catch {
+      refuseRunnerPodConvention("SCP_MANAGED_RUNNER_K8S_RESOURCES", "not valid JSON");
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      refuseRunnerPodConvention("SCP_MANAGED_RUNNER_K8S_RESOURCES", "expected a JSON object");
+    }
+    const resources: { requests?: Record<string, string>; limits?: Record<string, string> } = {};
+    for (const [side, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (side !== "requests" && side !== "limits") {
+        refuseRunnerPodConvention(
+          "SCP_MANAGED_RUNNER_K8S_RESOURCES",
+          `unknown key ${JSON.stringify(side)} — only "requests" and "limits" are accepted`
+        );
+      }
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        refuseRunnerPodConvention(
+          "SCP_MANAGED_RUNNER_K8S_RESOURCES",
+          `${side} must be a flat object`
+        );
+      }
+      const sideOut: Record<string, string> = {};
+      for (const [resource, quantity] of Object.entries(value as Record<string, unknown>)) {
+        if (!K8S_RESOURCE_NAME.test(resource)) {
+          refuseRunnerPodConvention(
+            "SCP_MANAGED_RUNNER_K8S_RESOURCES",
+            `${JSON.stringify(resource)} is not a Kubernetes resource name`
+          );
+        }
+        // A YAML `cpu: 1` arrives as a NUMBER through `toJson`, and that is the common case rather
+        // than an edge one — `values.yaml`'s own api/worker blocks write `cpu: "1"` quoted for
+        // exactly this reason, and an operator who forgets the quotes must not be refused.
+        const q = typeof quantity === "number" ? String(quantity) : quantity;
+        if (typeof q !== "string" || !K8S_QUANTITY.test(q)) {
+          refuseRunnerPodConvention(
+            "SCP_MANAGED_RUNNER_K8S_RESOURCES",
+            `${resource}=${JSON.stringify(quantity)} is not a Kubernetes quantity`
+          );
+        }
+        sideOut[resource] = q;
+      }
+      if (Object.keys(sideOut).length > 0) resources[side] = sideOut;
+    }
+    if (Object.keys(resources).length > 0) out.resources = resources;
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function managedRunnerKubernetesSettings(): KubernetesLauncherSettings | undefined {
+  if (managedRunnerLauncherKind() !== "kubernetes") return undefined;
+  const namespace = process.env.SCP_MANAGED_RUNNER_K8S_NAMESPACE?.trim();
+  const workspaceRoot = process.env.SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT?.trim();
+  const claimName = process.env.SCP_MANAGED_RUNNER_K8S_WORKSPACE_CLAIM?.trim();
+  const hostPath = process.env.SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH?.trim();
+  if (!namespace || !workspaceRoot) return undefined;
+  const workspaceVolume = claimName
+    ? ({ kind: "persistentVolumeClaim", claimName } as const)
+    : hostPath
+      ? ({ kind: "hostPath", path: hostPath } as const)
+      : undefined;
+  if (!workspaceVolume) return undefined;
+  const pod = managedRunnerPodConventions();
+  return {
+    namespace,
+    workspaceRoot,
+    workspaceVolume,
+    // THE GRANTED CAPABILITY (owner decision 2026-08-20, ADR-0035 §6). Enabling it here is only
+    // half the change: without `secrets: create,delete` in the chart's Role the Secret POST 403s, so
+    // the chart renders the RBAC and sets this variable from the SAME value.
+    //
+    // THE CODE DEFAULT STAYS `false` WHILE THE CHART DEFAULT IS `true`, AND THAT ASYMMETRY IS
+    // DELIBERATE. This flag does not mean "per-run Secrets are a good idea"; it means "the RBAC to
+    // create them EXISTS in this namespace", and only the thing that rendered the RBAC knows that.
+    // The chart does, so it says so. A hand-rolled Kubernetes deployment that never applied a Role
+    // does not, and for it the honest answer is the named refusal at step `secret-env` rather than a
+    // 403 from inside a promotion, minutes in. Absent env var => the deployment made no such claim.
+    // See `KubernetesRunnerLauncherConfig.perRunSecrets`.
+    perRunSecrets: process.env.SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS?.trim() === "true",
+    // OFF BY DEFAULT AND THAT IS A FINDING, not a preference: none of apps/runner-{iac,scan,dep}
+    // has a `USER` line, so `true` makes every managed run fail with CreateContainerConfigError
+    // before its entrypoint. Kept as a knob so an operator who rebuilds the images non-root can
+    // harden it without a code change.
+    runAsNonRoot: process.env.SCP_MANAGED_RUNNER_K8S_RUN_AS_NON_ROOT?.trim() === "true",
+    // THE POD CONVENTIONS EVERY OTHER POD IN THIS CHART INHERITS (M23.5). Absent when the deployment
+    // states none, so a launch is byte-identical to every one before it.
+    ...(pod ? { pod } : {}),
+    ...(process.env.SCP_MANAGED_RUNNER_K8S_API_BASE?.trim()
+      ? { apiBase: process.env.SCP_MANAGED_RUNNER_K8S_API_BASE.trim() }
+      : {})
+  };
+}
+
 /** Exported so the commander's promotion scan step, which constructs a `managed-scan` plugin context
  *  directly rather than through a binding, resolves the SAME operator-governed binary. Two code
- *  paths reading one knob; the alternative is a setting that silently applies to half the runs. */
-export function managedRunnerSettings(): { dockerBinary: string } {
-  return { dockerBinary: managedRunnerDockerBinary() };
+ *  paths reading one knob; the alternative is a setting that silently applies to half the runs.
+ *
+ *  M23.2 WIDENS IT TO THE WHOLE LAUNCHER SLICE rather than adding a second function beside it. The
+ *  reason is the defect this function already exists to prevent: `dockerBinary` shipped injected on
+ *  the binding path and absent on the binding-free one, so an operator's podman applied to some of
+ *  the runs. A launcher SELECTION with the same shape would mean the commander's own promotion scan
+ *  stayed on Docker forever while bound executors moved to Jobs — the same bug with a larger blast
+ *  radius. One function, every caller. */
+export function managedRunnerSettings(): {
+  dockerBinary: string;
+  runnerLauncher: "docker" | "kubernetes";
+  kubernetes?: KubernetesLauncherSettings;
+} {
+  const kubernetes = managedRunnerKubernetesSettings();
+  return {
+    dockerBinary: managedRunnerDockerBinary(),
+    runnerLauncher: managedRunnerLauncherKind(),
+    ...(kubernetes ? { kubernetes } : {})
+  };
 }
 
 /**
@@ -658,20 +900,30 @@ export function managedDepServerSettings(): {
   runnerImage: string | undefined;
   workspaceRoot: string;
   dockerBinary: string;
+  runnerLauncher: "docker" | "kubernetes";
+  kubernetes?: KubernetesLauncherSettings;
 } {
   return {
     runnerImage: process.env.SCP_MANAGED_DEP_RUNNER_IMAGE,
     workspaceRoot: process.env.SCP_MANAGED_DEP_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-dep"),
-    // THE OPERATOR'S RUNTIME, and it belongs in THIS function rather than only at the binding
-    // injection site below, because this class has TWO construction paths and the binding one is
-    // the rare one: `dependencies/managed-dep-instance.ts` builds the ordinary, binding-free
-    // dispatch. Returning it here is what makes both paths read the same knob — the alternative,
-    // which is what shipped, is a setting that silently applies to some of the runs.
-    dockerBinary: managedRunnerDockerBinary()
+    // THE OPERATOR'S RUNTIME AND, SINCE M23.2, THE WHOLE LAUNCHER SLICE — and it belongs in THIS
+    // function rather than only at the binding injection site below, because this class has TWO
+    // construction paths and the binding one is the rare one:
+    // `dependencies/managed-dep-instance.ts` builds the ordinary, binding-free dispatch. Returning
+    // it here is what makes both paths read the same knobs — the alternative, which is what
+    // shipped, is a setting that silently applies to some of the runs.
+    ...managedRunnerSettings()
   };
 }
 
-function pluginStateDir(): string {
+/**
+ * Root for every executor instance's durable dedup/idempotency file. EXPORTED for
+ * `test-support/plugin-state-isolation.integration.test.ts` only, which asserts that a test process
+ * is not writing into the fixed machine-global default — the check that keeps
+ * `test-support/plugin-state-dir.ts` from being a setup file nobody wired in (delete that
+ * `setupFiles` entry and that test dies, which is the point).
+ */
+export function pluginStateDir(): string {
   return process.env.SCP_PLUGIN_STATE_DIR ?? join(tmpdir(), "scp-plugin-state");
 }
 
@@ -803,7 +1055,7 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     serverInjected.networkMode = settings.networkMode;
     serverInjected.workspaceRoot = settings.workspaceRoot;
-    serverInjected.dockerBinary = managedRunnerDockerBinary();
+    Object.assign(serverInjected, managedRunnerSettings());
   }
 
   if (pluginModule === "managed-scan") {
@@ -816,7 +1068,7 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     serverInjected.networkMode = settings.networkMode;
     serverInjected.workspaceRoot = settings.workspaceRoot;
-    serverInjected.dockerBinary = managedRunnerDockerBinary();
+    Object.assign(serverInjected, managedRunnerSettings());
   }
 
   if (pluginModule === "managed-dep") {
@@ -829,7 +1081,7 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     // No `networkMode` — see `managedDepServerSettings`. The plugin uses a literal.
     serverInjected.workspaceRoot = settings.workspaceRoot;
-    serverInjected.dockerBinary = settings.dockerBinary;
+    Object.assign(serverInjected, managedRunnerSettings());
   }
 
   return {

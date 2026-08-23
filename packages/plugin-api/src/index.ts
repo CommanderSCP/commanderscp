@@ -193,7 +193,14 @@ export type ExecutionPhase = "pending" | "running" | "succeeded" | "failed" | "a
 export interface ExecutionStatus {
   phase: ExecutionPhase;
   detail?: string;
-  /** Opaque snapshot of executor-side state at this point in time — what a later rollback restores. */
+  /** Opaque snapshot of executor-side state at this point in time — what a later rollback restores.
+   *
+   *  BOUNDED BEFORE IT IS STORED (M23.1f), on BOTH routes it takes: `change_wave_targets.observed_state`
+   *  as `revision`, and `prior_state_ref` via `markWaveTargetTriggered`. A snapshot that renders to
+   *  more than the column policy comes back shortened, so an executor that needs a rollback to
+   *  address it must keep it SMALL — a hash or a handle, not a serialised world. The rollback path
+   *  is exercised end to end against a real bound in
+   *  `apps/server/src/coordination/executor-ref-prior-state-bound.integration.test.ts`. */
   stateRef?: unknown;
   /**
    * Structured, machine-readable snapshot of what the executor currently has deployed (ADR-0008

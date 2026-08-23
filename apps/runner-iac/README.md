@@ -12,6 +12,11 @@ Not an npm workspace package — a plain Docker build context.
 docker build -t scp-runner-iac:dev apps/runner-iac
 ```
 
-Interface: `docker run --rm -v <workspace-dir>:/workspace -e <vaulted infra creds> scp-runner-iac
-<plan|apply|rollback>` — see `run.sh`'s own doc comment for the full per-action contract (evidence
-files written back into `/workspace`, state-history snapshots, `PRIOR_STATE_FILE` for rollback).
+Interface: `docker create --network <mode> --name <name> --env-file <vaulted infra creds> [-e
+PRIOR_STATE_FILE=...] scp-runner-iac <plan|apply|rollback>` then `docker cp <workspace-dir>/.
+<container>:/workspace`, `docker start -a`, `docker cp <container>:/workspace <workspace-dir>`,
+`docker rm -f` — see `run.sh`'s own doc comment for the full per-action contract (evidence files
+written back into `/workspace`, state-history snapshots, `PRIOR_STATE_FILE` for rollback). NEVER a
+bind mount (`-v`) and never a bare `-e` for the credential: the workspace is copied in and out by
+`@scp/runner-launcher`, the one place every managed runner is launched (M23.1), and the credential
+travels through a mode-0600 `--env-file` unlinked the instant `create` returns, not the argv.

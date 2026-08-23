@@ -20,13 +20,12 @@
  * plugin-testkit's own idempotencyKey conformance assertion, which this fixture also satisfies:
  * the SAME idempotencyKey reuses the module-level dedup cache and never re-POSTs).
  */
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll } from "vitest";
 import nock from "nock";
-import { runExecutorConformanceSuite } from "@scp/plugin-testkit";
+import { runExecutorConformanceSuite, mkdtempTracked } from "@scp/plugin-testkit";
 import { createTerraformExecutorPlugin } from "./index.js";
 import { realHttpPluginContext } from "./test-support/real-http-client.js";
 
@@ -58,7 +57,10 @@ afterAll(() => {
 });
 
 runExecutorConformanceSuite("terraform", async () => {
-  const statePath = join(await mkdtemp(join(tmpdir(), "terraform-conformance-")), "state.json");
+  const statePath = join(
+    await mkdtempTracked(join(tmpdir(), "terraform-conformance-")),
+    "state.json"
+  );
   const build = (): {
     plugin: ReturnType<typeof createTerraformExecutorPlugin>;
     ctx: ReturnType<typeof realHttpPluginContext>;

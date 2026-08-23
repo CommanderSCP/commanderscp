@@ -285,6 +285,170 @@ managedDep:
   workspaceRoot: /var/lib/scp/managed-dep
 
 # -------------------------------------------------------------------------------------------
+# Managed-scan (M13.3b — ADR-0020). OFF BY DEFAULT, same control as managedDep: with `runnerImage`
+# empty nothing is rendered, `SCP_MANAGED_SCAN_RUNNER_IMAGE` is unset, and a managed-scan binding
+# fails closed at dispatch with "managed scanning is not enabled".
+#
+# THIS BLOCK IS NET-NEW IN M23.4 AND ITS ABSENCE WAS A REAL HOLE, not a deliberate omission. The
+# server has read `SCP_MANAGED_SCAN_RUNNER_IMAGE` since M13.3b (`managedScanServerSettings`), and a
+# filterless grep over `deploy/helm/` for that name found it in README PROSE and nowhere else — so
+# managed-scan could not be enabled by `helm install` at all, on any launcher, while the other two
+# classes could. BUILD_AND_TEST.md's M23.3 entry records the same measurement. Found while granting
+# the Secret RBAC "for all three managed classes": two of the three were reachable from the chart.
+#
+# NO networkMode KNOB, and for the opposite reason to managedDep's: managed-scan's charter egress
+# clause is QUALIFIED (registry pulls), so the plugin resolves the value against the scanner
+# registry rather than taking an operator default. See `promotion-scan-step.ts`.
+# -------------------------------------------------------------------------------------------
+managedScan:
+  runnerImage: ""
+
+# -------------------------------------------------------------------------------------------
+# WHICH SUBSTRATE THE MANAGED RUNNERS LAUNCH ON (M23.2). Applies to ALL THREE managed classes at
+# once — `managed-iac`, `managed-scan` and `managed-dep` — because it is a property of the
+# deployment, not of one executor.
+#
+# `docker` (the default) IS TODAY'S BEHAVIOUR, BYTE FOR BYTE: the plugins shell out to a container
+# CLI, which is correct under docker-compose/VM and is the only thing that ever worked. It does NOT
+# work under `helm install` and never did — this chart mounts no Docker socket anywhere (deliberately;
+# mounting one is a container-escape risk it refuses to paper over) and the scpd image ships no
+# docker binary, so a managed run on Kubernetes ends at an ENOENT.
+#
+# `kubernetes` launches each run as an ephemeral Job through the API server. Requirements, all of
+# them enforced at render time by `tools/helm-verify` rather than discovered as a hang:
+#   - `workspace.claimName` must name a ReadWriteMANY PersistentVolumeClaim that ALREADY EXISTS.
+#     Kubernetes has no universal `docker cp`: a ConfigMap fails the 1 MiB etcd limit and
+#     `pods/exec` + tar is impossible against `apps/runner-dep`'s seven-applet `FROM scratch` image
+#     (no tar, no shell). The worker writes the run's inputs into this volume and the runner Job
+#     mounts the same bytes. This chart's own PVCs are RWO and cannot be reused for it.
+#   - the worker (and, on an `api.role=all` single-pod install, the api) gets a service-account
+#     token — see `automountServiceAccountToken` in the deployment templates.
+#   - at least one managed class must be enabled, or nothing will ever launch.
+#
+# NETWORK EGRESS IS NOT `--network none` AND CANNOT BE (owner decision, 2026-08-18). No pod-spec
+# field removes a pod's network namespace. Runner pods carry `scp.launcher.network=<the requested
+# mode>` so a NetworkPolicy can select them, and that is TRAFFIC DENIAL, NOT INTERFACE ABSENCE —
+# fail-open on a CNI that does not enforce NetworkPolicy at all. Do not read the label as containment.
+# -------------------------------------------------------------------------------------------
+managedRunners:
+  # "docker" | "kubernetes". Explicit, never auto-detected: guessing from the presence of a
+  # service-account token would switch an eval stack running inside a pod onto Jobs it has no RBAC
+  # for, and would leave a hardened install (automountServiceAccountToken: false) shelling out to a
+  # binary the image does not ship. Anything other than the exact string "kubernetes" is docker.
+  launcher: docker
+  kubernetes:
+    # Where the runner Jobs are created. Empty means `.Release.Namespace` — and since
+    # `perRunSecrets` defaults to `true`, leaving this empty is a render-time FAILURE (M23.5
+    # MEDIUM-7) unless `acceptSharedNamespaceSecretDelete` below is also set. See that value and
+    # `perRunSecrets` for why: this is "the narrowing that IS available" for a Role that grants
+    # `delete` on every Secret in whatever namespace it renders into.
+    namespace: ""
+    # The RWX PersistentVolumeClaim the worker and every runner Job share. MUST ALREADY EXIST — this
+    # chart does not create it, because RWX is a storage-class capability an operator provisions.
+    workspace:
+      claimName: ""
+      # Where the worker mounts it. The Job mounts the same volume at subpaths under this root.
+      mountPath: /var/lib/scp/runner-workspace
+    # THE PER-RUN SECRET CAPABILITY — GRANTED, AND ON (owner decision 2026-08-20, ADR-0035). This
+    # value renders the `secrets` rule on the runner Role AND sets the server-side flag; neither can
+    # be true without the other, which is what stops a deployment believing it can create Secrets
+    # that RBAC will 403.
+    #
+    # WHAT IT ENDS. `RunnerSpec.secretEnv` reaches a pod as a per-run Secret + `envFrom.secretRef`.
+    # Until this default flipped, `managed-iac` — the only class that populates `secretEnv` — could
+    # not run on Kubernetes AT ALL: it refused at its first step. That refusal was correct while the
+    # grant was undecided and is not something to keep once it is.
+    #
+    # WHAT THE GRANT IS: `create` and `delete` on `""/secrets`, namespaced, and nothing else.
+    # Not `get` (the adapter issues one POST and two DELETEs and no GET), and NOT `list` — a `list`
+    # on secrets returns every Secret BODY in the namespace, this chart's own database password
+    # included. The reap sweep is built to work without it.
+    #
+    # `delete` DESERVES THE SAME SENTENCE `list` GOT, AND UNTIL M23.5 MEDIUM-7 DID NOT HAVE ONE.
+    # `list` is refused because it can READ every Secret's body in the namespace; `delete` is
+    # GRANTED, and it can DESTROY every Secret in the namespace, this release's own database
+    # credential included — proved with the worker's own token against a live cluster:
+    #   DELETE …/secrets/scp-commanderscp-db -> {"status":"Success"} ; then GET -> NotFound
+    # A blast radius that large being reasoned about for the read verb and left unstated for the
+    # destructive one was the gap; it is not anymore.
+    #
+    # WHAT COULD NOT BE NARROWED, SAID PLAINLY: `resourceNames`. Per-run Secret names derive from
+    # `runId`, so the set is unbounded, and Kubernetes RBAC cannot restrict a `create` by
+    # `resourceNames` under any circumstances — the object's name is not known to the authorizer at
+    # admission time. The grant is therefore namespace-wide on `secrets`. THE NARROWING THAT IS
+    # ACTUALLY AVAILABLE IS `namespace` ABOVE: point it at a namespace of the runners' own and the
+    # Role, the RoleBinding, the Jobs and the Secrets all move there, away from this release's own
+    # Secrets. That is the recommended shape for anything holding real cloud credentials, and as of
+    # M23.5 it is ENFORCED, not merely recommended: `perRunSecrets: true` with an empty `namespace`
+    # above is a render-time failure (`commanderscp.assertRunnerPrerequisites`) unless
+    # `acceptSharedNamespaceSecretDelete` below says otherwise.
+    #
+    # SETTING IT `false` STILL WORKS and is the supported opt-out: no rule is rendered and the server
+    # refuses a run that needs one, loudly, at its first step, rather than falling back to
+    # `env[].value` (plaintext in etcd and in every etcd backup) or dropping the credential silently.
+    # `managed-scan` and `managed-dep` hold no credential (`secretEnv: []` in both) and are
+    # unaffected either way — but they DO need the rest of this Role, which is a separate fix made
+    # at the same time; see `templates/runner-iac.yaml`.
+    perRunSecrets: true
+    # THE EXPLICIT OVERRIDE (M23.5 MEDIUM-7). `false` by default: with `perRunSecrets: true` and
+    # `namespace` left empty, the chart REFUSES to render rather than silently handing the worker
+    # ServiceAccount `delete` on this release's own Secrets. Set this `true` only if you have
+    # deliberately decided that blast radius is acceptable for this deployment (e.g. a single-tenant
+    # eval install with nothing else of value in the namespace) — the safer fix is almost always
+    # `namespace` above, a runner namespace with nothing else in it.
+    acceptSharedNamespaceSecretDelete: false
+    # Pod `securityContext.runAsNonRoot` for runner Jobs. FALSE by default, and that is a fact about
+    # the images rather than a preference: none of apps/runner-{iac,scan,dep} declares a `USER`, so
+    # `true` makes every managed run fail with CreateContainerConfigError before its entrypoint.
+    # Set it only if you rebuild the runner images to run as a non-root uid.
+    runAsNonRoot: false
+
+    # -----------------------------------------------------------------------------------------
+    # THE POD CONVENTIONS THE RUNNER JOB INHERITS (M23.5)
+    #
+    # This chart creates SIX pods. Five of them are templates in this repo and every one carries
+    # `imagePullSecrets`, `image.pullPolicy` and a `resources` block. The sixth — the runner Job —
+    # is built by `jobManifest()` in `packages/runner-launcher` at RUN time, from settings that
+    # described a namespace, a workspace and two booleans and nothing about the pod. So it inherited
+    # none of them. These three values are the channel that was missing.
+    # -----------------------------------------------------------------------------------------
+
+    # Secret names for pulling the runner images, in `.Values.imagePullSecrets`' own `[{name: x}]`
+    # shape. EMPTY MEANS INHERIT `.Values.imagePullSecrets`, which is what every other pod here uses
+    # — so a private registry (the norm for self-hosted, and mandatory behind the per-outpost Harbor
+    # SCP itself designs) works without a second setting. Set it explicitly only when the runner
+    # images live somewhere the scpd image does not.
+    imagePullSecrets: []
+
+    # `imagePullPolicy` for the runner container. EMPTY MEANS INHERIT `.Values.image.pullPolicy`.
+    #
+    # NOT COSMETIC, AND NOT DEFAULTABLE TO NOTHING: an UNSET imagePullPolicy is `Always` for any
+    # `:latest` tag and `IfNotPresent` otherwise. Measured on a real cluster with the image already
+    # loaded on the node, unset produced `spawn-failed, code=ErrImagePull — failed to pull and unpack
+    # image ...:latest` while the identical image ran fine under `docker create`. That is charter
+    # principle 5 ("no runtime network calls to the outside world") broken in an air-gapped install,
+    # by an omission. Pin runner images by digest and this is moot; the inherited `IfNotPresent` is
+    # what makes an air-gapped node work either way.
+    imagePullPolicy: ""
+
+    # `resources` for the runner container. EMPTY BY DEFAULT, AND THE DEFAULT IS A JUDGEMENT RATHER
+    # THAN AN OVERSIGHT: the right memory limit for `tofu apply` against an unknown estate or for
+    # Trivy against an unknown image is not something this chart can know, and a guessed limit
+    # OOMKills real runs — a worse failure than having none, because it looks like a runner bug.
+    #
+    # WHEN YOU MUST SET IT: a namespace with a compute ResourceQuota and no defaulting LimitRange
+    # REJECTS a pod that declares no limits (`must specify limits.memory for: runner`). No pod is
+    # then ever created — measured — and a dedicated runner namespace, which the `namespace` value
+    # above recommends, is exactly where a platform team puts such a quota. Since M23.5 that failure
+    # names itself instead of being reported as an exhausted run budget, but the fix is this value.
+    #
+    # Shape: the Kubernetes `resources` block, e.g.
+    #   resources:
+    #     requests: { cpu: 250m, memory: 512Mi }
+    #     limits: { cpu: "2", memory: 4Gi }
+    resources: {}
+
+# -------------------------------------------------------------------------------------------
 # Managed-scan vulnerability-DB cache (M13.3b-ii — ADR-0020, proposal §13.3b). OPTIONAL, OFF BY
 # DEFAULT: with it off the promotion scan step's runner uses the DB baked into the scp-runner-scan
 # image (the fail-closed fallback, as stale as the image), so single-container/dev stays zero-config.

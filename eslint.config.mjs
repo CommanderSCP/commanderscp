@@ -52,6 +52,20 @@ export default tseslint.config(
     files: ["**/*.config.ts", "**/*.config.mts", "**/*.mjs", "**/*.cjs"],
     languageOptions: { globals: nodeGlobals }
   },
+  {
+    // CommonJS, deliberately. `packages/source-census/test-support/spawn-observer-preload.cjs` is a
+    // `node --require` preload and CANNOT be ESM: it has to mutate `node:child_process`'s exports
+    // BEFORE any user module imports it, because Node copies a builtin's exports into its ESM facade
+    // on first import — an `--import` preload that imported the module would already be too late,
+    // and every "nothing was spawned" assertion built on it would silently watch nothing. So this is
+    // the one place a `require()` is the correct construct rather than a legacy one.
+    files: ["**/*.cjs"],
+    languageOptions: {
+      sourceType: "commonjs",
+      globals: { ...nodeGlobals, require: "readonly", module: "writable", exports: "writable" }
+    },
+    rules: { "@typescript-eslint/no-require-imports": "off" }
+  },
   // ---------------------------------------------------------------------------------------------
   // apps/web import boundary (BUILD_AND_TEST.md §8 M2 item 2 Part C, DESIGN.md §14): the SPA
   // "consumes only @scp/sdk" — it must never speak to the API via a raw fetch/XHR, never pull in

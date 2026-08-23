@@ -9,9 +9,10 @@
     "build": "tsc -b",
     "dev": "tsc -b -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "devDependencies": {
+    "@scp/test-tmpdir": "workspace:*",
     "@types/node": "^22.10.0",
     "typescript": "~5.8.0",
     "vitest": "^3.0.0"

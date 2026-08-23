@@ -9,7 +9,7 @@
     "build": "tsc -b",
     "dev": "tsc -b -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "devDependencies": {
     "typescript": "~5.8.0",

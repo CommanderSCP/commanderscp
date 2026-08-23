@@ -1599,9 +1599,29 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
      * The value is deliberately NOT `"docker"`: asserting the fallback would pass whether or not
      * anything was injected at all.
      */
-    it("hands the operator's container runtime to the runner it starts", async () => {
-      const saved = process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY;
+    /**
+     * M23.2 WIDENS THIS CASE FROM ONE FIELD TO THE WHOLE LAUNCHER SLICE, and the widening is not
+     * housekeeping — it is the same defect one level up. The adapter SELECTION
+     * (`SCP_MANAGED_RUNNER_LAUNCHER`) travels the identical route and has a larger blast radius:
+     * omitted from THIS path, the ordinary bump dispatch would keep shelling out to `docker` on a
+     * Kubernetes deployment while every bound executor moved to Jobs — i.e. M21's actuator would
+     * remain exactly as dead as M23 exists to fix, on the path that actually runs. The unit-level
+     * `managed-runner-selection.test.ts` covers `managedDepServerSettings()`; only THIS test can see
+     * what `managed-dep-instance.ts` puts in the instance config it starts.
+     */
+    it("hands the operator's container runtime AND launcher selection to the runner it starts", async () => {
+      const saved = {
+        binary: process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY,
+        launcher: process.env.SCP_MANAGED_RUNNER_LAUNCHER,
+        ns: process.env.SCP_MANAGED_RUNNER_K8S_NAMESPACE,
+        root: process.env.SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT,
+        claim: process.env.SCP_MANAGED_RUNNER_K8S_WORKSPACE_CLAIM
+      };
       process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY = "/usr/bin/operator-chosen-runtime";
+      process.env.SCP_MANAGED_RUNNER_LAUNCHER = "kubernetes";
+      process.env.SCP_MANAGED_RUNNER_K8S_NAMESPACE = "operator-chosen-namespace";
+      process.env.SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT = "/operator-chosen-workspace";
+      process.env.SCP_MANAGED_RUNNER_K8S_WORKSPACE_CLAIM = "operator-chosen-claim";
       try {
         await authoredAndPushed();
 
@@ -1613,10 +1633,25 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
             started.config.dockerBinary,
             `${started.id} was started with a runtime the operator did not choose`
           ).toBe("/usr/bin/operator-chosen-runtime");
+          expect(
+            started.config.runnerLauncher,
+            `${started.id} was started on a launcher the operator did not choose`
+          ).toBe("kubernetes");
+          expect(
+            (started.config.kubernetes as { namespace?: string } | undefined)?.namespace,
+            `${started.id} carries no Kubernetes settings, so its runner has nowhere to launch`
+          ).toBe("operator-chosen-namespace");
         }
       } finally {
-        if (saved === undefined) delete process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY;
-        else process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY = saved;
+        const restore = (key: string, value: string | undefined): void => {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        };
+        restore("SCP_MANAGED_RUNNER_DOCKER_BINARY", saved.binary);
+        restore("SCP_MANAGED_RUNNER_LAUNCHER", saved.launcher);
+        restore("SCP_MANAGED_RUNNER_K8S_NAMESPACE", saved.ns);
+        restore("SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT", saved.root);
+        restore("SCP_MANAGED_RUNNER_K8S_WORKSPACE_CLAIM", saved.claim);
       }
     }, 180_000);
 

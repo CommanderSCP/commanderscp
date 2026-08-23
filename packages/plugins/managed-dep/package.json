@@ -9,7 +9,7 @@
     "build": "tsc -b",
     "dev": "tsc -b -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests"
   },
   "devDependencies": {
@@ -21,6 +21,7 @@
   "dependencies": {
     "@scp/dependency-manifests": "workspace:*",
     "@scp/git-provider-core": "workspace:*",
-    "@scp/plugin-api": "workspace:*"
+    "@scp/plugin-api": "workspace:*",
+    "@scp/runner-launcher": "workspace:*"
   }
 }
