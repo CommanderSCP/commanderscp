@@ -16,6 +16,7 @@ import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
 import type { FreezeRow } from "./freezes-repo.js";
 import {
   freezesByTarget,
+  rollbackExemptible,
   unionFreezes,
   type EffectiveFreeze,
   type TargetFreezes
@@ -984,7 +985,19 @@ export async function evaluateGovernanceGate(
   // lifecycle path would silently lift the freeze at `validating -> accepted` AND on
   // `POST /policy-evaluate`. `lifecycle_edge` keeps any-target-frozen => block by design (there is
   // no such thing as accepting three quarters of a change), and D7 is a WAVE-boundary decision.
-  const freezeExemptRollback = ctx.gateKind === "wave_boundary" && ctx.isRollback === true;
+  //
+  // AND TIER-AWARE (M25.3 review finding 1). `rollbackExemptible` is the ONE definition of "may D7
+  // stand this covering set aside", shared verbatim with `reconcile.ts`'s per-target seam: a
+  // PLATFORM freeze is never stood aside for a rollback. Shipped tier-blind, this conjunct handed
+  // any principal holding `object:write` (all `POST /v1/changes/{id}/rollback` requires — no
+  // `freeze:override`, no reason, no operator token) a route past the freeze `checkFreeze`'s block
+  // sentence promises "no tenant role can override, however privileged", and a CHEAPER one than the
+  // override it was contrasted with. The full reasoning, including why `overridable` is deliberately
+  // NOT consulted and what this narrows, is on `rollbackExemptible`.
+  const freezeExemptRollback =
+    ctx.gateKind === "wave_boundary" &&
+    ctx.isRollback === true &&
+    rollbackExemptible(byTarget.flatMap((e) => e.freezes));
   const freezeCheck = await checkFreeze(tx, ctx, byTarget);
   if (freezeCheck.blocked && !partiallyFrozen && !freezeExemptRollback) {
     // Both a plain freeze block and a REJECTED override (missing reason / unauthorized for some
@@ -1048,7 +1061,7 @@ export async function evaluateGovernanceGate(
   // permit that leaves no trace is indistinguishable from a freeze that never matched.
   const freezeNote =
     freezeExemptRollback && freezeCheck.blocked
-      ? `rollback exempt from ${frozenIds.length} frozen target(s): ${freezeCheck.blocked.reason} (DESIGN §9.4 / owner decision D7 — holding a rollback pins a broken release in place for the whole window)`
+      ? `rollback exempt from ${frozenIds.length} ORG-tier frozen target(s): ${freezeCheck.blocked.reason} (DESIGN §9.4 / owner decision D7 — holding a rollback pins a broken release in place for the whole window; a PLATFORM freeze is never stood aside this way, see rollbackExemptible)`
       : undefined;
 
   let emergencyNote: string | undefined;

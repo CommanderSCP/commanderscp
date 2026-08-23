@@ -191,3 +191,53 @@ export function unionFreezes(byTarget: TargetFreezes[]): EffectiveFreeze[] {
   }
   return union;
 }
+
+/**
+ * IS THIS COVERING SET ELIGIBLE FOR THE D7 ROLLBACK EXEMPTION? — pure, and the ONE definition both
+ * D7 seams consult (`gate-orchestrator.ts`'s `freezeExemptRollback` and `reconcile.ts`'s per-target
+ * `continue`).
+ *
+ * ============================================================================================
+ * D7 IS AN ORG-TIER DECISION AND A PLATFORM FREEZE IS NEVER STOOD ASIDE FOR A ROLLBACK
+ * ============================================================================================
+ * Owner decision D7 exempts a rollback from a freeze because holding one PINS A BROKEN RELEASE in
+ * place for the whole window, and `scp change rollback` is the documented exit. That reasoning is
+ * about a freeze the tenant's own organization declared — the org can weigh "broken release" against
+ * "change window" because it owns both sides of the trade.
+ *
+ * It does not carry above org, and shipping it as written was a HOLE. `POST /v1/changes/{id}/
+ * rollback` requires `object:write` at the org and nothing else: no `freeze:override`, no reason, no
+ * operator token. A tier-blind D7 therefore handed every principal who can write an object a route
+ * past the one freeze the block sentence three files away promises "no tenant role can override,
+ * however privileged" — a route CHEAPER than the override it was contrasted with, not merely equal
+ * to it. Two things cannot both be true, so this makes the sentence the true one.
+ *
+ * `overridable` IS DELIBERATELY NOT CONSULTED HERE, and this is the sharp edge of the decision. It
+ * would read as the natural mapping — the operator has admitted tenant override, so admit the
+ * rollback too — and it is wrong, because the two are not the same act. `overridable` admits a
+ * REASONED override by an actor holding `freeze:override` AT THE ORG ROOT (two independent
+ * authorities, both required, and the reason is audited on the Decision). The rollback path checks
+ * none of that. Mapping one bit onto both would mean an operator who admitted a narrow, audited,
+ * high-privilege escape had silently also admitted an unaudited one at `object:write`. So
+ * `overridable` keeps exactly one meaning, and a platform freeze holds rollbacks in both settings.
+ *
+ * THE OPERATOR'S REMEDY IS THE ONE THE BLOCK SENTENCE ALREADY NAMES: `PUT`/`DELETE
+ * /v1/instance/freezes/{key}` shortens or retracts the freeze, over the operator token. A platform
+ * freeze that must let emergency rollbacks through is a freeze that should not have been declared
+ * deployment-wide, or should be lifted — not one a tenant works around.
+ *
+ * STATED CONSEQUENCE, because it is the one place D7 NARROWS: a rollback wave covered by BOTH tiers
+ * is blocked WHOLE rather than admitted for the targets only an org freeze covers. Coarse, and
+ * chosen over the finer alternative (resolve the tiers separately for a rollback and hold only the
+ * platform-covered targets) because the finer one needs a second resolution pass whose result
+ * `frozenTargets`, `partiallyFrozen` and the hold Decision would all have to agree with — a second
+ * source of truth about what is frozen, which is precisely what `freezesByTarget` exists to be the
+ * only one of. A wave containing a platform-frozen target cannot complete this window either way.
+ *
+ * Takes the projected shape (`{ tier }`) rather than `EffectiveFreeze`, because `reconcile.ts` holds
+ * `FreezeHoldVerdict["freezes"]` — the Decision projection — and passing that through the same
+ * predicate is what makes the two seams provably one rule instead of two that agree today.
+ */
+export function rollbackExemptible(freezes: readonly { tier: "org" | "platform" }[]): boolean {
+  return freezes.every((f) => f.tier !== "platform");
+}
