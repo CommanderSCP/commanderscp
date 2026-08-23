@@ -21,7 +21,11 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import type { PluginHost } from "../plugin-host/contract.js";
-import { activeFreezesForScopes, createFreeze } from "../governance/freezes-repo.js";
+import {
+  activeFreezesForScopes,
+  createFreeze,
+  updateFreezeWindow
+} from "../governance/freezes-repo.js";
 import { freezesByTarget, unionFreezes } from "../governance/freeze-scope.js";
 import { containmentScopeIds } from "../graph/containment.js";
 import { evaluateGovernanceGate } from "../governance/gate-orchestrator.js";
@@ -190,7 +194,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
       reason: `${name}: integration fixture`
     });
 
-  /** An `atomic: true` freeze (owner decision D5, drizzle/0077). Written through the repo rather
+  /** An `atomic: true` freeze (owner decision D5, drizzle/0084). Written through the repo rather
    *  than the route DELIBERATELY: M25.2 holds no codegen slot, so `CreateFreezeRequestSchema` is
    *  untouched and `POST /api/v1/freezes` cannot set this column yet. The authoring surface is the
    *  next increment's — see this file's sibling note in the migration header. */
@@ -1471,6 +1475,88 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     // the audit log can resolve the structured before/after rather than only free text.
     expect(events.map((e) => e.decisionId)).toEqual(decisions.map((d) => d.id));
   });
+
+  it("M25.1: a PATCH that moves `endsAt` NOWHERE is recorded as `unchanged`, not as an extension", async () => {
+    // EQUALITY IS ITS OWN CASE. The comparison shipped as `endsAt < before.endsAt ? "shortened" :
+    // "extended"`, which folds "the same instant" into the extension arm — so re-saving a
+    // freeze-editing form without touching the field (the ordinary shape of a UI PATCH, and the UI
+    // this increment unblocks is the next session's) wrote a HASH-CHAINED audit event claiming an
+    // extension that did not happen, alongside a Decision asserting `from === to`. Principle 6 is
+    // about a record that reconstructs what occurred; a record of a governance edit that did not
+    // occur fails it in the direction that is hardest to notice, because nothing looks broken.
+    const frozen = await freezeAt(amer.id, "amer-noop-freeze");
+
+    const same = await admin.freezes.updateWindow(frozen.id, {
+      endsAt: frozen.endsAt,
+      reason: "integration: saving the form without touching the field"
+    });
+    expect(same.endsAt, "the window really is where it was").toBe(frozen.endsAt);
+
+    const [decision] = await decisionsOfKind(frozen.id, "freeze_window");
+    expect(decision!.inputContext).toMatchObject({
+      action: "unchanged",
+      endsAt: { from: frozen.endsAt, to: frozen.endsAt }
+    });
+    expect(
+      (decision!.reasonTree as { loosening: boolean }).loosening,
+      "nothing was weakened, so nothing may be flagged as a loosening either"
+    ).toBe(false);
+    expect(
+      (await auditEventsFor(frozen.id)).map((e) => e.action),
+      "the audit chain names the third case by name rather than rounding it to a tightening"
+    ).toEqual(["freeze.window.unchanged"]);
+  });
+
+  it("M25.1: two OVERLAPPING window edits — the second is recorded against what the FIRST left, not a stale snapshot", async () => {
+    // THE LOST-SNAPSHOT RACE, in its deterministic form, at the repo seam so the interleaving is
+    // exact rather than hoped for (the `stampBoundaryBundleChecksum` precedent in
+    // `boundary-segment.integration.test.ts`). `updateFreezeWindow` is a read-modify-write whose
+    // READ decides two things that end up in a permanent record: `direction` (the audit action, and
+    // the `loosening` flag on the Decision) and the Decision's `endsAt.from`.
+    //
+    // Under READ COMMITTED an UNLOCKED read returns the pre-tx1 committed value no matter when
+    // within this window tx2 lands, so the corruption is CERTAIN here, not probabilistic: tx2 would
+    // read the original hour, compute SECOND < original => "shortened", and stamp
+    // `freeze.window.shortened` on an edit that pushed the live deadline from one minute out to ten
+    // — an audit record asserting the OPPOSITE direction of the governance change it describes.
+    // `FOR UPDATE` parks tx2 at the READ until tx1 commits, after which it re-reads FIRST.
+    const frozen = await freezeAt(amer.id, "amer-race-freeze"); // endsAt: an hour out
+    const FIRST = new Date(Date.now() + 60_000); // a big shortening: an hour -> a minute
+    const SECOND = new Date(Date.now() + 10 * 60_000); // LONGER than FIRST, SHORTER than the original
+
+    let second!: ReturnType<typeof updateFreezeWindow>;
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      await updateFreezeWindow(tx, {
+        orgId: org.orgId,
+        id: frozen.id,
+        endsAt: FIRST,
+        reason: "integration: cutting it to a minute",
+        actorObjectId: org.orgId
+      });
+      second = withTenantTx(server.deps.db, org.orgId, (tx2) =>
+        updateFreezeWindow(tx2, {
+          orgId: org.orgId,
+          id: frozen.id,
+          endsAt: SECOND,
+          reason: "integration: actually give it ten",
+          actorObjectId: org.orgId
+        })
+      );
+      // Long enough for tx2 to reach its read; tx1 does not commit until this resolves, so the
+      // window tx2 must land inside is bounded below by this sleep and not by scheduler luck.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    });
+    const result = await second;
+
+    expect(
+      result.before.endsAt.toISOString(),
+      "the audited `from` must be the window that was actually in force, not the one tx2 first saw"
+    ).toBe(FIRST.toISOString());
+    expect(
+      result.direction,
+      "ten minutes is an EXTENSION of a one-minute window; only a stale snapshot calls it a shortening"
+    ).toBe("extended");
+  }, 60_000);
 
   it("M25.1: a retraction is final, and a window edit cannot invert the window", async () => {
     const frozen = await freezeAt(amer.id, "amer-final-freeze");

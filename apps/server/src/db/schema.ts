@@ -1029,14 +1029,14 @@ export const freezes = pgTable(
     reason: text("reason").notNull(),
     createdByActorId: uuid("created_by_actor_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    /** M25.2 / owner decision D5 (drizzle/0077) — WHETHER THIS FREEZE STILL PARKS A WHOLE WAVE.
+    /** M25.2 / owner decision D5 (drizzle/0084) — WHETHER THIS FREEZE STILL PARKS A WHOLE WAVE.
      *  `false` (the default, and retroactively true of every freeze authored before M25.2): the
      *  covered wave targets are held one by one in `coordination/reconcile.ts`'s trigger loop and
      *  their uncovered siblings ship. `true`: any coverage parks every target of the wave — the
      *  pre-M25.2 behaviour, for coupled targets where half-applied is worse than not-applied.
      *  Read in exactly one place: `gate-orchestrator.ts`'s `partiallyFrozen` predicate. */
     atomic: boolean("atomic").notNull().default(false),
-    /** M25.1 (drizzle/0078) — THIS FREEZE WAS RETRACTED, and is no longer in force regardless of
+    /** M25.1 (drizzle/0085) — THIS FREEZE WAS RETRACTED, and is no longer in force regardless of
      *  `endsAt`. A SOFT lift, following `personal_access_tokens.revoked_at`: the row stays readable
      *  by id forever, because two Decision writers put `freeze.id` in their `inputContext` and a
      *  hard DELETE would dangle every one of them (charter principle 6 — a blocked response stays

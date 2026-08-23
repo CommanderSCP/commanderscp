@@ -617,6 +617,19 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
   //     authority being checked, which is the property `freeze:override`'s per-freeze loop
   //     establishes for overrides and the one that actually constrains blast radius here.
   //
+  // OPEN, PENDING AN OWNER RULING — DO NOT READ THE TWO BULLETS ABOVE AS A SETTLED DECISION.
+  // `drizzle/0010_governance.sql`'s own comment already states the opposite conclusion: it calls
+  // `freeze:override` and `change:emergency` "the two highest-blast-radius bypass permissions
+  // (DESIGN §10.3), deliberately NOT granted to Administrator by default", and DESIGN §10.3 says
+  // getting past a freeze "requires an explicit `freeze:override` permission". After this route an
+  // Administrator at service S retracts an Owner's S-scoped freeze FOR EVERYONE with a permission
+  // they already hold, where the Owner-only override would have admitted exactly ONE change. The
+  // widening is bounded (scope, above) and not escalatable (`role_binding:write` has no write API,
+  // so an Administrator cannot mint themselves Owner), but it is a widening of a gate a migration
+  // calls deliberate, and that is a governance call rather than an implementation one.
+  // `docs/proposals/campaigns-rework.md` §1.7 carries it as an OPEN DECISION with the three exits;
+  // whichever way it lands, 0010's comment and DESIGN §10.3 must end up agreeing with this file.
+  //
   // An `authorize` failure throws a raw 403 rather than returning a `blocked` verdict, and that
   // differs from `checkFreeze` deliberately: `checkFreeze` runs inside a change's gate evaluation,
   // where a rejected override must become a Decision so the change carries a resolvable

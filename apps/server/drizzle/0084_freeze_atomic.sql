@@ -42,14 +42,27 @@
 -- `freezes-repo.ts`'s `createFreeze`, whose input gained an optional `atomic`.
 --
 -- ===========================================================================================
--- WHY 0077, AND THE `when`
+-- WHY 0084, AND THE `when` — AND WHY THIS FILE WAS RENUMBERED ONCE ALREADY
 --
--- 0076 is `main`'s highest entry (`when` 1788133004000) and this one is 1788140000000 — STRICTLY
--- GREATER, which is the only comparison drizzle makes. It gates on `when` ALONE and SILENTLY SKIPS
--- an entry whose `when` does not exceed what a database has already applied: no error, no warning,
--- the failure surfaces later as a missing column. `idx` orders the array and never gates. See
--- 0061's header for the three-way collision that taught this, and `db/journal-ordering.test.ts` for
--- the guard. Expect a renumber at merge if a peer branch lands its own 0077 first.
+-- This one is 1788142000000 and `main`'s highest entry is 0083_governance_move_rungs
+-- (`when` 1788141000000) — STRICTLY GREATER, which is the only comparison drizzle makes. It gates
+-- on `when` ALONE and SILENTLY SKIPS an entry whose `when` does not exceed what a database has
+-- already applied: no error, no warning, the failure surfaces later as a missing column. `idx`
+-- orders the array and never gates. See 0061's header for the three-way collision that taught
+-- this, and `db/journal-ordering.test.ts` for the guard.
+--
+-- THIS FILE SHIPPED AS 0077 WITH `when` 1788140000000, authored while `main` topped out at 0076
+-- (1788133004000). Seven migrations landed on `main` while this branch was open, the highest of
+-- them 1788141000000 — ABOVE this file's original `when`. Merging as authored would have made
+-- every instance already carrying 0083 skip `freeze_atomic` PERMANENTLY and SILENTLY, while its
+-- M25.1 sibling (a higher `when`) still applied: `freezes` would have gained `lifted_at` and never
+-- `atomic`, and `routes/governance.ts`'s `freezeResponse` reads both, so every freeze read would
+-- 500 in production. No test here could have caught it — Testcontainers hands out a fresh database
+-- per file, `lastDbMigration` is undefined, and every migration applies regardless of `when`.
+--
+-- The lesson is the standing one and it applies to the NEXT branch too: a `when` is only valid
+-- against the `main` it will actually merge into, so re-derive it at merge time rather than trust
+-- the one authored at branch time.
 --
 -- Hand-authored, same reason as 0002/0005/0007/0010/0011: drizzle-kit's interactive
 -- column-provenance prompt cannot run non-interactively here, and RLS/grants are never expressible

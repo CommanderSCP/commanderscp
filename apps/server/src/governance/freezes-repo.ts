@@ -48,7 +48,7 @@ export interface CreateFreezeInput {
   endsAt: Date;
   reason: string;
   createdByActorId: string;
-  /** Defaults to `false` — see `freezes.atomic` (drizzle/0077). Reachable from
+  /** Defaults to `false` — see `freezes.atomic` (drizzle/0084). Reachable from
    *  `POST /api/v1/freezes` (`CreateFreezeRequestSchema.atomic`, optional) and `scp freeze create
    *  --atomic`, because a loosening whose escape hatch ships one increment later has a window in
    *  which the escape hatch does not exist. */
@@ -101,6 +101,40 @@ export async function getFreeze(tx: TenantTx, orgId: string, id: string): Promis
     .from(freezes)
     .where(and(eq(freezes.orgId, orgId), eq(freezes.id, id)))
     .limit(1);
+  if (!rows[0]) throw notFound(`freeze '${id}' not found`);
+  return rows[0] as FreezeRow;
+}
+
+/**
+ * `getFreeze` UNDER A ROW LOCK — the read half of every read-modify-write in this file.
+ *
+ * BOTH WRITE VERBS ARE READ-MODIFY-WRITES, and both put the value they read into a PERMANENT
+ * RECORD: `updateFreezeWindow` derives `direction` from `before.endsAt` and the route writes
+ * `endsAt: { from, to }` into a Decision, while `liftFreeze` names `before.liftedAt` in its
+ * conflict message. Under READ COMMITTED an UNLOCKED read is a stale snapshot the whole way to
+ * COMMIT: two operators PATCH one freeze, both read `endsAt = T`, A commits `T1`, B's UPDATE then
+ * blocks on the row lock, re-checks only `lifted_at IS NULL`, and writes `T2` from B's stale
+ * snapshot. B's audit record then says "from T" — a window that was never live at the moment B
+ * edited it — and, if `T < T1 < T2`, is stamped `freeze.window.extended` for an edit that actually
+ * SHORTENED the live window. That is a hash-chained governance record asserting the opposite of
+ * what happened, which principle 6 does not survive.
+ *
+ * `FOR UPDATE` parks the second transaction AT THE READ rather than at the UPDATE, so `before` is
+ * whatever A committed and the direction and the audited `from` are both computed against the
+ * value that was actually in force. Neither edit is lost and neither is refused. Same instrument,
+ * same reason, as `coordination/transition.ts` (change rows), `graph/objects-repo.ts`'s
+ * `lockObjectRow` and `dependencies/version-poll.ts`'s declaration re-read.
+ *
+ * NOT exported: an unlocked `getFreeze` is right for the two READ routes (`GET /freezes/{id}` and
+ * the list), and taking a write lock there would serialize readers behind an editor for nothing.
+ */
+async function lockFreezeRow(tx: TenantTx, orgId: string, id: string): Promise<FreezeRow> {
+  const rows = await tx
+    .select()
+    .from(freezes)
+    .where(and(eq(freezes.orgId, orgId), eq(freezes.id, id)))
+    .limit(1)
+    .for("update");
   if (!rows[0]) throw notFound(`freeze '${id}' not found`);
   return rows[0] as FreezeRow;
 }
@@ -240,7 +274,7 @@ export interface LiftFreezeInput {
 /**
  * RETRACT a freeze: it stops being in force immediately, whatever `ends_at` says.
  *
- * A SOFT lift (drizzle/0078). The row stays and stays readable by id, because
+ * A SOFT lift (drizzle/0085). The row stays and stays readable by id, because
  * `gate-orchestrator.ts`'s freeze-block Decision carries `inputContext.freeze.id` and
  * `reconcile.ts`'s `recordFreezeAdmissionHold` carries `inputContext.held[].freezes[].id`, both
  * permanently. A hard delete would make `scp change explain` name an id that resolves to nothing —
@@ -266,7 +300,11 @@ export async function liftFreeze(tx: TenantTx, input: LiftFreezeInput): Promise<
   }
   // Loaded first so an unknown id is a 404 rather than the 409 the no-op UPDATE below would
   // otherwise produce, and so the caller gets the BEFORE row for its audit event and Decision.
-  const before = await getFreeze(tx, input.orgId, input.id);
+  // UNDER `FOR UPDATE` (`lockFreezeRow`): the conditional UPDATE below already makes a double lift
+  // a race-free REFUSAL, but the refusal's message quotes `before.liftedAt`, and an unlocked read
+  // that raced the winning lift would report "already lifted at undefined" — naming no instant and
+  // no operator, in the one message whose entire job is to say who got there first.
+  const before = await lockFreezeRow(tx, input.orgId, input.id);
   const [row] = await tx
     .update(freezes)
     .set({
@@ -287,8 +325,16 @@ export async function liftFreeze(tx: TenantTx, input: LiftFreezeInput): Promise<
 /** Which way a window edit moved, for the audit event and the Decision. A SHORTENING is a
  *  governance LOOSENING (the freeze stops protecting sooner); an EXTENSION is a TIGHTENING. Both
  *  need `freeze:write`; they are distinguished because "who made governance weaker, and when" is
- *  the question an audit log is read with. */
-export type FreezeWindowDirection = "shortened" | "extended";
+ *  the question an audit log is read with.
+ *
+ *  `"unchanged"` IS A THIRD CASE AND NOT A ROUNDING ERROR. A comparison written as
+ *  `endsAt < before.endsAt ? "shortened" : "extended"` — which is how this shipped — folds equality
+ *  into the wrong arm: `PATCH { endsAt: <the value it already has> }` is an ordinary thing for a
+ *  form-backed UI to send on save, and it wrote a hash-chained `freeze.window.extended` event, plus
+ *  a Decision asserting an extension, with `from === to`. Nothing was extended. Refusing the call
+ *  instead would be equally truthful and worse to use, so the third label is the answer: the record
+ *  says what happened, and `loosening` stays false because no protection was weakened. */
+export type FreezeWindowDirection = "shortened" | "extended" | "unchanged";
 
 export interface UpdateFreezeWindowInput {
   orgId: string;
@@ -332,7 +378,9 @@ export async function updateFreezeWindow(
   if (input.reason.trim().length === 0) {
     throw badRequest("changing a freeze window requires a non-empty reason");
   }
-  const before = await getFreeze(tx, input.orgId, input.id);
+  // `FOR UPDATE` — see `lockFreezeRow`. `direction` and the Decision's `endsAt.from` are BOTH
+  // derived from this row, so reading it unlocked would let a concurrent PATCH make both false.
+  const before = await lockFreezeRow(tx, input.orgId, input.id);
   if (before.liftedAt) {
     throw conflict(
       `freeze '${input.id}' was lifted at ${before.liftedAt.toISOString()} — a retraction is final; declare a new freeze instead of re-opening this one`
@@ -341,7 +389,12 @@ export async function updateFreezeWindow(
   // THE SAME invariant `createFreeze` enforces, from the same function. A PATCH that admitted
   // `endsAt <= startsAt` would leave a row the POST route refuses to produce.
   assertWindowOrdered(before.startsAt, input.endsAt);
-  const direction: FreezeWindowDirection = input.endsAt < before.endsAt ? "shortened" : "extended";
+  const direction: FreezeWindowDirection =
+    input.endsAt < before.endsAt
+      ? "shortened"
+      : input.endsAt > before.endsAt
+        ? "extended"
+        : "unchanged"; // equality is its own case — see `FreezeWindowDirection`
   const [row] = await tx
     .update(freezes)
     .set({ endsAt: input.endsAt })

@@ -4,7 +4,7 @@
 --
 -- `/api/v1/freezes` shipped as CREATE / LIST / GET. There has never been a way to LIFT a freeze or
 -- to SHORTEN one. That was survivable while a freeze parked a whole wave — the operator waited for
--- `ends_at` and the release resumed on its own. M25.2 (drizzle/0077) made it unsurvivable: a
+-- `ends_at` and the release resumed on its own. M25.2 (drizzle/0084) made it unsurvivable: a
 -- far-future `ends_at` now holds a SUBSET of a wave's targets while the siblings have already
 -- shipped, so a mistyped year leaves a fleet split across two versions with no API exit. The only
 -- escapes were `scp change cancel` / `scp change rollback`, both of which throw the RELEASE away
@@ -86,16 +86,17 @@
 -- lift record must outlive the operator who made it.
 --
 -- ===========================================================================================
--- WHY 0078, AND THE `when`
+-- WHY 0085, AND THE `when` — RENUMBERED FROM 0078, SEE 0084's HEADER
 --
--- 0077 is this branch's highest entry (`when` 1788140000000); this one is 1788146000000 — STRICTLY
--- GREATER, which is the only comparison drizzle makes. It gates on `when` ALONE and SILENTLY SKIPS
--- an entry whose `when` does not exceed what a database has already applied: no error, no warning,
--- the failure surfaces later as a missing column. `idx` orders the array and never gates. See
--- 0061's header for the three-way collision that taught this, and `db/journal-ordering.test.ts` for
--- the guard. Expect a renumber at merge if a peer branch lands its own 0078 first.
+-- 0084 is this branch's next-highest entry (`when` 1788142000000); this one is 1788143000000 —
+-- STRICTLY GREATER, which is the only comparison drizzle makes. Both are above `main`'s highest
+-- (0083_governance_move_rungs, 1788141000000), which is the comparison that matters and the one
+-- the originally-authored pair got wrong: this file's 1788146000000 cleared `main` by luck while
+-- its sibling's 1788140000000 did not, so the pair would have SPLIT — `lifted_at` applied,
+-- `atomic` skipped forever, and every freeze read broken on any instance already at 0083. 0084's
+-- header carries the full account; `db/journal-ordering.test.ts` is the guard that catches it.
 --
--- Hand-authored, same reason as 0002/0005/0007/0010/0011/0077: drizzle-kit's interactive
+-- Hand-authored, same reason as 0002/0005/0007/0010/0011/0084: drizzle-kit's interactive
 -- column-provenance prompt cannot run non-interactively here, and RLS/grants are never expressible
 -- in its schema diffing anyway.
 -- ===========================================================================================

@@ -108,7 +108,7 @@ export async function evaluateFreezeHolds(
   // `atomic` — OWNER DECISION D5, READ HERE AND NOT ONLY AT THE GATE
   // ============================================================================================
   // An `atomic` freeze restores the union: covering ANY one target of the set freezes EVERY target
-  // of it (drizzle/0077, proposal §1.6). `gate-orchestrator.ts`'s `partiallyFrozen` already honours
+  // of it (drizzle/0084, proposal §1.6). `gate-orchestrator.ts`'s `partiallyFrozen` already honours
   // that — but the wave gate fires EXACTLY ONCE, on `pending -> running`, so a gate-only reader
   // makes `atomic` silently degrade to per-target admission for every freeze that opens after the
   // wave started. That is the second of the two defects M25.2 exists to fix, applied to the

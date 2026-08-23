@@ -879,7 +879,7 @@ export async function evaluateGovernanceGate(
   //    null, and today's tick-by-tick re-evaluation lifts it when the window closes. Dropping this
   //    guard would transition a totally-frozen wave to `running` with nothing running and delete
   //    the surface an operator resolves with `scp change explain`.
-  //  * no covering freeze is `atomic` (owner decision D5, drizzle/0077). One `atomic` freeze
+  //  * no covering freeze is `atomic` (owner decision D5, drizzle/0084). One `atomic` freeze
   //    anywhere in the coverage restores the union — the incident freeze, where half-applied is
   //    worse than not-applied. The predicate is DATA-DRIVEN rather than call-site-driven, so the
   //    person with the context decides, not this file.

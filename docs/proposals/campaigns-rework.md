@@ -313,7 +313,7 @@ which is what made it urgent: everything §1.7 says about a far-future freeze be
 cancel` / `scp change rollback` (both of which discard the release rather than the freeze) as the
 only exits. What landed, and the decisions taken to land it:
 
-- **A SOFT lift** — `drizzle/0078` adds `lifted_at` + `lifted_by_actor_id` + `lift_reason`, not a
+- **A SOFT lift** — `drizzle/0085` adds `lifted_at` + `lifted_by_actor_id` + `lift_reason`, not a
   hard `DELETE FROM freezes`. `gate-orchestrator.ts`'s block Decision carries
   `inputContext.freeze.id` and `recordFreezeAdmissionHold` carries
   `inputContext.held[].freezes[].id`, permanently; a hard delete dangles every one of them and
@@ -346,6 +346,53 @@ only exits. What landed, and the decisions taken to land it:
   declaration would mean an Administrator can create a governance object they cannot remove — the
   entrance-with-no-exit this increment exists to close — and reach is already bounded by the scope
   the permission is demanded at.
+
+**OPEN DECISION — OWNER RULING NEEDED: does `freeze:write` now supersede the Owner-only
+`freeze:override`?** Raised by the adversarial pass over M25.1 and *not* settled by the bullet
+above, because the bullet argues the case from first principles while `drizzle/0010_governance.sql`
+already states the opposite conclusion in writing: `freeze:override` and `change:emergency` are
+there called "the two highest-blast-radius bypass permissions (DESIGN §10.3), **deliberately NOT
+granted to Administrator by default**", and DESIGN.md §10.3 says getting past a freeze "requires an
+explicit `freeze:override` permission". After M25.1 an Administrator bound at service S can
+`scp freeze lift` an Owner-declared freeze at S — retracting it for *everyone* — using a permission
+Administrator already holds, where before they needed an Owner to `freeze:override` and that
+admitted exactly *one* change. **The strictly wider act now takes the strictly narrower
+permission.** The scope bound is real and verified (an S-scoped Administrator genuinely cannot touch
+the org-root freeze; `authz/resolve.ts`'s `scopeExpandCte` expands upward only), and there is no
+route to self-escalation — `role_binding:write` has no write API — so this is a deliberate widening,
+not a hole. But it is a widening of a gate a migration comment calls deliberate, and reconciling the
+two is a governance call, not an implementation one. Shipped as `freeze:write` pending the ruling;
+the three exits are:
+
+  a. **Accept it** — amend `0010`'s comment and DESIGN §10.3 to say that `freeze:override` gates
+     *bypassing* a standing freeze and `freeze:write` gates *authoring and retracting* one.
+  b. **`freeze:override` to loosen a freeze you did not declare** (`created_by_actor_id`), keeping
+     `freeze:write` for your own. Preserves both properties — no entrance without an exit, and no
+     Administrator undoing an Owner. Must cover PATCH-shortening too, or it is bypassed in one call.
+  c. **`freeze:override` only while the freeze is actually holding something** — read-time,
+     racy, and it makes the permission needed depend on fleet state; recorded for completeness.
+
+**Post-review corrections (same day, adversarial pass):**
+
+- **Both migrations renumbered `0077`/`0078` -> `0084`/`0085`, with new `when`s.** `main` gained
+  seven migrations while this branch was open, topping out at `0083_governance_move_rungs`
+  (`when` 1788141000000) — *above* `0077_freeze_atomic`'s authored `when` of 1788140000000 and
+  below `0078_freeze_lift`'s 1788146000000. Merging as authored would have SPLIT the pair on every
+  instance already carrying 0083: drizzle gates on `when` alone and skips silently, so `lifted_at`
+  would have applied and `atomic` never, and `freezeResponse` reads both — every freeze read broken
+  in production, invisible to CI, which migrates from empty. `db/journal-ordering.test.ts` is the
+  guard that would have caught it at merge; the renumber is what makes the merge clean.
+- **The window-edit direction has a third case, `unchanged`.** The comparison shipped as
+  `endsAt < before.endsAt ? "shortened" : "extended"`, which folds equality into the extension arm:
+  re-saving a form without touching the field wrote a hash-chained `freeze.window.extended` event
+  and a Decision asserting an extension with `from === to`. `loosening` stays false.
+- **Both write verbs read their row `FOR UPDATE`.** Each is a read-modify-write whose *read* decides
+  what goes into a permanent record — `direction` and the Decision's `endsAt.from` for the PATCH,
+  the "already lifted at …" instant for a refused second lift. Unlocked under READ COMMITTED, two
+  concurrent PATCHes let the second compute both against a snapshot that was never live: with the
+  original window at an hour, a first edit to one minute and a second to ten minutes, the second was
+  audited as a *shortening* of a window it actually extended. Pinned by a deterministic two-
+  transaction test at the repo seam (the `stampBoundaryBundleChecksum` precedent).
 
 This unblocks the freeze-authoring UI session, whose gate M25.1 was.
 
