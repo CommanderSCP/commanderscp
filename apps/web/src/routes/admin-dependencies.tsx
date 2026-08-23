@@ -308,7 +308,7 @@ export function DeclareDialogBody({
   // A typed id / URN is sent as-is when no listed component was picked — the server resolves it
   // (and refuses a service with a 400 that is rendered here); the picker itself lists components only.
   const producerIdOrUrn = producerPick ? producerPick.id : producerQuery.trim();
-  const previewKey = [ecosystem, coordinate, producerIdOrUrn].join(" ");
+  const previewKey = [ecosystem, coordinate, producerIdOrUrn].join("\u0000");
   const complete = coordinate.trim() !== "" && producerIdOrUrn !== "";
   const previewCurrent = preview !== null && preview.key === previewKey;
 
@@ -922,7 +922,7 @@ export function ProducersView({
               <TableBody>
                 {shown.map((row) => (
                   <ProducerRowView
-                    key={`${row.ecosystem} ${row.coordinate}`}
+                    key={`${row.ecosystem}\u0000${row.coordinate}`}
                     row={row}
                     now={now}
                     onRetract={() => setRetracting(row)}
@@ -963,7 +963,7 @@ export function ProducersView({
           </DialogHeader>
           {retracting ? (
             <RetractDialogBody
-              key={`${retracting.ecosystem} ${retracting.coordinate}`}
+              key={`${retracting.ecosystem}\u0000${retracting.coordinate}`}
               producer={retracting}
               run={retract}
               onRetracted={onRetracted}
