@@ -1056,12 +1056,19 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(await decisionsOfKind(change.id, "freeze_admission")).toHaveLength(1);
 
     // A perfectly authorized delete, taken while the change is in flight and the region frozen.
+    //
+    // The PLACEMENT is deleted, not its component, and that is deliberate on two counts. The wave
+    // target IS the placement (`app.at(amer)`), so deleting it is the precise statement of what this
+    // test is about — one dead target among three live siblings. And a component that still has
+    // placements is a non-empty container: the container-delete guard refuses that with a 409, so a
+    // `DELETE /components/{id}` here would stop testing tombstone handling and start testing the
+    // guard. Child-first ordering is the rule; this fixture only ever needed the child.
     const res = await server.app.inject({
       method: "DELETE",
-      url: `/api/v1/components/${app.id}`,
+      url: `/api/v1/placements/${app.at(amer)}`,
       headers: { authorization: `Bearer ${org.adminToken}` }
     });
-    expect(res.statusCode).toBeLessThan(300);
+    expect(res.statusCode, "the placement delete must be accepted, not 409'd").toBeLessThan(300);
 
     await tick(4);
 
