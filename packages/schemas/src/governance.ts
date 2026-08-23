@@ -347,11 +347,26 @@ export const InstanceFreezeMatchSchema = z
     /** Deployment-wide. Mutually exclusive with `environment` (refused 400, and by a DB CHECK). */
     allEnvironments: z.boolean().optional(),
     /** A `deployment-target`'s `properties.environment`, e.g. `"prod"`. With no `region`, this
-     *  matches EVERY region of that environment — including a stage that declares no region. */
-    environment: z.string().min(1).optional(),
+     *  matches EVERY region of that environment — including a stage that declares no region.
+     *
+     *  TRIMMED BEFORE `min(1)`, AND THE TRIM IS A CORRECTNESS FIX, NOT TIDINESS (M25.3 review
+     *  finding 3). `readStageCoordinate` trims what the GRAPH declares, and `instanceFreezeCovers`
+     *  compares the two with `!==`. Stored untrimmed, `" prod"` therefore matches NOTHING while the
+     *  PUT returns 200 and `GET /v1/instance/freezes` lists the row cleanly — a freeze an operator
+     *  believes is in force and which holds nothing, which is the exact failure mode a freeze must
+     *  never have. The DB CHECK cannot close this: `length(btrim(...)) > 0` TESTS a value, it does
+     *  not STORE one, so `" prod"` passes it. Trimming here is one barrier ahead of the table and
+     *  covers every writer that goes through the API, which is all of them.
+     *
+     *  `.trim()` before `.min(1)` also makes an all-whitespace value a 400 naming the addressing
+     *  rule rather than a row that silently matches nothing. It changes no emitted JSON Schema
+     *  (`z.toJSONSchema` still yields `{"type":"string","minLength":1}`), so it is not an API
+     *  change — verified against the generated document, not inferred. */
+    environment: z.string().trim().min(1).optional(),
     /** Narrows `environment` to one `properties.region`, e.g. `"amer"`. A target that declares no
-     *  region does NOT match a region-narrowed freeze: it has not said it is that region. */
-    region: z.string().min(1).optional()
+     *  region does NOT match a region-narrowed freeze: it has not said it is that region.
+     *  Trimmed for exactly the reason `environment` is — same comparison, same silent no-match. */
+    region: z.string().trim().min(1).optional()
   })
   .refine((m) => (m.allEnvironments === true) !== (m.environment !== undefined), {
     message:

@@ -111,9 +111,19 @@ export async function activeInstanceFreezesInWindow(
  *                                          NOT match a region-narrowed freeze: it has not said it
  *                                          is that region.
  *
- * Comparison is exact on the trimmed strings both sides already store — `readStageCoordinate`
- * trims what the graph declares and 0086's CHECK refuses a blank match value, so neither side can
- * carry whitespace. Deliberately NOT case-insensitive: `properties.environment` is an opaque
+ * Comparison is EXACT (`!==`), and both sides are trimmed BEFORE they get here — `readStageCoordinate`
+ * trims what the graph declares, and `InstanceFreezeMatchSchema` trims what the operator sends.
+ *
+ * THAT SECOND HALF WAS MISSING AND THIS DOCBLOCK ASSERTED IT ANYWAY (M25.3 review finding 3). What
+ * it originally claimed was that 0086's `instance_freezes_match_ck` closed the operator side; it
+ * does not, and could not — `length(btrim("match_environment")) > 0` TESTS a value, it does not
+ * STORE one, so `" prod"` satisfies the CHECK, is accepted with 200, lists cleanly, and then matches
+ * nothing at all. A freeze that holds nothing while reading as in force is the one failure mode this
+ * tier must not have, and the guard against it now lives where the value enters (the Zod schema's
+ * `.trim()`), with this comparison staying exact. Recorded rather than quietly corrected because a
+ * well-written comment naming a hazard is a signal to sweep, not evidence it was handled.
+ *
+ * Deliberately NOT case-insensitive: `properties.environment` is an opaque
  * operator-chosen label everywhere else in this repo (`listRegionTargets` compares it with `=`),
  * and one matcher folding case while the region view does not is the drift this file is careful
  * about.
