@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { filterFreezesByScopes, type FreezeRow } from "./freezes-repo.js";
 import { instanceFreezeCovers, type InstanceFreezeRow } from "./instance-freezes-repo.js";
-import { freezesByTarget, unionFreezes, type EffectiveFreeze } from "./freeze-scope.js";
+import {
+  freezesByTarget,
+  rollbackExemptible,
+  unionFreezes,
+  type EffectiveFreeze
+} from "./freeze-scope.js";
 
 /**
  * THE TWO PROPERTIES `freeze-scope.ts` DECLARES, measured without a database.
@@ -274,5 +279,24 @@ describe("filterFreezesByScopes", () => {
 
   it("returns [] for an empty scope set without inspecting the rows", () => {
     expect(filterFreezesByScopes([freeze("f", "svc")], [])).toEqual([]);
+  });
+});
+
+describe("rollbackExemptible — owner decision D7 stops at the tier boundary (M25.3)", () => {
+  // The predicate BOTH D7 seams consult (`gate-orchestrator.ts`'s `freezeExemptRollback` and
+  // `reconcile.ts`'s per-target `continue`). Unit-tested here because it is the whole rule, and
+  // because the integration cases that exercise it cost a container each.
+  const org = { tier: "org" } as const;
+  const platform = { tier: "platform" } as const;
+
+  it("exempts a set of org freezes and refuses any set containing a platform freeze", () => {
+    expect(rollbackExemptible([]), "nothing covering is trivially exempt").toBe(true);
+    expect(rollbackExemptible([org, org])).toBe(true);
+    expect(rollbackExemptible([platform])).toBe(false);
+    // THE MIXED CASE, and the direction that matters: an org freeze beside a platform one does NOT
+    // lend the set the exemption. `every` and not `some`, and a one-element test cannot tell the
+    // two apart — which is why both orders are here.
+    expect(rollbackExemptible([org, platform])).toBe(false);
+    expect(rollbackExemptible([platform, org])).toBe(false);
   });
 });

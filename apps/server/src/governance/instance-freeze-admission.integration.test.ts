@@ -158,7 +158,15 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
   /** The LIFECYCLE edge, deliberately: it keeps any-target-frozen => block (there is no such thing
    *  as accepting three quarters of a change) and it is the ONLY path on which the override loop is
    *  reachable at all — `EvaluateWaveGateContext` carries no `overrideFreeze` field. That is the
-   *  proposal's "honest limit" and it is pre-existing, not created by M25.3. */
+   *  proposal's "honest limit" and it is pre-existing, not created by M25.3.
+   *
+   *  `targetObjectIds` MUST BE THE CHANGE'S DECLARED TARGETS — components/services — and never a
+   *  placement, because that is what the production caller supplies. `coordination/gates.ts`'s
+   *  `evaluateLifecycleGate` builds this set as `targetObjectIdsOf(changeObject.properties)`; only
+   *  the WAVE boundary ever sees placements (the plan compiler expands targets into them). Passing
+   *  a placement here was a review finding: it made cases E and F green in a configuration the
+   *  lifecycle edge cannot produce, and it is the reason case E2 below exists — a component target
+   *  declares no stage coordinate, so at this edge ONLY a deployment-wide platform freeze matches. */
   const acceptGate = (
     targetObjectIds: string[],
     changeObjectId: string,
@@ -180,6 +188,22 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
 
   const propose = (label: string, targets: string[]) =>
     admin.changes.propose({ name: uniq(label), targets });
+
+  /** The wave boundary FOR A ROLLBACK — the D7 exemption path (case I). `isRollback` lives on the
+   *  shared `GateContext` and only `evaluateWaveGate` ever sets it in production. */
+  const rollbackWaveGate = (targetObjectIds: string[], changeObjectId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      evaluateGovernanceGate(tx, getSharedCelSandbox(), null, {
+        orgId: org.orgId,
+        changeObjectId,
+        targetObjectIds,
+        actorObjectId: org.orgId,
+        emergency: false,
+        gateKind: "wave_boundary",
+        gateRef: { waveIndex: 0 },
+        isRollback: true
+      })
+    );
 
   // ============================================================================================
   // A — WIRING. Built, and INSTALLED.
@@ -366,15 +390,24 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     const prod = await stage(env, "amer");
     const component = await componentAt("e-component", [prod]);
     const change = await propose("e-change", [component.id]);
+    // THE TARGETS THE LIFECYCLE EDGE ACTUALLY BUILDS — the change's DECLARED targets, never its
+    // placements (see `acceptGate`). An earlier version of this case passed `component.at(prod)`,
+    // which no production caller of `lifecycle_edge` supplies, and paired it with an
+    // environment-addressed freeze — a combination that only matches because of the placement.
+    const declared = [component.id];
     // THE MOST PRIVILEGED TENANT PRINCIPAL THIS ORG CAN HAVE: Owner at the ORG ROOT, which is the
     // widest scope `hasPermission`'s org-filtered `scopeExpandCte` can express. If anyone could
     // override a platform freeze, it would be this actor.
     const owner = await createTestUser(server, org, [{ role: "Owner", scope: orgRootId }]);
 
     const key = uniq("e-platform");
-    await platformFreeze(key, { environment: env }); // overridable defaults to false
+    // DEPLOYMENT-WIDE, AND THAT IS THE POINT, not a convenience: `allEnvironments` is the ONE
+    // addressing form that reaches a component-shaped target, so it is the only form under which
+    // this edge — the only edge the override loop runs on — can reach the ruling at all. Case E2
+    // pins the other half of that fact. Authored and lifted inside this case, per the file header.
+    await platformFreeze(key, { allEnvironments: true }); // overridable defaults to false
 
-    const refused = await acceptGate([component.at(prod)], change.id, owner.objectId, {
+    const refused = await acceptGate(declared, change.id, owner.objectId, {
       reason: "E: incident bridge approved"
     });
     expect(
@@ -393,9 +426,9 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     // THE OTHER DIRECTION. Same freeze key, same actor, same reason — one operator-set bit apart.
     // Without this arm the assertion above would pass just as well against a tier nobody can ever
     // override for any reason, which is not what was ruled.
-    await platformFreeze(key, { environment: env }, { overridable: true });
+    await platformFreeze(key, { allEnvironments: true }, { overridable: true });
 
-    const admitted = await acceptGate([component.at(prod)], change.id, owner.objectId, {
+    const admitted = await acceptGate(declared, change.id, owner.objectId, {
       reason: "E: incident bridge approved"
     });
     expect(
@@ -406,19 +439,69 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
 
     // AND THE REASON IS STILL MANDATORY under the admitted bit — the two authorities are
     // independent and both are required, so admitting override does not admit an unreasoned one.
-    const noReason = await acceptGate([component.at(prod)], change.id, owner.objectId, {
+    const noReason = await acceptGate(declared, change.id, owner.objectId, {
       reason: "   "
     });
     expect(noReason.verdict).toBe("block");
 
     // AND A PRINCIPAL WITHOUT THE PERMISSION IS STILL REFUSED under the admitted bit.
     const viewer = await createTestUser(server, org, [{ role: "Viewer", scope: orgRootId }]);
-    const unprivileged = await acceptGate([component.at(prod)], change.id, viewer.objectId, {
+    const unprivileged = await acceptGate(declared, change.id, viewer.objectId, {
       reason: "E: let me through"
     });
     expect(unprivileged.verdict).toBe("block");
 
     await admin.instanceFreezes.lift(key, { reason: "E: cleanup" }, OPERATOR_TOKEN);
+  });
+
+  // ============================================================================================
+  // E2 — WHERE THE OVERRIDE RULING CAN AND CANNOT BE REACHED. The limit, pinned rather than
+  // described, because it is the shape a reviewer found cases E and F passing in.
+  // ============================================================================================
+  it("E2: an environment-addressed platform freeze holds at the WAVE boundary and is invisible at the LIFECYCLE edge — so `overridable` is only reachable deployment-wide", async () => {
+    const env = uniq("e2-env");
+    const prod = await stage(env, "amer");
+    const component = await componentAt("e2-component", [prod]);
+    const change = await propose("e2-change", [component.id]);
+    const owner = await createTestUser(server, org, [{ role: "Owner", scope: orgRootId }]);
+
+    const key = uniq("e2-platform");
+    // AUTHORED `overridable: true`, so an allow below cannot be read as "the operator forbade it".
+    await platformFreeze(key, { environment: env }, { overridable: true });
+
+    // THE CONTROL — it really is in force, at the boundary where a stage coordinate exists. Without
+    // this the assertion underneath would pass just as well against a freeze that was never written.
+    const held = await waveGate([component.at(prod)], change.id);
+    expect(
+      held.verdict,
+      "the wave boundary resolves a PLACEMENT, whose deployment-target declares the environment"
+    ).toBe("block");
+
+    // THE LIMIT. `evaluateLifecycleGate` evaluates the change's DECLARED targets — a component,
+    // which is not a deployment-target and declares no stage coordinate — so
+    // `instanceFreezeCovers` is false for every form except `allEnvironments`. The accept edge
+    // therefore ALLOWS while the wave boundary blocks.
+    const accepted = await acceptGate([component.id], change.id, owner.objectId, {
+      reason: "E2: would override if there were anything to override"
+    });
+    expect(
+      accepted.verdict,
+      "an environment-addressed platform freeze does not reach the accept edge: the target declares no stage"
+    ).toBe("allow");
+    // AND THE ALLOW IS "NOTHING MATCHED", NOT "OVERRIDDEN" — the distinction the whole case turns
+    // on. An override would have produced an entry here and a `freeze.override` audit event.
+    expect(
+      accepted.freezeOverrides ?? [],
+      "nothing was overridden, because nothing matched — which is why `overridable` buys nothing for an environment-addressed freeze"
+    ).toEqual([]);
+
+    // THE CONSEQUENCE, STATED SO IT CHANGES LOUDLY: `EvaluateWaveGateContext` carries no
+    // `overrideFreeze` (pre-existing, and true at the org tier too), so the override loop runs ONLY
+    // on `validating -> accepted`. Combine the two facts and `overridable: true` is exercisable for
+    // `allEnvironments` freezes and for nothing else. If a later change gives the wave boundary an
+    // override path, or expands a component target to its placements at the accept edge, this
+    // assertion goes red and the ADR-0040 §7 limit has to be rewritten rather than quietly lapsing.
+    await admin.instanceFreezes.lift(key, { reason: "E2: cleanup" }, OPERATOR_TOKEN);
   });
 
   // ============================================================================================
@@ -430,26 +513,50 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     const component = await componentAt("f-component", [prod]);
     const change = await propose("f-change", [component.id]);
     const owner = await createTestUser(server, org, [{ role: "Owner", scope: orgRootId }]);
+    // The lifecycle edge's REAL target set (see `acceptGate` and case E2).
+    const declared = [component.id];
 
     const key = uniq("f-platform");
     // The platform freeze is authored OVERRIDABLE from the start, so this case measures the
-    // quantifier and not the ruling case E already owns.
-    await platformFreeze(key, { environment: env }, { overridable: true });
+    // quantifier and not the ruling case E already owns — and DEPLOYMENT-WIDE, because that is the
+    // only form that reaches a component-shaped target at this edge (case E2).
+    await platformFreeze(key, { allEnvironments: true }, { overridable: true });
     const orgFreeze = await orgFreezeAt(component.id, "f-component-freeze");
 
     // Satisfying the platform freeze alone is not authority over the org freeze. The org-root Owner
     // holds `freeze:override` at the root, which EXPANDS DOWN to the component — so to make the
     // quantifier the thing under test, the actor here holds it nowhere.
     const nobody = await createTestUser(server, org, [{ role: "Viewer", scope: orgRootId }]);
-    const neither = await acceptGate([component.at(prod)], change.id, nobody.objectId, {
+    const neither = await acceptGate(declared, change.id, nobody.objectId, {
       reason: "F: attempt"
     });
     expect(neither.verdict).toBe("block");
 
+    // THE SHARP ARM, and the one the `nobody` arm above does NOT measure: an actor who holds
+    // `freeze:override` SOMEWHERE — enough to satisfy the org freeze at its own scope — and not at
+    // the org root, where the admitted platform freeze is checked. A Viewer proves nothing about
+    // the quantifier because it fails both halves; this principal fails exactly one, which is what
+    // "every freeze, at ITS OWN scope" means. Scope expansion runs DOWNWARD, so an Owner at the
+    // component reaches the component and never the root above it.
+    const componentOwner = await createTestUser(server, org, [
+      { role: "Owner", scope: component.id }
+    ]);
+    const partial = await acceptGate(declared, change.id, componentOwner.objectId, {
+      reason: "F: authority over the org freeze only"
+    });
+    expect(
+      partial.verdict,
+      "authority over one freeze is not authority over the other — the quantifier is universal"
+    ).toBe("block");
+    expect(
+      partial.inputContext.overrideRejected,
+      "and the refusal names the tier and the scope it was checked at, not merely 'blocked'"
+    ).toEqual(expect.stringContaining(orgRootId));
+
     // The org-root Owner satisfies BOTH — the platform freeze at the org root (admitted), and the
     // org freeze at the component (reached by org-root scope expansion). Both overrides are
     // recorded INDIVIDUALLY: one audited override per freeze, never one for the set.
-    const both = await acceptGate([component.at(prod)], change.id, owner.objectId, {
+    const both = await acceptGate(declared, change.id, owner.objectId, {
       reason: "F: incident bridge approved"
     });
     expect(both.verdict).toBe("allow");
@@ -464,11 +571,116 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     // platform one still blocks an actor with no override at all — the floor property, which lives
     // entirely in `overridable` and never in the merge.
     await admin.freezes.lift(orgFreeze.id, { reason: "F: org lifts its own" });
-    const stillPlatform = await acceptGate([component.at(prod)], change.id, nobody.objectId);
+    const stillPlatform = await acceptGate(declared, change.id, nobody.objectId);
     expect(stillPlatform.verdict).toBe("block");
     expect((stillPlatform.inputContext.freeze as { tier: string }).tier).toBe("platform");
 
     await admin.instanceFreezes.lift(key, { reason: "F: cleanup" }, OPERATOR_TOKEN);
+  });
+
+  // ============================================================================================
+  // H — WHITESPACE IN THE OPERATOR'S MATCH VALUE. A freeze that reads as in force and holds
+  // NOTHING is the one failure mode this tier must not have.
+  // ============================================================================================
+  it("H: an environment authored with stray whitespace is trimmed and still holds — it does not silently match nothing", async () => {
+    const env = uniq("h-env");
+    const prod = await stage(env, "amer");
+    const component = await componentAt("h-component", [prod]);
+    const change = await propose("h-change", [component.id]);
+
+    // THE FIXTURE IS THE BUG: `readStageCoordinate` trims what the GRAPH declares and
+    // `instanceFreezeCovers` compares with `!==`, so an untrimmed `" env "` on the operator's side
+    // matched nothing at all while `PUT` returned 200 and `GET /v1/instance/freezes` listed the row
+    // cleanly. 0086's `instance_freezes_match_ck` cannot close it — `length(btrim(...)) > 0` TESTS
+    // a value, it does not STORE one.
+    const key = uniq("h-platform");
+    const written = await platformFreeze(key, { environment: `  ${env}  `, region: " amer " });
+    expect(
+      written.match.environment,
+      "the value is trimmed where it ENTERS, so what is stored is what will be compared"
+    ).toBe(env);
+    expect(written.match.region).toBe("amer");
+
+    const gate = await waveGate([component.at(prod)], change.id);
+    expect(
+      gate.verdict,
+      "and it therefore actually holds — the assertion that would have failed before the trim"
+    ).toBe("block");
+
+    await admin.instanceFreezes.lift(key, { reason: "H: cleanup" }, OPERATOR_TOKEN);
+
+    // AN ALL-WHITESPACE VALUE IS A 400 NAMING THE ADDRESSING RULE, not a row that matches nothing:
+    // `.trim()` runs BEFORE `.min(1)`, so "   " is an absent environment, and an absent environment
+    // is not deployment-wide (case B2).
+    await expect(
+      admin.instanceFreezes.put(
+        uniq("h-blank"),
+        { ...openWindow(), reason: "H: blank", match: { environment: "   " } },
+        OPERATOR_TOKEN
+      )
+    ).rejects.toBeInstanceOf(ScpApiError);
+  });
+
+  // ============================================================================================
+  // I — THE D7 ROLLBACK EXEMPTION STOPS AT THE TIER BOUNDARY. Both directions, one freeze apart.
+  // ============================================================================================
+  it("I: a rollback wave is exempt from an ORG freeze and is NOT exempt from a platform freeze", async () => {
+    const env = uniq("i-env");
+    const prod = await stage(env, "amer");
+    const component = await componentAt("i-component", [prod]);
+    const change = await propose("i-change", [component.id]);
+    const targets = [component.at(prod)];
+
+    // DIRECTION ONE — D7 UNCHANGED AT THE ORG TIER. Holding a rollback pins a broken release in
+    // place for the whole window, and this is the arm that would go red if the fix had simply
+    // deleted the exemption instead of bounding it.
+    const orgFreeze = await orgFreezeAt(component.id, "i-org-freeze");
+    expect(
+      (await waveGate(targets, change.id)).verdict,
+      "the control: the org freeze really does cover this wave"
+    ).toBe("block");
+    expect(
+      (await rollbackWaveGate(targets, change.id)).verdict,
+      "D7 stands at the org tier — the org owns both sides of the 'broken release vs change window' trade"
+    ).toBe("allow");
+
+    // DIRECTION TWO — A PLATFORM FREEZE IS NEVER STOOD ASIDE. `POST /v1/changes/{id}/rollback`
+    // requires `object:write` at the org and nothing else: no `freeze:override`, no reason, no
+    // operator token. A tier-blind D7 made that the CHEAPEST route past the freeze `checkFreeze`
+    // tells the caller "no tenant role can override, however privileged" — cheaper than the
+    // override it is contrasted with, which is the contradiction this arm pins.
+    const key = uniq("i-platform");
+    await platformFreeze(key, { environment: env });
+    const underBoth = await rollbackWaveGate(targets, change.id);
+    expect(
+      underBoth.verdict,
+      "a rollback does not walk past a platform freeze, and a covering org freeze beside it does not lend it the exemption"
+    ).toBe("block");
+    expect((underBoth.inputContext.freeze as { tier: string }).tier).toBe("platform");
+
+    // AND NOT BECAUSE THE ORG FREEZE WAS THERE. Retract it and the platform freeze alone still
+    // refuses the rollback — otherwise this case would pass against a rule that merely made a
+    // MIXED covering set inexempt.
+    await admin.freezes.lift(orgFreeze.id, { reason: "I: org lifts its own" });
+    const platformOnly = await rollbackWaveGate(targets, change.id);
+    expect(platformOnly.verdict).toBe("block");
+    expect((platformOnly.inputContext.freeze as { tier: string }).tier).toBe("platform");
+
+    // `overridable` IS DELIBERATELY NOT A ROLLBACK ADMISSION. The natural guess is that the
+    // operator-set bit should also admit D7; it must not, because `overridable` admits a REASONED
+    // override by an actor holding `freeze:override` at the org root, and the rollback path checks
+    // none of that. One bit, one meaning.
+    await platformFreeze(key, { environment: env }, { overridable: true });
+    expect(
+      (await rollbackWaveGate(targets, change.id)).verdict,
+      "admitting a high-privilege audited override does not silently admit an unaudited one at object:write"
+    ).toBe("block");
+
+    await admin.instanceFreezes.lift(key, { reason: "I: cleanup" }, OPERATOR_TOKEN);
+    expect(
+      (await rollbackWaveGate(targets, change.id)).verdict,
+      "and with the platform freeze retracted the rollback moves again — the refusal was the freeze, not the rollback"
+    ).toBe("allow");
   });
 
   // ============================================================================================
