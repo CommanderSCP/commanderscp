@@ -165,9 +165,11 @@ async function run(args: string[]): Promise<void> {
 }
 
 // Warm the dynamic import once, in a hook (see outpost-reconcile-precondition.test.ts for why).
+// No per-hook budget: the package's declared hookTimeout (vitest.config.ts, 30s) governs — a
+// trailing number here would be a SECOND owner of the same deadline (#265's hook census refuses it).
 beforeAll(async () => {
   await import("./cli.js");
-}, 30_000);
+});
 
 beforeEach(async () => {
   inventoryCalls.length = 0;
