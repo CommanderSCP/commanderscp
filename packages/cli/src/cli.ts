@@ -27,9 +27,13 @@ import type {
   ObjectListResponse,
   Pat,
   Plan,
+  PlanDiff,
   PlanDiffSummary,
+  PlanDependencyProducerDiffEntry,
   PlanExecutorBindingDiffEntry,
+  PlanGovernanceMoveRungDiffEntry,
   PlanObjectDiffEntry,
+  PlanPlacementDiffEntry,
   PlanRelationshipDiffEntry,
   PlanSourceMappingDiffEntry,
   PolicyEvaluateResponse,
@@ -1392,15 +1396,35 @@ export function parseScopeFlag(value: string): SourceMappingScope | null {
   return parsed.data;
 }
 
+/**
+ * EVERY collection `computePlanDiff` can emit, and the union is the point: a collection that is
+ * computed, counted in `summary`, but missing here is a change the operator approves without ever
+ * being shown it. `printPlanResult` spreads all of them, and the `never` arm below is what makes
+ * "add a collection, forget the table" a TYPE ERROR rather than a silent omission — which is how
+ * `placements`, `producers` and `governanceMoveRungs` each went unprinted for a while.
+ */
 type PlanDiffEntry =
   | PlanObjectDiffEntry
   | PlanRelationshipDiffEntry
   | PlanSourceMappingDiffEntry
-  | PlanExecutorBindingDiffEntry;
+  | PlanPlacementDiffEntry
+  | PlanExecutorBindingDiffEntry
+  | PlanDependencyProducerDiffEntry
+  | PlanGovernanceMoveRungDiffEntry;
 
+/** Every branch returns the SAME four keys in the same order — `tableLines` takes its columns from
+ *  the FIRST row only, so a branch with a different key set prints blanks for every later row. */
 export function diffEntryRow(entry: PlanDiffEntry): Record<string, string> {
   if (entry.kind === "object") {
     return { kind: "object", action: entry.action, ref: entry.urn, reason: entry.reason };
+  }
+  if (entry.kind === "relationship") {
+    return {
+      kind: "relationship",
+      action: entry.action,
+      ref: `${entry.fromUrn} --${entry.typeId}--> ${entry.toUrn}`,
+      reason: entry.reason
+    };
   }
   if (entry.kind === "source-mapping") {
     // The ref is part of the mapping IDENTITY (ADR-0030 §1), so it MUST appear here: two mappings
@@ -1428,12 +1452,81 @@ export function diffEntryRow(entry: PlanDiffEntry): Record<string, string> {
       reason: entry.reason
     };
   }
+  if (entry.kind === "placement") {
+    return {
+      kind: "placement",
+      action: entry.action,
+      ref: `${entry.componentUrn} @ ${entry.deploymentTargetUrn}`,
+      reason: entry.reason
+    };
+  }
+  if (entry.kind === "dependency-producer") {
+    // The DISPLACED producer is this entry's most consequential fact — an `update` takes a
+    // coordinate away from a component the manifest never mentions — so it belongs in the row an
+    // operator approves, not only in `--output json`.
+    const displaced =
+      entry.displacedProducerUrn === undefined
+        ? ""
+        : ` (taking it from ${entry.displacedProducerUrn})`;
+    return {
+      kind: "dependency-producer",
+      action: entry.action,
+      ref: `${entry.ecosystem}:${entry.coordinate} -> ${entry.producerUrn}${displaced}`,
+      reason: entry.reason
+    };
+  }
+  if (entry.kind === "governance-move-rung") {
+    // A `delete` here DISABLES a governance bar, and a disabled bar's symptom is an ABSENCE of
+    // refusals — nothing downstream surfaces the mistake, so the plan table is the only place an
+    // operator can catch it. Hence the action is spelled out in words as well as in the column.
+    const act =
+      entry.action === "create"
+        ? "enable"
+        : entry.action === "delete"
+          ? "DISABLE"
+          : "already enabled";
+    return {
+      kind: "governance-move-rung",
+      action: entry.action,
+      ref: `${act} governance:move enforcement on ${entry.subjectUrn}`,
+      reason: entry.reason
+    };
+  }
+  // Unreachable for any kind the union knows — the `never` binding turns a NEW collection into a
+  // compile error here. The runtime row exists anyway because entries are parsed off the wire: an
+  // older CLI reading a newer server's plan must show the row as UNKNOWN rather than mislabel it
+  // (this fall-through used to print every unknown kind as "relationship" with undefined refs).
+  const unknown: never = entry;
+  const wire = unknown as { kind?: unknown; action?: unknown; reason?: unknown };
   return {
-    kind: "relationship",
-    action: entry.action,
-    ref: `${entry.fromUrn} --${entry.typeId}--> ${entry.toUrn}`,
-    reason: entry.reason
+    kind: `unknown(${String(wire.kind)})`,
+    action: String(wire.action ?? ""),
+    ref: "(this CLI does not know this entry kind — use --output json)",
+    reason: String(wire.reason ?? "")
   };
+}
+
+/**
+ * EVERY collection the diff can carry, flattened into the rows `scp plan` prints. Exported so the
+ * "nothing computed is invisible" property is testable without capturing stdout.
+ *
+ * All but the first two are optional on the wire (a plan stored before the collection existed has
+ * no key; for `producers` and `governanceMoveRungs` an absent key additionally means "this stack
+ * manages none") — but every one that IS present must be PRINTED, or a plan whose only content is
+ * bindings, placements, producers or rungs shows an EMPTY table under a NON-ZERO summary, and an
+ * operator approves a diff they were never shown. Sharpest for a rung `delete`: it turns off a
+ * governance bar whose only symptom is an absence of refusals, so no later signal catches it.
+ */
+export function planDiffEntries(diff: PlanDiff): PlanDiffEntry[] {
+  return [
+    ...diff.objects,
+    ...diff.relationships,
+    ...(diff.sourceMappings ?? []),
+    ...(diff.placements ?? []),
+    ...(diff.executorBindings ?? []),
+    ...(diff.producers ?? []),
+    ...(diff.governanceMoveRungs ?? [])
+  ];
 }
 
 function summaryLine(summary: PlanDiffSummary): string {
@@ -1446,16 +1539,7 @@ function printPlanResult(plan: Plan, output: OutputFormat): void {
     console.log(JSON.stringify(plan, null, 2));
     return;
   }
-  // `sourceMappings`/`executorBindings` are optional on the wire (a plan stored before C1 has
-  // neither) — but they must be PRINTED, or a plan whose only content is bindings shows an empty
-  // table and an operator approves a diff they were never shown.
-  const entries: PlanDiffEntry[] = [
-    ...plan.diff.objects,
-    ...plan.diff.relationships,
-    ...(plan.diff.sourceMappings ?? []),
-    ...(plan.diff.executorBindings ?? [])
-  ];
-  printResult(entries, "table", (item) => diffEntryRow(item as PlanDiffEntry));
+  printResult(planDiffEntries(plan.diff), "table", (item) => diffEntryRow(item as PlanDiffEntry));
   console.log(
     `\nPlan ${plan.id} (${plan.stackName}, status: ${plan.status}): ${summaryLine(plan.diff.summary)}`
   );

@@ -54,8 +54,11 @@ import {
  *  5. **THE MEMBER QUESTION**, settled behaviourally: removing B from `[A, B]` disables B, and A
  *     stays enforced.
  *  6. **THE AUTHORITY.** `policy:write` at-or-above the subject, against the REAL applying
- *     principal. Paired with a control apply by the same Operator so the 403 is a statement about
- *     the collection and not about Operators and plans.
+ *     principal — on the ENABLE and on the DISABLE alike. Paired with a control apply by the same
+ *     Operator so the 403 is a statement about the collection and not about Operators and plans.
+ *     The disable half (c) is the one that matters more: narrowing the check to `create` would let
+ *     an Operator turn a governance bar OFF, and a bar that is off announces itself only by an
+ *     absence of refusals.
  *  7. **THE MONOTONE REFUSAL.** A manifest that drops a rung under an ENABLED upper rung fails its
  *     apply with the verb's own 409, naming the upper rung — reporting a successful disable that
  *     leaves every move under the subtree enforced anyway is the worst of both.
@@ -69,6 +72,7 @@ import {
  * | Mutation | Measured |
  * |---|---|
  * | delete `checks.push(governanceMoveRungScopeCheck(…))` from `prepareApplyChecks` | EXACTLY 1 fails: "(6)(b)" — `promise resolved … instead of rejecting`; the rung is written by a principal holding `policy:write` nowhere. "(6)(a)" stays green, which is what makes the 403 a statement about the COLLECTION and not about Operators and plans |
+ * | narrow `prepareApplyChecks`'s rung loop to `if (entry.action === "create")` | EXACTLY 1 fails: "(6)(c)" — `promise resolved … instead of rejecting`, then the bar is measurably down. Before (6)(c) existed this mutation was GREEN across all 44 tests of this file, `move-enforcement.integration` and `governance-managed-write-doors`, and a probe confirmed an org-root Operator holding `policy:write` nowhere could disable a standing rung through it |
  * | apply calls the bare `enableGovernanceMoveRung` instead of `enableGovernanceMoveRungWithEffects` | EXACTLY 1 fails: "(3)", `expected [] to have a length of 1` — no Decision, no audit event. "(2) WIRING" STAYS GREEN, which is precisely why a rung-is-enforced gate is not sufficient on its own |
  * | an absent `governanceMoveRungs` key maps to `[]` in `computeDiffForManifest` | EXACTLY 1 fails: "(1)", on the SUBSTANTIVE assertion — `an absent governanceMoveRungs key manages nothing …: expected false to be true`. The standing bar was disabled by a manifest that merely forgot the key. This is the catastrophic direction and it is the one the message names |
  * | drop the `delete` loop from `executePlanDiff`'s rung block | 2 fail: "(5)" (`the dropped member's rung must be disabled: expected true to be false`) and "(7)" (`promise resolved … instead of rejecting` — a disable that never runs cannot be refused by the monotone check either). Recorded as two because the second shows the 409 is reached through the WRITE and not asserted independently of it |
@@ -351,9 +355,55 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
 
       // Nothing was written, and nothing was HALF written: the checks are drained to completion
       // before `executePlanDiff` runs, so the service this plan would have created is absent too.
-      await expect(
-        admin.services.get(`urn:scp:${stackName}:service:svc`)
-      ).rejects.toMatchObject({ status: 404 });
+      await expect(admin.services.get(`urn:scp:${stackName}:service:svc`)).rejects.toMatchObject({
+        status: 404
+      });
+    });
+
+    /**
+     * THE DISABLE HALF, and the reason it is a separate case rather than a variant of (b).
+     *
+     * `prepareApplyChecks` authorizes every NON-NOOP entry. Narrow that one predicate to
+     * `entry.action === "create"` and (a), (b) and every other gate in this file stay green while an
+     * Operator holding `policy:write` NOWHERE can delete a rung out of a manifest and turn a
+     * governance bar off. That is strictly worse than the enable direction it shares a check with:
+     * an unauthorized ENABLE announces itself the first time somebody is refused a move, an
+     * unauthorized DISABLE announces itself by an ABSENCE of refusals — nothing, until an audit
+     * notices where a governed object ended up. The same asymmetry is why an absent collection is
+     * unmanaged (1) rather than empty.
+     */
+    it("(c) …and the SAME Operator is REFUSED a plan that DISABLES one — the authority covers deletes, not just creates", async () => {
+      const stackName = `stack-${randomUUID().slice(0, 8)}`;
+      function build(subjects: ("a" | "b")[]) {
+        const app = new App();
+        const stack = new Stack(app, stackName);
+        const a = new Service(stack, "a", { name: "A" });
+        const b = new Service(stack, "b", { name: "B" });
+        for (const s of subjects) stack.addGovernanceMoveRung(s === "a" ? a : b);
+        return stack.synth();
+      }
+
+      // The ADMIN establishes both bars — the Operator never had authority to create them, so the
+      // delete they attempt below is a delete of somebody else's standing enforcement.
+      await applyLatest(build(["a", "b"]));
+      const bUrn = `urn:scp:${stackName}:service:b`;
+      expect(await enforcedAt(bUrn)).toBe(true);
+
+      // The Operator plans the same stack with B dropped. Planning is fine — it writes nothing.
+      const plan = await operator.plans.create(build(["a"]));
+      expect(
+        Object.fromEntries(
+          (plan.diff.governanceMoveRungs ?? []).map((r) => [r.subjectUrn, r.action])
+        )
+      ).toMatchObject({ [bUrn]: "delete" });
+
+      await expect(operator.plans.apply(plan.id)).rejects.toMatchObject({ status: 403 });
+
+      // THE SUBSTANTIVE ASSERTION: the bar is still up. A refusal that let the row through anyway
+      // would be a 403 nobody is protected by.
+      expect(await enforcedAt(bUrn), "a refused apply must leave the standing rung enforcing").toBe(
+        true
+      );
     });
   });
 
@@ -406,9 +456,9 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
 
       // Nothing half-applied: the refusal threw inside the apply transaction.
       expect(await enforcedAt(svcUrn)).toBe(true);
-      expect(
-        (await admin.governanceMove.rungs()).rungs.map((r) => r.subjectObjectId)
-      ).toContain(domain.id);
+      expect((await admin.governanceMove.rungs()).rungs.map((r) => r.subjectObjectId)).toContain(
+        domain.id
+      );
     });
   });
 
@@ -459,10 +509,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
 
       // …and the identical move by a principal who DOES hold `governance:move` succeeds. Different
       // component, so neither case depends on the other having run.
-      const moved = await admin.components.setService(
-        `urn:scp:${stackName}:component:y`,
-        destUrn
-      );
+      const moved = await admin.components.setService(`urn:scp:${stackName}:component:y`, destUrn);
       expect(moved.id).toBeTruthy();
       expect(dest.urn).toBe(destUrn);
     });
