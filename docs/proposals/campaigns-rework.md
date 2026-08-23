@@ -809,6 +809,38 @@ Confirm: **(a) no freeze federates in M25** — the platform tier is per-instanc
 
 ---
 
+## The wave-target hold projection — shape fixed by reading the component (2026-08-23)
+
+The per-target hold Decision (pillar 1 §1.4) is **not** what the UI renders. The UI session read
+`PipelineWaveCard` rather than describing it from memory, and the correction matters: the card reads a
+**wave-target projection field** via `holdFor(target)` — shaped like `ChangeStageDependencyTarget`
+(`dependencies[]`, each `{ dependsOn, dependsOnName, summary, satisfied, source }`). The Decision is
+only the `WhyLink` target behind "Why?".
+
+So the additive read field on the wave-target projection is the actual feed, and it must satisfy four
+properties. **This field is NOT part of M25.2** (which is internal-only and holds no codegen slot); it
+lands with the codegen slot, which means these are design inputs before the field is written rather
+than change requests after it.
+
+1. **It carries the covering freezes themselves, never a boolean.** A `frozen: true` flag would force
+   the client to join back to something to say anything useful.
+2. **Each covering freeze carries a server-composed `summary` sentence**, rendered verbatim. This is
+   the established idiom: `describeStageDependencyHold`'s sentence is both the rendered line and what
+   the Decision's `reasonTree` carries. **The UI composes no copy from raw fields** (charter principle
+   6 — explainability is the server's return value, not a client's reconstruction).
+3. **`scopeObjectId` is enriched to `{ objectId, name }`** server-side — the same ruling as
+   dependency producers §12.6 Q1. A bare id renders as a UUID; an N+1 client join is worse.
+4. **`endsAt` is carried and `now` is not.** The client's own clock contextualizes it. This is the
+   dedup contract from §1.4 and a render need must never push `now` into the record.
+
+**The raw status stays beside the hold.** A held target's status is still `pending` — the hold line
+*explains* that status rather than replacing it. The same rule governs the wave aggregate: a mixed
+wave must be nameable without overwriting what each target individually is, and the aggregate value is
+computed server-side (it feeds `wave-status.ts`'s `waveStatusTone`/`waveStatusBorder` plus
+`PipelineWaveCard`'s wave-level badge — the only two render sites, and never recomputed client-side).
+
+---
+
 ## Coordination with the UI session
 
 UI work for this rework is owned by the session on `claude/ui-review-worktree-efc42b`, which is **98 commits ahead of `main` with no open PR** and is the correct base for UI work. Agreed with that session on 2026-08-23:
