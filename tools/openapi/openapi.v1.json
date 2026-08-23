@@ -42983,6 +42983,24 @@
                           ],
                           "additionalProperties": false
                         }
+                      },
+                      "governanceMoveRungs": {
+                        "description": "governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author \"governanceMoveRungs\": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "subjectIdOrUrn": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            }
+                          },
+                          "required": [
+                            "subjectIdOrUrn"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -43314,6 +43332,24 @@
                               "producerUrn",
                               "ecosystem",
                               "coordinate"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "governanceMoveRungs": {
+                          "description": "governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author \"governanceMoveRungs\": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "subjectIdOrUrn": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              }
+                            },
+                            "required": [
+                              "subjectIdOrUrn"
                             ],
                             "additionalProperties": false
                           }
@@ -43800,6 +43836,40 @@
                               "ecosystem",
                               "coordinate",
                               "producerUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "governanceMoveRungs": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "governance-move-rung"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "subjectUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "subjectUrn",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -44357,6 +44427,24 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "governanceMoveRungs": {
+                          "description": "governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author \"governanceMoveRungs\": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "subjectIdOrUrn": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              }
+                            },
+                            "required": [
+                              "subjectIdOrUrn"
+                            ],
+                            "additionalProperties": false
+                          }
                         }
                       },
                       "required": [
@@ -44840,6 +44928,40 @@
                               "ecosystem",
                               "coordinate",
                               "producerUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "governanceMoveRungs": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "governance-move-rung"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "subjectUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "subjectUrn",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -45400,6 +45522,24 @@
                                 ],
                                 "additionalProperties": false
                               }
+                            },
+                            "governanceMoveRungs": {
+                              "description": "governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author \"governanceMoveRungs\": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.",
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "subjectIdOrUrn": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 512
+                                  }
+                                },
+                                "required": [
+                                  "subjectIdOrUrn"
+                                ],
+                                "additionalProperties": false
+                              }
                             }
                           },
                           "required": [
@@ -45883,6 +46023,40 @@
                                   "ecosystem",
                                   "coordinate",
                                   "producerUrn",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "governanceMoveRungs": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "governance-move-rung"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "subjectUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "subjectUrn",
                                   "reason"
                                 ],
                                 "additionalProperties": false

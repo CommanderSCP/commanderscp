@@ -19,16 +19,17 @@ import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { forbidden, notFound } from "../errors.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
-import { insertDecision } from "../coordination/decisions-repo.js";
-import { appendAuditEvent } from "../audit/audit-repo.js";
 import {
   assertRungSubjectType,
-  disableGovernanceMoveRung,
-  enableGovernanceMoveRung,
   listGovernanceMoveRungs,
   readInstanceMoveRung,
   resolveGovernanceMoveEnforcement
 } from "../governance/move-enforcement.js";
+import {
+  disableGovernanceMoveRungWithEffects,
+  enableGovernanceMoveRungWithEffects,
+  governanceMoveRungScopeCheck
+} from "../governance/move-rung-write.js";
 
 /**
  * THE `governance:move` LATTICE'S API SURFACE (charter principle 3: API → SDK → CLI → IaC → UI).
@@ -58,7 +59,9 @@ import {
  * registration, not at request time. `/objects/:type/:idOrUrn/health` is the existing precedent for
  * a per-object sub-resource and this follows it exactly.
  *
- * EVERY WRITE RECORDS A DECISION AND AN AUDIT EVENT IN THE SAME TRANSACTION (charter principle 6).
+ * EVERY WRITE RECORDS A DECISION AND AN AUDIT EVENT IN THE SAME TRANSACTION (charter principle 6) —
+ * and that is now true of a SECOND door, `iac/plans-repo.ts`'s apply (proposal §9.6 Q4), because both
+ * go through `governance/move-rung-write.ts` rather than each assembling the act for itself.
  */
 
 const RungParamSchema = z.object({ idOrUrn: z.string().min(1) });
@@ -67,9 +70,11 @@ const ObjectEnforcementParamSchema = z.object({
   idOrUrn: z.string().min(1)
 });
 
-/** The Decision kind every rung write records. Named as a constant so `GET /decisions?kind=…`
- *  consumers and this route's tests have one import site. */
-export const GOVERNANCE_MOVE_DECISION_KIND = "governance.move_enforcement";
+/** The Decision kind every rung write records. It lives with the WRITE (`governance/move-rung-write
+ *  .ts`), which is what makes the claim above true for the IaC door as well as this one; re-exported
+ *  here because this route was its first home and `GET /decisions?kind=…` consumers import it from
+ *  the surface they read about. */
+export { GOVERNANCE_MOVE_DECISION_KIND } from "../governance/move-rung-write.js";
 
 /** Constant-time comparison of the presented operator token against the configured one. The fifth
  *  copy of this helper (`instance-scan-floors.ts`, `scan-db.ts`, `scanner-assignments.ts`,
@@ -215,46 +220,23 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
         const subject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.idOrUrn);
         const tier = assertRungSubjectType(subject.typeId, request.params.idOrUrn);
         // A governance-authoring act, at the same bar as authoring a policy. `authorize` expands
-        // strictly UPWARD from the scope object, so this IS "at-or-above the subject".
+        // strictly UPWARD from the scope object, so this IS "at-or-above the subject". The pair is
+        // `governance/move-rung-write.ts`'s, imported rather than restated so this door and the IaC
+        // apply door cannot come to require different things.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "policy:write",
-          scopeObjectId: subject.id
+          ...governanceMoveRungScopeCheck(subject.id)
         });
-        const decision = await insertDecision(tx, {
+        // THE WHOLE ACT — row + Decision + audit event — through the function the IaC apply door
+        // calls too, so neither can perform a fraction of it.
+        const { decisionId } = await enableGovernanceMoveRungWithEffects(tx, {
           orgId: auth.orgId,
-          kind: GOVERNANCE_MOVE_DECISION_KIND,
-          subjectId: subject.id,
-          verdict: "enabled",
-          inputContext: {
-            tier,
-            subjectObjectId: subject.id,
-            enabledByObjectId: auth.subjectObjectId,
-            ...(request.body.note === undefined ? {} : { note: request.body.note })
-          },
-          reasonTree: {
-            summary:
-              `governance:move enforcement enabled at ${tier} '${subject.name}' — every containment ` +
-              `move of an object under it now requires 'governance:move' at-or-above the object AND ` +
-              `at-or-above the destination`
-          }
-        });
-        await enableGovernanceMoveRung(tx, {
-          orgId: auth.orgId,
-          subjectObjectId: subject.id,
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id,
+          subject: { id: subject.id, name: subject.name },
           tier,
-          enabledByObjectId: auth.subjectObjectId,
-          decisionId: decision.id
-        });
-        await appendAuditEvent(tx, {
-          orgId: auth.orgId,
-          actorId: auth.subjectObjectId,
-          action: "governance.move_enforcement.enable",
-          subjectId: subject.id,
-          reason: request.body.note ?? `enabled at ${tier}`,
-          decisionId: decision.id,
-          requestId: request.id
+          ...(request.body.note === undefined ? {} : { note: request.body.note })
         });
         return {
           subjectObjectId: subject.id,
@@ -263,7 +245,7 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
           enforcement: await resolveGovernanceMoveEnforcement(tx, auth.orgId, {
             objectId: subject.id
           }),
-          decisionId: decision.id
+          decisionId
         };
       });
       reply.status(200).send(body);
@@ -301,8 +283,7 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "policy:write",
-          scopeObjectId: subject.id
+          ...governanceMoveRungScopeCheck(subject.id)
         });
         // 404 before the monotone refusal: "there is no rung here" and "you may not disable this
         // rung" are different answers with different remedies, and collapsing them would send an
@@ -313,32 +294,14 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
             `governance:move enforcement is not enabled at '${request.params.idOrUrn}' — there is no rung here to disable`
           );
         }
-        await disableGovernanceMoveRung(tx, {
+        // The whole act — the monotone 409, the row, the Decision and the audit event — through the
+        // function the IaC apply door calls too.
+        const { decisionId } = await disableGovernanceMoveRungWithEffects(tx, {
           orgId: auth.orgId,
-          subjectObjectId: subject.id
-        });
-        const decision = await insertDecision(tx, {
-          orgId: auth.orgId,
-          kind: GOVERNANCE_MOVE_DECISION_KIND,
-          subjectId: subject.id,
-          verdict: "disabled",
-          inputContext: {
-            tier,
-            subjectObjectId: subject.id,
-            disabledByObjectId: auth.subjectObjectId
-          },
-          reasonTree: {
-            summary: `governance:move enforcement disabled at ${tier} '${subject.name}'`
-          }
-        });
-        await appendAuditEvent(tx, {
-          orgId: auth.orgId,
-          actorId: auth.subjectObjectId,
-          action: "governance.move_enforcement.disable",
-          subjectId: subject.id,
-          reason: `disabled at ${tier}`,
-          decisionId: decision.id,
-          requestId: request.id
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id,
+          subject: { id: subject.id, name: subject.name },
+          tier
         });
         return {
           subjectObjectId: subject.id,
@@ -347,7 +310,7 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
           enforcement: await resolveGovernanceMoveEnforcement(tx, auth.orgId, {
             objectId: subject.id
           }),
-          decisionId: decision.id
+          decisionId
         };
       });
       reply.status(200).send(body);

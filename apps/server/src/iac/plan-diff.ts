@@ -5,6 +5,7 @@ import type {
   PlanDiff,
   PlanExecutorBindingDiffEntry,
   PlanExecutorBindingTarget,
+  PlanGovernanceMoveRungDiffEntry,
   PlanObjectDiffEntry,
   PlanObjectTarget,
   PlanPlacementDiffEntry,
@@ -14,6 +15,7 @@ import type {
   SourceMappingScope
 } from "@scp/schemas";
 import { canonicalJson } from "../graph/objects-repo.js";
+import { moveRungTierForObjectType } from "../governance/move-enforcement.js";
 
 /** The relationship type that binds a component to its owning service (migration 0021).
  *  EXPORTED because `plans-repo.ts`'s apply path has to ask the same question at its door — a
@@ -205,6 +207,23 @@ export interface ResolvedManifest {
    *  therefore cannot retract a stack's LAST declaration. Use the retract verb (which also reports
    *  the bumps already in flight), or hand-author `"producers": []`. */
   producers: ResolvedManifestDependencyProducer[] | null;
+  /** THE SECOND `| null` COLLECTION, and it is null for the same KIND of reason `producers` is —
+   *  read that comment first (proposal governance-reach-on-containment-move.md §9.6 Q4).
+   *
+   *  `null`  = the manifest had NO `governanceMoveRungs` key = this stack manages no rungs. The
+   *            prune step is skipped ENTIRELY and no diff entries are emitted at all.
+   *  `[]`    = the key was present and empty = "I manage rungs and declare none" -> disable all.
+   *
+   *  A rung is a governance BAR: pruning one on a forgotten key un-governs a subtree, and the
+   *  symptom is an ABSENCE of refusals — moves that should have been refused quietly succeeding,
+   *  which nothing surfaces until somebody audits where a governed object ended up. Same accepted
+   *  cost as `producers`: `Stack.synth()` omits an empty collection, so `@scp/iac` cannot disable a
+   *  stack's LAST rung; use `DELETE /governance/move-enforcement/rungs/{idOrUrn}` or hand-author
+   *  `"governanceMoveRungs": []`.
+   *
+   *  Each member is the SUBJECT CONTAINER'S URN — the whole identity. A rung has no value beyond
+   *  existing, and its TIER is derived from the subject's object type, never declared. */
+  governanceMoveRungs: string[] | null;
 }
 
 export interface ExistingObjectSnapshot {
@@ -288,6 +307,19 @@ export interface PlanDiffSnapshot {
    * it is converging.
    */
   existingDependencyProducers: ResolvedManifestDependencyProducer[];
+  /**
+   * Live `governance_move_rungs` rows whose SUBJECT CONTAINER this stack owns, as subject URNs — the
+   * prune pool AND the existence pool, which for this collection is ONE pool rather than the two
+   * `producers` needs.
+   *
+   * The second pool exists there because a producer declaration is keyed on the COORDINATE and can
+   * change hands with no row deleted, so "who holds it" is a question the ownership-scoped pool
+   * cannot answer. A rung is keyed on its SUBJECT and cannot change hands at all: it is enabled at
+   * that container or it is not. And a declaration whose subject this stack does not own is REFUSED
+   * (`invalidGovernanceMoveRungDeclarations`), so every rung this diff asks about is one whose
+   * subject is in the pool. One pool is therefore not a simplification — it is the whole question.
+   */
+  managedGovernanceMoveRungs: string[];
 }
 
 function relKey(t: ExistingRelationshipTriple): string {
@@ -906,6 +938,69 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     producerEntries = entries;
   }
 
+  // -----------------------------------------------------------------------------------------
+  // `governance:move` RUNGS (ADR-0038 §2; proposal §9.6 Q4). Converge-then-prune like the four
+  // above, with the SAME divergence `producers` has and NONE of its additions:
+  //
+  //  - THE DIVERGENCE: `manifest.governanceMoveRungs === null` (no key) means UNMANAGED. The whole
+  //    block is skipped — no entries, no prune, and the diff carries no `governanceMoveRungs` key at
+  //    all, so the stored plan itself records that this stack manages no rungs.
+  //  - NO `update`: a rung has no value beyond existing (the tier is derived from the subject's
+  //    type), so the verdicts are enable, disable and "already enabled".
+  //  - NO transfer case: identity is the SUBJECT, and a rung cannot change hands.
+  // -----------------------------------------------------------------------------------------
+  let governanceMoveRungEntries: PlanGovernanceMoveRungDiffEntry[] | undefined;
+  if (manifest.governanceMoveRungs !== null) {
+    const entries: PlanGovernanceMoveRungDiffEntry[] = [];
+    const live = new Set(snapshot.managedGovernanceMoveRungs);
+    const declared = new Set<string>();
+
+    for (const subjectUrn of manifest.governanceMoveRungs) {
+      // Two declarations of one subject are one rung; collapsing keeps the diff well-formed (the
+      // same treatment a duplicate producer coordinate gets). There is nothing to reject here — a
+      // repeated rung is idempotent rather than ambiguous, because the collection carries no value
+      // the two copies could disagree about.
+      if (declared.has(subjectUrn)) continue;
+      declared.add(subjectUrn);
+      if (live.has(subjectUrn)) {
+        entries.push({
+          kind: "governance-move-rung",
+          action: "noop",
+          subjectUrn,
+          reason: "matches current state"
+        });
+        noops++;
+        continue;
+      }
+      entries.push({
+        kind: "governance-move-rung",
+        action: "create",
+        subjectUrn,
+        reason:
+          "governance:move enforcement is not enabled at this container — this plan ENABLES it, so " +
+          "every containment move under it will require 'governance:move' at BOTH ends"
+      });
+      creates++;
+    }
+
+    // THE PRUNE, reached only because the key was present. Sorted by subject so the reviewed diff is
+    // stable regardless of row order from the DB, exactly like every other prune here.
+    const prunes = [...live].filter((urn) => !declared.has(urn)).sort((a, b) => a.localeCompare(b));
+    for (const subjectUrn of prunes) {
+      entries.push({
+        kind: "governance-move-rung",
+        action: "delete",
+        subjectUrn,
+        reason:
+          "enabled at a container this stack owns, no longer present in the desired manifest's " +
+          "governanceMoveRungs — this plan DISABLES the bar (refused 409 at apply if an upper rung " +
+          "is enabled, because an enablement above cannot be undone below)"
+      });
+      deletes++;
+    }
+    governanceMoveRungEntries = entries;
+  }
+
   return {
     objects: objectEntries,
     relationships: relationshipEntries,
@@ -914,6 +1009,10 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     placements: placementEntries,
     // OMITTED, not `[]`, when the stack manages no producers — the absent key IS the statement.
     ...(producerEntries !== undefined ? { producers: producerEntries } : {}),
+    // Same rule, same reason — see `ResolvedManifest.governanceMoveRungs`.
+    ...(governanceMoveRungEntries !== undefined
+      ? { governanceMoveRungs: governanceMoveRungEntries }
+      : {}),
     summary: { creates, updates, deletes, noops }
   };
 }
@@ -1084,6 +1183,58 @@ export function invalidProducerDeclarations(diff: PlanDiff): string[] {
         `producer ${coordinate} is currently produced by ${entry.displacedProducerUrn}, which this ` +
           `stack does not manage — a transfer away from another stack's component must go through ` +
           `POST /dependencies/producers, which reports the blast radius and the bumps in flight`
+      );
+    }
+  }
+  return offenders;
+}
+
+/**
+ * Human-readable descriptions of any `governanceMoveRungs` entry this plan may not make (ADR-0038 §2;
+ * proposal §9.6 Q4). Two refusals, both derived PURELY from the diff so `plans-repo.ts` can re-run
+ * them at apply against the STORED diff — the same defence-in-depth every other guard here gets:
+ *
+ *  1. THE SUBJECT IS NOT AN OBJECT THIS STACK OWNS. `governance_move_rungs` carries no labels, so
+ *     ownership is inherited from the subject container — the rule the projection tables and
+ *     `producers` already use. Without it, stack A enables a rung on stack B's service: a row A can
+ *     never see again (it is outside A's pool) and B's next apply disables one it never enabled. The
+ *     practical consequence is worth stating rather than discovering: a rung on the ORG ROOT, or on
+ *     a container another stack owns, is authored through the API/CLI, not through a manifest.
+ *
+ *  2. THE SUBJECT CANNOT CARRY A RUNG. `moveRungTierForObjectType` is the one place that decides
+ *     which types can (`assertRungSubjectType` is its throwing form at the HTTP door): a rung governs
+ *     moves of the things INSIDE a container, and nothing is contained by a component or a
+ *     deployment-target, so a rung on one would govern the empty set of moves — a bar an operator
+ *     believes they set and that refuses nothing, which is worse than no bar. The typed verb refuses
+ *     it; this door must too, or IaC is the way around it.
+ *
+ * `delete` entries are exempt from BOTH: a prune entry can only have come from the ownership-scoped
+ * pool (so ownership is proved), its subject's type was proved when the rung was enabled, and the
+ * subject container may legitimately be being deleted by this same plan.
+ */
+export function invalidGovernanceMoveRungDeclarations(diff: PlanDiff): string[] {
+  const typeByUrn = new Map<string, string>();
+  for (const obj of diff.objects) {
+    if (obj.action !== "delete") typeByUrn.set(obj.urn, obj.typeId);
+  }
+
+  const offenders: string[] = [];
+  for (const entry of diff.governanceMoveRungs ?? []) {
+    if (entry.action === "delete") continue;
+    const typeId = typeByUrn.get(entry.subjectUrn);
+    if (typeId === undefined) {
+      offenders.push(
+        `governance:move rung at ${entry.subjectUrn}, which this stack does not manage — a rung's ` +
+          `ownership is inherited from its subject container, so declare that container in this ` +
+          `stack's manifest, or enable the rung through PUT /governance/move-enforcement/rungs`
+      );
+      continue;
+    }
+    if (!moveRungTierForObjectType(typeId)) {
+      offenders.push(
+        `governance:move rung at ${entry.subjectUrn}, which is a '${typeId}' — a rung sits on a ` +
+          `CONTAINER (the org root, a containment domain, a service or an assembly), because it ` +
+          `governs moves of the things inside it, and nothing is contained by a '${typeId}'`
       );
     }
   }

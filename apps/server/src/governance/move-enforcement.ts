@@ -346,9 +346,10 @@ export async function assertGovernanceMoveAdmits(
 }
 
 // ---------------------------------------------------------------------------------------------
-// The rung write verbs. Authorization lives at the route (`routes/governance-move.ts`); what lives
-// here is the SHAPE of an enablement and the monotone refusal, so the HTTP door and any later door
-// (IaC rungs are a named follow-up) cannot disagree about either.
+// The rung write verbs. Authorization and the Decision/audit pair live one module over
+// (`governance/move-rung-write.ts`, shared by the HTTP door and the IaC apply door — the follow-up
+// named in proposal §9.6 Q4, now built); what lives HERE is the SHAPE of an enablement and the
+// monotone refusal, so no door can disagree with another about either.
 // ---------------------------------------------------------------------------------------------
 
 export interface EnableGovernanceMoveRungInput {

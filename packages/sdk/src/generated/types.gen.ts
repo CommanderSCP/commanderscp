@@ -10818,6 +10818,12 @@ export type CreatePlanData = {
                 ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
                 coordinate: string;
             }>;
+            /**
+             * governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author "governanceMoveRungs": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.
+             */
+            governanceMoveRungs?: Array<{
+                subjectIdOrUrn: string;
+            }>;
         };
     };
     path?: never;
@@ -10940,6 +10946,12 @@ export type CreatePlanResponses = {
                 ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
                 coordinate: string;
             }>;
+            /**
+             * governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author "governanceMoveRungs": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.
+             */
+            governanceMoveRungs?: Array<{
+                subjectIdOrUrn: string;
+            }>;
         };
         diff: {
             objects: Array<{
@@ -11019,6 +11031,12 @@ export type CreatePlanResponses = {
                 coordinate: string;
                 producerUrn: string;
                 displacedProducerUrn?: string;
+                reason: string;
+            }>;
+            governanceMoveRungs?: Array<{
+                kind: 'governance-move-rung';
+                action: 'create' | 'delete' | 'noop';
+                subjectUrn: string;
                 reason: string;
             }>;
             summary: {
@@ -11160,6 +11178,12 @@ export type GetPlanResponses = {
                 ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
                 coordinate: string;
             }>;
+            /**
+             * governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author "governanceMoveRungs": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.
+             */
+            governanceMoveRungs?: Array<{
+                subjectIdOrUrn: string;
+            }>;
         };
         diff: {
             objects: Array<{
@@ -11239,6 +11263,12 @@ export type GetPlanResponses = {
                 coordinate: string;
                 producerUrn: string;
                 displacedProducerUrn?: string;
+                reason: string;
+            }>;
+            governanceMoveRungs?: Array<{
+                kind: 'governance-move-rung';
+                action: 'create' | 'delete' | 'noop';
+                subjectUrn: string;
                 reason: string;
             }>;
             summary: {
@@ -11392,6 +11422,12 @@ export type ApplyPlanResponses = {
                     ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
                     coordinate: string;
                 }>;
+                /**
+                 * governance:move enforcement rungs (ADR-0038 §2). LIKE 'producers' and UNLIKE every other collection here, an ABSENT key means UNMANAGED and disables NOTHING — a rung is a governance bar, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry disables that rung, and a present-but-empty array disables every rung on a container this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot disable the LAST rung — use DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author "governanceMoveRungs": []. The subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a disable under an enabled upper rung is refused 409.
+                 */
+                governanceMoveRungs?: Array<{
+                    subjectIdOrUrn: string;
+                }>;
             };
             diff: {
                 objects: Array<{
@@ -11471,6 +11507,12 @@ export type ApplyPlanResponses = {
                     coordinate: string;
                     producerUrn: string;
                     displacedProducerUrn?: string;
+                    reason: string;
+                }>;
+                governanceMoveRungs?: Array<{
+                    kind: 'governance-move-rung';
+                    action: 'create' | 'delete' | 'noop';
+                    subjectUrn: string;
                     reason: string;
                 }>;
                 summary: {

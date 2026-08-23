@@ -3576,6 +3576,9 @@ export const zCreatePlanResponse = z.object({
                 'oci'
             ]),
             coordinate: z.string().min(1).max(512)
+        })).optional(),
+        governanceMoveRungs: z.array(z.object({
+            subjectIdOrUrn: z.string().min(1).max(512)
         })).optional()
     }),
     diff: z.object({
@@ -3696,6 +3699,16 @@ export const zCreatePlanResponse = z.object({
             coordinate: z.string().min(1).max(512),
             producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            reason: z.string()
+        })).optional(),
+        governanceMoveRungs: z.array(z.object({
+            kind: z.literal('governance-move-rung'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            subjectUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             reason: z.string()
         })).optional(),
         summary: z.object({
@@ -3790,6 +3803,9 @@ export const zGetPlanResponse = z.object({
                 'oci'
             ]),
             coordinate: z.string().min(1).max(512)
+        })).optional(),
+        governanceMoveRungs: z.array(z.object({
+            subjectIdOrUrn: z.string().min(1).max(512)
         })).optional()
     }),
     diff: z.object({
@@ -3910,6 +3926,16 @@ export const zGetPlanResponse = z.object({
             coordinate: z.string().min(1).max(512),
             producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            reason: z.string()
+        })).optional(),
+        governanceMoveRungs: z.array(z.object({
+            kind: z.literal('governance-move-rung'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            subjectUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             reason: z.string()
         })).optional(),
         summary: z.object({
@@ -4005,6 +4031,9 @@ export const zApplyPlanResponse = z.object({
                     'oci'
                 ]),
                 coordinate: z.string().min(1).max(512)
+            })).optional(),
+            governanceMoveRungs: z.array(z.object({
+                subjectIdOrUrn: z.string().min(1).max(512)
             })).optional()
         }),
         diff: z.object({
@@ -4125,6 +4154,16 @@ export const zApplyPlanResponse = z.object({
                 coordinate: z.string().min(1).max(512),
                 producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
                 displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+                reason: z.string()
+            })).optional(),
+            governanceMoveRungs: z.array(z.object({
+                kind: z.literal('governance-move-rung'),
+                action: z.enum([
+                    'create',
+                    'delete',
+                    'noop'
+                ]),
+                subjectUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
                 reason: z.string()
             })).optional(),
             summary: z.object({
