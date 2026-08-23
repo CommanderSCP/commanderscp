@@ -14,7 +14,9 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import type { PluginHost } from "../plugin-host/contract.js";
-import { createFreeze } from "../governance/freezes-repo.js";
+import { activeFreezesForScopes, createFreeze } from "../governance/freezes-repo.js";
+import { freezesByTarget, unionFreezes } from "../governance/freeze-scope.js";
+import { containmentScopeIds } from "../graph/containment.js";
 import { evaluateGovernanceGate } from "../governance/gate-orchestrator.js";
 import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import { getLatestPlanForChange } from "./plan-service.js";
@@ -406,6 +408,47 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     ).toHaveLength(1);
     // Still held on the 33rd tick — otherwise "one row" would be true for the boring reason.
     expect(firedFor(app.at(amer))).toBe(0);
+  });
+
+  // ============================================================================================
+  // SET EQUALITY — the property `checkFreeze`'s swap rests on, against real containment walks.
+  // ============================================================================================
+  it("set equality: unionFreezes(freezesByTarget(T)) is the same set as activeFreezesForScopes(containmentScopeIds(T))", async () => {
+    // `gate-orchestrator.ts` replaced the second expression with the first, and its comment claims
+    // they are equal BY CONSTRUCTION — `containmentScopeIds` IS the union of the per-target
+    // `containmentChain` walks, and exact-set membership distributes over that union. "By
+    // construction" is a claim about two functions that can be edited independently, so it is
+    // pinned here, over a fixture whose freezes sit at THREE different rungs of the chain
+    // (deployment-target, component, service) reached by three different containment routes.
+    const svc = await admin.services.create({ name: `equal-svc-${randomUUID().slice(0, 8)}` });
+    const app = await componentAt("equal", [amer, apac, emea, govcloud], svc.id);
+    const other = await componentAt("equal-other", [amer]);
+    await freezeAt(amer.id, "equal-region-freeze"); // route 4
+    await freezeAt(other.id, "equal-component-freeze"); // route 3
+    await freezeAt(svc.id, "equal-service-freeze"); // routes 3 then 2
+
+    const targets = [
+      ...[amer, apac, emea, govcloud].map((p) => app.at(p)),
+      other.at(amer),
+      // A NON-placement target too: a component-shaped (legacy) wave target must resolve
+      // identically through both expressions, or the equality holds only for the shape that
+      // happens to be common today.
+      other.id
+    ];
+
+    const { perTarget, whole } = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const now = new Date();
+      const byTarget = await freezesByTarget(tx, org.orgId, targets, now);
+      const scopeIds = await containmentScopeIds(tx, org.orgId, targets);
+      return {
+        perTarget: unionFreezes(byTarget).map((f) => f.id),
+        whole: (await activeFreezesForScopes(tx, org.orgId, scopeIds, now)).map((f) => f.id)
+      };
+    });
+
+    // Non-empty first, so the equality cannot hold vacuously between two empty sets.
+    expect(perTarget.length).toBe(3);
+    expect(new Set(perTarget)).toEqual(new Set(whole));
   });
 
   // ============================================================================================
