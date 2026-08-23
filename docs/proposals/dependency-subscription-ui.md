@@ -157,3 +157,16 @@ Web unit: page renders the table from a fixture; empty state only after success;
 2. **The "Produces" strip on the producing component's tab (§12.4).** **(A, recommended)** yes — it is the only place a *team* sees that their component's releases now drive other teams' bumps, without visiting Admin. **(B)** Admin page only this round.
 3. **Header scope.** **(A, recommended)** producers + the one-line enablement pointer (§12.3.1). **(B)** also a read-only instance-unlock line here (`GET /instance/dependency-subscription-unlock`, CLI pointer) — cheap, but duplicates the tab's header; a follow-up if admins ask.
 
+### 12.7 Picker paging (2026-08-23 follow-up)
+
+The producer picker in §12.3 point 3 originally read only the first 100 components
+(`ObjectListQuerySchema`'s max — a larger `limit` 400s before auth). An org past 100 components
+could never pick one outside that first page. Fixed with cursor paging, eager-first-page: the first
+`client.components.list({ limit: 100 })` read is unchanged, and a **"Load more (N loaded)"**
+affordance (`DeclareDialogBody`'s `componentsLoadMore` prop, `AdminDependenciesPage`'s
+`useInfiniteQuery`) fetches the next page via the SERVER's own `nextCursor` — never a client-guessed
+offset — and appends it to the picker's in-memory list. `useInfiniteQuery` keeps at most one page in
+flight; the button disables while a fetch is pending, so a double-click cannot start a second one.
+The test that parses every recorded picker query against the real `ObjectListQuerySchema` (§12.5)
+now covers the cursor form too.
+

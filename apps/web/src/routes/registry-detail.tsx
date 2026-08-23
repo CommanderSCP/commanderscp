@@ -1,12 +1,21 @@
 import { useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Unlink } from "lucide-react";
-import { ExecutorTypeSchema, type ExecutorType, type TraverseResult } from "@scp/schemas";
+import { Trash2, Unlink } from "lucide-react";
+import {
+  ExecutorTypeSchema,
+  type ExecutorType,
+  type GovernanceMoveEnforcement,
+  type GovernanceMoveTier,
+  type GraphObject,
+  type TraverseResult
+} from "@scp/schemas";
+import { ScpApiError } from "@scp/sdk";
 import { client } from "../lib/client";
 import { findRegistry, findRegistryByTypeId, getRegistryClient } from "../lib/registries";
 import { registryDetailKey, registryListKey } from "../lib/query-client";
 import { useBasePathParam, useIdOrUrnParam } from "../lib/use-route-params";
+import { cn, focusRing } from "../lib/utils";
 import {
   ForeignOriginNotice,
   isForeignOriginObject,
@@ -24,6 +33,16 @@ import { Notice } from "../components/ui/notice";
 import { KeyValueList } from "../components/ui/key-value-list";
 import { SkeletonRows } from "../components/ui/skeleton";
 import { PageHeader } from "../components/ui/page-header";
+import { SectionLabel } from "../components/ui/section-label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
 import {
   Select,
   SelectContent,
@@ -31,6 +50,7 @@ import {
   SelectTrigger,
   SelectValue
 } from "../components/ui/select";
+import { queryErrorMessage } from "../components/query-error";
 
 /**
  * `/{basePath}/{idOrUrn}` (BUILD_AND_TEST.md §8 M2 item 2) — object properties/labels, owners
@@ -43,6 +63,8 @@ export function RegistryDetailPage(): React.JSX.Element {
   const registry = findRegistry(basePath);
   const detailKey = registryDetailKey(basePath ?? "", idOrUrn ?? "");
   const { domainId: ownDomainId } = useOwnDomainId();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const objectQuery = useQuery({
     queryKey: detailKey,
@@ -58,7 +80,12 @@ export function RegistryDetailPage(): React.JSX.Element {
   const ownersRelatedQuery = useQuery({
     queryKey: [...detailKey, "owners-related"],
     queryFn: () =>
-      client.graph.traverse({ objectId: objectId!, direction: "in", relTypes: ["owns"], maxDepth: 1 }),
+      client.graph.traverse({
+        objectId: objectId!,
+        direction: "in",
+        relTypes: ["owns"],
+        maxDepth: 1
+      }),
     enabled: !!registry?.ownable && !!objectId
   });
   const consumesRelatedQuery = useQuery({
@@ -142,6 +169,18 @@ export function RegistryDetailPage(): React.JSX.Element {
             </Link>
           </>
         }
+      />
+
+      {/* proposal governance-reach-on-containment-move.md §9.4 Q4 follow-up (owner-approved): a
+          read-only pointer to the `governance:move` lattice, on EVERY registry type — the explain
+          read is object-scoped and cheap, and every graph object can sit on some rung's containment
+          chain. Renders NOTHING while pending, on a failed read, or when the lattice does not reach
+          this object — absence here makes no claim; only a successful `enforced: true` answer does. */}
+      <GovernedHereLineForObject
+        typeId={registry.typeId}
+        objectId={object.id}
+        detailKey={detailKey}
+        fetchEnforcement={(type, id) => client.governanceMove.enforcement(type, id)}
       />
 
       {/* M20 (ADR-0031 §6): the one-way publish verb. Self-gates on the object's own
@@ -244,6 +283,22 @@ export function RegistryDetailPage(): React.JSX.Element {
       {object.typeId === "component" && (
         <MergeComponentCard survivorId={object.id} detailKey={detailKey} />
       )}
+
+      {/* Owner decision 2026-08-18: yes, delete offered for every registry type. Confirm dialog +
+          typed-name gate (destructive act); a 409 (container-delete guard, or a governance refusal)
+          or a 403 renders the server's sentence verbatim and the dialog stays open — never an
+          optimistic removal. Last card: it acts on the whole object every card above describes. */}
+      <DeleteObjectCard
+        typeLabel={registry.typeId}
+        name={object.name}
+        urn={object.urn}
+        idOrUrn={object.id}
+        runDelete={(id) => getRegistryClient(client, registry).delete(id)}
+        onDeleted={() => {
+          void queryClient.invalidateQueries({ queryKey: registryListKey(basePath ?? "") });
+          void navigate({ to: "/$basePath", params: { basePath: basePath ?? "" } });
+        }}
+      />
     </div>
   );
 }
@@ -253,7 +308,11 @@ export function RegistryDetailPage(): React.JSX.Element {
  * KeyValueList; nested objects/arrays collapse behind one "view raw" toggle rather than always
  * dumping the whole bag as JSON. No default JSON dump for an object with only scalar properties.
  */
-function PropertiesView({ properties }: { properties: Record<string, unknown> }): React.JSX.Element {
+function PropertiesView({
+  properties
+}: {
+  properties: Record<string, unknown>;
+}): React.JSX.Element {
   const [showRaw, setShowRaw] = useState(false);
   const entries = Object.entries(properties);
   if (entries.length === 0) return <p className="text-sm text-slate-500">No properties set.</p>;
@@ -281,7 +340,8 @@ function PropertiesView({ properties }: { properties: Record<string, unknown> })
             onClick={() => setShowRaw((v) => !v)}
             data-testid="properties-view-raw-toggle"
           >
-            {showRaw ? "Hide raw" : "View raw"} ({nestedCount} nested {nestedCount === 1 ? "value" : "values"})
+            {showRaw ? "Hide raw" : "View raw"} ({nestedCount} nested{" "}
+            {nestedCount === 1 ? "value" : "values"})
           </Button>
           {showRaw && (
             <pre className="mt-2 overflow-auto rounded bg-slate-50 p-3 text-xs">
@@ -318,9 +378,9 @@ function RelatedObjectList({
   const objects = query.data?.objects ?? [];
   const edges = query.data?.edges ?? [];
   const byId = new Map(objects.map((o) => [o.id, o]));
-  const otherIds = [
-    ...new Set(edges.map((e) => (direction === "in" ? e.fromId : e.toId)))
-  ].filter((id) => id !== selfId);
+  const otherIds = [...new Set(edges.map((e) => (direction === "in" ? e.fromId : e.toId)))].filter(
+    (id) => id !== selfId
+  );
 
   if (otherIds.length === 0) {
     return <p className="text-sm text-slate-500">{emptyMessage}</p>;
@@ -556,7 +616,9 @@ function TargetBindingsCard({
                     <Badge variant="neutral">{b.type}</Badge>{" "}
                     <Badge variant="neutral">{b.category}</Badge> {b.pluginModule}
                   </span>
-                  <span className="break-all font-mono text-xs text-slate-500">{b.pluginInstanceId}</span>
+                  <span className="break-all font-mono text-xs text-slate-500">
+                    {b.pluginInstanceId}
+                  </span>
                 </div>
                 <div className="flex gap-2">
                   {/* Relabel this binding to any other routing Type (ADR-0007). */}
@@ -592,9 +654,7 @@ function TargetBindingsCard({
             ))}
           </ul>
         )}
-        {error && (
-          <Alert tone="danger">{error instanceof Error ? error.message : "Failed"}</Alert>
-        )}
+        {error && <Alert tone="danger">{error instanceof Error ? error.message : "Failed"}</Alert>}
       </CardContent>
     </Card>
   );
@@ -709,6 +769,267 @@ function MergeComponentCard({
           </Notice>
         )}
       </CardContent>
+    </Card>
+  );
+}
+
+// -------------------------------------------------------------------------------------------
+// Governed-here line (governance-reach-on-containment-move.md §9.4 Q4 follow-up).
+// -------------------------------------------------------------------------------------------
+
+/** Sentence-case labels for the rung tiers a UI ever needs to name (admin-governance.tsx's
+ *  `CONTAINER_TIERS` covers the same three plus its own "Org root" spelling for the switch; this is
+ *  the read-only prose form used inline in a sentence, so "org root" rather than "Org root"). */
+const GOVERNANCE_MOVE_TIER_LABELS: Record<GovernanceMoveTier, string> = {
+  org: "org root",
+  containment_domain: "containment domain",
+  service: "service",
+  assembly: "assembly"
+};
+
+/**
+ * The rendered line itself — pure, off an already-resolved `GovernanceMoveEnforcement`. Exported for
+ * the test: given `enforced: true`, names the NEAREST rung on this object's chain (rungs arrive
+ * org-root-first per the schema doc, so the last entry is nearest — "+N more" in the tooltip names
+ * the rest); given `enforced: true` with an EMPTY rungs array (the instance rung alone is doing the
+ * work — see `GovernanceMoveEnforcement`'s own doc on the OR), names the instance level instead of a
+ * rung that does not exist. Callers must not invoke this when `enforced` is false — there is nothing
+ * honest to say short of "not enforced here", which is not what this line is for (silence already
+ * says that).
+ */
+export function GovernedHereLine({
+  enforcement
+}: {
+  enforcement: GovernanceMoveEnforcement;
+}): React.JSX.Element {
+  const rungs = enforcement.rungs;
+  const nearest = rungs.length > 0 ? rungs[rungs.length - 1] : undefined;
+  const others = rungs.length > 1 ? rungs.slice(0, -1) : [];
+  const moreTooltip =
+    others.length > 0
+      ? `Also enabled at ${others
+          .map((r) => `${GOVERNANCE_MOVE_TIER_LABELS[r.tier]} '${r.name}'`)
+          .join(", ")}.`
+      : undefined;
+
+  return (
+    <p className="text-xs text-slate-500" data-testid="governed-here-line">
+      Moves here are governed — enforcement enabled at{" "}
+      {nearest ? (
+        <span title={moreTooltip} data-testid="governed-here-rung">
+          {GOVERNANCE_MOVE_TIER_LABELS[nearest.tier]} '
+          <span className="font-medium text-slate-700">{nearest.name}</span>'
+          {others.length > 0 ? ` (+${others.length} more)` : ""}
+        </span>
+      ) : (
+        "the instance level"
+      )}
+      {" — "}
+      <Link to="/admin/governance" className={cn("underline", focusRing)}>
+        Manage
+      </Link>
+    </p>
+  );
+}
+
+/**
+ * Wires the explain read (`GET /objects/{type}/{idOrUrn}/governance-move-enforcement`) to
+ * `GovernedHereLine`, provider-free (`fetchEnforcement` threaded in) so it is testable off a spy
+ * with no route/client mocking. `queryKeyExtra` is the page's own `detailKey` — keying the read off
+ * it (rather than off nothing) is what makes the fetch happen exactly ONCE per object shown, cached
+ * by TanStack Query like every other read on this page.
+ *
+ * Pending, errored, or a successful `enforced: false` all render NOTHING — the line makes a claim
+ * only when it has one to make; absence here is never itself a claim.
+ */
+export function GovernedHereLineForObject({
+  typeId,
+  objectId,
+  detailKey,
+  fetchEnforcement
+}: {
+  typeId: string;
+  objectId: string;
+  detailKey: unknown[];
+  fetchEnforcement: (type: string, idOrUrn: string) => Promise<GovernanceMoveEnforcement>;
+}): React.JSX.Element | null {
+  const query = useQuery({
+    queryKey: [...detailKey, "governance-move-enforcement"],
+    queryFn: () => fetchEnforcement(typeId, objectId)
+  });
+  if (query.data?.enforced !== true) return null;
+  return <GovernedHereLine enforcement={query.data} />;
+}
+
+// -------------------------------------------------------------------------------------------
+// Delete… (owner decision 2026-08-18: every registry type, confirm + rendered refusal).
+// -------------------------------------------------------------------------------------------
+
+/** Verbatim server sentence for a delete refusal — the container-delete guard's 409 (children,
+ *  placements, named with a remedy) or a plain 403 both carry the whole explanation in
+ *  `problem.detail`; `.message` is only the RFC 9457 `title` ("Conflict", "Forbidden"), which is why
+ *  this reads `.problem?.detail` first, exactly `admin-governance.tsx`'s
+ *  `governanceMoveWriteRefusal` does for the sibling refusal class. */
+export function deleteRefusalMessage(error: unknown): string {
+  if (error instanceof ScpApiError) {
+    return error.problem?.detail ?? error.message;
+  }
+  return queryErrorMessage(error);
+}
+
+/**
+ * The confirm dialog's body, portal-free — exported for the test. Requires the object's OWN NAME
+ * typed back (destructive-act gate, the `outposts.tsx`/`component-pipeline.tsx` precedent this
+ * feature has no direct sibling for yet); Delete stays disabled until it matches EXACTLY. A refusal
+ * (409 container-delete guard, 403) renders the server's sentence verbatim and the dialog stays
+ * open — no navigation, no optimistic removal. Success calls `onDeleted`, which the card below turns
+ * into invalidate-and-navigate.
+ */
+export function DeleteObjectDialogBody({
+  typeLabel,
+  name,
+  urn,
+  run,
+  onDeleted,
+  onCancel
+}: {
+  typeLabel: string;
+  name: string;
+  urn: string;
+  run: () => Promise<GraphObject>;
+  onDeleted: () => void;
+  onCancel: () => void;
+}): React.JSX.Element {
+  const [confirmText, setConfirmText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const matches = confirmText === name;
+
+  const doDelete = async () => {
+    // Belt and braces beside the disabled button: the real write never fires on a mismatched name,
+    // whatever dispatched the click.
+    if (!matches) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await run();
+      onDeleted();
+    } catch (e) {
+      setError(e);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="flex flex-col gap-3 text-sm text-slate-600" data-testid="delete-body">
+        <p>
+          Permanently removes this {typeLabel} —{" "}
+          <span className="font-medium text-slate-900">{name}</span>{" "}
+          <span className="font-mono text-xs text-slate-500">{urn}</span>. If anything still depends
+          on it, the server refuses and names what to move or delete first.
+        </p>
+        <label className="block">
+          <SectionLabel as="span">
+            Type <span className="font-mono text-slate-700">{name}</span> to confirm
+          </SectionLabel>
+          <Input
+            className="mt-1 font-mono"
+            value={confirmText}
+            disabled={busy}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder={name}
+            data-testid="delete-confirm-name"
+          />
+        </label>
+        {error !== null ? (
+          <Alert tone="danger" data-testid="delete-error">
+            {deleteRefusalMessage(error)}
+          </Alert>
+        ) : null}
+      </div>
+      <DialogFooter>
+        <Button variant="outline" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+        <Button
+          variant="destructive"
+          onClick={() => void doDelete()}
+          disabled={busy || !matches}
+          data-testid="delete-confirm"
+        >
+          {busy ? "Deleting…" : "Delete"}
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+/**
+ * The card + dialog trigger, threaded provider-free (`runDelete`/`onDeleted`) so the whole flow is
+ * testable without a router. Danger-styled per the design system's `destructive` Button variant;
+ * placed as the LAST card on the page, since it acts on the whole object every card above describes.
+ */
+export function DeleteObjectCard({
+  typeLabel,
+  name,
+  urn,
+  idOrUrn,
+  runDelete,
+  onDeleted
+}: {
+  typeLabel: string;
+  name: string;
+  urn: string;
+  idOrUrn: string;
+  runDelete: (idOrUrn: string) => Promise<GraphObject>;
+  onDeleted: () => void;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Delete</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <p className="text-xs text-slate-500">
+          Permanently removes this {typeLabel}. This cannot be undone from here.
+        </p>
+        <Button
+          variant="destructive"
+          icon={Trash2}
+          className="self-start"
+          onClick={() => setOpen(true)}
+          data-testid="delete-open"
+        >
+          Delete…
+        </Button>
+      </CardContent>
+      <Dialog open={open} onOpenChange={(next) => !next && setOpen(false)}>
+        <DialogContent data-testid="delete-dialog">
+          <DialogHeader>
+            <DialogTitle>Delete {typeLabel}</DialogTitle>
+            <DialogDescription>
+              This soft-deletes the object. If anything still depends on it, the server refuses and
+              names what to move or delete first.
+            </DialogDescription>
+          </DialogHeader>
+          {open ? (
+            <DeleteObjectDialogBody
+              typeLabel={typeLabel}
+              name={name}
+              urn={urn}
+              run={() => runDelete(idOrUrn)}
+              onDeleted={() => {
+                setOpen(false);
+                onDeleted();
+              }}
+              onCancel={() => setOpen(false)}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

@@ -35,6 +35,11 @@ import {
  *     (mutation: drop any one of the three from the preview key → that field's case goes RED);
  *   - the picker's components.list query stays inside ObjectListQuerySchema (limit max 100 — a
  *     larger value is a 400 on the real server, invisible behind a mocked SDK); mutation: 200 → RED;
+ *   - PICKER PAGING (§12.7): past 100 components, "Load more" fetches the next page via the
+ *     SERVER's `nextCursor` and appends it — never a client-guessed offset, never more than one read
+ *     in flight; mutation: drop the cursor from the second read → the schema-validity assertion and
+ *     the exact-cursor assertion both go RED; mutation: fire the fetch twice per click → the
+ *     "exactly one more read" count assertion goes RED;
  *   - every refusal status renders the server sentence; the retract dialog renders the real
  *     response's open bumps and stays open on them.
  *
@@ -94,6 +99,30 @@ const RESET_DECLARE = declareImpl;
 const RESET_RETRACT = retractImpl;
 const RESET_LIST = listImpl;
 
+/** The picker's `components.list` — overridable per test so the paging case (below) can answer a
+ *  real cursor while every other test keeps the fixed two-item, single-page fixture unchanged. */
+let componentsListImpl: (query: unknown) => Promise<{
+  items: { id: string; name: string; urn: string; typeId: string }[];
+  nextCursor: string | null;
+}> = async () => ({
+  items: [
+    {
+      id: COMPONENT.id,
+      name: COMPONENT.name,
+      urn: "urn:scp:default:component:checkout-api",
+      typeId: "component"
+    },
+    {
+      id: "019f0000-0000-7000-8000-00000000c0d1",
+      name: "ledger-api",
+      urn: "urn:scp:default:component:ledger-api",
+      typeId: "component"
+    }
+  ],
+  nextCursor: null
+});
+const RESET_COMPONENTS_LIST = componentsListImpl;
+
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   Link: ({
@@ -148,23 +177,7 @@ vi.mock("../lib/client", () => ({
     components: {
       list: async (query: unknown) => {
         calls.push({ method: "components.list", req: query });
-        return {
-          items: [
-            {
-              id: COMPONENT.id,
-              name: COMPONENT.name,
-              urn: "urn:scp:default:component:checkout-api",
-              typeId: "component"
-            },
-            {
-              id: "019f0000-0000-7000-8000-00000000c0d1",
-              name: "ledger-api",
-              urn: "urn:scp:default:component:ledger-api",
-              typeId: "component"
-            }
-          ],
-          nextCursor: null
-        };
+        return componentsListImpl(query);
       }
     }
   }
@@ -178,6 +191,7 @@ afterEach(() => {
   listImpl = RESET_LIST;
   declareImpl = RESET_DECLARE;
   retractImpl = RESET_RETRACT;
+  componentsListImpl = RESET_COMPONENTS_LIST;
 });
 
 async function settle(): Promise<void> {
@@ -707,6 +721,68 @@ describe("Declare… — dry run FIRST, then the write, and never the write with
       producerIdOrUrn: "urn:scp:default:service:checkout",
       dryRun: true
     });
+    view.unmount();
+  });
+
+  it("PAGING (dependency-subscription-ui.md §12.7): more than 100 components → 'Load more' appears; clicking it fetches the SERVER's cursor and appends the second page, never a parallel loop", async () => {
+    // Page 1: exactly the picker's `limit: 100`, all named so a search for the page-2-only
+    // component matches nothing yet. Page 2: one item, distinctly named, `nextCursor: null` (no
+    // third page).
+    const page1 = Array.from({ length: 100 }, (_, i) => ({
+      id: `019f0000-0000-7000-8000-0000000e${String(i).padStart(4, "0")}`,
+      name: `bulk-component-${i}`,
+      urn: `urn:scp:default:component:bulk-component-${i}`,
+      typeId: "component"
+    }));
+    const page2 = [
+      {
+        id: "019f0000-0000-7000-8000-00000000fe02",
+        name: "second-page-component",
+        urn: "urn:scp:default:component:second-page-component",
+        typeId: "component"
+      }
+    ];
+    componentsListImpl = async (query) => {
+      const cursor = (query as { cursor?: string }).cursor;
+      return cursor === "page-2-cursor"
+        ? { items: page2, nextCursor: null }
+        : { items: page1, nextCursor: "page-2-cursor" };
+    };
+
+    const view = await renderPage();
+    clickInDocument("declare-open");
+    await waitUntil(
+      () => inDocument("declare-producer-load-more") !== null,
+      "the Load more button"
+    );
+    expect(inDocument("declare-producer-load-more")?.textContent).toBe("Load more (100 loaded)");
+
+    // The page-2 component is not yet loaded: searching for it turns up nothing.
+    typeInto(inDocument("declare-producer-search") as HTMLInputElement, "second-page-component");
+    await settle();
+    expect(inDocument("declare-producer-none")).not.toBeNull();
+    expect(inDocument("declare-producer-match")).toBeNull();
+
+    const readsBeforeLoadMore = calls.filter((c) => c.method === "components.list").length;
+    clickInDocument("declare-producer-load-more");
+    await waitUntil(
+      () => inDocument("declare-producer-match") !== null,
+      "the second page's match to render"
+    );
+    expect(inDocument("declare-producer-match")?.textContent).toContain("second-page-component");
+    // Exactly one more read fired — never a parallel/unbounded burst of page fetches.
+    const pickerReads = calls.filter((c) => c.method === "components.list");
+    expect(pickerReads.length).toBe(readsBeforeLoadMore + 1);
+    // The query the SECOND read carried the server's own cursor, and still validates against the
+    // real ObjectListQuerySchema (the paging form, not only the bare-limit form §12.5 already pins).
+    const secondRead = pickerReads.at(-1);
+    if (!secondRead) throw new Error("no second components.list read was recorded");
+    expect((secondRead.req as { cursor?: string }).cursor).toBe("page-2-cursor");
+    const parsed = ObjectListQuerySchema.safeParse(secondRead.req ?? {});
+    expect(parsed.success, JSON.stringify(secondRead.req)).toBe(true);
+
+    // No third page exists (`nextCursor: null`), so the affordance is gone once it is loaded.
+    expect(inDocument("declare-producer-load-more")).toBeNull();
     view.unmount();
   });
 });

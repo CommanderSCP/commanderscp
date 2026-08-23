@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleHelp, ExternalLink, Package } from "lucide-react";
 import type {
   DeclareDependencyLineProducerRequest,
@@ -254,6 +254,20 @@ export function BlastRadiusReport({
 /** The producer picker's data — the components list as the dialog sees it. */
 export type ComponentsRead = ReadState<readonly GraphObject[]>;
 
+/**
+ * Cursor paging for the picker (dependency-subscription-ui.md §12 paging note). `components` above
+ * carries only the pages read so far — the first page loads eagerly (`limit: 100`,
+ * `ObjectListQuerySchema`'s max), and `onLoadMore` fetches the next one via the cursor the SERVER
+ * returned (`nextCursor`), never a client-guessed offset. `loading` disables the affordance so a
+ * double-click cannot start a second fetch — there is exactly one in-flight page at a time, never a
+ * parallel unbounded loop.
+ */
+export interface ComponentsLoadMore {
+  hasMore: boolean;
+  loading: boolean;
+  onLoadMore: () => void;
+}
+
 function componentMatches(c: GraphObject, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (q === "") return true;
@@ -269,11 +283,13 @@ function componentMatches(c: GraphObject, query: string): boolean {
  */
 export function DeclareDialogBody({
   components,
+  componentsLoadMore,
   run,
   onDeclared,
   onCancel
 }: {
   components: ComponentsRead;
+  componentsLoadMore: ComponentsLoadMore;
   run: (req: DeclareDependencyLineProducerRequest) => Promise<DependencyLineProducerVerbResponse>;
   onDeclared: (response: DependencyLineProducerVerbResponse) => void;
   onCancel: () => void;
@@ -446,6 +462,21 @@ export function DeclareDialogBody({
               ) : null}
             </ul>
           )}
+          {components.status === "ok" && componentsLoadMore.hasMore ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="mt-1"
+              disabled={componentsLoadMore.loading}
+              onClick={componentsLoadMore.onLoadMore}
+              data-testid="declare-producer-load-more"
+            >
+              {componentsLoadMore.loading
+                ? "Loading…"
+                : `Load more (${components.data.length} loaded)`}
+            </Button>
+          ) : null}
         </div>
 
         {previewCurrent ? (
@@ -777,6 +808,7 @@ function ProducerRowView({
 export function ProducersView({
   producers,
   components,
+  componentsLoadMore,
   declare,
   retract,
   onDeclared,
@@ -786,6 +818,7 @@ export function ProducersView({
 }: {
   producers: readonly DependencyLineProducerView[];
   components: ComponentsRead;
+  componentsLoadMore: ComponentsLoadMore;
   declare: (
     req: DeclareDependencyLineProducerRequest
   ) => Promise<DependencyLineProducerVerbResponse>;
@@ -910,6 +943,7 @@ export function ProducersView({
           {declareOpen ? (
             <DeclareDialogBody
               components={components}
+              componentsLoadMore={componentsLoadMore}
               run={declare}
               onDeclared={(response) => {
                 setDeclareOpen(false);
@@ -964,10 +998,15 @@ export function AdminDependenciesPage(): React.JSX.Element {
   const managedHere = listQuery.data?.dependencyManagement.managedHere === true;
   // `limit: 100` is ObjectListQuerySchema's MAX (packages/schemas/src/graph.ts) — a larger value is a
   // 400 before auth, which is what every other components.list call site in this app also respects.
-  // The picker therefore offers the first 100 components; a typed id / URN is still sent as-is.
-  const componentsQuery = useQuery({
+  // The first page loads eagerly; an org with more than 100 components gets a "Load more" affordance
+  // (`ComponentsLoadMore`) that fetches subsequent pages via the SERVER's own `nextCursor` — never a
+  // client-guessed offset, and `useInfiniteQuery` guarantees at most one page in flight at a time.
+  const componentsQuery = useInfiniteQuery({
     queryKey: ["components", "picker", { limit: 100 }],
-    queryFn: () => client.components.list({ limit: 100 }),
+    queryFn: ({ pageParam }: { pageParam: string | undefined }) =>
+      client.components.list({ limit: 100, ...(pageParam ? { cursor: pageParam } : {}) }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: isCommander && managedHere
   });
 
@@ -996,8 +1035,13 @@ export function AdminDependenciesPage(): React.JSX.Element {
   const components: ComponentsRead = componentsQuery.error
     ? { status: "error", error: componentsQuery.error }
     : componentsQuery.data
-      ? { status: "ok", data: componentsQuery.data.items }
+      ? { status: "ok", data: componentsQuery.data.pages.flatMap((page) => page.items) }
       : { status: "pending" };
+  const componentsLoadMore: ComponentsLoadMore = {
+    hasMore: componentsQuery.hasNextPage === true,
+    loading: componentsQuery.isFetchingNextPage,
+    onLoadMore: () => void componentsQuery.fetchNextPage()
+  };
 
   const refresh = () => void queryClient.invalidateQueries({ queryKey: dependencyProducersKey() });
 
@@ -1005,6 +1049,7 @@ export function AdminDependenciesPage(): React.JSX.Element {
     <ProducersView
       producers={data.producers}
       components={components}
+      componentsLoadMore={componentsLoadMore}
       declare={(req) => client.dependencyProducers.declare(req)}
       retract={(req) => client.dependencyProducers.retract(req)}
       onDeclared={(response) => {
