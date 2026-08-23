@@ -30,7 +30,13 @@ function freeze(id: string, scopeObjectId: string, atomic = false): FreezeRow {
     reason: "test",
     createdByActorId: "actor",
     createdAt: new Date("2026-01-01T00:00:00Z"),
-    atomic
+    atomic,
+    // M25.1 — a row this fixture hands back has by definition already passed
+    // `activeFreezesInWindow`'s `lifted_at IS NULL` filter, so the live value is the only one that
+    // can reach `filterFreezesByScopes`/`unionFreezes`.
+    liftedAt: null,
+    liftedByActorId: null,
+    liftReason: null
   };
 }
 

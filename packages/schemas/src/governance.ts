@@ -200,7 +200,25 @@ export const FreezeSchema = z.object({
    *  to make an EXISTING required field optional). Required rather than optional deliberately: the
    *  column is `NOT NULL DEFAULT false`, so every row has an answer, and an operator asking "will
    *  this freeze stop the whole release?" must not have to distinguish absent from false. */
-  atomic: z.boolean()
+  atomic: z.boolean(),
+  /** M25.1 — when this freeze was RETRACTED, or `null` while it still stands. A lifted freeze is
+   *  no longer in force whatever `endsAt` says, and it is still returned by `GET /freezes/{id}` and
+   *  `GET /freezes` FOREVER: a `gate`/`freeze_admission` Decision cites `freeze.id` in its
+   *  `inputContext`, and "what was this freeze that blocked me?" must stay answerable (charter
+   *  principle 6). LIFTED IS A FIELD, NOT AN ABSENCE — read it, don't infer it from a 404.
+   *
+   *  REQUIRED AND NULLABLE, exactly like `name` above: every row has an answer to "was this
+   *  retracted", and `null` is that answer for the overwhelming majority. Adding a required
+   *  response property is additive and oasdiff-safe (the rule is never to make an EXISTING required
+   *  field optional). */
+  liftedAt: z.string().datetime().nullable(),
+  /** The actor object that lifted it, or `null`. */
+  liftedByActorId: z.string().uuid().nullable(),
+  /** Why it was lifted — mandatory and non-empty whenever `liftedAt` is set, `null` otherwise. A
+   *  lift is a governance LOOSENING that applies to everyone at once; `freeze:override` already
+   *  refuses to bypass a freeze for a single change without a reason, and retracting one outright
+   *  cannot be held to a lower standard. */
+  liftReason: z.string().nullable()
 });
 export type Freeze = z.infer<typeof FreezeSchema>;
 
@@ -226,6 +244,44 @@ export type CreateFreezeRequest = z.infer<typeof CreateFreezeRequestSchema>;
 export const FreezeIdParamSchema = z.object({ id: z.string().uuid() });
 export const FreezeListResponseSchema = cursorPageResponseSchema(FreezeSchema);
 export type FreezeListResponse = z.infer<typeof FreezeListResponseSchema>;
+
+/**
+ * M25.1 — the body of `DELETE /api/v1/freezes/{id}`.
+ *
+ * A BODY ON A DELETE, following `DeleteSourceMappingRequestSchema` (the shipped precedent on
+ * `DELETE /change-sources/{sourceKind}/mappings`), because the reason is MANDATORY and a free-text
+ * governance justification does not belong in a query string.
+ *
+ * `reason` IS REQUIRED, and that is the whole schema. Lifting a freeze retracts a protection for
+ * EVERYONE covered by it — a strictly wider blast radius than `freeze:override`, which lets one
+ * change past and leaves the freeze standing, and which has refused to work without a reason since
+ * M4 (DESIGN §10.3). A loosening with no recorded reason is exactly what that refusal exists to
+ * prevent.
+ */
+export const LiftFreezeRequestSchema = z.object({
+  reason: z.string().min(1)
+});
+export type LiftFreezeRequest = z.infer<typeof LiftFreezeRequestSchema>;
+
+/**
+ * M25.1 — the body of `PATCH /api/v1/freezes/{id}`: move `endsAt`, in either direction.
+ *
+ * SHORTENING is a LOOSENING (governance stops protecting sooner) and EXTENDING is a TIGHTENING.
+ * Both need `freeze:write` at the freeze's own scope and both require a reason; the server records
+ * which direction it was, together with the old and new instants, in the audit event and the
+ * Decision — "who made governance weaker, and when" is the question an audit log is read with.
+ *
+ * `startsAt` IS DELIBERATELY NOT EDITABLE. Moving the start of an open window is either a no-op or
+ * a rewriting of history ("this freeze was in force from a time it was not"), and `endsAt` is the
+ * whole of the escape hatch M25.1 exists to provide. Shortening `endsAt` to a past instant is
+ * allowed and is NOT re-labelled a lift: same effect on admission, different and truthful record,
+ * and reversible where a lift is not.
+ */
+export const UpdateFreezeWindowRequestSchema = z.object({
+  endsAt: z.string().datetime(),
+  reason: z.string().min(1)
+});
+export type UpdateFreezeWindowRequest = z.infer<typeof UpdateFreezeWindowRequestSchema>;
 
 // -------------------------------------------------------------------------------------------
 // `scp policy evaluate` (BUILD_AND_TEST.md §8 M4 item 7) — a dry-run gate evaluation against a

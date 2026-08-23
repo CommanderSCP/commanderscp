@@ -547,6 +547,13 @@
       "when": 1788140000000,
       "tag": "0077_freeze_atomic",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1788146000000,
+      "tag": "0078_freeze_lift",
+      "breakpoints": true
     }
   ]
 }

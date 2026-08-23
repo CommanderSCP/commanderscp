@@ -14428,6 +14428,9 @@ export type ListFreezesResponses = {
             createdByActorId: string;
             createdAt: string;
             atomic: boolean;
+            liftedAt: string | null;
+            liftedByActorId: string | null;
+            liftReason: string | null;
         }>;
         nextCursor: string | null;
     };
@@ -14501,10 +14504,106 @@ export type CreateFreezeResponses = {
         createdByActorId: string;
         createdAt: string;
         atomic: boolean;
+        liftedAt: string | null;
+        liftedByActorId: string | null;
+        liftReason: string | null;
     };
 };
 
 export type CreateFreezeResponse = CreateFreezeResponses[keyof CreateFreezeResponses];
+
+export type LiftFreezeData = {
+    body: {
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/freezes/{id}';
+};
+
+export type LiftFreezeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type LiftFreezeError = LiftFreezeErrors[keyof LiftFreezeErrors];
+
+export type LiftFreezeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        scopeObjectId: string;
+        name: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        createdByActorId: string;
+        createdAt: string;
+        atomic: boolean;
+        liftedAt: string | null;
+        liftedByActorId: string | null;
+        liftReason: string | null;
+    };
+};
+
+export type LiftFreezeResponse = LiftFreezeResponses[keyof LiftFreezeResponses];
 
 export type GetFreezeData = {
     body?: never;
@@ -14567,10 +14666,107 @@ export type GetFreezeResponses = {
         createdByActorId: string;
         createdAt: string;
         atomic: boolean;
+        liftedAt: string | null;
+        liftedByActorId: string | null;
+        liftReason: string | null;
     };
 };
 
 export type GetFreezeResponse = GetFreezeResponses[keyof GetFreezeResponses];
+
+export type UpdateFreezeWindowData = {
+    body: {
+        endsAt: string;
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/freezes/{id}';
+};
+
+export type UpdateFreezeWindowErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateFreezeWindowError = UpdateFreezeWindowErrors[keyof UpdateFreezeWindowErrors];
+
+export type UpdateFreezeWindowResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        scopeObjectId: string;
+        name: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        createdByActorId: string;
+        createdAt: string;
+        atomic: boolean;
+        liftedAt: string | null;
+        liftedByActorId: string | null;
+        liftReason: string | null;
+    };
+};
+
+export type UpdateFreezeWindowResponse = UpdateFreezeWindowResponses[keyof UpdateFreezeWindowResponses];
 
 export type PolicyEvaluateData = {
     body: {

@@ -1054,7 +1054,12 @@ function freezeRow(f: Freeze): Record<string, string> {
     reason: f.reason,
     // D5: whether this freeze parks the whole wave or only what it covers is the single most
     // consequential thing about it, so it is on the default table row rather than json-only.
-    atomic: String(f.atomic)
+    atomic: String(f.atomic),
+    // M25.1 — on the DEFAULT row, not json-only, because `scp freeze list` returns lifted freezes
+    // too (they stay readable forever so a Decision citing one resolves) and a retracted freeze
+    // that renders identically to a live one is a list an operator cannot act on. Empty means
+    // still standing.
+    liftedAt: f.liftedAt ?? ""
   };
 }
 
@@ -3237,6 +3242,48 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const found = await client.freezes.get(id);
       printResult(found, opts.output, (item) => freezeRow(item as Freeze));
+    });
+
+  // M25.1 — THE EXITS. `scp freeze` was create/list/get, so an operator could declare a freeze and
+  // had no way to take it back: the only escapes were `scp change cancel` / `scp change rollback`,
+  // which throw the RELEASE away rather than lifting the FREEZE. Since M25.2's per-target
+  // admission that is worse than waiting — a mistyped `--ends-at` year now holds a SUBSET of a
+  // wave's targets while the siblings have already shipped.
+  freezeCmd
+    .command("lift <id>")
+    .description(
+      "Lift (retract) a freeze — it stops being in force immediately, whatever endsAt says"
+    )
+    .requiredOption(
+      "--reason <text>",
+      "mandatory reason — lifting a freeze is a governance LOOSENING that applies to everyone it covered"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts & { reason: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      // The lifted row comes back rather than an empty 204: `liftedAt`/`liftedBy`/`liftReason` are
+      // on it, and a lifted freeze stays gettable by id forever so a Decision citing it resolves.
+      const lifted = await client.freezes.lift(id, { reason: opts.reason });
+      printResult(lifted, opts.output, (item) => freezeRow(item as Freeze));
+    });
+
+  freezeCmd
+    .command("update <id>")
+    .description(
+      "Move a freeze's endsAt — shortening it is a loosening, extending it is a tightening"
+    )
+    .requiredOption("--ends-at <iso>", "the new ISO 8601 end (must still be after startsAt)")
+    .requiredOption("--reason <text>", "mandatory reason, in BOTH directions")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts & { endsAt: string; reason: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const updated = await client.freezes.updateWindow(id, {
+        endsAt: opts.endsAt,
+        reason: opts.reason
+      });
+      printResult(updated, opts.output, (item) => freezeRow(item as Freeze));
     });
 
   const policyCmd = program.commands.find((c) => c.name() === "policy")!;

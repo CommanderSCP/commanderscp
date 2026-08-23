@@ -1,8 +1,8 @@
-import { and, eq, gt, lte } from "drizzle-orm";
+import { and, eq, gt, isNull, lte } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { freezes } from "../db/schema.js";
-import { notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 
 /**
  * Freeze windows (DESIGN §10.3): "a built-in policy effect with time windows and scope
@@ -33,6 +33,11 @@ export interface FreezeRow {
    *  makes `atomic` silently degrade to per-target for any freeze that opens after the wave started
    *  — which is the very case M25.2's second half exists to fix. */
   atomic: boolean;
+  /** M25.1 — non-null means this freeze was RETRACTED by an operator and is no longer in force,
+   *  whatever `endsAt` says. See `activeFreezesInWindow`, the one place it is filtered. */
+  liftedAt: Date | null;
+  liftedByActorId: string | null;
+  liftReason: string | null;
 }
 
 export interface CreateFreezeInput {
@@ -50,10 +55,29 @@ export interface CreateFreezeInput {
   atomic?: boolean | undefined;
 }
 
-export async function createFreeze(tx: TenantTx, input: CreateFreezeInput): Promise<FreezeRow> {
-  if (input.endsAt <= input.startsAt) {
-    throw notFound("freeze endsAt must be after startsAt"); // validated again at the route/schema layer; defensive here
+/**
+ * THE WINDOW-ORDER INVARIANT, in one place — `endsAt` must be strictly after `startsAt`.
+ *
+ * Extracted in M25.1 because `PATCH /freezes/{id}` is a SECOND writer of `ends_at` and a second
+ * copy of this comparison is exactly the drift `activeFreezesInWindow`'s header is about, one
+ * comparison over: a PATCH that admitted `endsAt <= startsAt` would leave a row `createFreeze`
+ * refuses to produce, which the half-open window predicate then reads as permanently inactive
+ * without anyone having lifted it.
+ *
+ * Throws `badRequest`, not `notFound`. It was `notFound` before this increment — a copy-paste that
+ * would have reported a malformed window as a missing freeze to any caller that did not pre-check;
+ * the route pre-checked, so it was never observable, which is why it survived.
+ */
+export function assertWindowOrdered(startsAt: Date, endsAt: Date): void {
+  if (endsAt <= startsAt) {
+    throw badRequest(
+      `freeze endsAt (${endsAt.toISOString()}) must be after startsAt (${startsAt.toISOString()})`
+    );
   }
+}
+
+export async function createFreeze(tx: TenantTx, input: CreateFreezeInput): Promise<FreezeRow> {
+  assertWindowOrdered(input.startsAt, input.endsAt); // validated again at the route/schema layer; defensive here
   const [row] = await tx
     .insert(freezes)
     .values({
@@ -105,6 +129,28 @@ export async function listFreezes(tx: TenantTx, orgId: string): Promise<FreezeRo
  * EXPIRY IS THIS PREDICATE AND NOTHING ELSE. There is no sweeper and no status column: the first
  * tick after `ends_at` a freeze simply stops being returned here. See `scan-override-grants.ts`,
  * which followed this file for the same reason.
+ *
+ * ============================================================================================
+ * M25.1 — AND `lifted_at IS NULL`, THE ONLY LIVENESS FILTER IN THE SYSTEM
+ * ============================================================================================
+ * A freeze can now be RETRACTED before its window closes (`liftFreeze`, `DELETE /freezes/{id}`),
+ * and that retraction is a soft one: the row stays, permanently readable by id, because two
+ * Decision writers carry `freeze.id` in their `inputContext` and a hard delete would dangle every
+ * one of them (charter principle 6).
+ *
+ * The filter belongs HERE and nowhere else, for the same reason the window predicate does. Every
+ * consumer of "is this freeze in force" composes over this function — `activeFreezesForScopes`,
+ * `freeze-scope.ts`'s `freezesByTarget`, and through them `checkFreeze`, `evaluateFreezeHolds` and
+ * the service board's freeze resolution — so one `isNull` retires a freeze on every path at once,
+ * INCLUDING the release path: `reconcile.ts`'s per-target loop simply stops seeing a hold and
+ * `clearFreezeAdmissionHold` writes its `allow` row on the next tick, with no lift-specific code
+ * anywhere in reconcile. A second liveness filter added elsewhere would be free to disagree with
+ * this one, silently and in either direction — the shape that once made a service-scoped freeze
+ * fail OPEN (`graph/containment.ts`'s header).
+ *
+ * The index is deliberately unchanged: `freezes_org_window` already narrows to freezes covering
+ * this instant, which is zero rows for nearly every org nearly all the time, so this is a filter
+ * over a handful of rows at most.
  */
 export async function activeFreezesInWindow(
   tx: TenantTx,
@@ -114,7 +160,14 @@ export async function activeFreezesInWindow(
   const rows = await tx
     .select()
     .from(freezes)
-    .where(and(eq(freezes.orgId, orgId), lte(freezes.startsAt, at), gt(freezes.endsAt, at)));
+    .where(
+      and(
+        eq(freezes.orgId, orgId),
+        lte(freezes.startsAt, at),
+        gt(freezes.endsAt, at),
+        isNull(freezes.liftedAt)
+      )
+    );
   return rows as FreezeRow[];
 }
 
@@ -157,4 +210,143 @@ export async function activeFreezesForScopes(
 ): Promise<FreezeRow[]> {
   if (scopeObjectIds.length === 0) return [];
   return filterFreezesByScopes(await activeFreezesInWindow(tx, orgId, at), scopeObjectIds);
+}
+
+// =============================================================================================
+// M25.1 — THE TWO WRITE VERBS THAT WERE MISSING
+//
+// `/api/v1/freezes` shipped as CREATE / LIST / GET. A freeze could be declared and never
+// retracted or shortened, which was survivable only while a freeze parked a WHOLE wave: the
+// operator waited for `ends_at` and the release resumed. M25.2 made it unsurvivable — a
+// far-future `ends_at` now holds a SUBSET of a wave's targets while the siblings have shipped, so
+// a mistyped year leaves a fleet split across two versions with no API exit. The only escapes
+// were `scp change cancel` / `scp change rollback`, which throw the RELEASE away, not the FREEZE.
+//
+// BOTH VERBS ARE `freeze:write` AT THE FREEZE'S OWN SCOPE, and the routes enforce that (this file
+// never authorizes — same split as everywhere else in the repo layer). See `routes/governance.ts`
+// for the reasoning about `freeze:write` vs `freeze:override`.
+// =============================================================================================
+
+export interface LiftFreezeInput {
+  orgId: string;
+  id: string;
+  /** MANDATORY and non-empty — checked at the route, defended here. */
+  reason: string;
+  actorObjectId: string;
+  /** Injectable for tests; production passes nothing. Recorded verbatim as `lifted_at`. */
+  now?: Date | undefined;
+}
+
+/**
+ * RETRACT a freeze: it stops being in force immediately, whatever `ends_at` says.
+ *
+ * A SOFT lift (drizzle/0078). The row stays and stays readable by id, because
+ * `gate-orchestrator.ts`'s freeze-block Decision carries `inputContext.freeze.id` and
+ * `reconcile.ts`'s `recordFreezeAdmissionHold` carries `inputContext.held[].freezes[].id`, both
+ * permanently. A hard delete would make `scp change explain` name an id that resolves to nothing —
+ * precisely the question ("what was this freeze that blocked me?") that charter principle 6 exists
+ * to keep answerable.
+ *
+ * NOT EXPRESSIBLE AS `ends_at = now()`, which is why this needed a column at all: a freeze
+ * SCHEDULED for next week has `starts_at` in the future, so that assignment would produce
+ * `ends_at < starts_at` — a row violating the invariant `assertWindowOrdered` enforces on both
+ * write paths. A scheduled freeze declared by mistake is exactly the freeze someone needs to
+ * retract, so the encoding has to cover it.
+ *
+ * IDEMPOTENT? NO — a second lift is a `conflict`, deliberately. `lifted_at`, `lifted_by_actor_id`
+ * and `lift_reason` are a single record of WHO retracted this and WHY; silently letting a second
+ * caller overwrite them would replace the operator who actually lifted it (and their reason) with
+ * whoever repeated the call, and the audit event pair would then disagree with the row. The
+ * conditional `UPDATE ... WHERE lifted_at IS NULL` makes that a race-free refusal rather than a
+ * read-then-write check.
+ */
+export async function liftFreeze(tx: TenantTx, input: LiftFreezeInput): Promise<FreezeRow> {
+  if (input.reason.trim().length === 0) {
+    throw badRequest("lifting a freeze requires a non-empty reason");
+  }
+  // Loaded first so an unknown id is a 404 rather than the 409 the no-op UPDATE below would
+  // otherwise produce, and so the caller gets the BEFORE row for its audit event and Decision.
+  const before = await getFreeze(tx, input.orgId, input.id);
+  const [row] = await tx
+    .update(freezes)
+    .set({
+      liftedAt: input.now ?? new Date(),
+      liftedByActorId: input.actorObjectId,
+      liftReason: input.reason
+    })
+    .where(and(eq(freezes.orgId, input.orgId), eq(freezes.id, input.id), isNull(freezes.liftedAt)))
+    .returning();
+  if (!row) {
+    throw conflict(
+      `freeze '${input.id}' was already lifted at ${before.liftedAt?.toISOString()} — a lift records who retracted it and why, and is not overwritten`
+    );
+  }
+  return row as FreezeRow;
+}
+
+/** Which way a window edit moved, for the audit event and the Decision. A SHORTENING is a
+ *  governance LOOSENING (the freeze stops protecting sooner); an EXTENSION is a TIGHTENING. Both
+ *  need `freeze:write`; they are distinguished because "who made governance weaker, and when" is
+ *  the question an audit log is read with. */
+export type FreezeWindowDirection = "shortened" | "extended";
+
+export interface UpdateFreezeWindowInput {
+  orgId: string;
+  id: string;
+  endsAt: Date;
+  /** MANDATORY and non-empty on BOTH directions — see the route's docblock. */
+  reason: string;
+  actorObjectId: string;
+}
+
+export interface UpdateFreezeWindowResult {
+  before: FreezeRow;
+  after: FreezeRow;
+  direction: FreezeWindowDirection;
+}
+
+/**
+ * Move a freeze's `ends_at`, in EITHER direction.
+ *
+ * SHORTENING to a past instant is left as an ordinary window edit and is NOT silently re-labelled
+ * a lift. It has the same effect on admission — the freeze leaves the half-open window and every
+ * consumer of `activeFreezesInWindow` stops seeing it on the next read — and a different record,
+ * which is the truth: the operator said "this ends sooner", not "I retract this". The distinction
+ * is not academic, because it is reversible (a later PATCH can push `ends_at` forward again and
+ * the freeze returns) where a lift is not.
+ *
+ * `startsAt` is deliberately NOT editable. Moving the start of a window that is already open is
+ * either a no-op or a rewriting of history — "this freeze was in force from a time it was not" —
+ * and neither is a thing an operator has asked for. `endsAt` is the whole of the escape hatch
+ * M25.1 exists to provide.
+ *
+ * REFUSED ON A LIFTED FREEZE (`conflict`). Extending one would produce a row whose `ends_at`
+ * promises protection that `lifted_at` cancels, readable either way by anyone who does not know
+ * which filter wins; the honest answer is that a retraction is final and a new freeze is one POST
+ * away.
+ */
+export async function updateFreezeWindow(
+  tx: TenantTx,
+  input: UpdateFreezeWindowInput
+): Promise<UpdateFreezeWindowResult> {
+  if (input.reason.trim().length === 0) {
+    throw badRequest("changing a freeze window requires a non-empty reason");
+  }
+  const before = await getFreeze(tx, input.orgId, input.id);
+  if (before.liftedAt) {
+    throw conflict(
+      `freeze '${input.id}' was lifted at ${before.liftedAt.toISOString()} — a retraction is final; declare a new freeze instead of re-opening this one`
+    );
+  }
+  // THE SAME invariant `createFreeze` enforces, from the same function. A PATCH that admitted
+  // `endsAt <= startsAt` would leave a row the POST route refuses to produce.
+  assertWindowOrdered(before.startsAt, input.endsAt);
+  const direction: FreezeWindowDirection = input.endsAt < before.endsAt ? "shortened" : "extended";
+  const [row] = await tx
+    .update(freezes)
+    .set({ endsAt: input.endsAt })
+    .where(and(eq(freezes.orgId, input.orgId), eq(freezes.id, input.id), isNull(freezes.liftedAt)))
+    .returning();
+  if (!row) throw conflict(`freeze '${input.id}' was lifted concurrently`);
+  return { before, after: row as FreezeRow, direction };
 }
