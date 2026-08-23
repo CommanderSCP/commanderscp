@@ -475,7 +475,13 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           startsAt,
           endsAt,
           reason: request.body.reason,
-          createdByActorId: auth.subjectObjectId
+          createdByActorId: auth.subjectObjectId,
+          // M25.2 / owner decision D5 — THE AUTHORING DOOR for `freezes.atomic`. Without this line
+          // the column exists, the engine reads it, and no operator can ever set it: every freeze
+          // on the estate would be per-target with no way to say otherwise, which is the
+          // "component built, never installed" shape applied to the one mitigation D5's loosening
+          // was approved on. Absent => `false` in `createFreeze`, so an old client is unchanged.
+          atomic: request.body.atomic
         });
       });
       reply.status(201).send({
@@ -486,7 +492,8 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         endsAt: freeze.endsAt.toISOString(),
         reason: freeze.reason,
         createdByActorId: freeze.createdByActorId,
-        createdAt: freeze.createdAt.toISOString()
+        createdAt: freeze.createdAt.toISOString(),
+        atomic: freeze.atomic
       });
     }
   });
@@ -520,7 +527,8 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           endsAt: f.endsAt.toISOString(),
           reason: f.reason,
           createdByActorId: f.createdByActorId,
-          createdAt: f.createdAt.toISOString()
+          createdAt: f.createdAt.toISOString(),
+          atomic: f.atomic
         })),
         nextCursor: null
       });
@@ -556,7 +564,8 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         endsAt: freeze.endsAt.toISOString(),
         reason: freeze.reason,
         createdByActorId: freeze.createdByActorId,
-        createdAt: freeze.createdAt.toISOString()
+        createdAt: freeze.createdAt.toISOString(),
+        atomic: freeze.atomic
       });
     }
   });

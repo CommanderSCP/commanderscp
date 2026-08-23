@@ -1051,7 +1051,10 @@ function freezeRow(f: Freeze): Record<string, string> {
     name: f.name ?? "",
     startsAt: f.startsAt,
     endsAt: f.endsAt,
-    reason: f.reason
+    reason: f.reason,
+    // D5: whether this freeze parks the whole wave or only what it covers is the single most
+    // consequential thing about it, so it is on the default table row rather than json-only.
+    atomic: String(f.atomic)
   };
 }
 
@@ -3173,11 +3176,18 @@ export function buildProgram(): Command {
   freezeCmd
     .command("create")
     .description("Declare a freeze window over a scope")
-    .requiredOption("--scope <idOrUrn>", "the org/domain/service/component this freeze covers")
+    .requiredOption(
+      "--scope <idOrUrn>",
+      "the org/domain/service/component/deployment-target this freeze covers (a deployment-target scope freezes a whole region — ADR-0026 containment route 4)"
+    )
     .requiredOption("--starts-at <iso>", "ISO 8601 start")
     .requiredOption("--ends-at <iso>", "ISO 8601 end")
     .requiredOption("--reason <text>", "mandatory reason")
     .option("--name <name>", "human-readable label")
+    .option(
+      "--atomic",
+      "park the WHOLE wave rather than only the targets this freeze covers (owner decision D5) — use it when half-applied is worse than not-applied, e.g. a schema migration and the service that reads it"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -3188,6 +3198,7 @@ export function buildProgram(): Command {
           endsAt: string;
           reason: string;
           name?: string;
+          atomic?: boolean;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -3196,7 +3207,11 @@ export function buildProgram(): Command {
           startsAt: opts.startsAt,
           endsAt: opts.endsAt,
           reason: opts.reason,
-          name: opts.name
+          name: opts.name,
+          // Sent only when the flag is present, so an ordinary `scp freeze create` keeps sending a
+          // byte-identical body and the server-side default (`false`) stays the one place the
+          // default lives.
+          ...(opts.atomic ? { atomic: true } : {})
         });
         printResult(freeze, opts.output, (item) => freezeRow(item as Freeze));
       }

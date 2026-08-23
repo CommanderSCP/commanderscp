@@ -190,7 +190,17 @@ export const FreezeSchema = z.object({
   endsAt: z.string().datetime(),
   reason: z.string(),
   createdByActorId: z.string().uuid(),
-  createdAt: z.string().datetime()
+  createdAt: z.string().datetime(),
+  /** M25.2 / owner decision D5 — does this freeze park the WHOLE wave, or only the targets it
+   *  covers? `false` (the default) is per-target admission: a freeze over one region holds that
+   *  region and its siblings ship. `true` restores pre-M25.2 all-or-nothing behaviour, for the
+   *  coupled case where half-applied is worse than not-applied.
+   *
+   *  A REQUIRED response property, which is additive and oasdiff-safe (the standing rule is never
+   *  to make an EXISTING required field optional). Required rather than optional deliberately: the
+   *  column is `NOT NULL DEFAULT false`, so every row has an answer, and an operator asking "will
+   *  this freeze stop the whole release?" must not have to distinguish absent from false. */
+  atomic: z.boolean()
 });
 export type Freeze = z.infer<typeof FreezeSchema>;
 
@@ -199,7 +209,17 @@ export const CreateFreezeRequestSchema = z.object({
   name: z.string().optional(),
   startsAt: z.string().datetime(),
   endsAt: z.string().datetime(),
-  reason: z.string().min(1)
+  reason: z.string().min(1),
+  /** M25.2 / owner decision D5 — opt this freeze OUT of per-target admission (see `FreezeSchema`).
+   *
+   *  OPTIONAL, defaulting to `false` server-side, which is a request widening and therefore
+   *  oasdiff-safe. It exists because D5 is a change that newly PERMITS and applies RETROACTIVELY to
+   *  every freeze already authored: the day per-target admission ships, an operator who freezes a
+   *  service during an incident gets three quarters of a release instead of none. `atomic: true` is
+   *  the escape hatch that decision was taken on the strength of, so it ships in the SAME increment
+   *  as the loosening rather than in the one after it — a mitigation that lands later is a window
+   *  in which the mitigation does not exist. */
+  atomic: z.boolean().optional()
 });
 export type CreateFreezeRequest = z.infer<typeof CreateFreezeRequestSchema>;
 

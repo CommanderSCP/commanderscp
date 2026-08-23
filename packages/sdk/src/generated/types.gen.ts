@@ -14427,6 +14427,7 @@ export type ListFreezesResponses = {
             reason: string;
             createdByActorId: string;
             createdAt: string;
+            atomic: boolean;
         }>;
         nextCursor: string | null;
     };
@@ -14441,6 +14442,7 @@ export type CreateFreezeData = {
         startsAt: string;
         endsAt: string;
         reason: string;
+        atomic?: boolean;
     };
     path?: never;
     query?: never;
@@ -14498,6 +14500,7 @@ export type CreateFreezeResponses = {
         reason: string;
         createdByActorId: string;
         createdAt: string;
+        atomic: boolean;
     };
 };
 
@@ -14563,6 +14566,7 @@ export type GetFreezeResponses = {
         reason: string;
         createdByActorId: string;
         createdAt: string;
+        atomic: boolean;
     };
 };
 

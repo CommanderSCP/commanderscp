@@ -25,8 +25,13 @@ export interface FreezeRow {
   createdByActorId: string;
   createdAt: Date;
   /** M25.2 / owner decision D5 — `true` parks the WHOLE wave (pre-M25.2 behaviour), `false` (the
-   *  default) admits the wave's uncovered targets and holds only the covered ones. Read in exactly
-   *  one place: `gate-orchestrator.ts`'s `partiallyFrozen` predicate. */
+   *  default) admits the wave's uncovered targets and holds only the covered ones.
+   *
+   *  READ IN TWO PLACES, AND IT MUST BE BOTH: `gate-orchestrator.ts`'s `partiallyFrozen` predicate
+   *  (the wave boundary) and `coordination/freeze-hold.ts`'s `evaluateFreezeHolds` (every tick of
+   *  the trigger loop). The gate fires exactly ONCE, on `pending -> running`, so a gate-only reader
+   *  makes `atomic` silently degrade to per-target for any freeze that opens after the wave started
+   *  — which is the very case M25.2's second half exists to fix. */
   atomic: boolean;
 }
 
@@ -38,9 +43,10 @@ export interface CreateFreezeInput {
   endsAt: Date;
   reason: string;
   createdByActorId: string;
-  /** Defaults to `false` — see `freezes.atomic` (drizzle/0077). NOT yet reachable from
-   *  `POST /api/v1/freezes`: M25.2 holds no codegen slot, so the request schema is untouched and
-   *  this input exists for the authoring surface that follows it. */
+  /** Defaults to `false` — see `freezes.atomic` (drizzle/0077). Reachable from
+   *  `POST /api/v1/freezes` (`CreateFreezeRequestSchema.atomic`, optional) and `scp freeze create
+   *  --atomic`, because a loosening whose escape hatch ships one increment later has a window in
+   *  which the escape hatch does not exist. */
   atomic?: boolean | undefined;
 }
 
