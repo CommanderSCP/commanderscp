@@ -228,14 +228,17 @@ const BUMPED: Record<
     // THE PROPERTY LIVES ON PATHS". `recordStageDependencyHold` is reached only from
     // `reconcileExecutingChange` and holds the ADR-0028 hold bump; before 0058 this registry did not
     // name it at all, so one of the five bumps in the subject area was entirely unguarded.
-    bumpIn: ["reconcileExecutingChange", "recordStageDependencyHold"],
-    count: 3,
+    bumpIn: ["reconcileExecutingChange", "recordStageDependencyHold", "recordFreezeAdmissionHold"],
+    count: 4,
     queryIn: "listChangeRowsInStates",
     why:
       "a gate-blocked wave stays pending and writes nothing (the 13-day production outage); a " +
       "wave whose targets are merely POLLED writes only change_wave_targets, never the change row; " +
-      "and a stage-dependency hold (ADR-0028) withholds its targets and writes only a Decision " +
-      "(its FOURTH not-advanced path, the S10 foreign-origin skip, is filtered out of the candidate " +
+      "a stage-dependency hold (ADR-0028) withholds its targets and writes only a Decision; and " +
+      "M25.2's FREEZE hold does the same for a target an active freeze covers — a change whose " +
+      "targets are all frozen stays `executing` with its wave `running`, so nothing else moves its " +
+      "cursor for the whole freeze window, which can be weeks " +
+      "(its FIFTH not-advanced path, the S10 foreign-origin skip, is filtered out of the candidate " +
       "query instead — a bump there would write a read-only replica's row)"
   },
   advanceValidatingChanges: {

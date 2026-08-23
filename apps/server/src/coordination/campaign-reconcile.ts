@@ -10,6 +10,11 @@ import { getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.j
 import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
 import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
+import {
+  describeFreezeHold,
+  evaluateFreezeHolds,
+  type FreezeHoldVerdict
+} from "./freeze-hold.js";
 import { proposeChange, typeOf } from "./changes-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -310,6 +315,35 @@ async function reconcileOneCampaign(
   let allTerminal = true;
   let anyFailed = false;
 
+  /**
+   * THE FREEZE HOLD, CAMPAIGN SIDE (M25.2, docs/proposals/campaigns-rework.md §1.3) — memoised once
+   * per campaign per tick, exactly like `reconcile.ts`'s twin, and lazy for the same reason: a wave
+   * with nothing `pending` never asks.
+   *
+   * OPERABILITY, NOT CORRECTNESS, and worth stating so nobody deletes it thinking it is redundant.
+   * A member Change fanned out into a freeze WOULD be held at the change-side actuator anyway — the
+   * fan-out mints a change with exactly one target, and that change's own per-target loop refuses to
+   * trigger it. But without this seam a 40-target campaign entering a two-week freeze mints 40 real
+   * Changes that each compile a plan, enter `executing`, and trip the watchdog's 30-minute stall SLA
+   * for a fortnight. Holding the fan-out keeps the estate clean.
+   *
+   * CAMPAIGN WAVE TARGETS ARE COMPONENTS, not placements, so only org/domain/service/component
+   * -scoped freezes reach them. A region freeze correctly does NOT stop fan-out — it stops the
+   * member change's placement targets, one layer down, at the actuator that can see a place.
+   */
+  let campaignFreezeHolds: Map<string, FreezeHoldVerdict> | undefined;
+  const loadCampaignFreezeHolds = async (): Promise<Map<string, FreezeHoldVerdict>> =>
+    (campaignFreezeHolds ??= await withTenantTx(db, orgId, (tx) =>
+      evaluateFreezeHolds(tx, {
+        orgId,
+        targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+      })
+    ));
+  /** Every target this tick an active freeze covered — one Decision for the campaign, never one per
+   *  target (`insertDecisionIfChanged` dedupes on the LATEST row of a `(subject_id, kind)`, so
+   *  per-target rows would alternate and suppression would never fire). */
+  const frozenTargets: FreezeHoldVerdict[] = [];
+
   for (const target of activeWave.targets) {
     if (target.status === "succeeded") continue;
     if (target.status === "failed") {
@@ -391,6 +425,33 @@ async function reconcileOneCampaign(
         anyFailed = true;
         continue;
       }
+
+      // ==========================================================================================
+      // THE FREEZE HOLD — M25.2's SECOND ACTUATOR. This `continue` is the refusal.
+      // ==========================================================================================
+      // AFTER THE LIVENESS GATE, deliberately: a tombstoned target is dead regardless of any
+      // freeze, and terminalizing it is PROGRESS — holding it instead would keep a dead row
+      // non-terminal for the length of the freeze window and hide the block Decision the liveness
+      // gate exists to write. BEFORE `proposeChange`, so no member Change, no `coordinates` edge,
+      // and no `campaign_wave_targets.member_change_object_id` is written for a fan-out we are
+      // declining to perform.
+      //
+      // `allTerminal` IS ALREADY FALSE — set at the top of this `pending` branch — so this
+      // `continue` cannot let the wave terminalize behind a held target. That is the campaign-side
+      // equivalent of `reconcile.ts`'s "counted first" invariant, and it is inherited rather than
+      // restated: there is no separate count here to get wrong.
+      //
+      // NO CURSOR BUMP IS NEEDED. `reconcileCampaignsOrgTick` already bumps `objects.updated_at`
+      // UNCONDITIONALLY for every locally-owned campaign it examines (starvation-class instance 4,
+      // verified at that call site), so a campaign every one of whose targets is frozen still
+      // rotates through the batch. The change side needs its own bump only because nothing there
+      // writes the `changes` row on the held path.
+      const frozen = (await loadCampaignFreezeHolds()).get(target.targetObjectId);
+      if (frozen) {
+        frozenTargets.push(frozen);
+        continue;
+      }
+
       try {
         await withTenantTx(db, orgId, async (tx) => {
           const targetObject = await tx.query.objects.findFirst({
@@ -469,10 +530,80 @@ async function reconcileOneCampaign(
     }
   }
 
+  if (frozenTargets.length > 0) {
+    await recordCampaignFreezeAdmissionHold(
+      db,
+      orgId,
+      campaignObjectId,
+      activeWave,
+      frozenTargets
+    );
+  }
+
   if (!allTerminal) return;
   await withTenantTx(db, orgId, (tx) =>
     markCampaignWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded")
   );
+}
+
+/**
+ * THE EXPLAINABILITY HALF OF THE CAMPAIGN-SIDE FREEZE HOLD (M25.2) — the same Decision shape
+ * `reconcile.ts`'s `recordFreezeAdmissionHold` writes, with the CAMPAIGN as the subject.
+ *
+ * Every property that file's docblock argues at length applies here unchanged and for the same
+ * reasons: `kind: "freeze_admission"` distinct from `"gate"` (sharing it would make these rows and
+ * the campaign wave gate's own rows alternate under `insertDecisionIfChanged`'s
+ * latest-row-per-`(subject_id, kind)` comparison, and suppression would never fire);
+ * `verdict: "hold"` and never `"block"` (`latestBlockDecisionForSubject` filters on the verdict
+ * ALONE and nothing writes a clearing row); ONE row per campaign rather than per target; and
+ * `endsAt` in the context with the clock deliberately absent, which is what makes a fortnight-long
+ * hold one row instead of 1.2 million.
+ *
+ * NO CURSOR BUMP, unlike the change side, and the asymmetry is checked rather than assumed:
+ * `reconcileCampaignsOrgTick` bumps `objects.updated_at` unconditionally for every locally-owned
+ * campaign it examines, below its S10 guard. `candidate-loop-registry.test.ts` records that as this
+ * loop's one bump.
+ */
+async function recordCampaignFreezeAdmissionHold(
+  db: Db,
+  orgId: string,
+  campaignObjectId: string,
+  activeWave: { id: string; waveIndex: number },
+  frozenTargets: FreezeHoldVerdict[]
+): Promise<void> {
+  const held = [...frozenTargets]
+    .sort((a, b) => a.targetObjectId.localeCompare(b.targetObjectId))
+    .map((entry) => ({
+      targetObjectId: entry.targetObjectId,
+      componentObjectId: entry.stage?.componentObjectId ?? null,
+      deploymentTargetObjectId: entry.stage?.deploymentTargetObjectId ?? null,
+      freezes: entry.freezes
+    }));
+
+  const recorded = await withTenantTx(db, orgId, (tx) =>
+    insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "freeze_admission",
+      subjectId: campaignObjectId,
+      verdict: "hold",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held },
+      reasonTree: {
+        summary: `${held.length} campaign wave target(s) held: an active freeze covers that scope — no member change is fanned out while it stands`,
+        held: frozenTargets
+          .map((verdict) => describeFreezeHold(verdict))
+          .sort((a, b) => a.localeCompare(b))
+      }
+    })
+  ).catch((err) => {
+    logCampaignError(orgId, campaignObjectId, `wave ${activeWave.waveIndex} freeze hold`, err);
+    return undefined;
+  });
+
+  if (recorded?.created) {
+    console.info(
+      `[campaign-reconcile] org ${orgId} campaign ${campaignObjectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by an active freeze — decision ${recorded.decision.id} (scp decision get ${recorded.decision.id}); re-evaluated every tick until the window closes`
+    );
+  }
 }
 
 /** One org's campaign-reconciliation pass — called from `coordination/reconcile.ts`'s

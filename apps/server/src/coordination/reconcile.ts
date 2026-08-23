@@ -22,6 +22,11 @@ import {
   evaluateStageDependencies,
   type StageDependencyVerdict
 } from "./stage-dependency-hold.js";
+import {
+  describeFreezeHold,
+  evaluateFreezeHolds,
+  type FreezeHoldVerdict
+} from "./freeze-hold.js";
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
 import {
@@ -918,6 +923,35 @@ async function reconcileExecutingChange(
         ? []
         : await withTenantTx(db, orgId, (tx) => loadDependsOnEdges(tx, orgId, changeTargets)));
 
+  /**
+   * THE FREEZE HOLD (M25.2) — resolved ONCE per change per tick, for the WHOLE wave, and memoised
+   * exactly like the edge set beside it.
+   *
+   * ONE CALL FOR THE WAVE, NOT ONE PER TARGET, and that is what keeps the cost honest: the whole
+   * point of `freezesByTarget` is that it asks "does this org have ANY active freeze right now?"
+   * once, on an indexed window read, and returns every target unfrozen without walking a single
+   * containment chain when the answer is no. Calling it per target would issue that read per target
+   * instead. See `governance/freeze-scope.ts`'s inertness property, which has its own counting test.
+   *
+   * LAZY, for the same reason `loadInTargetSetEdges` is: the call sits inside the trigger branch, so
+   * a wave that is purely POLLING in-flight targets does not consult freezes at all. A freeze cannot
+   * withdraw a trigger already made (`ExecutorPlugin` has no pause verb — ADR-0008), so there is
+   * nothing for it to say about a target already in flight.
+   *
+   * RESOLVED EVERY TICK, never once at the wave boundary. That is the second half of what M25.2
+   * fixes: `evaluateWaveGate` fires exactly once on `pending -> running`, so a freeze DECLARED
+   * MID-WAVE was previously never seen at all. Memoisation is per tick, so the next tick asks again
+   * — which is also how a freeze CLEARS, in one second, with no scheduler and no status flip.
+   */
+  let freezeHolds: Map<string, FreezeHoldVerdict> | undefined;
+  const loadFreezeHolds = async (): Promise<Map<string, FreezeHoldVerdict>> =>
+    (freezeHolds ??= await withTenantTx(db, orgId, (tx) =>
+      evaluateFreezeHolds(tx, {
+        orgId,
+        targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+      })
+    ));
+
   /** Every target held this tick, with the verdict that held it — collected across the whole loop so
    *  ONE Decision covers the change rather than one per target. That is not tidiness: `decisions`
    *  are deduped per `(subject_id, kind)` on the LATEST row, so per-target rows for a multi-target
@@ -942,6 +976,14 @@ async function reconcileExecutingChange(
    *  `weightUnreadable`. Made visible so the fail-open is something an operator can find rather than
    *  something they have to deduce. */
   const unscopeableTargets: { targetObjectId: string; verdicts: StageDependencyVerdict[] }[] = [];
+
+  /** Every target this tick that an active freeze covered (M25.2). Collected separately from
+   *  `heldTargets` because the two carry different explanations and write different Decisions —
+   *  but they are counted TOGETHER in the terminalization below, and the two sets are DISJOINT BY
+   *  CONSTRUCTION because the freeze `continue` fires before the stage-dependency check can run.
+   *  If that ordering ever changes, the arithmetic at the bottom of this loop goes negative and a
+   *  wave with live targets terminalizes. */
+  const frozenTargets: FreezeHoldVerdict[] = [];
 
   for (const target of activeWave.targets) {
     if (target.status === "succeeded") continue;
@@ -982,6 +1024,52 @@ async function reconcileExecutingChange(
       // the state a refusal leaves behind.
       const backoffMs = target.status === "triggering" ? triggerBackoffMs(target.attempt) : 0;
       if (backoffMs > 0 && Date.now() - Date.parse(target.updatedAt) < backoffMs) continue;
+
+      // ==========================================================================================
+      // THE FREEZE HOLD — M25.2's ACTUATOR (docs/proposals/campaigns-rework.md §1.2)
+      // ==========================================================================================
+      // THIS `continue` IS THE REFUSAL. Delete it and the target triggers into an active freeze,
+      // and every test in `freeze-admission.integration.test.ts` that asserts an executor was never
+      // called goes red. Nothing else in this file withholds a trigger for a freeze: the wave gate
+      // above now only blocks the ALL-frozen wave.
+      //
+      // FIVE INVARIANTS, each with a named prior incident. Every one is load-bearing:
+      //
+      //   1. COUNTED FIRST. `nonTerminalTargets++` happened at the top of this branch, BEFORE this
+      //      `continue`. A frozen target is still in flight. Copied verbatim from the backoff gate
+      //      and from ADR-0028's hold below, and for the same reason: without it a wave whose only
+      //      remaining target is frozen marks itself `succeeded` and the change completes green
+      //      with a target that never ran — silent-success masking, the class ADR-0006 exists to
+      //      prevent.
+      //   2. BEFORE `triggerWaveTarget`. No advisory trigger-claim lock is taken and no executor
+      //      binding is re-read for a call we are not going to make. `attempt` therefore stays 0 on
+      //      a target held from its first tick, which is what the actuator test measures.
+      //   3. `!isRollback` (owner decision D7). `evaluateLifecycleGate` already exempts rollbacks
+      //      (`gates.ts` — DESIGN §9.4, "no human-review step to wait for"), but
+      //      `EvaluateWaveGateContext` carries no `isRollback` at all, so a rollback's wave targets
+      //      were freeze-blocked. Holding a rollback pins a BROKEN RELEASE in place for the whole
+      //      window — the one change a freeze most wants to let through. This is a change that
+      //      newly permits, which is why it is an owner decision and gets a test in both
+      //      directions.
+      //   4. BEFORE THE STAGE-DEPENDENCY HOLD. Only one `continue` can fire, so the two hold sets
+      //      are DISJOINT BY CONSTRUCTION — which is exactly what the terminalization arithmetic at
+      //      the bottom of this loop depends on. Stated consequence: a target that is both frozen
+      //      and dependency-held records only the freeze this tick, and resumes producing
+      //      `stage_dependency` verdicts the tick the freeze lifts. A frozen target should also not
+      //      spend a graph read per tick on a coupling it cannot act on either way.
+      //   5. AFTER THE BACKOFF GATE. A `triggering` target has ALREADY been handed to its executor.
+      //      `ExecutorPlugin` is observe/trigger/status/abort and nothing else (ADR-0008 forbids
+      //      adding a pause verb), so a freeze cannot un-ring that bell. What it withholds here is
+      //      the RETRY, not the original call. That is the honest boundary of what a freeze buys,
+      //      and for a `pending` target — every first trigger, the case this is about — `backoffMs`
+      //      is 0 and the two orders are identical anyway.
+      if (!isRollback) {
+        const frozen = (await loadFreezeHolds()).get(target.targetObjectId);
+        if (frozen) {
+          frozenTargets.push(frozen);
+          continue;
+        }
+      }
 
       // STAGE-DEPENDENCY HOLD (ADR-0028 decision 2) — withhold this target's trigger while a
       // dependency of its component is not yet satisfied AT THIS PLACE: one its own CI declared, or
@@ -1157,6 +1245,10 @@ async function reconcileExecutingChange(
     await recordStageDependencyHold(db, orgId, change, activeWave, heldTargets);
   }
 
+  if (frozenTargets.length > 0) {
+    await recordFreezeAdmissionHold(db, orgId, change, activeWave, frozenTargets);
+  }
+
   // TERMINALIZATION, IN TWO RULES RATHER THAN ONE — because a held target is in flight (invariant 1
   // above) and a single `if (!allTerminal) return` therefore kept an already-FAILED wave alive
   // forever. A wave with one failed target and one held one never reached `markWaveTerminal`, so the
@@ -1175,7 +1267,22 @@ async function reconcileExecutingChange(
   // it — and from the next tick on the `failed` branch returns before this loop is reached at all.
   // Its hold Decision was written just above, so what kept it from running stays on record beside
   // the failure that ended the wave.
-  if (nonTerminalTargets - heldTargets.length > 0) {
+  //
+  // M25.2 ADDS A SECOND HOLD SET TO BOTH LINES, and getting either one wrong is the sharpest
+  // regression risk in that increment:
+  //
+  //   * Miss it in the FIRST guard and `nonTerminalTargets - heldCount` goes NEGATIVE (a frozen
+  //     target is counted in `nonTerminalTargets` but not in the subtrahend, or the reverse), the
+  //     guard passes, and a wave with genuinely live targets terminalizes.
+  //   * Miss it in the SECOND and a wave whose only remaining targets are frozen falls through to
+  //     `markWaveTerminal(..., "succeeded")` — the wave completes GREEN with a target that was
+  //     never deployed. Silent-success masking, the class ADR-0006 exists to prevent.
+  //
+  // The two sets are DISJOINT BY CONSTRUCTION: the freeze `continue` in the loop above fires
+  // before the stage-dependency evaluation can run, so no target can appear in both. That is a
+  // property of the ordering, not of the data, which is why it is stated at both places.
+  const heldCount = heldTargets.length + frozenTargets.length;
+  if (nonTerminalTargets - heldCount > 0) {
     // ROUND-ROBIN BUMP (4 of 5) — THE FIFTH INSTANCE OF THE STARVATION CLASS, and the one the
     // gate-blocked bump ~300 lines up does NOT cover. That bump fires only while the wave is still
     // `pending`. The moment the gate ALLOWS, `markWaveRunning` moves the wave to `running` and
@@ -1233,7 +1340,7 @@ async function reconcileExecutingChange(
     );
     return; // something is genuinely still running
   }
-  if (heldTargets.length > 0 && !anyFailed) return; // the PURE hold: unchanged, still in flight
+  if (heldCount > 0 && !anyFailed) return; // the PURE hold: unchanged, still in flight
   await withTenantTx(db, orgId, (tx) =>
     markWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded")
   );
@@ -1350,6 +1457,101 @@ async function recordStageDependencyHold(
   if (firstHold.created) {
     console.info(
       `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by a stage dependency — decision ${firstHold.decision.id} (scp decision get ${firstHold.decision.id}); re-evaluated every tick until it clears`
+    );
+  }
+}
+
+/**
+ * THE EXPLAINABILITY HALF OF THE FREEZE HOLD (M25.2, charter principle 6) — and the
+ * anti-write-amplification contract that makes it safe to write from a 1 s loop.
+ *
+ * Four properties, each defending a named prior incident. All four are copied from
+ * `recordStageDependencyHold` above, which is the point: this is the same seam one mechanism over,
+ * and it is the seam that produced this project's worst production incident.
+ *
+ * `kind: "freeze_admission"`, DISTINCT FROM `"gate"`. `insertDecisionIfChanged` compares against
+ * the LATEST row of the same `(subject_id, kind)`. Sharing `gate` would make these rows and the
+ * wave gate's own rows for the same change ALTERNATE — each differing from the one before it — and
+ * suppression would never fire once. That is ADR-0024's measured 1.44 GB/day rebuilt from parts.
+ *
+ * `verdict: "hold"`, NEVER `"block"`. `latestBlockDecisionForSubject` selects the newest row with
+ * `verdict = 'block'` for a subject, filtered on the VERDICT ALONE — no kind, no recency, no
+ * change-state gate — and `service-board.ts` feeds it straight into a component row's
+ * `attention.blocked`. Nothing ever writes a clearing row. A `block` here would mark the component
+ * blocked permanently: after the freeze lifted, after the change was accepted, forever. And unlike
+ * the nineteen other `block` writers, this one fires on EVERY release into a frozen window BY
+ * DESIGN, so it would make the attention signal permanently wrong for exactly the orgs that use
+ * freezes.
+ *
+ * ONE ROW PER CHANGE, NOT PER TARGET. Per-target rows for a four-region wave would alternate under
+ * the same `(subject_id, kind)` comparison and suppression would never fire. `subjectId` is the
+ * CHANGE, and the held set is an array inside one `inputContext`.
+ *
+ * `endsAt`, NEVER `now`. The freeze's own window boundary is in the context and the clock is not —
+ * `gate-orchestrator.ts`'s trick, copied exactly. Every field written here is a uuid, a small
+ * integer, a type-id string, a freeze name, or an ISO instant read straight off `freezes.ends_at`;
+ * none is derived from `Date.now()`, `attempt`, or an observed weight. BOTH SORTS (targets by
+ * `targetObjectId` here, freezes by id in `freeze-hold.ts`) are load-bearing for the same reason: a
+ * reordered `activeWave.targets` must not make an unchanged situation look new. So tick N+1 produces
+ * a byte-identical candidate, `restatesDecision` is true, and nothing is written. A three-week
+ * freeze over a held change is ONE row, not 1.8 million.
+ *
+ * THE `reconcile_cursor_at` BUMP IS NOT OPTIONAL, and it goes in the SAME transaction as the
+ * Decision so a hold can never be recorded without its change also moving to the back of the queue.
+ * A change whose targets are all frozen stays `executing` with its wave `running`, so nothing else
+ * writes its row; `listChangeRowsInStates` serves oldest-`reconcile_cursor_at`-first capped at
+ * `BATCH_LIMIT`, so more than `BATCH_LIMIT` frozen changes would own every slot of every tick and
+ * every change queued behind them would never be evaluated even once. That is not hypothetical: the
+ * identical property stopped all coordination on the homelab for 13 days behind green health
+ * checks. This is bump 6 of 6, and `candidate-loop-registry.test.ts` is the CI gate that notices if
+ * it goes missing — its `advanceExecutingChanges` entry names this function and counts this bump.
+ * `state_entered_at` and `updated_at` are deliberately untouched (migration 0058's split): the
+ * watchdog's stall SLA must keep measuring from when the change entered `executing`, and a frozen
+ * change must not advertise itself to an operator as freshly updated every second it waits.
+ */
+async function recordFreezeAdmissionHold(
+  db: Db,
+  orgId: string,
+  change: ChangeRow,
+  activeWave: { id: string; waveIndex: number },
+  frozenTargets: FreezeHoldVerdict[]
+): Promise<void> {
+  const held = [...frozenTargets]
+    .sort((a, b) => a.targetObjectId.localeCompare(b.targetObjectId))
+    .map((entry) => ({
+      targetObjectId: entry.targetObjectId,
+      componentObjectId: entry.stage?.componentObjectId ?? null,
+      deploymentTargetObjectId: entry.stage?.deploymentTargetObjectId ?? null,
+      freezes: entry.freezes
+    }));
+
+  const firstHold = await withTenantTx(db, orgId, async (tx) => {
+    const recorded = await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "freeze_admission",
+      subjectId: change.objectId,
+      verdict: "hold",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held },
+      reasonTree: {
+        summary: `${held.length} wave target(s) held: an active freeze covers that scope — siblings proceed`,
+        held: frozenTargets
+          .map((verdict) => describeFreezeHold(verdict))
+          .sort((a, b) => a.localeCompare(b))
+      }
+    });
+    await tx
+      .update(changes)
+      .set({ reconcileCursorAt: new Date() })
+      .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)));
+    return recorded;
+  });
+
+  // Logged exactly once per distinct hold, on the tick that actually persisted it — the same
+  // `created` signal the gate-blocked and stage-dependency log lines use, and for the same reason:
+  // a target frozen for a fortnight is one line, not 1,209,600.
+  if (firstHold.created) {
+    console.info(
+      `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by an active freeze — decision ${firstHold.decision.id} (scp decision get ${firstHold.decision.id}); re-evaluated every tick until the window closes`
     );
   }
 }
