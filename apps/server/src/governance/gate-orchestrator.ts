@@ -898,7 +898,13 @@ export async function evaluateGovernanceGate(
   //
   // NARROW: it lifts the FREEZE block and nothing else. Execution continues into policy matching,
   // controls and approvals below, all of which still apply to a rollback's wave.
-  const freezeExemptRollback = ctx.isRollback === true;
+  // QUALIFIED ON `wave_boundary`, exactly like `partiallyFrozen` above, and not merely on
+  // `isRollback`. Today `isRollback` is set only by `evaluateWaveGate`, so the conjunct is inert —
+  // but `isRollback` lives on the SHARED `GateContext`, and one future caller setting it on the
+  // lifecycle path would silently lift the freeze at `validating -> accepted` AND on
+  // `POST /policy-evaluate`. `lifecycle_edge` keeps any-target-frozen => block by design (there is
+  // no such thing as accepting three quarters of a change), and D7 is a WAVE-boundary decision.
+  const freezeExemptRollback = ctx.gateKind === "wave_boundary" && ctx.isRollback === true;
   const freezeCheck = await checkFreeze(tx, ctx, byTarget);
   if (freezeCheck.blocked && !partiallyFrozen && !freezeExemptRollback) {
     // Both a plain freeze block and a REJECTED override (missing reason / unauthorized for some

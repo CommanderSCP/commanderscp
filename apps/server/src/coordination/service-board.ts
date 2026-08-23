@@ -25,7 +25,9 @@ import { getChange } from "./changes-repo.js";
 import { getLatestPlanForChange } from "./plan-service.js";
 import { latestBlockDecisionForSubject } from "./decisions-repo.js";
 import { listApprovalRequestsForChange } from "../governance/approvals-repo.js";
-import { listFreezes, type FreezeRow } from "../governance/freezes-repo.js";
+import type { FreezeRow } from "../governance/freezes-repo.js";
+import { freezesByTarget } from "../governance/freeze-scope.js";
+import { listPlacementsForComponents } from "../graph/placements-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { listPeers } from "../federation/peers-repo.js";
 import { scopeCarriesChangeObjects } from "../federation/scope-filter.js";
@@ -562,9 +564,13 @@ export async function buildServiceBoard(
   //    this change?". It is an ensure (not a get) because it is the one canonical way to name this
   //    instance; minting the identity row on first use is idempotent and race-safe (self-repo.ts).
   const self = await ensureFederationSelf(tx, orgId);
-  const [latestByComponent, allFreezes, peers, unattachedInFlight] = await Promise.all([
+  const [latestByComponent, placements, peers, unattachedInFlight] = await Promise.all([
     latestChangeByComponent(tx, orgId, componentIds, self.domainId),
-    listFreezes(tx, orgId),
+    // Every placement of every component on this board — the second half of the freeze resolution
+    // below. A `deployment-target`-scoped freeze (a REGION freeze, the owner's literal ask) sits on
+    // a PLACEMENT's containment chain, never on a component's, so a board that resolved only
+    // component ids would report `activeFreeze: null` for every row a region freeze covers.
+    listPlacementsForComponents(tx, orgId, componentIds),
     listPeers(tx, orgId),
     // ARM 2 of the change-blindness union — POSITIVE EVIDENCE that changes are moving on a peer
     // and cannot be attributed to anything local. Conditioned on IN_FLIGHT so a change that
@@ -616,17 +622,61 @@ export async function buildServiceBoard(
       ]
     : [];
 
-  const now = Date.now();
-  const activeFreezeByScope = new Map<string, FreezeRow>();
-  for (const f of allFreezes) {
-    if (
-      f.startsAt.getTime() <= now &&
-      f.endsAt.getTime() > now &&
-      !activeFreezeByScope.has(f.scopeObjectId)
-    ) {
-      activeFreezeByScope.set(f.scopeObjectId, f);
-    }
+  // ============================================================================================
+  // WHICH FREEZE IS ACTUALLY ON THIS ROW — resolved through CONTAINMENT, not exact scope membership
+  // ============================================================================================
+  // What this used to be: `listFreezes` (every freeze ever authored in the org), a hand-rolled
+  // half-open window comparison in JS, and a `Map` keyed on `scopeObjectId` looked up with
+  // `component.id`. Two defects in three lines, and M25.2 makes both worse:
+  //
+  //   * EXACT-SET MEMBERSHIP. A freeze declared at a domain, at the org root, or at a
+  //     deployment-target appeared on NO board row at all — `activeFreeze: null` for every affected
+  //     component. Before per-target admission, such a freeze at least produced a whole-wave
+  //     `gate`/`block` Decision that `latestBlockDecisionForSubject` turned into `attention.blocked`,
+  //     so an operator saw *something*. A PARTIALLY frozen wave now returns `allow`, its hold
+  //     Decision is deliberately `verdict: "hold"` so it does not reach that reader, and the held
+  //     target sits at `status: "pending"` — indistinguishable from queued. The lever works and the
+  //     signal was missing (proposal §1.8).
+  //   * A SECOND COPY OF THE WINDOW PREDICATE. `freezes-repo.ts`'s `activeFreezesInWindow` claims in
+  //     its own docblock to be THE ONLY PLACE that knows `starts_at <= at < ends_at`; this file made
+  //     that false. Two copies of one predicate drifting is precisely how the containment routes
+  //     drifted until a service-scoped freeze failed OPEN.
+  //
+  // `freezesByTarget` fixes both at once: it owns the window predicate and walks `containmentChain`
+  // per id, so every route reaches — component (3), deployment-target (4), service, domain, org.
+  // INERT when the org has no active freeze (one indexed read, zero graph walks), which is the state
+  // nearly every board render is in.
+  const placementsByComponent = new Map<string, string[]>();
+  for (const p of placements) {
+    const list = placementsByComponent.get(p.componentObjectId) ?? [];
+    list.push(p.placementId);
+    placementsByComponent.set(p.componentObjectId, list);
   }
+  const freezeLookupIds = [service.id, ...componentIds, ...placements.map((p) => p.placementId)];
+  const freezesByObjectId = new Map<string, FreezeRow[]>();
+  for (const entry of await freezesByTarget(tx, orgId, freezeLookupIds, new Date())) {
+    freezesByObjectId.set(entry.targetObjectId, entry.freezes);
+  }
+  /** The one freeze to show for an object and everything placed under it. DETERMINISTIC where the
+   *  old map was not: it kept whichever row `listFreezes` happened to return first, and that query
+   *  has no `ORDER BY`, so two freezes at one scope made the board's answer depend on the planner.
+   *  The rule is "the one that keeps this row frozen LONGEST" (max `endsAt`, ties broken by id) —
+   *  the honest single answer to "when can this ship again". */
+  const activeFreezeFor = (objectId: string): FreezeRow | undefined => {
+    const candidates = [
+      ...(freezesByObjectId.get(objectId) ?? []),
+      ...(placementsByComponent.get(objectId) ?? []).flatMap(
+        (placementId) => freezesByObjectId.get(placementId) ?? []
+      )
+    ];
+    if (candidates.length === 0) return undefined;
+    return candidates.reduce((best, f) =>
+      f.endsAt.getTime() > best.endsAt.getTime() ||
+      (f.endsAt.getTime() === best.endsAt.getTime() && f.id < best.id)
+        ? f
+        : best
+    );
+  };
 
   // 3. Per-component projection. Bounded by the service's component count; each iteration's reads are
   //    the same ones the Phase-1 change-pipeline view already relies on, run server-side in this tx.
@@ -644,7 +694,7 @@ export async function buildServiceBoard(
   for (const component of components) {
     const latest = latestByComponent.get(component.id) ?? null;
     const changeId = latest?.changeId ?? null;
-    const componentFreeze = activeFreezeByScope.get(component.id);
+    const componentFreeze = activeFreezeFor(component.id);
 
     if (!latest || !changeId) {
       // Nothing found for this component. On a domain every peer of which forwards change objects
@@ -841,7 +891,7 @@ export async function buildServiceBoard(
   // on every air-gapped deployment forever.
   const stalenessUnknowns = anyUpstreamStale ? ["summary.stable", "rows[].latestChangeId"] : [];
 
-  const serviceFreeze = activeFreezeByScope.get(service.id);
+  const serviceFreeze = activeFreezeFor(service.id);
   return {
     service: { id: service.id, urn: service.urn, name: service.name },
     rows,

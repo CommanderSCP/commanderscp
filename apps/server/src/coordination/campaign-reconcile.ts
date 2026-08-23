@@ -9,7 +9,11 @@ import { badRequest, describeError } from "../errors.js";
 import { getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
-import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
+import {
+  insertDecision,
+  insertDecisionIfChanged,
+  latestDecisionForSubjectKind
+} from "./decisions-repo.js";
 import { describeFreezeHold, evaluateFreezeHolds, type FreezeHoldVerdict } from "./freeze-hold.js";
 import { proposeChange, typeOf } from "./changes-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
@@ -343,6 +347,9 @@ async function reconcileOneCampaign(
    *  target (`insertDecisionIfChanged` dedupes on the LATEST row of a `(subject_id, kind)`, so
    *  per-target rows would alternate and suppression would never fire). */
   const frozenTargets: FreezeHoldVerdict[] = [];
+  /** Did any target of this wave get past the freeze seam on this tick? The release condition for
+   *  the hold Decision below. */
+  let anyTargetFannedOut = false;
 
   for (const target of activeWave.targets) {
     if (target.status === "succeeded") continue;
@@ -451,6 +458,11 @@ async function reconcileOneCampaign(
         frozenTargets.push(frozen);
         continue;
       }
+      // Set BEFORE `proposeChange` for the same reason the change side sets its flag before
+      // `triggerWaveTarget`: this target was NOT held on this tick, which is the observation the
+      // release row records. A `proposeChange` that then throws is retried next tick and the
+      // release is idempotent.
+      anyTargetFannedOut = true;
 
       try {
         await withTenantTx(db, orgId, async (tx) => {
@@ -532,6 +544,13 @@ async function reconcileOneCampaign(
 
   if (frozenTargets.length > 0) {
     await recordCampaignFreezeAdmissionHold(db, orgId, campaignObjectId, activeWave, frozenTargets);
+  } else if (anyTargetFannedOut) {
+    // HOLD -> RELEASE (proposal §1.5), the campaign-side twin of `reconcile.ts`'s
+    // `clearFreezeAdmissionHold`. Without it the newest `freeze_admission` row for a campaign that
+    // was held for a fortnight still reads `hold` after the window closed and every member change
+    // was minted — a historical record with no clearing counterpart, which is the exact defect
+    // `routes/changes.ts` documents against ADR-0028's identical omission.
+    await clearCampaignFreezeAdmissionHold(db, orgId, campaignObjectId, activeWave);
   }
 
   if (!allTerminal) return;
@@ -558,6 +577,45 @@ async function reconcileOneCampaign(
  * campaign it examines, below its S10 guard. `candidate-loop-registry.test.ts` records that as this
  * loop's one bump.
  */
+/**
+ * The campaign-side HOLD -> RELEASE row (proposal §1.5). Three guards, identical to
+ * `reconcile.ts`'s `clearFreezeAdmissionHold`: reached only on a tick with nothing held and
+ * something fanned out; returns unless the newest `(campaign, freeze_admission)` row is a `hold`;
+ * and written through `insertDecisionIfChanged` regardless. Best-effort — failing to record that a
+ * hold released must not fail the tick that released it.
+ */
+async function clearCampaignFreezeAdmissionHold(
+  db: Db,
+  orgId: string,
+  campaignObjectId: string,
+  activeWave: { id: string; waveIndex: number }
+): Promise<void> {
+  await withTenantTx(db, orgId, async (tx) => {
+    const latest = await latestDecisionForSubjectKind(
+      tx,
+      orgId,
+      campaignObjectId,
+      "freeze_admission"
+    );
+    if (!latest || latest.verdict !== "hold") return;
+    await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "freeze_admission",
+      subjectId: campaignObjectId,
+      verdict: "allow",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held: [] },
+      reasonTree: {
+        summary:
+          "no campaign wave target is held by a freeze any more — the window closed (or the " +
+          "freeze was lifted) and fan-out has resumed",
+        releases: latest.id
+      }
+    });
+  }).catch((err) => {
+    logCampaignError(orgId, campaignObjectId, `wave ${activeWave.waveIndex} freeze release`, err);
+  });
+}
+
 async function recordCampaignFreezeAdmissionHold(
   db: Db,
   orgId: string,

@@ -27,6 +27,18 @@ export interface CampaignWaveStatusInput {
    *  this wave's boundary gate returned a "block" verdict (a policy/control did not pass). */
   waveStatus: "pending" | "blocked" | "running" | "succeeded" | "failed" | "skipped";
   targets: CampaignWaveTargetStatusInput[];
+  /** M25.2 — how many of this wave's targets an ACTIVE FREEZE is currently withholding from fan-out
+   *  (`coordination/freeze-hold.ts`, re-evaluated at read time by `campaign-repo.ts`).
+   *
+   *  WHY IT IS A SEPARATE INPUT rather than something derivable from `waveStatus`: before per-target
+   *  admission, a freeze over any campaign target produced a whole-wave `block` verdict, so
+   *  `waveStatus` went `blocked` and this function reported `blocked` for free. M25.2 stands the
+   *  gate aside for a PARTIALLY frozen wave — 39 of 40 components fan out and one is held — so the
+   *  wave is `running` and the campaign would read as ordinarily `active` indefinitely, silently
+   *  losing a status it used to report. That is a regression this increment introduces, not a
+   *  pre-existing gap, so it is closed in the same increment (proposal §1.8). Optional and defaulted
+   *  to 0 so every existing caller and table-driven case is unchanged. */
+  frozenTargetCount?: number;
 }
 
 export interface ComputeCampaignStatusInput {
@@ -56,7 +68,15 @@ export function computeCampaignStatus(input: ComputeCampaignStatusInput): Campai
   }
 
   if (input.waves.some((w) => w.waveStatus === "failed")) return "failed";
-  if (input.waves.some((w) => w.waveStatus === "blocked")) return "blocked";
+  // `blocked` covers BOTH ways a campaign wave stops moving for a governance reason: the gate's own
+  // `block` verdict (a policy or control did not pass), and M25.2's per-target freeze hold, which
+  // deliberately leaves the wave `running` so its unfrozen siblings can proceed. Same tier, because
+  // the operator-facing fact is the same one — something needs a human before this finishes.
+  if (
+    input.waves.some((w) => w.waveStatus === "blocked" || (w.frozenTargetCount ?? 0) > 0)
+  ) {
+    return "blocked";
+  }
   if (input.waves.every((w) => w.waveStatus === "succeeded" || w.waveStatus === "skipped")) {
     return "completed";
   }

@@ -20,6 +20,7 @@ import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.j
 import { authorize } from "../authz/resolve.js";
 import { insertDecision } from "./decisions-repo.js";
 import { computeCampaignStatus, type CampaignWaveStatusInput } from "./campaign-status.js";
+import { evaluateFreezeHolds } from "./freeze-hold.js";
 import { getLatestCampaignPlan } from "./campaign-plan-service.js";
 
 export type ObjectRow = typeof objects.$inferSelect;
@@ -195,9 +196,32 @@ export async function getCampaignStatus(
     for (const row of rows) stateByChangeId.set(row.objectId, row.state);
   }
 
+  // M25.2 — WHICH TARGETS A FREEZE IS HOLDING RIGHT NOW, re-evaluated here rather than read off the
+  // campaign's `freeze_admission` Decision. The Decision is a historical record; a status derived
+  // from it would keep saying `blocked` after the window closed, which is the same stale-hold defect
+  // `routes/changes.ts` documents against ADR-0028's `stage_dependency` row. Re-evaluating costs one
+  // indexed window read per status render and NOTHING else when the org has no active freeze
+  // (`freezesByTarget`'s inertness property).
+  //
+  // SCOPED TO THE RUNNING WAVE. Only the active wave fans out, so a freeze over a target of a wave
+  // that has not started yet is not withholding anything and must not make the campaign read
+  // `blocked` weeks early. A target that already minted its member change is likewise past this
+  // seam — the freeze bites that change's own wave targets, one layer down.
+  const runningWaveTargetIds = plan.waves
+    .filter((w) => w.status === "running")
+    .flatMap((w) => w.targets.filter((t) => t.memberChangeObjectId === null))
+    .map((t) => t.targetObjectId);
+  const frozenTargetIds =
+    runningWaveTargetIds.length === 0
+      ? new Set<string>()
+      : new Set(
+          (await evaluateFreezeHolds(tx, { orgId, targetObjectIds: runningWaveTargetIds })).keys()
+        );
+
   const waves: CampaignWaveStatusInput[] = plan.waves.map((w) => ({
     waveIndex: w.waveIndex,
     waveStatus: w.status as CampaignWaveStatusInput["waveStatus"],
+    frozenTargetCount: w.targets.filter((t) => frozenTargetIds.has(t.targetObjectId)).length,
     targets: w.targets.map((t) => ({
       targetObjectId: t.targetObjectId,
       memberChangeState:
