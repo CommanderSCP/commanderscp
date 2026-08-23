@@ -280,12 +280,30 @@ export const ChangeWaveTargetSchema = z.object({
   /** DERIVED, read-only (ADR-0007): the Category of `type`, via `categoryOfType`. Not stored. */
   category: ExecutorCategorySchema,
   executorPluginId: z.string().nullable(),
+  /** The `ExternalRunRef` the executor's `trigger()` returned — plugin-shaped, opaque to SCP, and
+   *  the handle `status()` is polled with.
+   *
+   *  BOUNDED, NOT VERBATIM (M23.1f), and unlike `observed` below it carries NO structured
+   *  truncation signal — recorded here rather than left to be discovered. The reason is that the
+   *  reader of this field is the PLUGIN, not an operator: a cut here is a broken handle, not a
+   *  wrong thing on a screen, and the honest fix for that is refusing the write rather than
+   *  describing the damage. See the note at `markWaveTargetTriggered` in `wave-targets-repo.ts`
+   *  and M23.1g in BUILD_AND_TEST.md, where it is carried as still open. */
   executorRef: z.record(z.string(), z.unknown()).nullable(),
   /** The snapshot reconcile observed from status() — the per-wave version (ADR-0008 decisions 1-2).
    *  Additive-optional: plans predating the `observed_state` column read back without it; `null` once
-   *  observed with nothing. `revision` is the opaque stateRef as-is (a git SHA / Argo revision).
+   *  observed with nothing.
+   *
+   *  `revision` is the executor's stateRef (a git SHA / Argo revision), opaque to SCP — but NOT
+   *  necessarily as-is, which is what this comment claimed until M23.1g and what M23.1f made false.
+   *  Every string here passes a persistence bound before it becomes a row, so it may be SHORTENED
+   *  (an elision marker mid-value) and the two code points `jsonb` refuses — U+0000 and lone
+   *  surrogates — are replaced one-for-one by U+FFFD. `truncation` below says which fields that
+   *  happened to; nothing else here does.
+   *
    *  `images` (P4C increment 3) is the deployed image refs (tag/digest, e.g. `ghcr.io/x/y:1.2.3` or
-   *  `...@sha256:...`) — the human-facing per-wave version, preferred over the git SHA in the UI.
+   *  `...@sha256:...`) — the human-facing per-wave version, preferred over the git SHA in the UI. It
+   *  is a PREFIX of what the executor reported when `truncation.images` is present.
    *  `rollout` (P4D increment 4) is the OBSERVE-ONLY progressive-delivery snapshot (an Argo Rollout's
    *  phase/step/weight/message as the executor reports it) — display-only; SCP never drives it
    *  (ADR-0008: rollout state is OBSERVED, NOT DRIVEN). Every field is optional (only phase/message
@@ -301,6 +319,45 @@ export const ChangeWaveTargetSchema = z.object({
           weight: z.number().optional(),
           message: z.string().optional()
         })
+        .optional(),
+      /** WHAT THE PERSISTENCE BOUND REMOVED, KEYED BY THE FIELD IT HAPPENED TO — M23.1g, and the
+       *  reason `revision`/`images`/`rollout` above are readable at all rather than merely
+       *  present.
+       *
+       *  ABSENT MEANS NOTHING WAS REMOVED. That is every honest reading and it is the only thing a
+       *  consumer has to check: an entry exists only for a field that lost something.
+       *
+       *  `dropped: true` IS THE WHOLE POINT. A field the bound refused outright is simply not in
+       *  `observed`, byte-identical to a field the executor never reported — so a UI that renders
+       *  `observed.rollout ?? "no rollout"` states a cause that is FALSE, blaming the executor for
+       *  a cut this platform made. Same class as the `no_weight` reason ADR-0028's gate reported
+       *  (charter principle 6). Read this before you render an absence.
+       *
+       *  A CONSUMER MUST NOT PATTERN-MATCH THE STORED VALUE INSTEAD. The bound's markers
+       *  (`__scpElided`, `[elided: N more entries]`) are content-shaped — a plugin can put those
+       *  exact characters in a revision, and one of the bound's branches emits no marker at all —
+       *  and they live in `@scp/runner-launcher`, which the UI does not and must not depend on.
+       *  This field is the API's answer, which is what makes it API-first (charter principle 3).
+       *
+       *  ADDITIVE-OPTIONAL: rows written before M23.1g carry no key, which reads as "nothing was
+       *  removed". That is not backfilled and cannot be — the removed content is gone. The key
+       *  `__scpElided` can appear here when the report itself was too wide to list every field;
+       *  its `droppedFields` is how many were not listed. */
+      truncation: z
+        .record(
+          z.string(),
+          z.object({
+            /** The field is not in `observed` at all, and that is OUR doing. */
+            dropped: z.boolean(),
+            /** Characters removed from strings inside this field. */
+            droppedCharacters: z.number().int().nonnegative().optional(),
+            /** Array entries removed from lists inside this field. */
+            droppedEntries: z.number().int().nonnegative().optional(),
+            /** Object fields removed from objects inside this field. Their names are not
+             *  recoverable below the root — the store keeps a count, not a list. */
+            droppedFields: z.number().int().nonnegative().optional()
+          })
+        )
         .optional()
     })
     .nullable()

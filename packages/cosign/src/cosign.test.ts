@@ -1,7 +1,8 @@
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { mkdtempTrackedForFileSync } from "@scp/test-tmpdir";
 import { COSIGN_BIN_ENV, VENDORED_COSIGN_PATH } from "./cosign-bin.js";
 
 /**
@@ -32,7 +33,7 @@ function writeShim(dir: string, name: string, helpBody: string): string {
 }
 
 beforeAll(() => {
-  shimDir = mkdtempSync(path.join(tmpdir(), "scp-cosign-shim-"));
+  shimDir = mkdtempTrackedForFileSync(path.join(tmpdir(), "scp-cosign-shim-"));
   newerShim = writeShim(
     shimDir,
     "cosign-newer",

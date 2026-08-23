@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  check,
   foreignKey,
   index,
   integer,
@@ -886,8 +887,15 @@ export const changeWaveTargets = pgTable(
     // Last status() stateRef reconcile observed — the synced revision it previously computed and
     // discarded (ADR-0008 decision 1; docs/proposals/observe-enrichment.md signal 1). Additive/
     // nullable, null until the first successful observe; a status() with no stateRef never nulls a
-    // previously-captured value (updateWaveTargetObserved writes it only when defined). Stores the
-    // opaque revision as-is (jsonb); the strongly-typed digest/rollout object is a later increment.
+    // previously-captured value (updateWaveTargetObserved writes it only when defined).
+    //
+    // NOT AS-IS — the claim this comment made until M23.1g, and M23.1f made it false. Everything in
+    // this column is plugin-supplied and passes `boundPluginJson` on the way in: a string may be
+    // shortened, a list may lose its tail, U+0000 and lone surrogates become U+FFFD. What was
+    // removed is written into the SAME jsonb under `truncation`, per field, so a reader is never
+    // left to infer a cut from a suspiciously short value — and so `no rollout` and `we cut the
+    // rollout` stop being the same bytes (`ChangeWaveTargetSchema.observed.truncation`).
+    // `observedAt` is stamped here too and is deliberately NOT on the API.
     observedState: jsonb("observed_state"),
     // pending|triggering|triggered|observing|succeeded|failed|aborted|no_executor
     // `no_executor` (docs/adr/0006): fail-closed terminal — the target has real executor bindings
@@ -975,7 +983,13 @@ export const controlRuns = pgTable(
   },
   (table) => [
     index("control_runs_org_change").on(table.orgId, table.changeObjectId, table.createdAt),
-    index("control_runs_org_control").on(table.orgId, table.controlObjectId)
+    index("control_runs_org_control").on(table.orgId, table.controlObjectId),
+    // 0065 — the composite-FK target for `scan_findings`. `id` is already the primary key, so this
+    // adds no new uniqueness; it exists so a `(org_id, control_run_id)` foreign key has something to
+    // reference, which is what makes "a finding cannot point at another org's scan" a STRUCTURAL
+    // barrier rather than a repo-layer habit (0061 could not do this for its `objects(id)`
+    // references and says so).
+    unique("control_runs_org_id_key").on(table.orgId, table.id)
   ]
 );
 
@@ -1832,6 +1846,47 @@ export const scanRequirementFloors = pgTable(
 );
 
 // -------------------------------------------------------------------------------------------
+// M22.2 — instance-scoped scan-EXCLUSION admissions (ADR-0033 §1, §7a). Hand-authored table/RLS/
+// grants in drizzle/0074_scan_exclusion_admissions.sql; read that file's header for the full
+// rationale.
+//
+// THE SECOND TABLE IN THIS SCHEMA WITH NO `org_id`, and it is the SAME documented exception as
+// `scanRequirementFloors` above rather than a new one: an admission is an operator statement about
+// the DEPLOYMENT ("exclusions of this class may have effect beneath the platform/trust-domain
+// rung"), identical for every org hosted here, so it holds no per-tenant rows and exposes no
+// cross-tenant visibility. Access is the same: tenant-READ (RLS `FOR SELECT USING (true)`, `scp_app`
+// holds SELECT only) / operator-WRITE over the admin connection.
+//
+// DO NOT REASON ABOUT THIS TABLE BY ANALOGY WITH `scanFindings` BELOW — M22 added both and they are
+// deliberately opposite. `scan_findings` is ordinary tenant data (`org_id NOT NULL`, standard RLS):
+// it records what a scanner saw for one tenant's artifact. This one is instance config.
+//
+// A ROW IS AN ADMISSION; NO ROW IS NO ADMISSION. The table ships EMPTY and is never seeded, so on
+// every existing deployment the `platform` rung admits nothing, every clause beneath fails the
+// monotone AND, and behaviour is byte-identical to pre-M22.2. Note the sign is the OPPOSITE of the
+// neighbour above: an absent floor row means NO CEILING (a loosening), an absent admission row means
+// NO ADMISSION (a tightening). A tightening and a loosening cannot share a default.
+//
+// `class` must agree with `ScanExclusionClassSchema` (packages/schemas/src/supply-chain.ts); the
+// migration carries a CHECK holding the same four values, and an integration test pins that the two
+// lists agree.
+// -------------------------------------------------------------------------------------------
+export const scanExclusionAdmissions = pgTable(
+  "scan_exclusion_admissions",
+  {
+    tier: text("tier").notNull(), // 'platform' | 'trust_domain'
+    /** 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override' */
+    class: text("class").notNull(),
+    /** 'local' | 'federated'. As on `scanRequirementFloors`, the CHECK admits both but no federation
+     *  writer produces `federated` rows today — outposts never evaluate scan policy (ADR-0020 §3). */
+    origin: text("origin").notNull().default("local"),
+    note: text("note"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [primaryKey({ columns: [table.tier, table.class, table.origin] })]
+);
+
+// -------------------------------------------------------------------------------------------
 // M21.2 — the DEPENDENCY INVENTORY substrate (ADR-0032 §3/§4/§5/§7). Hand-authored table/RLS/grants
 // in drizzle/0061_dependency_inventory.sql; read that file's header for the full rationale — the
 // four measurements behind the principle-2 bend, the URN-collision argument, and the RLS mirroring.
@@ -2329,7 +2384,7 @@ export const dependencyBumpAuthorships = pgTable(
 );
 
 /**
- * THE PER-OBJECT RUNGS OF THE `governance:move` LATTICE (drizzle/0079,
+ * THE PER-OBJECT RUNGS OF THE `governance:move` LATTICE (drizzle/0083,
  * docs/proposals/governance-reach-on-containment-move.md §9.2 — owner ruling 2026-08-18).
  *
  * One row per CONTAINER (org root, containment domain, service, assembly) under which a containment
@@ -2370,7 +2425,7 @@ export const governanceMoveRungs = pgTable(
 
 /**
  * THE INSTANCE (COMMANDER) RUNG — the singleton that ACTIVATES the lattice deployment-wide
- * (drizzle/0079 §2; owner decision Q1-A: "if enabled there, orgs can't disable it").
+ * (drizzle/0083 §2; owner decision Q1-A: "if enabled there, orgs can't disable it").
  *
  * Storage is byte-for-byte the `dependency_subscription_unlock` shape (0062): `CHECK id = 'default'`,
  * tenant SELECT-only, FORCE RLS, no write policy, operator-token `PUT` through the raw admin pool.
@@ -2385,3 +2440,83 @@ export const governanceMoveInstanceRung = pgTable("governance_move_instance_rung
   enabled: boolean("enabled").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
 });
+
+/**
+ * M22.1b (ADR-0033 §7/§7a, migration 0073) — the per-finding projection of ONE scan verdict.
+ *
+ * A scan verdict was four integers until M22.1a; every rule in ADR-0033 is a rule ABOUT A FINDING,
+ * so this is the substrate the rest of M22 queues behind. See 0073's header for the full argument;
+ * the four load-bearing facts, restated where the code is:
+ *
+ *   1. ORDINARY TENANT DATA, `org_id NOT NULL` under the standard `org_isolation` RLS policy. NOT
+ *      the DESIGN §4.2 tenancy exception — M22.2's instance-tier ADMISSION rows are that, and the
+ *      two land in the same milestone and must not be copied from each other.
+ *   2. A PROJECTION TABLE, not a graph object type, on drizzle/0061's four measured tests: a finding
+ *      has no sluggable identity (the same CVE recurs per package; an entry may carry no
+ *      `VulnerabilityID` at all yet still counts), 2000 rows/scan through the graph write path is
+ *      2000 signed journal rows behind two per-org advisory locks, a new builtin type can wedge a
+ *      peer's whole signed bundle mid-upgrade, and this is high-churn derived observation data.
+ *   3. COMMANDER-LOCAL. `control_runs.evidence` is copied VERBATIM into the promotion bundle, so
+ *      findings are deliberately rows here and never on that column — the bundle keeps counts.
+ *   4. RETENTION IS PER ROW (ADR-0024 §D1, ADR-0033 D10): an EXCLUDED finding is accepted-risk
+ *      evidence ('E'); an ordinary one is telemetry ('O').
+ */
+export const scanFindings = pgTable(
+  "scan_findings",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** The scan verdict these findings decompose — one `control_runs` row is exactly one scan
+     *  outcome for one artifact digest at one gate crossing (M22.0a), which is the unit an exclusion
+     *  is resolved for. */
+    controlRunId: uuid("control_run_id").notNull(),
+    /** POSITION within the persisted set, in the producing parser's order — the identity, because a
+     *  finding has no other one. */
+    ordinal: integer("ordinal").notNull(),
+    /** critical|high|medium|low. Trivy's `UNKNOWN` is folded away upstream and never reaches a row,
+     *  exactly as it never reaches a count. */
+    severity: text("severity").notNull(),
+    /** Every attribution column is NULLABLE for the same reason `ScanFindingSchema`'s fields are
+     *  optional: an entry is retained whenever it would have been COUNTED, on `Severity` alone.
+     *  Requiring identifiers would drop entries and move operators' numbers. */
+    vulnerabilityId: text("vulnerability_id"),
+    pkgName: text("pkg_name"),
+    installedVersion: text("installed_version"),
+    /** ABSENT means upstream shipped no fix — M22.3's "no fix available" class reads this absence as
+     *  the signal rather than inferring it. */
+    fixedVersion: text("fixed_version"),
+    /** Trivy `Results[].Class` — the field that makes M22.4's vendor rule expressible without an
+     *  inventory join (`os-pkgs` attributes to the base image line, `lang-pkgs` to a manifest
+     *  dependency or to nothing). */
+    class: text("class"),
+    target: text("target"),
+    /** `PkgIdentifier.PURL` VERBATIM. Canonicalisation belongs at the join, once, where both sides
+     *  are visible — the dependency inventory stores its coordinate un-normalised too. */
+    purl: text("purl"),
+    /** ADR-0024 §D1 class, per row. 'E' excluded (accepted-risk evidence) | 'O' ordinary
+     *  (telemetry). 'P' is refused by the CHECK: no finding is permanent evidence. Defaults to 'O'
+     *  because nothing is excluded until M22.2 exists to exclude it. */
+    retentionClass: text("retention_class").notNull().default("O"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    /** `orgId` LEADS, so this index IS the one hot lookup ("the findings of control run R") and no
+     *  second index is needed. */
+    primaryKey({
+      name: "scan_findings_pk",
+      columns: [table.orgId, table.controlRunId, table.ordinal]
+    }),
+    /** Barrier 2 (DESIGN §4.2): a row cannot reference another org's control run, even from a
+     *  session that passes RLS for its own org. CASCADE so findings never outlive the verdict they
+     *  explain. */
+    foreignKey({
+      name: "scan_findings_control_run_fk",
+      columns: [table.orgId, table.controlRunId],
+      foreignColumns: [controlRuns.orgId, controlRuns.id]
+    }).onDelete("cascade"),
+    check(
+      "scan_findings_severity_check",
+      sql`${table.severity} IN ('critical','high','medium','low')`
+    ),
+    check("scan_findings_retention_class_check", sql`${table.retentionClass} IN ('E','O')`)
+  ]
+);

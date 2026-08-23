@@ -31,10 +31,12 @@
  */
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseAllDocuments } from "yaml";
+import { jobManifest, kubernetesRbacKey, kubernetesRunnerRbac } from "@scp/runner-launcher";
+import type { KubernetesRbacRule, RunnerSpec } from "@scp/runner-launcher";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CHART_DIR = path.resolve(__dirname, "../../../deploy/helm");
@@ -116,6 +118,359 @@ function renderedFederationRole(docs: K8sDoc[]): string {
   return ns?.metadata?.labels?.["commanderscp.io/federation-role"] ?? "commander";
 }
 
+/**
+ * ==================================================================================================
+ * M23.6 CLAUSE 5 — THE RUNNER ROLE, DIFFED AGAINST WHAT THE ADAPTER ACTUALLY ISSUES, BOTH WAYS
+ * ==================================================================================================
+ *
+ * The clause is "the chart grants exactly what the adapter calls, and no more". The gate that stood
+ * here before could only ever catch the FIRST half: `batch/jobs` was checked with
+ * `JSON.stringify(rules).includes('"patch"')`, `pods`/`pods/log` were checked NOWHERE AT ALL, and
+ * only `events` and `secrets` had a set-equality. Measured against that gate: four unused verbs
+ * added to `runner-iac.yaml` (`jobs: +deletecollection,+update`; `pods,pods/log: +delete,+create`)
+ * left this script green, `pnpm -w test` green and the kind suite green. A privilege that can only
+ * drift wider is the direction that matters.
+ *
+ * THE EXPECTED SET IS NOT WRITTEN HERE. It is `kubernetesRunnerRbac()` in `@scp/runner-launcher`,
+ * which `kubernetes-rbac-contract.test.ts` holds to the adapter by DRIVING every route over a
+ * recording io and deriving the verbs from the wire. A second hand-maintained copy in this file
+ * would be free to agree with the chart and disagree with the code, which is the failure mode this
+ * whole clause is about.
+ *
+ * ONE RULE PER (apiGroup, resource) IS PART OF THE CONTRACT, not a convenience for the comparison. A
+ * rule listing two resources gives each of them every verb in the list — that is how `pods` came to
+ * hold `get` and `pods/log` to hold `list`, neither of which the adapter ever issues — so a render
+ * that splits or merges rules differently must fail here rather than be normalised away.
+ */
+function rbacDiff(
+  rendered: unknown,
+  expected: readonly KubernetesRbacRule[],
+  /** Who the grant is FOR. Defaults to the adapter, which is the caller for the runner Role; the
+   *  chart-wide gate passes the identity's own description so a message about an install-time hook
+   *  does not claim the Kubernetes adapter issues its calls. */
+  caller = "the adapter"
+): string[] {
+  type Rule = { apiGroups?: string[]; resources?: string[]; verbs?: string[] };
+  const rules = (rendered ?? []) as Rule[];
+  const problems: string[] = [];
+
+  const seen = new Map<string, string[]>();
+  for (const rule of rules) {
+    const groups = rule.apiGroups ?? [];
+    const resources = rule.resources ?? [];
+    if (groups.length !== 1) {
+      problems.push(
+        `a rule names ${groups.length} apiGroups (${JSON.stringify(groups)}); one rule, one group`
+      );
+      continue;
+    }
+    if (resources.length !== 1) {
+      problems.push(
+        `a rule names ${resources.length} resources (${JSON.stringify(resources)}) and therefore grants EACH of them ${JSON.stringify(rule.verbs)} — split it, one rule per resource`
+      );
+      continue;
+    }
+    const key = kubernetesRbacKey({ apiGroup: groups[0]!, resource: resources[0]! });
+    if (seen.has(key)) {
+      problems.push(
+        `${key} appears in more than one rule, so its effective grant is the union — merge them`
+      );
+      continue;
+    }
+    seen.set(key, [...(rule.verbs ?? [])].sort());
+  }
+
+  const want = new Map(expected.map((r) => [kubernetesRbacKey(r), [...r.verbs].sort()]));
+  for (const [key, verbs] of want) {
+    const got = seen.get(key);
+    if (got === undefined) {
+      problems.push(
+        `${key} is NOT granted at all; ${caller} issues ${JSON.stringify(verbs)} against it`
+      );
+      continue;
+    }
+    const missing = verbs.filter((v) => !got.includes(v));
+    const extra = got.filter((v) => !verbs.includes(v));
+    if (missing.length > 0) {
+      problems.push(
+        `${key} is missing ${JSON.stringify(missing)} — every call using it is a 403 inside a run`
+      );
+    }
+    if (extra.length > 0) {
+      problems.push(
+        `${key} grants ${JSON.stringify(extra)}, which ${caller} never issues — a standing privilege for a caller that never calls`
+      );
+    }
+  }
+  for (const key of seen.keys()) {
+    if (!want.has(key)) {
+      problems.push(
+        `${key} is granted and ${caller} touches it NOT AT ALL (verbs ${JSON.stringify(seen.get(key))})`
+      );
+    }
+  }
+  return problems;
+}
+
+// ==================================================================================================
+// M23.6 CLAUSE 5, WIDENED FROM ONE RULE TO THE WHOLE CHART — WHAT `helm install` ACTUALLY GRANTS
+// ==================================================================================================
+/**
+ * `rbacDiff` above is real and fires in both directions, but it is true of ONE Role. The clause is
+ * "the chart grants exactly what the adapter calls, and no more", and that is a statement about the
+ * CHART. The gap is not theoretical: the M23.6 verification pass pointed a real authorizer at the
+ * harness identity and got `delete nodes: yes` — a question no assertion in this repository had ever
+ * asked, because every RBAC assertion it had was aimed at `-runner-iac`'s `rules` array. A diff can
+ * only speak for the object it is handed; everything the chart renders BESIDE that object was
+ * ungated.
+ *
+ * SO THIS FUNCTION TAKES A WHOLE RENDER AND ANSWERS: WHICH IDENTITY ENDS UP HOLDING WHICH RULES.
+ * It resolves every RoleBinding's `roleRef` against every rendered Role, accumulates the union per
+ * ServiceAccount subject, and compares each identity's TOTAL grant — not one rule of it — against a
+ * pinned expectation. Three identities exist in this chart and all three are named here, so a FOURTH
+ * is a failure by construction rather than something a reader has to notice:
+ *
+ *   - THE WORKLOAD ServiceAccount (the one the api/worker pods run as, and therefore the one the
+ *     Kubernetes adapter's every call authenticates as): exactly `kubernetesRunnerRbac()`, which is
+ *     the set `kubernetes-rbac-contract.test.ts` derives from the wire by driving the adapter. Or
+ *     NOTHING AT ALL, on every render where no managed run can launch.
+ *   - THE TWO AUTOWIRE ServiceAccounts (`-argocd-autowire`, `-gitea-autowire`): `get` on `secrets`,
+ *     in the bundled backend's own namespace. These are install-time hooks that read one generated
+ *     admin secret and mint a scoped API token; their Roles live in a DIFFERENT namespace from
+ *     everything else the chart grants, which is precisely why "the runner Role is correct" never
+ *     said anything about them.
+ *
+ * AND FOUR STRUCTURAL REFUSALS THAT DO NOT DEPEND ON KNOWING THE EXPECTED SET:
+ *   1. NO ClusterRole AND NO ClusterRoleBinding, EVER. Every grant this chart makes is namespaced.
+ *      `delete nodes` is a cluster-scoped question and this is the assertion that makes the answer
+ *      structurally "no" — including for the value combinations no matrix enumerates, since the
+ *      source census at the end of `verifySocketInvariantMatrix` covers the templates as text.
+ *   2. NO WILDCARD in `apiGroups`, `resources` or `verbs`. A `*` passes any set-equality that is
+ *      written as a `.includes`, and grants everything the day a new resource appears.
+ *   3. NO `escalate`, `bind` OR `impersonate`. Those three are how a bounded grant becomes an
+ *      unbounded one without the grant itself changing.
+ *   4. EVERY Role IS BOUND AND EVERY BINDING RESOLVES. A Role nothing references authorises nobody
+ *      (ADR-0035 §6a's exact starting failure, generalised from the one case that was checked), and
+ *      a RoleBinding whose `roleRef` names a Role this render does not contain is a grant that
+ *      silently does nothing — or, worse, picks up a same-named Role that is already in the cluster.
+ */
+const RBAC_WILDCARD = "*";
+const RBAC_ESCALATION_VERBS = ["escalate", "bind", "impersonate"];
+/** Cluster-scoped resources a namespaced Role cannot meaningfully grant — named so that a rule
+ *  mentioning one is reported as the mistake it is rather than as a silently inert line. */
+const CLUSTER_SCOPED_RESOURCES = [
+  "nodes",
+  "namespaces",
+  "persistentvolumes",
+  "clusterroles",
+  "clusterrolebindings",
+  "customresourcedefinitions",
+  "storageclasses",
+  "priorityclasses",
+  "apiservices",
+  "validatingwebhookconfigurations",
+  "mutatingwebhookconfigurations"
+];
+
+interface RenderedRule {
+  apiGroups?: string[];
+  resources?: string[];
+  verbs?: string[];
+}
+
+/**
+ * The identity the api/worker pods run as — the one the Kubernetes adapter's every call
+ * authenticates as, and therefore the subject of "the chart grants exactly what the adapter calls".
+ *
+ * READ FROM THE DEPLOYMENTS' POD SPECS, for two reasons. `serviceAccount.create=false` renders no
+ * ServiceAccount object at all while the pods still authenticate as something, so the object is the
+ * wrong place to look. And the chart's install-time HOOKS (the two bundled-backend autowire Jobs)
+ * deliberately run as their own identities; folding those in here would make this return three names
+ * and say nothing about any of them.
+ */
+function workloadServiceAccountNames(docs: K8sDoc[]): string[] {
+  const names = new Set<string>();
+  for (const doc of docs) {
+    if (doc.kind !== "Deployment") continue;
+    for (const podSpec of podSpecsOf(doc)) {
+      const name = podSpec["serviceAccountName"];
+      if (typeof name === "string" && name.length > 0) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+/** Every identity ANY pod in this render runs as, hooks included — so a new workload running as a
+ *  name nothing pinned is a failure rather than an identity this gate simply never looked at. */
+function allPodServiceAccountNames(docs: K8sDoc[]): string[] {
+  const names = new Set<string>();
+  for (const doc of docs) {
+    for (const podSpec of podSpecsOf(doc)) {
+      const name = podSpec["serviceAccountName"];
+      if (typeof name === "string" && name.length > 0) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+function chartGrantProblems(args: {
+  label: string;
+  docs: K8sDoc[];
+  /** True when a managed run can actually launch here, i.e. the runner Role must render. */
+  expectRunnerGrant: boolean;
+  perRunSecrets: boolean;
+}): string[] {
+  const { label, docs, expectRunnerGrant, perRunSecrets } = args;
+  const problems: string[] = [];
+  const say = (msg: string) => problems.push(`[${label}] ${msg}`);
+
+  // (1) NOTHING CLUSTER-SCOPED, AT ALL.
+  for (const doc of docs) {
+    if (doc.kind === "ClusterRole" || doc.kind === "ClusterRoleBinding") {
+      say(
+        `the chart rendered a ${doc.kind} ('${String(doc.metadata?.name)}'). Every grant this chart makes is namespaced; a cluster-scoped one is how a runner identity comes to hold verbs on nodes, namespaces or other releases' objects`
+      );
+    }
+  }
+
+  // (2)(3) WILDCARDS AND ESCALATION VERBS, over every rule of every role-ish object.
+  const roles = new Map<string, { kind: string; rules: RenderedRule[] }>();
+  for (const doc of docs) {
+    if (doc.kind !== "Role" && doc.kind !== "ClusterRole") continue;
+    const name = String(doc.metadata?.name ?? "");
+    const namespace = String(doc.metadata?.namespace ?? "");
+    const rules = (doc["rules"] ?? []) as RenderedRule[];
+    roles.set(`${namespace}/${name}`, { kind: doc.kind, rules });
+    for (const rule of rules) {
+      for (const field of ["apiGroups", "resources", "verbs"] as const) {
+        if ((rule[field] ?? []).includes(RBAC_WILDCARD)) {
+          say(
+            `${doc.kind} '${name}' has a rule with ${field}: ['*'] — a wildcard grants every resource that exists now AND every one added later, and satisfies any assertion written as a membership test`
+          );
+        }
+      }
+      for (const verb of rule.verbs ?? []) {
+        if (RBAC_ESCALATION_VERBS.includes(verb)) {
+          say(
+            `${doc.kind} '${name}' grants '${verb}', which lets the holder widen its OWN grant without this chart changing`
+          );
+        }
+      }
+      for (const resource of rule.resources ?? []) {
+        if (CLUSTER_SCOPED_RESOURCES.includes(resource)) {
+          say(
+            `${doc.kind} '${name}' names the cluster-scoped resource '${resource}'; nothing this chart grants is cluster-scoped`
+          );
+        }
+      }
+    }
+  }
+
+  // (4) EVERY BINDING RESOLVES, EVERY ROLE IS BOUND, AND THE UNION PER IDENTITY.
+  const effective = new Map<string, RenderedRule[]>();
+  const subjectNamespaces = new Set<string>();
+  const boundRoles = new Set<string>();
+  for (const doc of docs) {
+    if (doc.kind !== "RoleBinding") continue;
+    const bindingName = String(doc.metadata?.name ?? "");
+    const namespace = String(doc.metadata?.namespace ?? "");
+    const roleRef = (doc["roleRef"] ?? {}) as { kind?: string; name?: string };
+    const key = `${namespace}/${String(roleRef.name)}`;
+    const rules = roles.get(key)?.rules;
+    if (roleRef.kind !== "Role" || rules === undefined) {
+      say(
+        `RoleBinding '${bindingName}' in namespace '${namespace}' references ${String(roleRef.kind)} '${String(roleRef.name)}', which this render does not contain — the grant either does nothing or silently picks up a same-named object already in the cluster`
+      );
+      continue;
+    }
+    boundRoles.add(key);
+    for (const subject of (doc["subjects"] ?? []) as {
+      kind?: string;
+      name?: string;
+      namespace?: string;
+    }[]) {
+      if (subject.kind !== "ServiceAccount") {
+        say(
+          `RoleBinding '${bindingName}' names a ${String(subject.kind)} subject ('${String(subject.name)}'); this chart grants to ServiceAccounts and nothing else`
+        );
+        continue;
+      }
+      subjectNamespaces.add(String(subject.namespace ?? ""));
+      const identity = String(subject.name);
+      effective.set(identity, [...(effective.get(identity) ?? []), ...rules]);
+    }
+  }
+  for (const [key, role] of roles) {
+    if (!boundRoles.has(key)) {
+      say(
+        `${role.kind} '${key}' is rendered with no RoleBinding, so it authorises nobody — the shape ADR-0035 §6a records as the starting failure, here as a property of every Role rather than of the one that was checked`
+      );
+    }
+  }
+  // EVERY IDENTITY LIVES WHERE THE WORKLOAD LIVES. A subject in a second namespace would mean this
+  // release grants to an identity outside itself, which no assertion below would otherwise notice.
+  if (subjectNamespaces.size > 1) {
+    say(
+      `RoleBinding subjects span ${subjectNamespaces.size} namespaces (${[...subjectNamespaces].join(", ")}); every identity this chart grants to is a ServiceAccount in the RELEASE namespace`
+    );
+  }
+
+  // (5) EACH IDENTITY'S TOTAL GRANT, AGAINST WHAT IT IS SUPPOSED TO HOLD.
+  const workload = workloadServiceAccountNames(docs);
+  if (workload.length !== 1) {
+    say(
+      `the pods in this render name ${workload.length} distinct serviceAccountNames (${JSON.stringify(workload)}); the adapter's calls authenticate as ONE identity and this gate cannot say which`
+    );
+    return problems;
+  }
+  const workloadName = workload[0]!;
+  const expected = new Map<string, KubernetesRbacRule[]>();
+  expected.set(workloadName, expectRunnerGrant ? [...kubernetesRunnerRbac({ perRunSecrets })] : []);
+  // THE INSTALL-TIME HOOKS. Pinned by SHAPE here rather than described: each reads exactly one
+  // generated admin Secret in the bundled backend's namespace to mint a scoped API token.
+  const AUTOWIRE_GRANT: KubernetesRbacRule[] = [
+    { apiGroup: "", resource: "secrets", verbs: ["get"] }
+  ];
+  for (const identity of [...effective.keys(), ...allPodServiceAccountNames(docs)]) {
+    if (identity.endsWith("-argocd-autowire") || identity.endsWith("-gitea-autowire")) {
+      expected.set(identity, AUTOWIRE_GRANT);
+    }
+  }
+  for (const identity of effective.keys()) {
+    if (!expected.has(identity)) {
+      say(
+        `'${identity}' is granted rules by this chart and is not one of the three identities it is supposed to have (the workload ServiceAccount and the two bundled-backend autowire hooks)`
+      );
+    }
+  }
+  // AND THE OTHER DIRECTION: a pod running as an identity nothing above pins. A new hook Job with its
+  // own ServiceAccount would otherwise be invisible here until the day someone gave it a Role.
+  for (const identity of allPodServiceAccountNames(docs)) {
+    if (identity !== workloadName && !expected.has(identity)) {
+      say(
+        `a pod in this render runs as '${identity}', which is neither the workload ServiceAccount nor one of the two pinned autowire hooks — a new identity inside the release that no grant assertion covers`
+      );
+    }
+  }
+  for (const [identity, want] of expected) {
+    const got = effective.get(identity) ?? [];
+    if (want.length === 0) {
+      if (got.length > 0) {
+        say(
+          `'${identity}' holds ${JSON.stringify(got)} on a render where no managed run can launch — a standing privilege for a caller that never calls`
+        );
+      }
+      continue;
+    }
+    const caller =
+      identity === workloadName ? "the Kubernetes adapter" : `the '${identity}' install-time hook`;
+    for (const problem of rbacDiff(got, want, caller)) {
+      say(`the TOTAL grant held by '${identity}' is not what it is supposed to be: ${problem}`);
+    }
+  }
+  return problems;
+}
+
 /** Pure detector: given a role and a rendered bundled chart, return the list of guardrail
  *  violations (a bundled backend that rendered but is not allowed for that role). Empty ⇒ clean.
  *  This is the single decision function shared by the standing gate (feeds `fail()` → non-zero exit)
@@ -144,13 +499,710 @@ function federationRoleViolations(role: string, docs: K8sDoc[]): string[] {
   return violations;
 }
 
+// ==================================================================================================
+// M23.6 CLAUSE 6 — THE SOCKET INVARIANT, ENFORCED BY RENDERING EVERY COMBINATION
+// ==================================================================================================
+/**
+ * THE INVARIANT M23 MUST NOT BREAK, in BUILD_AND_TEST.md's own words: "**no Docker socket is mounted
+ * into any pod, ever** — not behind a value, not behind a `managedIac.enabled` opt-in, not 'for
+ * dev'." The escape risk `runner-iac.yaml`'s module header refuses to paper over is the reason M23
+ * exists at all; a socket mount would satisfy the goal while destroying the reason.
+ *
+ * WHAT STOOD FOR THIS BEFORE, AND WHY IT WAS NOT A GATE. Nothing rendered the chart and looked. A
+ * filterless `grep -rna 'docker.sock\\|/var/run/docker'` over the repo found ZERO assertions over
+ * rendered chart output — every `docker.sock` assertion in the tree was on Docker ARGV, which is a
+ * statement about the compose path and says nothing about a pod. Measured, before this section
+ * existed: a `hostPath: /var/run/docker.sock` volume plus its mount added to
+ * `deployment-worker.yaml` produced FOUR `docker.sock` occurrences in `helm template` AT THE DEFAULT
+ * VALUES while `pnpm -w test` stayed green (72/72) and helm-verify stayed green.
+ *
+ * A HANDFUL OF HAND-PICKED COMBINATIONS IS NOT A MATRIX. The 31 `renderChart` calls elsewhere in
+ * this file are each aimed at one question; none of them is a sweep, and the combination that
+ * carries a socket is by definition the one nobody thought to name. The product below is
+ * EXHAUSTIVE over the dimensions the clause names — every `managed*` enablement combination and
+ * every documented `managedRunners` override — and the count is printed so "exhaustive" is a number
+ * rather than a claim.
+ *
+ * AND THE HALF `helm template` STRUCTURALLY CANNOT SEE. The runner pod is not in the chart: it is
+ * built by `jobManifest()` in `packages/runner-launcher` at RUN time, from the settings the chart
+ * delivers as environment variables. So for every Kubernetes render this section ALSO reads the
+ * worker's own env out of the render, derives the launcher settings exactly as
+ * `managedRunnerKubernetesSettings()` does, builds the Job manifest those values produce, and holds
+ * it to the same invariant. The chart cannot render a socket, and it cannot ASK for one either.
+ */
+
+/** Every spelling of a container runtime's control socket that would grant escape if mounted. */
+const RUNTIME_SOCKET_PATTERNS = [
+  "docker.sock",
+  "/var/run/docker",
+  "containerd.sock",
+  "crio.sock",
+  "podman.sock",
+  "buildkitd.sock"
+];
+
+/** A pod spec, wherever it sits in a workload doc. */
+function podSpecsOf(doc: K8sDoc): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const spec = doc.spec as Record<string, unknown> | undefined;
+  if (!spec) return out;
+  if (doc.kind === "Pod") out.push(spec);
+  const template = spec["template"] as { spec?: Record<string, unknown> } | undefined;
+  if (template?.spec) out.push(template.spec);
+  // CronJob: spec.jobTemplate.spec.template.spec
+  const jobTemplate = spec["jobTemplate"] as
+    { spec?: { template?: { spec?: Record<string, unknown> } } } | undefined;
+  if (jobTemplate?.spec?.template?.spec) out.push(jobTemplate.spec.template.spec);
+  return out;
+}
+
+/**
+ * Every reason a rendered manifest violates the invariant. Two independent instruments, because
+ * each catches what the other cannot: a STRUCTURAL walk that knows which field is a volume (so it
+ * can name `hostPath` even when the path is innocuous), and a RAW scan of the bytes (so a socket
+ * hidden in a ConfigMap, an annotation or an unmodelled field cannot slip past the walk).
+ */
+function socketInvariantProblems(label: string, raw: string, docs: K8sDoc[]): string[] {
+  const problems: string[] = [];
+
+  for (const pattern of RUNTIME_SOCKET_PATTERNS) {
+    if (raw.includes(pattern)) {
+      problems.push(
+        `[${label}] the render contains '${pattern}' — a container runtime socket in a manifest this chart would apply`
+      );
+    }
+  }
+
+  for (const doc of docs) {
+    for (const podSpec of podSpecsOf(doc)) {
+      const name = `${doc.kind}/${String(doc.metadata?.name ?? "?")}`;
+      for (const volume of (podSpec["volumes"] as Record<string, unknown>[] | undefined) ?? []) {
+        if (volume["hostPath"] !== undefined) {
+          problems.push(
+            `[${label}] ${name} mounts a hostPath volume ${JSON.stringify(volume["hostPath"])} — this chart declares none, and a hostPath is one path edit away from being a socket`
+          );
+        }
+      }
+      const containers = [
+        ...((podSpec["containers"] as Record<string, unknown>[] | undefined) ?? []),
+        ...((podSpec["initContainers"] as Record<string, unknown>[] | undefined) ?? [])
+      ];
+      for (const container of containers) {
+        for (const mount of (container["volumeMounts"] as { mountPath?: string }[] | undefined) ??
+          []) {
+          const at = mount.mountPath ?? "";
+          if (RUNTIME_SOCKET_PATTERNS.some((p) => at.includes(p))) {
+            problems.push(`[${label}] ${name} mounts a runtime socket at ${at}`);
+          }
+        }
+      }
+    }
+  }
+  return problems;
+}
+
+/** The worker Deployment's env, flattened — how the chart tells the server what to launch on. */
+function workerEnvMap(docs: K8sDoc[]): Record<string, string> {
+  const worker = docs.find(
+    (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+  );
+  const containers = ((
+    worker?.spec as { template?: { spec?: { containers?: { env?: EnvVar[] }[] } } } | undefined
+  )?.template?.spec?.containers ?? []) as { env?: EnvVar[] }[];
+  const out: Record<string, string> = {};
+  for (const c of containers) {
+    for (const e of c.env ?? []) {
+      if (typeof e.value === "string") out[e.name] = e.value;
+    }
+  }
+  return out;
+}
+
+/**
+ * The runner Job THIS RENDER WOULD PRODUCE. Mirrors `managedRunnerKubernetesSettings()` in
+ * `apps/server/src/coordination/executor-bindings-repo.ts` — claim first, host path second, nothing
+ * third — so a chart that started plumbing `SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH` (today it
+ * does not, and that absence is itself asserted) would be caught here rather than at run time.
+ */
+function runnerJobFromRender(docs: K8sDoc[]): K8sDoc | null {
+  const env = workerEnvMap(docs);
+  if (env["SCP_MANAGED_RUNNER_LAUNCHER"] !== "kubernetes") return null;
+  const namespace = env["SCP_MANAGED_RUNNER_K8S_NAMESPACE"]?.trim();
+  const workspaceRoot = env["SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT"]?.trim();
+  const claimName = env["SCP_MANAGED_RUNNER_K8S_WORKSPACE_CLAIM"]?.trim();
+  const hostPath = env["SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH"]?.trim();
+  if (!namespace || !workspaceRoot) return null;
+  const workspaceVolume = claimName
+    ? ({ kind: "persistentVolumeClaim", claimName } as const)
+    : hostPath
+      ? ({ kind: "hostPath", path: hostPath } as const)
+      : undefined;
+  if (!workspaceVolume) return null;
+  const spec: RunnerSpec = {
+    runId: "socket-matrix",
+    labels: {},
+    image: "ghcr.io/commanderscp/scp-runner-iac:0.1.0",
+    operands: ["apply"],
+    networkMode: "none",
+    env: [],
+    secretEnv: [],
+    copyIn: [],
+    copyOut: undefined,
+    timeoutMs: 600_000,
+    maxBuffer: 32 * 1024 * 1024
+  };
+  return jobManifest(spec, {
+    namespace,
+    jobName: "scp-runner-iac-socket-matrix",
+    secretName: "scp-runner-iac-socket-matrix-env",
+    reapDeadline: new Date(0).toISOString(),
+    slots: new Map([[`${workspaceRoot}/in`, "in"]]),
+    workspaceVolume,
+    runAsNonRoot: env["SCP_MANAGED_RUNNER_K8S_RUN_AS_NON_ROOT"] === "true",
+    ttlSecondsAfterFinished: 3_600
+  }) as K8sDoc;
+}
+
+interface MatrixPoint {
+  label: string;
+  args: string[];
+  /** True when the chart's own render-time guards are expected to REFUSE this combination. */
+  refuses: boolean;
+  /**
+   * M23.6 CLAUSE 5, WIDENED. Whether a managed run can actually launch at this point — i.e. whether
+   * the workload ServiceAccount is supposed to hold the runner grant AT ALL — and, if so, whether
+   * the per-run Secret capability is on. DERIVED FROM THE POINT'S OWN VALUES, never read back out of
+   * the render: an expectation computed from the thing being checked agrees with it by construction.
+   */
+  expectRunnerGrant: boolean;
+  perRunSecrets: boolean;
+}
+
+/**
+ * The exhaustive product. Dimensions, and why each one is in it:
+ *  - the three managed classes, independently on/off (8) — the clause names them by wildcard, and
+ *    each one gates a different block of `runner-iac.yaml` and of the worker's env.
+ *  - the launcher (2) — `docker` and `kubernetes` render different pods and different volumes.
+ *  - `managedRunners.kubernetes.namespace` empty vs a runner namespace (2) — moves the Role, the
+ *    RoleBinding and the Jobs, and is the M23.5 render-time guard's own input.
+ *  - `perRunSecrets` (2) — renders or omits a rule and flips a server-side flag.
+ *  - `acceptSharedNamespaceSecretDelete` (2) — the documented override for the guard above; the
+ *    combination it exists to unblock is asserted to REFUSE without it.
+ *  - `runAsNonRoot` (2) — the only value that changes the runner pod's securityContext.
+ * Run twice: once with the rest of the chart at defaults, once with every other optional feature on
+ * (the existing kitchen sink plus `api.role=all`, which is the single-pod install where the worker's
+ * volumes land on the api pod too). Plus one small sweep over `api.role`, whose three values decide
+ * which pods exist at all.
+ */
+function socketMatrix(): MatrixPoint[] {
+  const points: MatrixPoint[] = [];
+  const IAC_IMAGE = "ghcr.io/commanderscp/scp-runner-iac:0.1.0";
+  const bool = [false, true];
+
+  /**
+   * THE TWO ENVIRONMENTS ARE NOT SYMMETRIC, AND THE ASYMMETRY IS THE FACTORING RATHER THAN A CORNER
+   * CUT. `defaults` carries the FULL `managedRunners` product, because those are the values the
+   * clause names and the ones that gate the runner templates. `everything-on` exists to answer a
+   * different question — "does any OTHER chart feature introduce a socket" — and no other feature
+   * reads a `managedRunners.kubernetes.*` value, so crossing it with the full product would multiply
+   * renders without multiplying coverage. It is crossed with every class combination and both
+   * launchers, which is what decides which pods exist.
+   *
+   * THE COST IS REAL AND IS WHY THIS IS WRITTEN DOWN. Each point is one `helm` process. At 276
+   * points this task starved the rest of `turbo run test`: `@scp/plugin-managed-scan`'s
+   * `scanner-containment` test, 390ms in isolation, timed out at 49,061ms once in three runs. The
+   * `fullProduct` flag is the lever that keeps the sweep exhaustive where exhaustiveness is the
+   * claim and bounded where it is not.
+   */
+  const environments: { name: string; extra: string[]; fullProduct: boolean }[] = [
+    { name: "defaults", extra: [], fullProduct: true },
+    {
+      fullProduct: false,
+      name: "everything-on",
+      extra: [
+        "--set",
+        "api.role=all",
+        "--set",
+        "ingress.enabled=true",
+        "--set",
+        "ingress.host=scp.example.com",
+        "--set",
+        "eventBus.driver=nats",
+        "--set",
+        "nats.enabled=true",
+        "--set",
+        "serviceMonitor.enabled=true",
+        "--set",
+        "worker.autoscaling.enabled=true",
+        "--set",
+        "imagePullSecrets[0].name=ghcr-creds",
+        "--set",
+        "image.pullPolicy=Always",
+        "--set",
+        "managedRunners.kubernetes.resources.limits.memory=512Mi",
+        "--set",
+        "managedRunners.kubernetes.imagePullSecrets[0].name=runner-creds",
+        "--set",
+        "managedRunners.kubernetes.imagePullPolicy=IfNotPresent"
+      ]
+    }
+  ];
+
+  for (const env of environments) {
+    for (const iac of bool) {
+      for (const dep of bool) {
+        for (const scan of bool) {
+          const classArgs = [
+            "--set",
+            `managedIac.enabled=${iac}`,
+            ...(iac ? ["--set", `managedIac.runnerImage=${IAC_IMAGE}`] : []),
+            ...(dep
+              ? ["--set", "managedDep.runnerImage=ghcr.io/commanderscp/scp-runner-dep:0.1.0"]
+              : []),
+            ...(scan
+              ? ["--set", "managedScan.runnerImage=ghcr.io/commanderscp/scp-runner-scan:0.1.0"]
+              : [])
+          ];
+          const classes = `iac=${iac},dep=${dep},scan=${scan}`;
+
+          // THE DOCKER LAUNCHER. Every Kubernetes value below renders nothing here, so the product
+          // collapses to one point per class combination — asserted, not assumed, by the fact that
+          // this file's (3d) case already proves a docker deployment renders no runner surface.
+          points.push({
+            label: `${env.name} docker ${classes}`,
+            args: [...env.extra, ...classArgs],
+            refuses: false,
+            // NO RUNNER GRANT ON A DOCKER DEPLOYMENT, EVER — the narrowing `runner-iac.yaml`'s point 3
+            // declares. The pods mount no token here, so a Role would be a standing grant for a
+            // caller that cannot call.
+            expectRunnerGrant: false,
+            perRunSecrets: false
+          });
+
+          // THE KUBERNETES LAUNCHER. Refuses outright when no class is enabled ("nothing will ever
+          // launch"), so that arm is a refusal point rather than a render.
+          const namespaces = env.fullProduct ? ["", "scp-runners"] : ["scp-runners"];
+          const secretsAxis = env.fullProduct ? bool : [true];
+          const acceptAxis = env.fullProduct ? bool : [false];
+          const nonRootAxis = env.fullProduct ? bool : [false];
+          for (const namespace of namespaces) {
+            for (const perRunSecrets of secretsAxis) {
+              for (const accept of acceptAxis) {
+                for (const runAsNonRoot of nonRootAxis) {
+                  const k8sArgs = [
+                    "--set",
+                    "managedRunners.launcher=kubernetes",
+                    "--set",
+                    "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+                    "--set",
+                    `managedRunners.kubernetes.namespace=${namespace}`,
+                    "--set",
+                    `managedRunners.kubernetes.perRunSecrets=${perRunSecrets}`,
+                    "--set",
+                    `managedRunners.kubernetes.acceptSharedNamespaceSecretDelete=${accept}`,
+                    "--set",
+                    `managedRunners.kubernetes.runAsNonRoot=${runAsNonRoot}`
+                  ];
+                  const noClass = !iac && !dep && !scan;
+                  const sharedSecretRefusal = namespace === "" && perRunSecrets && !accept;
+                  points.push({
+                    label: `${env.name} kubernetes ${classes} ns='${namespace}' secrets=${perRunSecrets} accept=${accept} nonroot=${runAsNonRoot}`,
+                    args: [...env.extra, ...classArgs, ...k8sArgs],
+                    refuses: noClass || sharedSecretRefusal,
+                    expectRunnerGrant: !noClass,
+                    perRunSecrets
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // `api.role` decides which pods exist at all, so it gets its own sweep on both launchers rather
+  // than riding only in `everything-on`. Its legal values are `api|all` and the chart refuses
+  // anything else at render time (`deployment-api.yaml`), which is why `worker` is not swept here:
+  // there is no such deployment shape to check.
+  for (const role of ["api", "all"]) {
+    points.push({
+      label: `api.role=${role} docker iac=true`,
+      args: [
+        "--set",
+        `api.role=${role}`,
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        `managedIac.runnerImage=${IAC_IMAGE}`
+      ],
+      refuses: false,
+      expectRunnerGrant: false,
+      perRunSecrets: false
+    });
+    points.push({
+      label: `api.role=${role} kubernetes iac=true`,
+      args: [
+        "--set",
+        `api.role=${role}`,
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        `managedIac.runnerImage=${IAC_IMAGE}`,
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners"
+      ],
+      refuses: false,
+      expectRunnerGrant: true,
+      // `perRunSecrets` is left at the chart's own default here, which is `true` (values.yaml,
+      // the owner's 2026-08-20 grant). Stated as a literal rather than read back from the render.
+      perRunSecrets: true
+    });
+  }
+
+  /**
+   * THE BUNDLED BACKENDS' OWN IDENTITIES (M23.6 clause 5, widened). `bundledExecutor.*.enabled` is
+   * not a dimension of the socket product — no bundled backend can introduce a runtime socket into
+   * an SCP pod — but each one renders a ServiceAccount, a Role and a RoleBinding IN THE BACKEND'S
+   * NAMESPACE, which is a grant this chart makes to an identity outside everything the runner Role
+   * gate ever looked at. They are swept here so `chartGrantProblems` sees them: both alone and
+   * together, and crossed with the Kubernetes launcher so the runner grant and the hook grants are
+   * checked in one render rather than in two that never meet.
+   */
+  for (const backends of [["argocd"], ["gitea"], ["argocd", "gitea"]]) {
+    const enable = backends.flatMap((be) => ["--set", `bundledExecutor.${be}.enabled=true`]);
+    points.push({
+      label: `bundled ${backends.join("+")} docker`,
+      args: enable,
+      refuses: false,
+      expectRunnerGrant: false,
+      perRunSecrets: false
+    });
+    points.push({
+      label: `bundled ${backends.join("+")} kubernetes iac=true`,
+      args: [
+        ...enable,
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        `managedIac.runnerImage=${IAC_IMAGE}`,
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners"
+      ],
+      refuses: false,
+      expectRunnerGrant: true,
+      perRunSecrets: true
+    });
+  }
+  return points;
+}
+
+function verifySocketInvariantMatrix(): void {
+  const label = "M23.6 socket invariant";
+  console.log(
+    "\nhelm-verify: rendering the FULL values matrix and asserting no pod mounts a container runtime socket..."
+  );
+  const points = socketMatrix();
+  let rendered = 0;
+  let refused = 0;
+  let runnerJobs = 0;
+  let grantsChecked = 0;
+  let grantProblems = 0;
+
+  for (const point of points) {
+    let raw: string;
+    try {
+      raw = renderRaw(CHART_DIR, "verify-socket", point.args);
+    } catch (err) {
+      // A REFUSAL IS AN ANSWER, AND THE ONLY ACCEPTABLE ONE FOR A COMBINATION THE CHART GUARDS.
+      // Counting it silently would let a guard that started refusing EVERYTHING shrink the matrix
+      // to nothing, so the expectation is stated per point and checked in both directions.
+      if (!point.refuses) {
+        fail(
+          `[${label}] ${point.label} failed to render, and this combination is expected to be valid: ${String((err as { stderr?: string }).stderr ?? err).slice(0, 400)}`
+        );
+      }
+      refused += 1;
+      continue;
+    }
+    if (point.refuses) {
+      fail(
+        `[${label}] ${point.label} RENDERED, but the chart's own guards are supposed to refuse it — a render-time guard that stopped guarding`
+      );
+    }
+    rendered += 1;
+    const docs = parseAllDocuments(raw)
+      .map((d) => d.toJS() as K8sDoc | null)
+      .filter((d): d is K8sDoc => d != null && typeof d === "object" && "kind" in d);
+    for (const problem of socketInvariantProblems(point.label, raw, docs)) fail(problem);
+
+    /**
+     * M23.6 CLAUSE 5, WIDENED — THE WHOLE CHART'S GRANT, ON THE RENDERS THIS LOOP ALREADY HAS.
+     *
+     * Sharing this loop is a deliberate cost decision, not a tidiness one. Each point is one `helm`
+     * process and this sweep already starved `turbo run test` once at 276 points (see
+     * `socketMatrix`'s own note); a second exhaustive sweep for RBAC would have doubled that for
+     * renders byte-identical to these. So the two invariants are asked of one render each, and the
+     * function above is pure so it can also be pointed at any other render.
+     */
+    for (const problem of chartGrantProblems({
+      label: point.label,
+      docs,
+      expectRunnerGrant: point.expectRunnerGrant,
+      perRunSecrets: point.perRunSecrets
+    })) {
+      fail(problem);
+      grantProblems += 1;
+    }
+    grantsChecked += 1;
+
+    // AND THE POD THE CHART CANNOT RENDER.
+    const job = runnerJobFromRender(docs);
+    if (job) {
+      runnerJobs += 1;
+      for (const problem of socketInvariantProblems(
+        `${point.label} runner Job`,
+        JSON.stringify(job),
+        [job]
+      )) {
+        fail(problem);
+      }
+    }
+  }
+
+  /**
+   * AND THE CENSUS THAT COVERS THE COMBINATIONS NO MATRIX CAN ENUMERATE. A sweep proves the points
+   * it visits; a string that appears in NO template of the chart cannot appear in ANY render of it,
+   * for every value assignment including the ones nobody has thought of yet. So the two instruments
+   * are complementary rather than redundant: this one is total over literal paths, the matrix is
+   * what catches a path a VALUE supplies.
+   *
+   * `hostPath` IS ASSERTED ABSENT FROM THE TEMPLATES AS WELL AS FROM THE RENDERS. This chart
+   * declares no hostPath volume anywhere and has no value that could produce one — the runner
+   * workspace is an RWX PersistentVolumeClaim and nothing else. `packages/runner-launcher` DOES
+   * support `{ kind: "hostPath" }` (the kind harness uses it, and `kubernetes-launch.golden.test.ts`
+   * pins that shape), reached only through `SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH` — an
+   * environment variable this chart does not set, which is asserted below by name rather than left
+   * as an observation.
+   *
+   * SCOPE, STATED RATHER THAN IMPLIED: `deploy/helm` — the chart `helm install` applies. The
+   * bundled-backends chart is checked for runtime sockets in its RENDER (below) and not for
+   * `hostPath` in its SOURCE, because `deploy/helm-bundled/vendor/argo-workflows` carries upstream
+   * CRD definitions whose openAPI schemas DOCUMENT the `hostPath` field in prose; that text is not a
+   * pod spec and stripping it would mean editing a vendored upstream manifest.
+   */
+  const templateDir = path.join(CHART_DIR, "templates");
+  const chartSources = readdirSync(templateDir)
+    .filter((f) => f.endsWith(".yaml") || f.endsWith(".tpl"))
+    .map((f) => ({
+      file: `templates/${f}`,
+      text: readFileSync(path.join(templateDir, f), "utf8")
+    }));
+  chartSources.push({
+    file: "values.yaml",
+    text: readFileSync(path.join(CHART_DIR, "values.yaml"), "utf8")
+  });
+  assert(
+    chartSources.length > 10,
+    `[${label}] the template census read ${chartSources.length} files, which is too few to be the chart — every assertion below would pass on an empty list`
+  );
+  for (const { file, text } of chartSources) {
+    for (const pattern of RUNTIME_SOCKET_PATTERNS) {
+      // The values.yaml PROSE explains why no socket is mounted, so a comment naming one is not a
+      // violation — the check is on what the file would emit, with comment lines removed.
+      const emitted = text
+        .split("\n")
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n");
+      assert(
+        !emitted.includes(pattern),
+        `[${label}] deploy/helm/${file} contains '${pattern}' outside a comment — no value combination can make that safe`
+      );
+    }
+    assert(
+      !/^\s*hostPath\s*:/m.test(
+        text
+          .split("\n")
+          .filter((line) => !/^\s*#/.test(line))
+          .join("\n")
+      ),
+      `[${label}] deploy/helm/${file} declares a hostPath volume. This chart declares none; the runner workspace is an RWX PersistentVolumeClaim`
+    );
+    assert(
+      !text.includes("SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH"),
+      `[${label}] deploy/helm/${file} plumbs SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH — that variable makes the runner Job mount a host directory, and it is deliberately reachable only from the kind harness`
+    );
+    /**
+     * M23.6 CLAUSE 5, WIDENED — THE CLUSTER-SCOPED HALF, AS A CENSUS. `chartGrantProblems` refuses a
+     * ClusterRole in every render the matrix visits; this refuses one in every render that COULD
+     * exist, including the value assignments nobody has enumerated. It is the same pairing the socket
+     * invariant uses one assertion above, and for the same reason: a sweep is total over the points
+     * it visits, a census is total over the literal text.
+     */
+    for (const clusterKind of ["ClusterRole", "ClusterRoleBinding"]) {
+      const emitted = text
+        .split("\n")
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n");
+      assert(
+        !new RegExp(`kind:\\s*${clusterKind}\\b`).test(emitted),
+        `[${label}] deploy/helm/${file} can render a ${clusterKind}. Every grant this chart makes is namespaced — a cluster-scoped one authorises the holder against nodes, namespaces and every other release in the cluster, and no value combination can narrow it back`
+      );
+    }
+  }
+  for (const setArgs of [
+    [] as string[],
+    [
+      "--set",
+      "bundledExecutor.argocd.enabled=true",
+      "--set",
+      "bundledExecutor.argoWorkflows.enabled=true",
+      "--set",
+      "bundledExecutor.argoEvents.enabled=true",
+      "--set",
+      "bundledExecutor.gitea.enabled=true"
+    ]
+  ]) {
+    const bundledRaw = renderRaw(BUNDLED_CHART_DIR, "verify-socket-bundled", setArgs);
+    for (const pattern of RUNTIME_SOCKET_PATTERNS) {
+      assert(
+        !bundledRaw.includes(pattern),
+        `[${label}] the bundled-backends render contains '${pattern}' — a vendored backend mounting a container runtime socket is the same escape, one chart along`
+      );
+    }
+  }
+
+  // NON-VACUITY, IN THREE PARTS. Every assertion above is "nothing was found", which is exactly what
+  // an empty matrix, a render that produced nothing, and a guard that refused everything all
+  // produce. The counts are asserted so the sweep cannot pass by having swept nothing.
+  assert(
+    points.length === 162,
+    `[${label}] the matrix is ${points.length} points, not the 162 it is documented as — update the count deliberately, with the dimension that changed`
+  );
+  assert(
+    rendered === 131 && refused === 31,
+    `[${label}] the matrix rendered ${rendered} and saw ${refused} refusals; expected 131 and 31`
+  );
+  assert(
+    runnerJobs === 110,
+    `[${label}] ${runnerJobs} of the renders produced a derivable runner Job manifest; expected 110. Zero would mean the env-derived half of this gate checked nothing at all`
+  );
+  // …and the detector itself finds what it is looking for when it IS there.
+  const planted: K8sDoc = {
+    kind: "Deployment",
+    metadata: { name: "planted" },
+    spec: {
+      template: {
+        spec: {
+          volumes: [{ name: "sock", hostPath: { path: "/var/run/docker.sock" } }],
+          containers: [{ name: "c", volumeMounts: [{ mountPath: "/var/run/docker.sock" }] }]
+        }
+      }
+    }
+  };
+  // FOUR, and the number is the two instruments meeting: the raw scan matches `docker.sock` and
+  // `/var/run/docker` in the bytes, and the structural walk names the hostPath VOLUME and the
+  // container's MOUNT separately. A control that only counted one of them would leave the other
+  // instrument unproven.
+  assert(
+    socketInvariantProblems("control", "hostPath: /var/run/docker.sock", [planted]).length === 4,
+    `[${label}] the socket detector does not fire on a manifest that plainly violates the invariant, so every clean verdict above means nothing`
+  );
+
+  /**
+   * AND THE GRANT DETECTOR'S OWN NON-VACUITY. Same discipline as the socket control above: every
+   * verdict `chartGrantProblems` returned was "no problems", which is also what a function that had
+   * stopped looking returns. Four plants, each aimed at one arm that has no other control — a
+   * ClusterRole, a wildcard verb, a Role nothing binds, and an identity the chart is not supposed to
+   * have — asserted by COUNT so a detector that fired once and stopped is visible.
+   */
+  const plantedGrant: K8sDoc[] = [
+    {
+      kind: "Deployment",
+      metadata: { name: "planted" },
+      spec: { template: { spec: { serviceAccountName: "scp", containers: [] } } }
+    },
+    {
+      kind: "ClusterRole",
+      metadata: { name: "planted-cluster" },
+      rules: [{ apiGroups: [""], resources: ["nodes"], verbs: ["delete"] }]
+    },
+    {
+      kind: "Role",
+      metadata: { name: "planted-wild", namespace: "default" },
+      rules: [{ apiGroups: ["batch"], resources: ["jobs"], verbs: ["*"] }]
+    },
+    {
+      kind: "Role",
+      metadata: { name: "planted-unbound", namespace: "default" },
+      rules: [{ apiGroups: [""], resources: ["secrets"], verbs: ["get"] }]
+    },
+    {
+      kind: "RoleBinding",
+      metadata: { name: "planted-binding", namespace: "default" },
+      roleRef: { kind: "Role", name: "planted-wild" },
+      subjects: [{ kind: "ServiceAccount", name: "a-stranger", namespace: "default" }]
+    }
+  ];
+  const plantedProblems = chartGrantProblems({
+    label: "control",
+    docs: plantedGrant,
+    expectRunnerGrant: false,
+    perRunSecrets: false
+  });
+  const plantedNames = [
+    "rendered a ClusterRole",
+    "verbs: ['*']",
+    "names the cluster-scoped resource 'nodes'",
+    "authorises nobody",
+    "is not one of the three identities"
+  ];
+  for (const fragment of plantedNames) {
+    assert(
+      plantedProblems.some((problem) => problem.includes(fragment)),
+      `[${label}] the grant detector did not report '${fragment}' on a render that plainly contains it, so every clean grant verdict above means nothing`
+    );
+  }
+  assert(
+    grantsChecked === rendered && grantProblems === 0,
+    `[${label}] the grant gate checked ${grantsChecked} of ${rendered} renders and reported ${grantProblems} problems`
+  );
+
+  console.log(
+    `  ${points.length} value combinations: ${rendered} rendered clean, ${refused} refused by the chart's own guards as expected, ${runnerJobs} runner Job manifests derived from the rendered env and checked too — no hostPath and no runtime socket anywhere`
+  );
+  console.log(
+    `  and the WHOLE chart's RBAC grant checked on all ${grantsChecked} of them: no ClusterRole or ClusterRoleBinding, no wildcard, no escalate/bind/impersonate, every Role bound, and each of the three identities holding exactly its pinned set`
+  );
+}
+
 function assert(condition: unknown, msg: string): void {
   if (!condition) fail(msg);
 }
 
+/** The RAW `helm template` output. Separate from {@link renderDir} because a NEGATIVE invariant
+ *  ("this string appears nowhere in what would be applied") is strictly stronger over the raw bytes
+ *  than over the parsed docs: a socket path smuggled into a ConfigMap body, an annotation or a
+ *  pod-spec field this file's `K8sDoc` shape does not model is invisible to a structural walk and
+ *  obvious here. This is the exact inverse of the module doc's warning about string-grepping, which
+ *  is about POSITIVE assertions ("the field is present on the container that matters"). */
+function renderRaw(dir: string, releaseName: string, setArgs: string[]): string {
+  return execFileSync("helm", ["template", releaseName, dir, ...setArgs], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024
+  });
+}
+
 function renderDir(dir: string, releaseName: string, setArgs: string[]): K8sDoc[] {
-  const args = ["template", releaseName, dir, ...setArgs];
-  const output = execFileSync("helm", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const output = renderRaw(dir, releaseName, setArgs);
   return parseAllDocuments(output)
     .map((doc) => doc.toJS() as K8sDoc | null)
     .filter((doc): doc is K8sDoc => doc != null && typeof doc === "object" && "kind" in doc);
@@ -168,10 +1220,17 @@ function renderBundledChart(setArgs: string[]): K8sDoc[] {
  *  stores base64(gzip(whole chart)) and is capped at Kubernetes' 1 MB Secret limit. */
 function packagedChartBase64Size(dir: string): number {
   const out = mkdtempSync(path.join(os.tmpdir(), "helm-verify-pkg-"));
-  execFileSync("helm", ["package", dir, "--destination", out], { stdio: "ignore" });
-  const tgz = readdirSync(out).find((f) => f.endsWith(".tgz"));
-  if (!tgz) throw new Error(`helm package produced no .tgz in ${out}`);
-  return readFileSync(path.join(out, tgz)).toString("base64").length;
+  // The same leaked-tempdir property as the *.test.ts census this dir's sibling fixtures were
+  // swept for (see @scp/test-tmpdir) — this is production tool code, not a vitest test, so that
+  // package's afterEach-based tracking does not apply here; a plain try/finally is the fix.
+  try {
+    execFileSync("helm", ["package", dir, "--destination", out], { stdio: "ignore" });
+    const tgz = readdirSync(out).find((f) => f.endsWith(".tgz"));
+    if (!tgz) throw new Error(`helm package produced no .tgz in ${out}`);
+    return readFileSync(path.join(out, tgz)).toString("base64").length;
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
 }
 
 /** One container env entry. `valueFrom` was `unknown` until the operator-config-surface block
@@ -196,12 +1255,20 @@ interface Container {
   };
   readinessProbe?: { httpGet?: { path?: string; port?: string; scheme?: string } };
   livenessProbe?: { httpGet?: { path?: string; port?: string; scheme?: string } };
+  /** M23.5 — a write path this chart puts in an env var must have a volume behind it in EVERY pod
+   *  that runs the role that writes there. See the `both roles` block. */
+  volumeMounts?: { name?: string; mountPath?: string }[];
 }
 
 interface PodSpec {
   securityContext?: { runAsNonRoot?: boolean; seccompProfile?: { type?: string } };
   containers?: Container[];
   initContainers?: Container[];
+  /** M23.2 — the field owner decision 6 makes conditional. `false` is the hardened default and must
+   *  stay it for every deployment that launches no managed runner through the API server. */
+  automountServiceAccountToken?: boolean;
+  /** M23.2 — the shared RWX runner workspace is one of these. */
+  volumes?: { name?: string }[];
 }
 
 function podSpecOf(doc: K8sDoc): PodSpec | undefined {
@@ -1431,6 +2498,7 @@ function main(): void {
       "SCP_FEDERATION_SYNC_INTERVAL_SECONDS",
       "SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS",
       "SCP_OPERATOR_TOKEN",
+      "SCP_OPERATOR_DATABASE_URL",
       "SCP_ARTIFACT_OCI_REGISTRY_HOSTS",
       "SCP_ARTIFACT_BLOB_BASE_URLS",
       "SCP_ARTIFACT_INSECURE_HOSTS",
@@ -1503,30 +2571,78 @@ function main(): void {
     );
     console.log(`  enabled render: every knob present + correct on BOTH Deployments`);
 
-    // The operator token is a secretKeyRef, never a literal — a token rendered as a plain env
-    // VALUE would sit in the Deployment spec for anyone with `get deploy`.
+    // ----------------------------------------------------------------------------------------
+    // THE OPERATOR WRITE SURFACE NEEDS *TWO* THINGS, AND THIS CHART ONLY EVER RENDERED THE FIRST.
+    //
+    // M22.9 R3. The chart rendered SCP_OPERATOR_TOKEN and nothing else, so an `operatorApi.enabled`
+    // install produced a pod that AUTHORIZED the operator and then could not execute: the four PUT
+    // handlers open their own connection, api/worker pods hold no admin DATABASE_URL by design
+    // (`commanderscp.adminDbEnv` is included by migrations-job.yaml alone), and `scp_app` holds
+    // SELECT only on the four instance-scoped tables. The write dialed config.ts's
+    // `localhost:5432` fallback INSIDE the pod and 500'd on ECONNREFUSED. Nothing was red: the
+    // pod was healthy, the render was green, and the integration suite could not see it because
+    // its DATABASE_URL is the Testcontainers SUPERUSER, which bypasses both the grant and the RLS
+    // barrier. For M22 the consequence was total — `scan_exclusion_admissions` stayed empty, and
+    // an empty admissions table fails the exclusion AND at its top rung for EVERY clause on the
+    // deployment, so the whole shipped dimension was inert.
+    //
+    // `assertOperatorCredentialPairing` below is the standing guard, and it is deliberately
+    // stronger than "assert the var is present in this one render": it asserts the two vars are
+    // present together or absent together on EVERY doc set this block renders. A future change
+    // that reintroduces the token without the connection cannot render green under any values.
+    // ----------------------------------------------------------------------------------------
+    function assertOperatorCredentialPairing(docs: K8sDoc[], what: string): void {
+      for (const suffix of ["-api", "-worker"]) {
+        const token = envOf(docs, suffix, "SCP_OPERATOR_TOKEN");
+        const dbUrl = envOf(docs, suffix, "SCP_OPERATOR_DATABASE_URL");
+        assert(
+          (token === undefined) === (dbUrl === undefined),
+          `[${envLabel}] ${what}: the ${suffix.slice(1)} Deployment carries SCP_OPERATOR_${token ? "TOKEN" : "DATABASE_URL"} but not SCP_OPERATOR_${token ? "DATABASE_URL" : "TOKEN"} — the operator write door needs BOTH (the token authorizes the caller; the connection is what lets the server execute the write). A pod with only the token 503s on every operator write`
+        );
+      }
+    }
+    assertOperatorCredentialPairing(defaultDocs, "default render");
+    assertOperatorCredentialPairing(onDocs, "every-knob-on render");
+
+    // Both are secretKeyRefs, never literals — either one rendered as a plain env VALUE would sit
+    // in the Deployment spec for anyone with `get deploy` (a shared secret, and a DB password).
     const opDocs = renderChart(releaseName, [
       "--set",
       "operatorApi.enabled=true",
       "--set",
-      "appSecrets.existingSecret=scp-operator"
+      "appSecrets.existingSecret=scp-operator",
+      "--set",
+      "operatorApi.databaseUrlSecret=scp-operator-db"
     ]);
+    assertOperatorCredentialPairing(opDocs, "operatorApi.enabled render");
     for (const suffix of ["-api", "-worker"]) {
       const found = envOf(opDocs, suffix, "SCP_OPERATOR_TOKEN");
       assert(
         found?.value === undefined && found?.valueFrom?.secretKeyRef?.name === "scp-operator",
         `[${envLabel}] SCP_OPERATOR_TOKEN must be a secretKeyRef (never a literal value) on the ${suffix.slice(1)} Deployment`
       );
+      const dbUrl = envOf(opDocs, suffix, "SCP_OPERATOR_DATABASE_URL");
+      assert(
+        dbUrl?.value === undefined &&
+          dbUrl?.valueFrom?.secretKeyRef?.name === "scp-operator-db" &&
+          dbUrl?.valueFrom?.secretKeyRef?.key === "SCP_OPERATOR_DATABASE_URL",
+        `[${envLabel}] SCP_OPERATOR_DATABASE_URL must be a secretKeyRef into operatorApi.databaseUrlSecret on the ${suffix.slice(1)} Deployment, got ${JSON.stringify(dbUrl)}`
+      );
     }
 
-    // FAIL-FAST GUARDS — both must REFUSE to render. A typo'd role or an operator token with no
-    // Secret behind it would otherwise surface as a healthy-looking install that misbehaves at
-    // runtime (a 400 from /discovery/run; a pod crash-looping on a missing secret key).
+    // FAIL-FAST GUARDS — all three must REFUSE to render. A typo'd role, an operator token with no
+    // Secret behind it, or an enabled write surface with no database connection would otherwise
+    // surface as a healthy-looking install that misbehaves at runtime (a 400 from /discovery/run;
+    // a pod crash-looping on a missing secret key; a 503 on every operator write).
     for (const [args, what] of [
       [["--set", "api.role=worker"], "api.role=worker"],
       [
         ["--set", "operatorApi.enabled=true"],
         "operatorApi.enabled with no appSecrets.existingSecret"
+      ],
+      [
+        ["--set", "operatorApi.enabled=true", "--set", "appSecrets.existingSecret=scp-operator"],
+        "operatorApi.enabled with no operatorApi.databaseUrlSecret"
       ]
     ] as [string[], string][]) {
       let rendered = false;
@@ -1538,7 +2654,9 @@ function main(): void {
       }
       assert(!rendered, `[${envLabel}] ${what} must FAIL the render, not be silently ignored`);
     }
-    console.log(`  operator token is a secretKeyRef; both fail-fast guards refuse to render`);
+    console.log(
+      `  operator token + database URL are paired secretKeyRefs; all three fail-fast guards refuse to render`
+    );
   }
 
   // Size-regression guard: the MAIN chart's Helm release Secret must stay under Kubernetes' 1 MB
@@ -1655,6 +2773,777 @@ function main(): void {
       `  positive (outpost + gitea/argocd) clean; negative (retrans + gitea) correctly flagged: "${badViolations[0]}"`
     );
   }
+
+  // ================================================================================================
+  // M23.2 — THE KUBERNETES RUNNER LAUNCHER'S CHART CONTRACT
+  // ================================================================================================
+  // Four properties, and every one of them is something a `helm install` gets wrong SILENTLY. The
+  // adapter itself is gated by `kubernetes-adapter.kind.test.ts` against a real cluster (CI job 4e);
+  // what THAT cannot see is whether the chart hands it a token, an egress path, a volume and the
+  // settings to use them. A managed run then fails minutes into a promotion, on a cluster, with a
+  // timeout — which is the worst place to discover any of it.
+  {
+    const label = "M23.2 runner launcher";
+    console.log("helm-verify: checking the M23.2 Kubernetes runner-launcher chart contract...");
+
+    // (1) THE DEFAULT IS UNCHANGED. Every deployment that does not opt in must render exactly what
+    //     it rendered before: no launcher vars, no API allow, and the hardened token default.
+    const defaults = renderChart("verify-m23-default", []);
+    const defaultWorker = defaults.find(
+      (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+    );
+    assert(defaultWorker, `[${label}] no worker Deployment in the default render`);
+    const defaultSpec = defaultWorker ? podSpecOf(defaultWorker) : undefined;
+    assert(
+      defaultSpec?.automountServiceAccountToken === false,
+      `[${label}] the worker mounts a service-account token by DEFAULT — the hardened default must be unchanged for a deployment that launches no managed runner`
+    );
+    assert(
+      !JSON.stringify(defaults).includes("SCP_MANAGED_RUNNER_LAUNCHER"),
+      `[${label}] the default render carries Kubernetes launcher settings; a docker deployment must carry no Kubernetes surface at all`
+    );
+    assert(
+      !defaults.some((d) => String(d.metadata?.name ?? "").includes("allow-kube-api-runner")),
+      `[${label}] the default render emits an API-server egress allow for the SCP pods; that must appear only where a runner can launch`
+    );
+
+    // (2) SELECTED: the token, the egress allow, the volume and the settings all arrive TOGETHER.
+    //     They are derived from one condition on purpose — three that can drift is how a deployment
+    //     ends up with a launcher setting and no token, which fails at the first API call.
+    const k8s = renderChart("verify-m23-k8s", [
+      "--set",
+      "managedRunners.launcher=kubernetes",
+      "--set",
+      "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+      // M23.5 MEDIUM-7 — `perRunSecrets` defaults `true`, and since that render-time guard was
+      // added an empty `namespace` alongside it is a refusal, not a render. This render is testing
+      // the token/egress/volume contract, not that guard (which has its own case below), so it
+      // states a runner namespace the same way `values.yaml` recommends operators do.
+      "--set",
+      "managedRunners.kubernetes.namespace=scp-runners",
+      "--set",
+      "managedIac.enabled=true",
+      "--set",
+      "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+    ]);
+    const worker = k8s.find(
+      (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+    );
+    const workerSpec = worker ? podSpecOf(worker) : undefined;
+    assert(
+      workerSpec?.automountServiceAccountToken === true,
+      `[${label}] the worker has NO service-account token with the Kubernetes launcher selected — every API call it makes would be anonymous`
+    );
+    const workerEnv = JSON.stringify(workerSpec?.containers ?? []);
+    for (const key of [
+      "SCP_MANAGED_RUNNER_LAUNCHER",
+      "SCP_MANAGED_RUNNER_K8S_NAMESPACE",
+      "SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT",
+      "SCP_MANAGED_RUNNER_K8S_WORKSPACE_CLAIM",
+      "SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS",
+      // Node's global fetch cannot take a custom CA without an undici Agent, so without this the
+      // adapter's every request fails TLS verification against the in-cluster API server.
+      "NODE_EXTRA_CA_CERTS"
+    ]) {
+      assert(workerEnv.includes(key), `[${label}] the worker is missing ${key}`);
+    }
+    assert(
+      workerEnv.includes("scp-runner-rwx") ||
+        JSON.stringify(workerSpec?.volumes ?? []).includes("scp-runner-rwx"),
+      `[${label}] the worker does not mount the shared runner workspace claim — the runner's inputs have nowhere to go`
+    );
+    // THE TWO CASES THE OLD EXPRESSION GOT WRONG, and they are here because the assertion above
+    // SURVIVED the mutation that restores it. `automountServiceAccountToken: {{ .Values.managedIac
+    // .enabled }}` is `true` in the render above too, so "the worker has a token" was passing for
+    // the wrong reason. Each of these fails under that expression and passes under the real one.
+    {
+      // (a) managed-DEP only. The old expression keyed on managedIac ALONE, so enabling the bump
+      //     actuator and nothing else gave the worker no token at all — M21's actuator dead on
+      //     Kubernetes for the second time, by a different mechanism.
+      const depOnly = renderChart("verify-m23-dep-only", [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        // See the comment on the `k8s` render above — M23.5 MEDIUM-7's guard fires here too since
+        // `perRunSecrets` defaults true regardless of which managed class is enabled.
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners",
+        "--set",
+        "managedDep.runnerImage=ghcr.io/commanderscp/scp-runner-dep:0.1.0"
+      ]);
+      const depWorker = depOnly.find(
+        (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+      );
+      assert(
+        podSpecOf(depWorker!)?.automountServiceAccountToken === true,
+        `[${label}] with only managed-dep enabled the worker has NO service-account token — the launcher condition is keyed on managed-IaC alone, which is the shape that left two of the three managed classes unable to authenticate`
+      );
+      // (b) THE DOCKER LAUNCHER WITH managed-IaC ON must NOT mount a token. It is surface for
+      //     nothing there — no Kubernetes call is ever made — and the old expression granted it.
+      const dockerIac = renderChart("verify-m23-docker-iac", [
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+      ]);
+      const dockerWorker = dockerIac.find(
+        (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+      );
+      assert(
+        podSpecOf(dockerWorker!)?.automountServiceAccountToken === false,
+        `[${label}] the worker mounts a service-account token on a DOCKER-launcher deployment — an API credential for a pod that makes no API call`
+      );
+    }
+    assert(
+      k8s.some((d) => String(d.metadata?.name ?? "").includes("allow-kube-api-runner")),
+      `[${label}] no API-server egress allow for the SCP pods. The chart's own -default-deny selects the worker (its comment records "api / worker / migrations / postgres-eval are NOT selected" as the BLAST RADIUS of the hook allow), so on any CNI that enforces policy every managed run would hang`
+    );
+
+    // (2b) M23.5 MEDIUM-10 — THE RUNNER POD'S OWN DENY-ALL, PROVEN TO SELECT THE POD.
+    //
+    //      ADR-0035 §6a's "an operator on Calico/Cilium loses nothing" is a claim about a
+    //      NetworkPolicy that must actually SELECT the runner pod, not merely exist in the chart. A
+    //      podSelector rendered by Helm and a pod template built by `jobManifest()` are two
+    //      independent sources of truth for the SAME label; this reads both and checks the subset
+    //      relationship the API server itself applies, rather than asserting they were WRITTEN to
+    //      agree.
+    {
+      type NetworkPolicyDoc = K8sDoc & {
+        spec?: {
+          podSelector?: { matchLabels?: Record<string, string> };
+          policyTypes?: string[];
+          ingress?: unknown[];
+          egress?: unknown[];
+        };
+      };
+      const denyPolicy = k8s.find(
+        (d) =>
+          d.kind === "NetworkPolicy" &&
+          String(d.metadata?.name ?? "").endsWith("-runner-network-none-deny")
+      ) as NetworkPolicyDoc | undefined;
+      assert(
+        denyPolicy,
+        `[${label}] no runner-network-none-deny NetworkPolicy rendered with the Kubernetes launcher selected — every managed run has unrestricted egress with a mounted credential on any CNI, the ADR-0035 §6a gap MEDIUM-10 fixed`
+      );
+      assert(
+        denyPolicy?.metadata?.namespace === "scp-runners",
+        `[${label}] the runner deny policy rendered into '${String(denyPolicy?.metadata?.namespace)}', not the runner namespace — a NetworkPolicy only applies within its own namespace, so this would select nothing`
+      );
+      assert(
+        JSON.stringify([...(denyPolicy?.spec?.policyTypes ?? [])].sort()) ===
+          '["Egress","Ingress"]' &&
+          !denyPolicy?.spec?.ingress &&
+          !denyPolicy?.spec?.egress,
+        `[${label}] the runner deny policy is not deny-all in both directions (got policyTypes=${JSON.stringify(denyPolicy?.spec?.policyTypes)}, ingress=${JSON.stringify(denyPolicy?.spec?.ingress)}, egress=${JSON.stringify(denyPolicy?.spec?.egress)})`
+      );
+
+      // THE PROOF: build the SAME pod `jobManifest()` produces for a real run in this namespace,
+      // and check the policy's `matchLabels` against its ACTUAL labels — the same subset test the
+      // API server runs. A name-based assertion ("a policy called *-deny exists") cannot catch a
+      // typo'd label value; this can.
+      const runnerSpec: RunnerSpec = {
+        runId: "verify-medium10",
+        labels: {},
+        image: "ghcr.io/commanderscp/scp-runner-iac:0.1.0",
+        operands: ["apply"],
+        networkMode: "none",
+        env: [],
+        secretEnv: [],
+        copyIn: [],
+        copyOut: undefined,
+        timeoutMs: 600_000,
+        maxBuffer: 32 * 1024 * 1024
+      };
+      const manifest = jobManifest(runnerSpec, {
+        namespace: "scp-runners",
+        jobName: "scp-runner-iac-verify-medium10",
+        secretName: "scp-runner-iac-verify-medium10-env",
+        reapDeadline: new Date().toISOString(),
+        slots: new Map(),
+        workspaceVolume: { kind: "hostPath", path: "/var/lib/scp/runner-workspace" },
+        runAsNonRoot: false,
+        ttlSecondsAfterFinished: 3_600
+      }) as { spec: { template: { metadata: { labels: Record<string, string> } } } };
+      const podLabels = manifest.spec.template.metadata.labels;
+      const matchLabels = denyPolicy?.spec?.podSelector?.matchLabels ?? {};
+      const selects = Object.entries(matchLabels).every(([k, v]) => podLabels[k] === v);
+      assert(
+        selects,
+        `[${label}] the runner deny policy's podSelector ${JSON.stringify(matchLabels)} does NOT select a network-mode-none runner pod's actual labels ${JSON.stringify(podLabels)} — rendered but selecting nothing, ADR-0035 §6a's exact starting failure`
+      );
+    }
+
+    // (3) THE PER-RUN SECRET GRANT — DECLARED HERE, NOT TOLERATED HERE.
+    //
+    //     THIS BLOCK INVERTED IN M23.4 AND THE INVERSION IS THE POINT OF WRITING IT DOWN. Until then
+    //     it asserted the grant was ABSENT: `perRunSecrets` was a declared-and-disabled capability
+    //     and this gate's job was to keep it disabled. The owner granted the RBAC on 2026-08-20
+    //     ("grant the secrets RBAC, keep going"), so the default render now carries a privilege it
+    //     did not carry before. A hardened-defaults gate that simply stopped failing on that would
+    //     be worse than no gate — it would have quietly accepted a privilege grant. So the gate does
+    //     not stop asserting; it asserts the OPPOSITE, plus the exact SHAPE of what was granted, so
+    //     that any FURTHER widening (a `get`, a `list`, a `*`, a second resource) is a red build.
+    //
+    //     WHAT IS ACCEPTED, EXHAUSTIVELY: `create` and `delete` on `""/secrets`, namespaced, on the
+    //     worker ServiceAccount, rendered only where a managed run can actually launch. The
+    //     reasoning, the alternatives and the combination the owner accepted along with it are in
+    //     ADR-0035; this is the machine-checked half of that record.
+    const runnerRole = (docs: K8sDoc[]) =>
+      docs.find((d) => d.kind === "Role" && String(d.metadata?.name ?? "").endsWith("-runner-iac"));
+    const roleOn = runnerRole(k8s);
+    assert(roleOn, `[${label}] no runner Role rendered with the Kubernetes launcher selected`);
+    // THE WHOLE ROLE, AS A SET, AGAINST WHAT THE ADAPTER ISSUES — the M23.6 clause 5 gate. This
+    // subsumes the two assertions that used to stand here: the `patch` the harness found missing
+    // (the adapter creates the Job SUSPENDED and PATCHes it live, so without it `start` is a 403 for
+    // every run) and the `events: list` M23.5 added (when a Job cannot create a pod at all, the
+    // controller's `FailedCreate` Event is the only record of why, and teardown deletes the Job).
+    // Both are now MISSING-verb findings of the same diff, which also reports the opposite.
+    {
+      const problems = rbacDiff(roleOn?.rules, kubernetesRunnerRbac({ perRunSecrets: true }));
+      assert(
+        problems.length === 0,
+        `[${label}] the runner Role is not what the adapter calls:\n    - ${problems.join("\n    - ")}\n  The expected set is kubernetesRunnerRbac() in @scp/runner-launcher, derived from the wire by kubernetes-rbac-contract.test.ts. Change the adapter and the declaration together, never the chart alone.`
+      );
+    }
+
+    type Rule = { apiGroups?: string[]; resources?: string[]; verbs?: string[] };
+    const secretRulesForShape = ((roleOn?.rules ?? []) as Rule[]).filter((r) =>
+      (r.resources ?? []).includes("secrets")
+    );
+    const secretRules = secretRulesForShape;
+    assert(
+      secretRules.length === 1,
+      `[${label}] expected exactly ONE 'secrets' rule on the runner Role by default (the owner's grant, ADR-0035); found ${secretRules.length}. managed-iac cannot run on Kubernetes without it, and more than one rule means the grant is being widened somewhere this gate cannot see`
+    );
+    // THE EXACT SHAPE, AS A SET EQUALITY AND NOT A `.includes`. A `.includes("create")` passes for
+    // `["*"]`, for `["create","list"]`, and for a rule that also grants `configmaps` — i.e. for
+    // every widening this assertion exists to catch.
+    assert(
+      JSON.stringify((secretRules[0]?.verbs ?? []).slice().sort()) === '["create","delete"]',
+      `[${label}] the 'secrets' grant is not exactly ["create","delete"] (got ${JSON.stringify(secretRules[0]?.verbs)}). 'get' is unused by the adapter (one POST, two DELETEs, no GET) and 'list' returns every Secret BODY in the namespace including this release's database password — neither is part of what the owner granted`
+    );
+    assert(
+      JSON.stringify(secretRules[0]?.resources ?? []) === '["secrets"]' &&
+        JSON.stringify(secretRules[0]?.apiGroups ?? []) === '[""]',
+      `[${label}] the 'secrets' rule names resources/apiGroups other than exactly ["secrets"] in the core group — a rule that carries a second resource inherits this grant's verbs for it`
+    );
+    assert(
+      JSON.stringify(k8s).includes('"SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS"'),
+      `[${label}] the per-run-secret setting does not reach the server, so the RBAC and the code's belief about the RBAC can diverge`
+    );
+
+    //     AND THE OPT-OUT STILL WORKS. One value renders the rule AND sets the flag, in both
+    //     directions — an operator who turns it off must get NO rule, or the two halves of the
+    //     capability drift apart in the direction that 403s inside a promotion.
+    const withoutSecrets = renderChart("verify-m23-nosecrets", [
+      "--set",
+      "managedRunners.launcher=kubernetes",
+      "--set",
+      "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+      "--set",
+      "managedRunners.kubernetes.perRunSecrets=false",
+      "--set",
+      "managedIac.enabled=true",
+      "--set",
+      "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+    ]);
+    assert(
+      !JSON.stringify(runnerRole(withoutSecrets)?.rules ?? []).includes("secrets"),
+      `[${label}] perRunSecrets=false still renders a 'secrets' rule — the opt-out grants the privilege it says it declines`
+    );
+    assert(
+      JSON.stringify(withoutSecrets).includes('"false"'),
+      `[${label}] perRunSecrets=false does not reach the server`
+    );
+
+    // (3a-guard) M23.5 MEDIUM-7 — THE DEFAULT POSTURE IS A RENDER-TIME REFUSAL, NOT A README LINE.
+    //
+    //     `perRunSecrets` defaults `true` and grants `delete` on EVERY Secret in whatever namespace
+    //     this Role renders into (see the assertion above pinning the verb set). Proved with the
+    //     worker's own token against a live cluster: `DELETE .../secrets/scp-commanderscp-db ->
+    //     Success`. Before this guard, an operator who took every OTHER default got that blast
+    //     radius over their own release's Secrets with no signal at install time. Three cases: the
+    //     unsafe combination refuses; each of the three documented escapes renders clean.
+    {
+      let unsafeRefused = false;
+      try {
+        renderChart("verify-m23-secret-ns-unsafe", [
+          "--set",
+          "managedRunners.launcher=kubernetes",
+          "--set",
+          "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+          "--set",
+          "managedIac.enabled=true",
+          "--set",
+          "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+          // Deliberately no `namespace`, no `perRunSecrets=false`, no `acceptSharedNamespaceSecretDelete`.
+        ]);
+      } catch {
+        unsafeRefused = true;
+      }
+      assert(
+        unsafeRefused,
+        `[${label}] perRunSecrets=true with no managedRunners.kubernetes.namespace and no acceptSharedNamespaceSecretDelete must FAIL the render — this is the default combination and it grants delete on the release's own Secrets`
+      );
+
+      const escapes: [string, string[]][] = [
+        [
+          "a dedicated runner namespace",
+          [
+            "--set",
+            "managedRunners.launcher=kubernetes",
+            "--set",
+            "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+            "--set",
+            "managedRunners.kubernetes.namespace=scp-runners",
+            "--set",
+            "managedIac.enabled=true",
+            "--set",
+            "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+          ]
+        ],
+        [
+          "perRunSecrets=false",
+          [
+            "--set",
+            "managedRunners.launcher=kubernetes",
+            "--set",
+            "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+            "--set",
+            "managedRunners.kubernetes.perRunSecrets=false",
+            "--set",
+            "managedIac.enabled=true",
+            "--set",
+            "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+          ]
+        ],
+        [
+          "acceptSharedNamespaceSecretDelete=true",
+          [
+            "--set",
+            "managedRunners.launcher=kubernetes",
+            "--set",
+            "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+            "--set",
+            "managedRunners.kubernetes.acceptSharedNamespaceSecretDelete=true",
+            "--set",
+            "managedIac.enabled=true",
+            "--set",
+            "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+          ]
+        ]
+      ];
+      for (const [why, args] of escapes) {
+        let rendered = false;
+        try {
+          renderChart("verify-m23-secret-ns-escape", args);
+          rendered = true;
+        } catch (cause) {
+          throw new Error(
+            `[${label}] stating ${why} must still render cleanly (M23.5 MEDIUM-7's guard is over-firing): ${String(cause)}`
+          );
+        }
+        assert(rendered, `[${label}] stating ${why} must still render cleanly`);
+      }
+    }
+
+    // (3b) THE RBAC EXISTS FOR ALL THREE MANAGED CLASSES, NOT ONLY THE ONE IT WAS NAMED AFTER.
+    //
+    //      A MEASURED DEFECT, NOT A TIDINESS RULE. Before M23.4 this Role was gated on
+    //      `managedIac.enabled` while the service-account token, the kube-API egress allow, the
+    //      workspace mount and every launcher setting were gated on "any managed class". Case (a)
+    //      above proves the TOKEN arrives for a dep-only render; nothing proved the AUTHORISATION
+    //      did, and it did not — `helm template` with managedDep alone rendered no Role and no
+    //      RoleBinding at all, so the worker authenticated and every `jobs: create` was a 403.
+    //      managed-dep, the one class that writes to a user's repository, was dead on Kubernetes.
+    //      That is the incomplete-call-site-census property, and this loop is the census.
+    for (const [why, extra] of [
+      ["managed-iac only", ["managedIac.enabled=true", "managedIac.runnerImage=ghcr.io/x/iac:1"]],
+      ["managed-dep only", ["managedDep.runnerImage=ghcr.io/x/dep:1"]],
+      ["managed-scan only", ["managedScan.runnerImage=ghcr.io/x/scan:1"]]
+    ] as [string, string[]][]) {
+      const docs = renderChart("verify-m23-class", [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        // See the comment on the `k8s` render above — M23.5 MEDIUM-7's guard fires for every one
+        // of these three, `perRunSecrets` defaulting true regardless of which class is enabled.
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners",
+        ...extra.flatMap((e) => ["--set", e])
+      ]);
+      const role = runnerRole(docs);
+      assert(
+        role,
+        `[${label}] with ${why} enabled on the Kubernetes launcher the chart renders NO runner Role. The worker gets a service-account token and every 'jobs: create' it makes is a 403 — a class enabled by the operator that cannot launch anything`
+      );
+      assert(
+        docs.some(
+          (d) => d.kind === "RoleBinding" && String(d.metadata?.name ?? "").endsWith("-runner-iac")
+        ),
+        `[${label}] with ${why} enabled the runner Role is rendered with no RoleBinding, which authorises nobody`
+      );
+      assert(
+        JSON.stringify(role?.rules ?? []).includes("secrets"),
+        `[${label}] with ${why} enabled the per-run Secret grant is missing. All three classes are launched by the SAME ServiceAccount through the SAME Role, so a grant that depends on WHICH class is enabled is a grant that is absent whenever the class it was named after is off`
+      );
+    }
+
+    // (3c) THE ROLE FOLLOWS THE RUNNER NAMESPACE. `managedRunners.kubernetes.namespace` has been
+    //      operator-settable since M23.2 and the adapter creates its Jobs there; the Role was
+    //      rendered unconditionally into `.Release.Namespace`, so taking the chart's own advice and
+    //      separating the runners produced a silent 403 on every launch. Both now come from one
+    //      helper, and this is what keeps them from drifting apart again.
+    {
+      const separated = renderChart("verify-m23-ns", [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners",
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+      ]);
+      assert(
+        runnerRole(separated)?.metadata?.namespace === "scp-runners",
+        `[${label}] with managedRunners.kubernetes.namespace set, the runner Role renders into '${String(runnerRole(separated)?.metadata?.namespace)}' while the adapter creates its Jobs in 'scp-runners' — every launch is a 403 that names no cause`
+      );
+      const binding = separated.find(
+        (d) => d.kind === "RoleBinding" && String(d.metadata?.name ?? "").endsWith("-runner-iac")
+      );
+      assert(
+        binding?.metadata?.namespace === "scp-runners",
+        `[${label}] the runner RoleBinding does not follow the runner namespace, so the Role above authorises nobody there`
+      );
+      // AND THE SUBJECT STAYS WITH THE WORKLOAD. A RoleBinding in the runner namespace naming a
+      // ServiceAccount in the runner namespace would name one that does not exist.
+      const subjectNs = (binding as unknown as { subjects?: { namespace?: string }[] })
+        ?.subjects?.[0]?.namespace;
+      assert(
+        subjectNs === "verify-m23-ns" || subjectNs === "default",
+        `[${label}] the runner RoleBinding's subject namespace is '${String(subjectNs)}' — the ServiceAccount lives with the workload, in the RELEASE namespace, not in the runner namespace`
+      );
+    }
+
+    // (3d) A `docker` DEPLOYMENT GETS NO RUNNER RBAC AT ALL. A DECLARED NARROWING (M23.4): the Role
+    //      used to render for `managedIac.enabled` regardless of launcher, granting Job creation —
+    //      and now Secret creation — to a ServiceAccount whose pods mount no token (case (b) above
+    //      asserts exactly that) and which makes no API call. Surface for nobody.
+    {
+      const dockerIacDocs = renderChart("verify-m23-docker-rbac", [
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+      ]);
+      assert(
+        !runnerRole(dockerIacDocs),
+        `[${label}] a DOCKER-launcher deployment renders the runner Role. Its ServiceAccount mounts no token and makes no API call, so this is a standing Job- and Secret-creation grant for a caller that never calls`
+      );
+    }
+    assert(
+      !runnerRole(defaults),
+      `[${label}] the DEFAULT render carries a runner Role — the hardened default must grant nothing at all`
+    );
+
+    // (4) THE PREREQUISITES ARE REFUSED AT RENDER, not discovered as a hang (owner decision 5).
+    //     A NEGATIVE CONTROL FOR EACH, because "the render succeeded" is what a guard that does not
+    //     fire also produces.
+    for (const [why, args] of [
+      [
+        "no RWX claim",
+        [
+          "--set",
+          "managedRunners.launcher=kubernetes",
+          "--set",
+          "managedIac.enabled=true",
+          "--set",
+          "managedIac.runnerImage=x"
+        ]
+      ],
+      [
+        "no managed class enabled",
+        [
+          "--set",
+          "managedRunners.launcher=kubernetes",
+          "--set",
+          "managedRunners.kubernetes.workspace.claimName=rwx"
+        ]
+      ]
+    ] as [string, string[]][]) {
+      let refused = false;
+      try {
+        renderChart("verify-m23-bad", args);
+      } catch {
+        refused = true;
+      }
+      assert(
+        refused,
+        `[${label}] the chart RENDERED with the Kubernetes launcher and ${why}. Owner decision 5 requires "a render-time check and a clear failure message rather than a mysterious hang"`
+      );
+    }
+    // (5) EVERY WORKER-ROLE WRITE PATH, ON EVERY POD THAT RUNS THE WORKER ROLE (M23.5).
+    //
+    //     THIS BLOCK EXISTS BECAUSE EVERYTHING ABOVE IT LOOKS AT `-worker` AND NOTHING LOOKS AT
+    //     `-api`. `helm template --set api.role=all --set worker.replicaCount=0` — the single-pod
+    //     topology `values.yaml` documents by name — put the token and every launcher setting on the
+    //     api pod (M23.2 fixed the token for exactly that reason) and mounted NOTHING at
+    //     `SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT`. Copy-in wrote to the api container's ephemeral
+    //     filesystem, the runner Job mounted the real claim and found an empty directory, and
+    //     managed-iac's copy-out is `when:"always" / onFailure:"swallow"`, so the run reported
+    //     nothing wrong. `assertRunnerPrerequisites` refuses a render whose claim is MISSING and
+    //     rendered happily for the topology where it is named and never mounted.
+    //
+    //     AND THE ASSERTION THAT WAS ALREADY HALF-WRITTEN. The operator-config-surface block above
+    //     says, in its own comment, "a knob wired into only one of them is a silent half-fix (the
+    //     loops run on the worker, but an `api.role=all` pod runs them too)" — and applies that rule
+    //     to env vars and to nothing else. So the api pod's TOKEN, its launcher settings and its
+    //     volumes were all unasserted: reverting `deployment-api.yaml`'s conditional
+    //     `automountServiceAccountToken` to the hard `false` it shipped with before M23.2 reddened
+    //     nothing in this file. One predicate, both pods, all of it.
+    {
+      const writePaths = (docs: K8sDoc[], suffix: string): string[] => {
+        const doc = docs.find(
+          (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith(suffix)
+        );
+        return (podSpecOf(doc ?? ({} as K8sDoc))?.containers ?? []).flatMap((c) =>
+          (c.volumeMounts ?? []).map((m) => String(m.mountPath))
+        );
+      };
+      const tokenOf = (docs: K8sDoc[], suffix: string): boolean | undefined =>
+        podSpecOf(
+          docs.find(
+            (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith(suffix)
+          ) ?? ({} as K8sDoc)
+        )?.automountServiceAccountToken;
+
+      // The three roots `commanderscp.commonEnv` renders and a worker-role process writes to. Read
+      // off `values.yaml`'s defaults, so a changed default that no mount followed is a red build.
+      const IAC_ROOT = "/var/lib/scp/managed-iac";
+      const DEP_ROOT = "/var/lib/scp/managed-dep";
+      const RUNNER_ROOT = "/var/lib/scp/runner-workspace";
+
+      const everything = [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        // See the comment on the `k8s` render in the M23.2 block above — M23.5 MEDIUM-7's guard
+        // fires here too since `perRunSecrets` defaults true.
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners",
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0",
+        "--set",
+        "managedDep.runnerImage=ghcr.io/commanderscp/scp-runner-dep:0.1.0"
+      ];
+
+      // (5a) THE SINGLE-POD TOPOLOGY, BY NAME. `api.role=all` + `worker.replicaCount: 0` is what
+      //      `values.yaml` tells a small install to set; the api pod IS the worker there.
+      const singlePod = renderChart("verify-m23-single-pod", [
+        ...everything,
+        "--set",
+        "api.role=all",
+        "--set",
+        "worker.replicaCount=0"
+      ]);
+      assert(
+        tokenOf(singlePod, "-api") === true,
+        `[${label}] on the documented single-pod topology (api.role=all, worker.replicaCount=0) the api pod has NO service-account token — it is the pod that runs the managed executors, so every API call it makes would be anonymous`
+      );
+      for (const [root, why] of [
+        [
+          RUNNER_ROOT,
+          "the shared runner workspace — copy-in would write to the container's own ephemeral filesystem and the runner Job would mount the real claim and find an empty directory, SILENTLY"
+        ],
+        [
+          IAC_ROOT,
+          "the managed-IaC scratch root — `containerSecurityContext.readOnlyRootFilesystem` is true, so this is EROFS on the first mkdir"
+        ],
+        [
+          DEP_ROOT,
+          "the managed-dep scratch root — same EROFS, and nothing has ever mounted it on EITHER pod"
+        ]
+      ] as [string, string][]) {
+        assert(
+          writePaths(singlePod, "-api").includes(root),
+          `[${label}] api.role=all mounts nothing at ${root}: ${why}`
+        );
+      }
+
+      // (5b) THE SPLIT TOPOLOGY'S WORKER, same three paths. `managedDep` is the one that was missing
+      //      here too — the census, not the reported symptom.
+      const split = renderChart("verify-m23-split", everything);
+      for (const root of [RUNNER_ROOT, IAC_ROOT, DEP_ROOT]) {
+        assert(
+          writePaths(split, "-worker").includes(root),
+          `[${label}] the worker mounts nothing at ${root} — a path this chart renders into an env var and the process writes to`
+        );
+      }
+
+      // (5c) AND THE NEGATIVE CONTROL, which is what makes (5a) mean anything. At the DEFAULT
+      //      `api.role=api` the api pod never runs a managed executor, so it must carry neither the
+      //      token nor any of the three roots. "Mount it on both, unconditionally" would pass (5a)
+      //      and (5b) and hand a token and an RWX claim to a pure request server.
+      assert(
+        tokenOf(split, "-api") === false,
+        `[${label}] a split-topology api pod (api.role=api) mounts a service-account token — it executes no managed trigger, so that is an API credential for a pod that makes no API call`
+      );
+      for (const root of [RUNNER_ROOT, IAC_ROOT, DEP_ROOT]) {
+        assert(
+          !writePaths(split, "-api").includes(root),
+          `[${label}] a split-topology api pod (api.role=api) mounts ${root}. It runs no worker-role work; mounting a shared RWX claim there widens the blast radius of the request server for nothing`
+        );
+      }
+    }
+
+    // (6) THE POD CONVENTIONS THE RUNNER JOB INHERITS (M23.5).
+    //
+    //     THE COUNT IS THE FINDING. This chart creates SIX pods; five are templates in this repo and
+    //     every one of them carries `.Values.imagePullSecrets`, `.Values.image.pullPolicy` and a
+    //     `resources` block. The sixth is built by `jobManifest()` at run time from
+    //     `managedRunnerSettings()`, which described a namespace, a workspace and two booleans — so
+    //     it inherited none of them, and not just the two that were reported. Measured on a real
+    //     cluster with the image already on the node and tagged `:latest`: `spawn-failed,
+    //     code=ErrImagePull`, while the identical image ran fine under `docker create`. An unset
+    //     `imagePullPolicy` is `Always` for `:latest` — charter principle 5, broken in production.
+    //
+    //     ASSERTED ON THE CHART SIDE BECAUSE THAT IS THE HALF NO UNIT TEST CAN SEE. The golden pins
+    //     what `jobManifest` does with these values; `managed-runner-selection.test.ts` pins how the
+    //     server parses them. Neither can answer whether a `helm install` ever emits one.
+    {
+      const runnerEnv = (docs: K8sDoc[], name: string): string | undefined => {
+        const worker = docs.find(
+          (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+        );
+        for (const c of podSpecOf(worker ?? ({} as K8sDoc))?.containers ?? []) {
+          const found = c.env?.find((e) => e.name === name);
+          if (found) return found.value ?? "";
+        }
+        return undefined;
+      };
+      const base = [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        // See the comment on the `k8s` render in the M23.2 block above — M23.5 MEDIUM-7's guard
+        // fires here too since `perRunSecrets` defaults true.
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners",
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+      ];
+
+      // (6a) THE PULL POLICY IS ALWAYS STATED, and it is the chart's own `IfNotPresent`. An ABSENT
+      //      variable is the defect: Kubernetes then defaults it to `Always` for a `:latest` tag and
+      //      an air-gapped node reaches for a registry it cannot see.
+      assert(
+        runnerEnv(k8s, "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY") === "IfNotPresent",
+        `[${label}] the runner Job's imagePullPolicy is not rendered from the chart's own image.pullPolicy. Unset means Kubernetes defaults it to Always for a :latest tag, which is charter principle 5 broken in an air-gapped install`
+      );
+      const explicitPolicy = renderChart("verify-m23-pullpolicy", [
+        ...base,
+        "--set",
+        "managedRunners.kubernetes.imagePullPolicy=Never"
+      ]);
+      assert(
+        runnerEnv(explicitPolicy, "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY") === "Never",
+        `[${label}] managedRunners.kubernetes.imagePullPolicy does not override the inherited value`
+      );
+
+      // (6b) PULL SECRETS ARE INHERITED FROM THE DEPLOYMENT-WIDE VALUE, with no second setting. A
+      //      runner image in a private registry is the norm for self-hosted and mandatory behind the
+      //      per-outpost Harbor SCP itself designs; the worker pulling `scpd` from that same
+      //      registry already worked, and the runner Job could not be pulled at all.
+      assert(
+        runnerEnv(k8s, "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS") === undefined,
+        `[${label}] a render with NO imagePullSecrets still emits SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS — an empty statement is not the same as no statement`
+      );
+      const inherited = renderChart("verify-m23-pullsecrets", [
+        ...base,
+        "--set",
+        "imagePullSecrets[0].name=ghcr-creds",
+        "--set",
+        "imagePullSecrets[1].name=harbor-creds"
+      ]);
+      assert(
+        runnerEnv(inherited, "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS") ===
+          "ghcr-creds,harbor-creds",
+        `[${label}] the runner Job does not inherit .Values.imagePullSecrets, so a runner image in a private registry cannot be pulled while the worker pulling scpd from the SAME registry can`
+      );
+      const overridden = renderChart("verify-m23-pullsecrets-override", [
+        ...base,
+        "--set",
+        "imagePullSecrets[0].name=ghcr-creds",
+        "--set",
+        "managedRunners.kubernetes.imagePullSecrets[0].name=runner-only-creds"
+      ]);
+      assert(
+        runnerEnv(overridden, "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS") === "runner-only-creds",
+        `[${label}] managedRunners.kubernetes.imagePullSecrets does not override the inherited list — the runner images may live somewhere the scpd image does not`
+      );
+
+      // (6c) `resources` — ABSENT unless set, and verbatim JSON when it is. The chart ships no
+      //      default deliberately (a guessed memory limit OOMKills a real `tofu apply`, which looks
+      //      like a runner bug); what it must not do is silently drop the value an operator DID set,
+      //      because a namespace with a compute ResourceQuota and no defaulting LimitRange rejects a
+      //      pod that declares none and no pod is then ever created.
+      assert(
+        runnerEnv(k8s, "SCP_MANAGED_RUNNER_K8S_RESOURCES") === undefined,
+        `[${label}] the default render emits SCP_MANAGED_RUNNER_K8S_RESOURCES for an empty resources block`
+      );
+      const withResources = renderChart("verify-m23-resources", [
+        ...base,
+        "--set",
+        "managedRunners.kubernetes.resources.limits.memory=4Gi",
+        "--set",
+        "managedRunners.kubernetes.resources.requests.cpu=250m"
+      ]);
+      const rendered = runnerEnv(withResources, "SCP_MANAGED_RUNNER_K8S_RESOURCES");
+      assert(
+        rendered !== undefined &&
+          (JSON.parse(rendered) as { limits?: { memory?: string } }).limits?.memory === "4Gi",
+        `[${label}] managedRunners.kubernetes.resources does not reach the runner Job (got ${rendered ?? "<absent>"}). A namespace with a compute ResourceQuota rejects a pod that declares no limits, and no pod is then ever created`
+      );
+
+      // (6d) AND NONE OF IT ON A DOCKER DEPLOYMENT. These three describe a pod spec; a compose or VM
+      //      install builds an argv. Same rule as every other Kubernetes variable here.
+      const dockerDocs = renderChart("verify-m23-docker-pod", [
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0",
+        "--set",
+        "imagePullSecrets[0].name=ghcr-creds"
+      ]);
+      for (const key of [
+        "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY",
+        "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS",
+        "SCP_MANAGED_RUNNER_K8S_RESOURCES"
+      ]) {
+        assert(
+          runnerEnv(dockerDocs, key) === undefined,
+          `[${label}] a DOCKER-launcher deployment carries ${key} — a docker deployment must carry no Kubernetes surface at all`
+        );
+      }
+    }
+
+    console.log(
+      "  default render unchanged; selected render carries token + egress + volume + settings; the per-run Secret grant is exactly create+delete on secrets, present for all three classes, absent on docker and at the default, and following the runner namespace; both prerequisites refuse at render; every worker-role write path is mounted on BOTH the worker and an api.role=all pod, and on neither at api.role=api; the runner Job inherits the deployment pull secrets, pull policy and resources, and none of the three on docker"
+    );
+  }
+
+  verifySocketInvariantMatrix();
 
   if (failures.length > 0) {
     console.error(`\nhelm-verify: ${failures.length} assertion(s) FAILED:\n`);

@@ -852,16 +852,46 @@ describe("T17 — duplicate keys, and the composer scan that was quadratic", () 
       return performance.now() - started;
     };
 
+    // RETRY THE MEASUREMENT, NEVER RELAX THE CLAIM. A single sample of each side flaked once in a
+    // full-repo `turbo run test --force` (`expected 8.64505652940312 to be less than 8`, 1 failure
+    // in 198, green standalone and on repeat) and was reproduced here on demand under the same
+    // load. A wall-clock sample can only ever be INFLATED by a scheduler steal, never deflated, so
+    // one stolen `tLarge` — or one lucky-fast `tSmall` — moves the ratio in the failing direction
+    // while the parser is unchanged. The lowest ratio of a few matched pairs is the uninterrupted
+    // measurement.
+    //
+    // NOTHING THE TEST CLAIMS IS WEAKENED, and that is deliberate: the bound is still 8, the
+    // sibling counts are still 8k and 32k, and the pairs are measured back to back so both halves
+    // of a ratio see the same load. A quadratic rescan lands an order of magnitude above the bound
+    // in EVERY attempt, so no number of retries can hide it. THE FIX FOR A FLAKE HERE IS MORE
+    // SAMPLES, NEVER A LARGER BOUND OR A SMALLER INPUT — those two are exactly the regression this
+    // test exists to catch, and it already had a 30 s timeout, so widening a budget could never
+    // have fixed it anyway.
+    //
+    // IT RETRIES ONLY ON FAILURE, WHICH IS WHAT KEEPS THE FAILURE READABLE. The happy path costs
+    // one pair (~0.2 s here). A genuine quadratic regression costs three (~23 s, inside the 30 s
+    // timeout) and still fails on the RATIO with every attempt printed, rather than on a timeout
+    // that says nothing about what regressed.
     const small = build(8_000);
     const large = build(32_000);
     timed(small); // warm, so JIT compilation is not charged to the first measurement
-    const tSmall = Math.max(timed(small), 1);
-    const tLarge = timed(large);
 
-    // 4x the siblings. Linear predicts ~4x; the quadratic rescan predicted ~16x and measured worse.
-    // The bound is generous because the RATIO is the claim and CI timing is noisy — a regression to
-    // the quadratic scan lands an order of magnitude above it, not just outside it.
-    expect(tLarge / tSmall).toBeLessThan(8);
+    // 4x the siblings. Linear predicts ~4x (measured 3.9); the quadratic rescan predicted ~16x and
+    // measured worse. The bound is generous because the RATIO is the claim.
+    const ratios: number[] = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const tSmall = Math.max(timed(small), 1);
+      const tLarge = timed(large);
+      ratios.push(tLarge / tSmall);
+      if (ratios[attempt]! < 8) break;
+    }
+
+    expect(
+      Math.min(...ratios),
+      `32k-vs-8k sibling parse ratios, best of ${ratios.length} matched pair(s): ${ratios
+        .map((r) => r.toFixed(2))
+        .join(", ")}`
+    ).toBeLessThan(8);
   }, 30_000);
 
   it("a duplicated NON-image key no longer fails the whole file forever", () => {

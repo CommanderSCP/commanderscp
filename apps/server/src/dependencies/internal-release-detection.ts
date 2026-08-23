@@ -752,10 +752,23 @@ async function resolveProdReleases(
   return [...byPair.values()];
 }
 
-/** `change_wave_targets.observed_state`'s `images` array (ADR-0008 / P4C), read defensively: the
- *  column is raw `jsonb`, is null until the first successful observe, and a status() that carried
- *  no images leaves it absent. Non-string entries are dropped rather than stringified. */
-function observedImagesOf(observed: unknown): string[] {
+/**
+ * `change_wave_targets.observed_state`'s `images` array (ADR-0008 / P4C), read defensively: the
+ * column is raw `jsonb`, is null until the first successful observe, and a status() that carried no
+ * images leaves it absent. Non-string entries are dropped rather than stringified.
+ *
+ * A TRUNCATION MARKER IS DELIBERATELY KEPT, NOT FILTERED OUT. `observed_state` is bounded at the
+ * store, and an over-long list comes back with its tail replaced by a recognisable entry
+ * (`isPersistedJsonEntriesElision`, `@scp/runner-launcher`). It is not an image ref and never
+ * matches a coordinate — but it is the ONLY evidence that this list is incomplete, `resolveReleased
+ * Version` reads it to tell a miss from a cut, and it is what lands in the Decision's
+ * `inputContext`. Stripping it here would look like tidying and would delete the record.
+ *
+ * EXPORTED for `observed-state-gate-critical-leaf.integration.test.ts`: the defect the marker exists
+ * for is only visible end to end — a real bounded row, read by THIS function, judged by
+ * `resolveReleasedVersion` — and a test that re-implemented this read would be pinning its own copy.
+ */
+export function observedImagesOf(observed: unknown): string[] {
   if (observed === null || typeof observed !== "object" || Array.isArray(observed)) return [];
   const images = (observed as { images?: unknown }).images;
   if (!Array.isArray(images)) return [];

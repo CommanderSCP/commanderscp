@@ -19,6 +19,15 @@ import {
  * Measured on the homelab: commit `bfddca9` at `02:32:14Z` was never ingested, because the
  * `workflow_run` it triggered at `02:32:17Z` advanced the shared cursor three seconds past it.
  */
+
+/**
+ * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
+ * that three named keys are absent only proves those three are absent; this proves NOTHING was
+ * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
+ * so it is checked rather than assumed.
+ */
+const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
+
 describe("observe cursor: each event kind advances independently", () => {
   const ev = (kind: string, occurredAt: string) =>
     ({ kind, occurredAt, correlation: {}, raw: {} }) as ExecutorEvent;
@@ -85,6 +94,73 @@ describe("observe cursor: each event kind advances independently", () => {
     expect(parseCursorToken(token)).toEqual(marks);
     // Key order must not churn the row on an unchanged cursor.
     expect(serializeCursorToken(marks)).toBe(token);
+  });
+
+  /**
+   * `ExecutorEvent.kind` is a string a PLUGIN supplies, and nothing validates it against an
+   * allow-list — `custom` exists precisely so a plugin can invent kinds. A kind of `__proto__`
+   * therefore reaches the watermark map as a key, where on the base commit it hit
+   * `Object.prototype`'s accessor instead of being stored.
+   */
+  describe("an event kind of __proto__ is an ordinary kind, not a hole in the cursor", () => {
+    it("advances its watermark like any other kind (it used to be a permanent no-op)", () => {
+      // MEASURED on the base commit: four ticks, and the mark set stayed `[]` the whole time while
+      // a control kind advanced normally — so the cursor never moved and the provider was re-polled
+      // from the same point on every tick, forever.
+      let marks = parseCursorToken(null);
+      for (const t of ["21", "22", "23", "24"]) {
+        marks = advanceWatermarks([ev("__proto__", `2026-08-${t}T00:00:00Z`)], marks);
+      }
+      expect(Object.keys(marks)).toEqual(["__proto__"]);
+      expect(watermarkFor(marks, "__proto__")).toBe("2026-08-24T00:00:00Z");
+    });
+
+    it("reads back as a timestamp, not as Object.prototype", () => {
+      // Base commit returned the object itself, which reached the provider as `?since=[object
+      // Object]`.
+      const marks = advanceWatermarks(
+        [ev("__proto__", "2026-08-24T00:00:00Z")],
+        parseCursorToken(null)
+      );
+      const since = watermarkFor(marks, "__proto__");
+      expect(typeof since).toBe("string");
+      expect(`?since=${String(since)}`).not.toContain("[object Object]");
+    });
+
+    it("survives the serialize/parse round trip instead of being dropped from the token", () => {
+      const marks = advanceWatermarks(
+        [ev("__proto__", "2026-08-24T00:00:00Z"), ev("push", "2026-08-23T00:00:00Z")],
+        parseCursorToken(null)
+      );
+      const token = serializeCursorToken(marks);
+      expect(token).toContain("__proto__");
+      const round = parseCursorToken(token);
+      expect(watermarkFor(round, "__proto__")).toBe("2026-08-24T00:00:00Z");
+      expect(watermarkFor(round, "push")).toBe("2026-08-23T00:00:00Z");
+      expect(serializeCursorToken(round)).toBe(token);
+    });
+
+    it("does not let an inherited member masquerade as a watermark", () => {
+      // `marks["toString"]` on a prototype-bearing object is a FUNCTION. `watermarkFor` must say
+      // "no watermark", not hand a function to the provider.
+      const marks = parseCursorToken('{"push":"2026-08-23T00:00:00Z"}');
+      for (const inherited of ["toString", "constructor", "hasOwnProperty", "valueOf"]) {
+        expect(watermarkFor(marks, inherited)).toBeUndefined();
+      }
+      // ... and a kind named after an inherited member still advances on its own merits.
+      const after = advanceWatermarks([ev("toString", "2026-08-24T00:00:00Z")], marks);
+      expect(watermarkFor(after, "toString")).toBe("2026-08-24T00:00:00Z");
+    });
+
+    it("leaves Object.prototype unmutated", () => {
+      const probe = {} as Record<string, unknown>;
+      expect(probe.polluted).toBeUndefined();
+      expect(Object.prototype.hasOwnProperty.call(Object.prototype, "_legacy")).toBe(false);
+      // Not just the named keys: nothing was added to or removed from Object.prototype at all.
+      expect(Object.getOwnPropertyNames(Object.prototype).sort().join(",")).toBe(
+        OBJECT_PROTOTYPE_KEYS_AT_LOAD
+      );
+    });
   });
 
   it("a corrupt token degrades to no watermark rather than wedging the instance", () => {

@@ -38,7 +38,15 @@ export type {
   ListServiceObjectsData,
   ListServiceObjectsResponse,
   LoginData,
-  LoginResponse
+  LoginResponse,
+  // M23.1g: THE GENERATED shape of `GET /changes/{id}:explain`, re-exported so a consumer can pin
+  // itself to what the OpenAPI document actually says rather than to the hand-written
+  // `ChangeExplainResponse` alias above. The two are meant to agree; the point of offering this one
+  // is that `observed.truncation` has to be reachable through the GENERATED types alone — a signal
+  // a consumer can only read by importing `@scp/schemas` (or, worse, `@scp/runner-launcher`) is not
+  // an API-first signal (charter principle 3). `observed-truncation.integration.test.ts` is the
+  // consumer that proves it.
+  ExplainChangeResponse
 } from "./generated/index.js";
 
 // M2 step 2: AuthN expansion (BUILD_AND_TEST.md §8 M2 item 3) — re-exported so CLI/consumers

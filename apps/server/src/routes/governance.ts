@@ -9,8 +9,11 @@ import {
   ApprovalVoteSchema,
   CastApprovalVoteRequestSchema,
   ControlBindingSchema,
+  ControlRunFindingsResponseSchema,
+  ControlRunIdParamSchema,
   ControlRunListResponseSchema,
   CreateControlBindingRequestSchema,
+  CursorPageQuerySchema,
   CreateFreezeRequestSchema,
   FreezeIdParamSchema,
   FreezeListResponseSchema,
@@ -31,6 +34,7 @@ import { targetObjectIdsOf } from "../coordination/changes-repo.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { evaluateGovernanceGate } from "../governance/gate-orchestrator.js";
 import { upsertControlBinding, listControlRunsForChange } from "../governance/controls-repo.js";
+import { loadScanFindings } from "../governance/scan-findings-repo.js";
 import {
   castApprovalVote,
   getApprovalRequest,
@@ -138,9 +142,80 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           evidence: r.evidence,
           detail: r.detail,
           decisionId: r.decisionId,
-          createdAt: r.createdAt.toISOString()
+          createdAt: r.createdAt.toISOString(),
+          // M22.8 — WHICH CROSSING THIS RUN AUTHORIZED. Stored since M4, never projected. It became
+          // load-bearing at M22.0a, which keyed the cache on gate identity and thereby made several
+          // runs per change the NORM rather than an anomaly; until now an operator reading this list
+          // saw N rows for one control with no way to tell which one let production through.
+          //
+          // Sent unconditionally. The columns are NOT NULL, so the wire fields' optionality is for
+          // older generated clients only (see `ControlRunSchema`), never a licence to omit them —
+          // and a `?? undefined` here would silently turn a schema-drift bug into a missing field.
+          gateKind: r.gateKind as "lifecycle_edge" | "wave_boundary",
+          gateRef: r.gateRef
         })),
         nextCursor: null
+      });
+    }
+  });
+
+  /**
+   * M22.9 (ADR-0033 §7) — the per-finding decomposition of ONE scan verdict.
+   *
+   * WHY A SEPARATE PATH RATHER THAN `?includeFindings=true` ON THE LIST ABOVE. A change legitimately
+   * carries several runs since M22.0a keyed the control cache on gate identity, and each run persists
+   * up to `SCAN_FINDINGS_PERSIST_CAP` (2000) findings; folding them into the list response would
+   * either be unbounded or need a per-item cap that no cursor can page past. One run per request
+   * pages properly and leaves the list response BYTE-IDENTICAL, so the OpenAPI diff is a new
+   * operation and nothing else — this repo has already paid once for making an existing required
+   * response field optional (oasdiff ERR).
+   *
+   * `object:read` at ORG scope, matching the list endpoint immediately above. These rows are the
+   * decomposition of evidence that endpoint already returns in aggregate (`evidence.severityCounts`,
+   * `evidence.exclusions`), so a stricter permission here would guard the detail while the summary
+   * stayed open — a bar that reads as protection and is not one.
+   */
+  typed.route({
+    method: "GET",
+    url: "/api/v1/control-runs/:id/findings",
+    schema: {
+      params: ControlRunIdParamSchema,
+      querystring: CursorPageQuerySchema,
+      response: {
+        200: ControlRunFindingsResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "listControlRunFindings",
+        summary:
+          "The persisted findings of one scan control run, with the finding-set marker (ADR-0033 §7)",
+        tags: ["controls"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const loaded = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: auth.orgId
+        });
+        const page = await loadScanFindings(tx, auth.orgId, request.params.id, request.query);
+        if (!page) throw notFound(`control run '${request.params.id}' not found`);
+        return page;
+      });
+      reply.status(200).send({
+        // ABSENT becomes an explicit `null`, never an omitted key: every marker state but `full`
+        // REFUSES every exclusion for this scan, and a consumer that cannot see the refusal would
+        // read a partial set as the whole one (`ControlRunFindingsResponseSchema`).
+        findingsRecord: loaded.record ?? null,
+        items: loaded.findings,
+        nextCursor: loaded.nextCursor
       });
     }
   });

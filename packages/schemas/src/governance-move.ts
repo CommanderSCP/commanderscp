@@ -4,7 +4,7 @@ import { z } from "zod";
  * `governance:move` ENFORCEMENT — the contract for the top-down monotone lattice that decides
  * whether a containment MOVE additionally requires the `governance:move` permission at both ends.
  * (docs/proposals/governance-reach-on-containment-move.md §9.2; owner ruling 2026-08-18; the server
- * substrate is drizzle/0079 and `apps/server/src/governance/move-enforcement.ts`.)
+ * substrate is drizzle/0083 and `apps/server/src/governance/move-enforcement.ts`.)
  *
  * THE SEMANTICS A CONSUMER MUST KNOW, because none of them are guessable from the field names:
  *

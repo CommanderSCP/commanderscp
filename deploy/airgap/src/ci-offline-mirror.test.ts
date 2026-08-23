@@ -299,12 +299,28 @@ describe("every var the seed step exports actually reaches the process that read
   const passThrough = new Set(turbo.tasks["test:integration"]?.passThroughEnv ?? []);
 
   /**
-   * The ONLY seeded vars whose consumer is a workflow step that runs directly, outside turbo: the
-   * two pinned-CLI installers, which are their own `run:` steps. Every other seeded var is read
-   * inside the test process, which turbo starts. An entry here is a claim that gets checked below,
-   * not an exemption — and a NEW seeded var is required to pass by default.
+   * The ONLY seeded vars whose consumer is a workflow step that runs directly, outside turbo:
+   *
+   *   - `SCP_SKOPEO_IMAGE_REF` / `SCP_COSIGN_IMAGE_REF` — the two pinned-CLI installers, which are
+   *     their own `run:` steps.
+   *   - `SKOPEO_IMAGE` / `COSIGN_IMAGE` — the root Dockerfile's own build ARGs, read by BUILDKIT
+   *     during `docker compose build`. Added 2026-08-18 with consumer form 4 (see
+   *     `tools/ci-mirror/images.list`): a digest-pinned `FROM` resolves at the registry, so it can be
+   *     served by neither a local re-tag nor an installer's env var, and until these were exported the
+   *     image build pulled quay.io LIVE. An image build is not a turbo task and never will be, so
+   *     `passThroughEnv` is the wrong home for them — but they are still seeded vars, so they still
+   *     have to be declared SOMEWHERE, which is what this list is for.
+   *
+   * Every other seeded var is read inside the test process, which turbo starts. An entry here is a
+   * claim that gets checked below, not an exemption — and a NEW seeded var is required to pass by
+   * default.
    */
-  const CONSUMED_OUTSIDE_TURBO = new Set(["SCP_SKOPEO_IMAGE_REF", "SCP_COSIGN_IMAGE_REF"]);
+  const CONSUMED_OUTSIDE_TURBO = new Set([
+    "SCP_SKOPEO_IMAGE_REF",
+    "SCP_COSIGN_IMAGE_REF",
+    "SKOPEO_IMAGE",
+    "COSIGN_IMAGE"
+  ]);
 
   /** Every `KEY=` the script exports, read out of the script rather than re-typed here. */
   const seeded = [

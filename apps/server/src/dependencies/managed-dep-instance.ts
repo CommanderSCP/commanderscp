@@ -137,11 +137,16 @@ export async function startManagedDepInstance(
       // SERVER-GOVERNED, LAST — see this module's doc.
       runnerImage: settings.runnerImage,
       workspaceRoot: settings.workspaceRoot,
-      // The operator's container runtime. This is the path that runs in production (the binding
-      // path below it is the hand-made rarity), so omitting it here meant `scp-managed-dep`
-      // `execFile`d a hardcoded `docker` on every ordinary bump however the deployment was
-      // configured — while its two sibling managed classes honoured the setting.
-      dockerBinary: settings.dockerBinary
+      // The operator's container runtime, and since M23.2 the launcher SELECTION with it. This is
+      // the path that runs in production (the binding path below it is the hand-made rarity), so
+      // omitting `dockerBinary` here meant `scp-managed-dep` `execFile`d a hardcoded `docker` on
+      // every ordinary bump however the deployment was configured — while its two sibling managed
+      // classes honoured the setting. The launcher selection has the SAME shape and a larger blast
+      // radius: omitted here, the ordinary bump path would stay on Docker on a Kubernetes
+      // deployment, i.e. M21's actuator would remain exactly as dead as M23 exists to fix.
+      dockerBinary: settings.dockerBinary,
+      runnerLauncher: settings.runnerLauncher,
+      ...(settings.kubernetes ? { kubernetes: settings.kubernetes } : {})
     },
     ...(resolved.instanceConfig.secrets ? { secrets: resolved.instanceConfig.secrets } : {}),
     ...(resolved.instanceConfig.allowedHosts

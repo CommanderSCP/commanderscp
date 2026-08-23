@@ -33,4 +33,4 @@ Tests (build time): each of 1/2/3/5 pinned with fixtures carrying the record; mu
 
 ## 4. Sequencing
 
-Blocked on #264 → main → this branch's next main-merge (which also renumbers migrations 0073–0079 and re-runs the E6 byte-equality pin). At build time: re-verify the shape against the merged `types.gen.ts` rather than this relay (read-never-infer), then implement §3 + tests in `PipelineWaveCard.tsx`.
+Blocked on #264 → main → this branch's next main-merge (done 2026-08-23: migrations renumbered 0077–0083, E6 pin re-run). At build time: re-verify the shape against the merged `types.gen.ts` rather than this relay (read-never-infer), then implement §3 + tests in `PipelineWaveCard.tsx`.

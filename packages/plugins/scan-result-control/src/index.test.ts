@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { PluginContext, ScopedHttpRequest, ScopedHttpResponse } from "@scp/plugin-api";
-import { ScanEvidenceSchema } from "@scp/schemas";
+import {
+  SCAN_FINDINGS_EXCLUDED_TRANSPORT_KEY,
+  ScanEvidenceSchema,
+  type EffectiveScanExclusions
+} from "@scp/schemas";
 import { createScanResultControlPlugin, type ScanResultControlConfig } from "./index.js";
 
 const DIGEST_A = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
@@ -335,5 +339,209 @@ describe("scan-result-control plugin", () => {
     });
     expect(outcome.status).toBe("fail");
     expect(outcome.detail).toMatch(/malformed/);
+  });
+
+  // =========================================================================================
+  // M22.2 (ADR-0033 §2) — EXCLUSION BEFORE COUNTING, applied HERE because this is the process
+  // that holds the findings. The gate resolves WHICH clauses are in force (a plugin has no
+  // database and no lookup ability) and threads them on `context.scanExclusions`; this control
+  // applies them to its own parse, before the threshold comparison.
+  //
+  // MUTATIONS RUN (2026-08-17), each reverted by an exact inverse edit. MEASURED results; baseline
+  // 22 passed.
+  //   P-1  compare the threshold against `counts` instead of `effectiveCounts`
+  //          -> 1 failed ("a HIGH with no fix is EXCLUDED before counting").
+  //   P-2  write `severityCounts: effectiveCounts` — i.e. REDEFINE the field operators author their
+  //        CEL conditions against
+  //          -> 1 failed (same test, on its `severityCounts.high === 1` arm). That arm exists for
+  //             exactly this mutation: without it the redefinition is invisible, because every
+  //             OTHER assertion in the suite is happy with the post-exclusion number.
+  //   P-3  emit `effectiveSeverityCounts`/`exclusions` unconditionally
+  //          -> 3 failed, including "WITH NOTHING THREADED the evidence document gains no new keys".
+  //   P-4  attach findings without the excluded ordinals
+  //          -> 1 failed ("the EXCLUDED ordinals ride the transport").
+  // =========================================================================================
+
+  /** A Trivy result whose entries carry an explicit `FixedVersion` or deliberately none — the field
+   *  the `no_fix_available` class reads. `trivyResult` above emits none at all, so this exists to
+   *  make the presence and the ABSENCE separately expressible rather than incidental. */
+  function trivyResultWithFixes(opts: {
+    digest: string;
+    entries: Array<{ severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"; pkg: string; fix?: string }>;
+  }): unknown {
+    return {
+      SchemaVersion: 2,
+      ArtifactName: "registry.example/app:1.2.3",
+      ArtifactType: "container_image",
+      Metadata: {
+        ImageID: DIGEST_A,
+        RepoTags: ["registry.example/app:1.2.3"],
+        RepoDigests: [`registry.example/app@${opts.digest}`]
+      },
+      Results: [
+        {
+          Target: "registry.example/app:1.2.3 (alpine 3.19)",
+          Class: "os-pkgs",
+          Type: "alpine",
+          Vulnerabilities: opts.entries.map((e, i) => ({
+            VulnerabilityID: `CVE-2026-${2000 + i}`,
+            PkgName: e.pkg,
+            Severity: e.severity,
+            ...(e.fix ? { FixedVersion: e.fix } : {})
+          }))
+        }
+      ]
+    };
+  }
+
+  const exclusions = (over: Partial<EffectiveScanExclusions["clauses"][number]> = {}) => ({
+    clauses: [
+      {
+        clause: { class: "no_fix_available" as const },
+        tier: "org" as const,
+        source: "policy:secops@p1",
+        admittedBy: [{ tier: "platform" as const, source: "instance:platform:local" }],
+        ...over
+      }
+    ]
+  });
+
+  it("M22.2: a HIGH with no fix is EXCLUDED before counting, so a maxHigh-0 ceiling PASSES", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx(baseConfig, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResultWithFixes({
+        digest: DIGEST_A,
+        entries: [{ severity: "HIGH", pkg: "openssl" }]
+      })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { scanExclusions: exclusions() }
+    });
+
+    expect(outcome.status).toBe("pass");
+    const evidence = ScanEvidenceSchema.parse(outcome.evidence);
+    // `severityCounts` STILL SAYS WHAT THE SCANNER FOUND. Operators author CEL conditions against
+    // it; redefining it post-exclusion would silently change every rule already written.
+    expect(evidence.severityCounts.high).toBe(1);
+    // ...and ONLY the threshold comparison reads the post-exclusion number.
+    expect(evidence.effectiveSeverityCounts?.high).toBe(0);
+    expect(evidence.exclusions?.appliedCount).toBe(1);
+    expect(evidence.exclusions?.applied[0]).toMatchObject({
+      ordinal: 0,
+      severity: "high",
+      class: "no_fix_available",
+      tier: "org",
+      source: "policy:secops@p1",
+      pkgName: "openssl"
+    });
+  });
+
+  it("M22.2: a HIGH that HAS a fix is not excluded, so the same ceiling still FAILS", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx(baseConfig, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResultWithFixes({
+        digest: DIGEST_A,
+        entries: [{ severity: "HIGH", pkg: "openssl", fix: "3.1.4" }]
+      })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { scanExclusions: exclusions() }
+    });
+    expect(outcome.status).toBe("fail");
+    const evidence = ScanEvidenceSchema.parse(outcome.evidence);
+    expect(evidence.effectiveSeverityCounts?.high).toBe(1);
+    expect(evidence.exclusions?.appliedCount).toBe(0);
+  });
+
+  it("M22.2: a MATCHER MISS yields no exclusion — the clause names a package that is not there", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx(baseConfig, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResultWithFixes({
+        digest: DIGEST_A,
+        entries: [{ severity: "HIGH", pkg: "openssl" }]
+      })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: {
+        scanExclusions: exclusions({ clause: { class: "no_fix_available", pkgName: "zlib" } })
+      }
+    });
+    expect(outcome.status).toBe("fail");
+  });
+
+  it("M22.2: WITH NOTHING THREADED the evidence document gains no new keys at all", async () => {
+    // The byte-identical default. `effectiveSeverityCounts`/`exclusions` appearing on every verdict
+    // would change every promotion bundle on the day this ships.
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx(baseConfig, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResultWithFixes({
+        digest: DIGEST_A,
+        entries: [{ severity: "LOW", pkg: "openssl" }]
+      })
+    }));
+    const outcome = await plugin.evaluate(ctx, { changeId: "c1", controlId: "ctl1", context: {} });
+    expect(outcome.status).toBe("pass");
+    expect(outcome.evidence).not.toHaveProperty("effectiveSeverityCounts");
+    expect(outcome.evidence).not.toHaveProperty("exclusions");
+  });
+
+  it("M22.2: a PRESENT-but-malformed context.scanExclusions is IGNORED, not fail-closed", async () => {
+    // Deliberately the opposite sign from `scanThreshold`. An uninterpretable CEILING would judge
+    // against something looser than governance resolved, so it fails closed; an uninterpretable
+    // LOOSENING only counts MORE findings, which is strictly stricter — failing the control there
+    // would turn an authoring mistake into a blocked promotion.
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx(baseConfig, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResultWithFixes({
+        digest: DIGEST_A,
+        entries: [{ severity: "LOW", pkg: "openssl" }]
+      })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { scanExclusions: { clauses: [{ nonsense: true }] } }
+    });
+    expect(outcome.status).toBe("pass");
+    expect(outcome.detail).not.toMatch(/malformed/);
+  });
+
+  it("M22.2: the EXCLUDED ordinals ride the transport so the server can write retention class E", async () => {
+    const plugin = createScanResultControlPlugin();
+    const ctx = testCtx(baseConfig, async () => ({
+      status: 200,
+      headers: {},
+      body: trivyResultWithFixes({
+        digest: DIGEST_A,
+        entries: [
+          { severity: "HIGH", pkg: "zlib", fix: "1.3.1" },
+          { severity: "HIGH", pkg: "openssl" }
+        ]
+      })
+    }));
+    const outcome = await plugin.evaluate(ctx, {
+      changeId: "c1",
+      controlId: "ctl1",
+      context: { scanExclusions: exclusions() }
+    });
+    expect(
+      (outcome.evidence as Record<string, unknown>)[SCAN_FINDINGS_EXCLUDED_TRANSPORT_KEY]
+    ).toEqual([1]);
   });
 });

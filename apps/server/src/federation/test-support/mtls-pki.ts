@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkdtempTrackedForFileSync } from "@scp/test-tmpdir";
 
 /**
  * Test-only throwaway-CA/leaf-cert/CRL generation via the `openssl` CLI (`execFileSync`) — used by
@@ -38,11 +39,22 @@ export interface TestCa {
   caCrtPem: Buffer;
 }
 
-/** Creates a fresh temp dir with a throwaway self-signed CA plus the `openssl ca` database files
- *  (`index.txt`/`serial`/`crlnumber`/a minimal `ca.cnf`) needed to later revoke certs and mint a
- *  CRL from the SAME CA. */
+/**
+ * Creates a fresh temp dir with a throwaway self-signed CA plus the `openssl ca` database files
+ * (`index.txt`/`serial`/`crlnumber`/a minimal `ca.cnf`) needed to later revoke certs and mint a
+ * CRL from the SAME CA.
+ *
+ * NOT counted by the original mkdtemp census (CLAUDE.md's own "incomplete call-site census" failure
+ * mode: the census only greped `*.test.ts` files for a direct `mkdtemp(` call, and every one of
+ * this function's 7 CALLERS is clean by that measure — the leak was IN THE HELPER, one level down).
+ * 501 leaked `scp-mtls-pki-*` directories were sitting on the author's machine when this was found
+ * — more than any single test-file leak in the census. `mkdtempTrackedForFileSync` (afterAll, not
+ * afterEach): callers use this in both a per-`it()` pattern (mtls.integration.test.ts, often
+ * several CAs in one test) and a `beforeAll`-shared pattern (federation-sync.integration.test.ts)
+ * — afterAll is the one lifetime that is correct under both without inspecting all 7 call sites.
+ */
 export function createTestCa(): TestCa {
-  const dir = mkdtempSync(join(tmpdir(), "scp-mtls-pki-"));
+  const dir = mkdtempTrackedForFileSync(join(tmpdir(), "scp-mtls-pki-"));
   const caKeyFile = join(dir, "ca.key");
   const caCrtFile = join(dir, "ca.crt");
   run(dir, ["genrsa", "-out", caKeyFile, "2048"]);

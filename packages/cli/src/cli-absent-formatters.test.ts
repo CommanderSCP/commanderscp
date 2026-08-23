@@ -3,6 +3,7 @@ import type {
   Campaign,
   FederationPeer,
   FederationStatusResponse,
+  InstanceScanExclusionAdmission,
   InstanceScanFloor,
   OutpostConfig,
   OutpostConfigReconcileResult,
@@ -12,6 +13,7 @@ import {
   campaignDetailRow,
   federationStatusRow,
   formatReconcileResultLines,
+  instanceScanExclusionAdmissionRow,
   instanceScanFloorRow,
   outpostConfigRow,
   peerRow,
@@ -109,6 +111,19 @@ function baseFloor(overrides: Partial<InstanceScanFloor> = {}): InstanceScanFloo
     maxHigh: 1,
     maxMedium: 2,
     maxLow: 3,
+    note: null,
+    updatedAt: "2026-07-01T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function baseAdmission(
+  overrides: Partial<InstanceScanExclusionAdmission> = {}
+): InstanceScanExclusionAdmission {
+  return {
+    tier: "platform",
+    class: "no_fix_available",
+    origin: "local",
     note: null,
     updatedAt: "2026-07-01T00:00:00.000Z",
     ...overrides
@@ -265,6 +280,43 @@ describe("instanceScanFloorRow: an unset ceiling is `-`, and `-` is not 0", () =
       baseFloor({ maxCritical: 0, maxHigh: 0, maxMedium: 0, maxLow: 0 })
     );
     expect([row.maxCritical, row.maxHigh, row.maxMedium, row.maxLow]).toEqual(["0", "0", "0", "0"]);
+  });
+});
+
+// -------------------------------------------------------------------------------------
+// instanceScanExclusionAdmissionRow — M22.9's twin of the block above, and it shipped with NO test
+// at all. A filterless `grep -rna 'instanceScanExclusionAdmissionRow'` over `--include='*.ts'`
+// found the formatter referenced ONLY by `cli.ts` itself, while its sibling `instanceScanFloorRow`
+// three lines up was covered here — the round-4 finding recurring on the next feature: the lift-out
+// happened, the pin did not, so deleting the whole M22.9 command block left this package green.
+// -------------------------------------------------------------------------------------
+describe("instanceScanExclusionAdmissionRow: an absent audit column must not read as authored", () => {
+  it("an OMITTED note renders empty, never the literal `undefined`", () => {
+    // The severe direction is specific: `note` is the operator's stated REASON for opening a
+    // loosening across every org on the deployment, and this row is where an auditor reads it. A
+    // fabricated `undefined` sitting in that column is a value somebody appears to have written.
+    const row = instanceScanExclusionAdmissionRow(without(baseAdmission(), "note"));
+    expect(row.note).toBe("");
+    expect(row.note).not.toContain("undefined");
+  });
+
+  it("an OMITTED updatedAt renders `-`, so `when` is never fabricated either", () => {
+    const row = instanceScanExclusionAdmissionRow(without(baseAdmission(), "updatedAt"));
+    expect(row.updatedAt).toBe("-");
+    expect(row.updatedAt).not.toContain("undefined");
+  });
+
+  it("an authored note survives verbatim — the guard must distinguish, not blank everything", () => {
+    const row = instanceScanExclusionAdmissionRow(
+      baseAdmission({
+        note: "CISA waiver 2026-07",
+        class: "approved_override",
+        tier: "trust_domain"
+      })
+    );
+    expect(row.note).toBe("CISA waiver 2026-07");
+    expect(row.class).toBe("approved_override");
+    expect(row.tier).toBe("trust_domain");
   });
 });
 

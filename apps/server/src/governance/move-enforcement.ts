@@ -7,7 +7,7 @@ import { containmentChain } from "../graph/containment.js";
 
 /**
  * `governance:move` — THE OPT-IN SECOND BAR ON A CONTAINMENT MOVE, resolved in exactly one place.
- * (docs/proposals/governance-reach-on-containment-move.md §9.2; owner ruling 2026-08-18; drizzle/0079.)
+ * (docs/proposals/governance-reach-on-containment-move.md §9.2; owner ruling 2026-08-18; drizzle/0083.)
  *
  * ## What the lattice is
  *
@@ -108,7 +108,7 @@ import { containmentChain } from "../graph/containment.js";
  * any more; the sentence is the record, and the audit log carries the write that was refused.
  */
 
-/** The tiers a rung may sit at — the literal stored at write time (drizzle/0079's CHECK). */
+/** The tiers a rung may sit at — the literal stored at write time (drizzle/0083's CHECK). */
 export const GOVERNANCE_MOVE_TIERS = ["org", "containment_domain", "service", "assembly"] as const;
 export type GovernanceMoveTier = (typeof GOVERNANCE_MOVE_TIERS)[number];
 
@@ -207,15 +207,15 @@ function toRung(row: {
   depth?: number;
 }): GovernanceMoveRung {
   if (!(GOVERNANCE_MOVE_TIERS as readonly string[]).includes(row.tier)) {
-    // drizzle/0079's CHECK makes this unreachable in production — throwing costs nothing and keeps
+    // drizzle/0083's CHECK makes this unreachable in production — throwing costs nothing and keeps
     // this comment true. A silent relabel to "org" would misreport a subtree's tier to an operator
     // reading the lattice, which is worse than crashing loudly on data the CHECK should have refused.
     throw new Error(
-      `governance_move_rungs row ${row.subject_object_id} carries tier "${row.tier}", which is not one of ${GOVERNANCE_MOVE_TIERS.join(", ")} — the migration 0079 CHECK should make this impossible`
+      `governance_move_rungs row ${row.subject_object_id} carries tier "${row.tier}", which is not one of ${GOVERNANCE_MOVE_TIERS.join(", ")} — the migration 0083 CHECK should make this impossible`
     );
   }
   return {
-    // The stored literal, never recomputed (drizzle/0079). Narrowed rather than cast so a row that
+    // The stored literal, never recomputed (drizzle/0083). Narrowed rather than cast so a row that
     // somehow escaped the CHECK is visible instead of silently mislabelled.
     tier: row.tier as GovernanceMoveTier,
     subjectObjectId: row.subject_object_id,

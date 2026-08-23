@@ -11,10 +11,12 @@ import {
   createOrphanComponent,
   createTestOrg,
   listenTestServer,
+  waitForAcceptEdgeControlRun,
   waitUntil,
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
+import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js";
 
 /**
  * M17.5 — SCOPED SCAN-REQUIREMENT POLICIES (ADR-0016), the BUILD_AND_TEST.md §8 M17 "Integration
@@ -30,6 +32,11 @@ import {
  * The six tiers, top-down:
  *
  *   platform -> trust domain (partition) -> org -> containment domain -> service -> component
+ *
+ * ...plus the OPTIONAL `assembly` rung between service and component (migration 0055; named as a
+ * tier by M22.0 / ADR-0033 §5, pinned by test (a2) below). It is optional in the sense the others
+ * are not — most chains have no assembly at all — which is why the list above is still "the six
+ * tiers" and why every test that does not care about it uses the four-rung `buildChain` default.
  *
  * TWO SENSES OF "DOMAIN": `trust_domain` is the ambient federation boundary ABOVE org (an
  * instance-scoped floor row, no `org_id`); `containment_domain` is the intra-org `domain` OBJECT
@@ -82,6 +89,27 @@ async function startTrivySource(): Promise<TrivySource> {
   };
 }
 
+/**
+ * M22.0a — DISAMBIGUATED. This used to be `.find(r => r.controlObjectId === controlId)`, which was
+ * unambiguous only while a control could produce at most ONE run per change. Since the control-run
+ * cache is keyed on gate identity (`latestControlRunForGate`), a single change can now hold a
+ * `lifecycle_edge` run AND a `wave_boundary` run for the same control — and `.find()` silently
+ * returned whichever row the listing happened to put first.
+ *
+ * Every assertion in this file still passed under the old form, because both runs resolve the same
+ * ceiling from the same policies and their evidence agrees. That is exactly why it was worth fixing
+ * BEFORE it mattered: the first test whose two runs legitimately DIFFER would have gone green or red
+ * on listing order. Now the caller gets the NEWEST matching run rather than an arbitrary one.
+ *
+ * IT CAN NOW NAME THE GATE IT MEANS — M22.8 closed the gap this comment used to record.
+ * `controlRuns.listForChange` (and `/changes/{id}/explain`, the other projection of the same shape)
+ * carry `gateKind` and `gateRef` as additive optional response fields, so an operator reading the
+ * API can finally tell which crossing a given run authorized rather than inferring it from ordering.
+ * This helper is deliberately left filtering on control + status: its callers want "the newest run
+ * of this control in this state", and narrowing it to one crossing would change what every existing
+ * assertion in this file means. `scan-requirements-read.integration.test.ts` is where the projection
+ * itself is pinned.
+ */
 async function waitForControlRun(
   admin: ScpClient,
   changeId: string,
@@ -90,9 +118,11 @@ async function waitForControlRun(
 ) {
   return waitUntil(
     async () => {
-      const runs = await admin.controlRuns.listForChange(changeId);
-      const run = runs.items.find((r) => r.controlObjectId === controlId);
-      return run?.status === status ? run : undefined;
+      const matching = (await admin.controlRuns.listForChange(changeId)).items
+        .filter((r) => r.controlObjectId === controlId && r.status === status)
+        // Newest first — deterministic, rather than "whatever the listing returned first".
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      return matching[0];
     },
     {
       describe: `control ${controlId} on change ${changeId} reports '${status}'`,
@@ -197,19 +227,40 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
 
   /** org root -> containment domain -> service -> component, with the component reachable from BOTH
    *  the service (`contains`) and the org root (its own `domain_id`) — the real four-tier chain the
-   *  org-and-below resolver walks. */
-  async function buildChain(admin: ScpClient, label: string) {
+   *  org-and-below resolver walks.
+   *
+   *  `withAssembly` inserts the OPTIONAL rung migration 0055 added, giving
+   *  `org -> containment domain -> service -> ASSEMBLY -> component`. The component then hangs off
+   *  the assembly rather than the service, so the service is reached only by continuing up through
+   *  the assembly — which is what makes the two tiers separable in the contributor list below. Only
+   *  ONE assembly rung is built because `assembly -> assembly` is refused at write time
+   *  (`relationships-repo.ts`; migration 0054's header), so this is the deepest legal ladder. */
+  async function buildChain(
+    admin: ScpClient,
+    label: string,
+    opts: { withAssembly?: boolean } = {}
+  ) {
     const containmentDomain = await admin.object("domain").create({ name: `dom-${label}` });
     const service = await admin
       .object("service")
       .create({ name: `svc-${label}`, domainId: containmentDomain.id });
     const component = await createOrphanComponent(admin, `comp-${label}`);
+    const assembly = opts.withAssembly
+      ? await admin.assemblies.create({ name: `asm-${label}` })
+      : undefined;
+    if (assembly) {
+      await admin.relationships.create({
+        typeId: "contains",
+        fromId: service.id,
+        toId: assembly.id
+      });
+    }
     await admin.relationships.create({
       typeId: "contains",
-      fromId: service.id,
+      fromId: assembly?.id ?? service.id,
       toId: component.id
     });
-    return { containmentDomain, service, component };
+    return { containmentDomain, service, assembly, component };
   }
 
   /** A policy carrying ONLY a `scanThreshold` effect, scoped at one object — the org-and-below
@@ -224,6 +275,12 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
      *  otherwise derive the same name-slug URN and collide). Defaults to the server's name-slug. */
     urn?: string
   ) {
+    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
+    // `scanThreshold` rule that requires no scan control: such a document is silently inert,
+    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
+    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
+    // doc: a real bound control would add a control run and change what these tests measure.
+    const scanControlId = SCAN_RULE_TEST_CONTROL_REF;
     return admin.policies.create({
       name,
       ...(urn ? { urn } : {}),
@@ -231,7 +288,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
         scope: { objectRef: scopeObjectId },
         enforcement: "advisory",
         ...(condition ? { condition } : {}),
-        effects: [{ scanThreshold: threshold }]
+        effects: [{ scanThreshold: threshold }, { requireControls: [scanControlId] }]
       }
     });
   }
@@ -337,6 +394,84 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
   });
 
   // -----------------------------------------------------------------------------------------
+  // (a2) THE ASSEMBLY RUNG (M22.0, ADR-0033 §5). Migration 0055 added the OPTIONAL
+  //      `service -> assembly -> component` level. `containmentChain` walks it for free (it matches
+  //      on the `contains` EDGE, never on the parent's TYPE), so an assembly-anchored ceiling has
+  //      always ENFORCED correctly — the merge is an order-independent per-severity MIN that never
+  //      reads a tier label. But `tierForObjectType` is a HARDCODED rung list, and until M22.0 it
+  //      fell `assembly` through to `component`: the ceiling bound, and the Decision named the wrong
+  //      tier, breaking ADR-0016 §5's promise that a block can say which tier bound it.
+  //
+  //      THE TWO ARMS ARE DELIBERATELY SPLIT, and the contrast is the point:
+  //        * ENFORCEMENT — the assembly's maxHigh: 0 really does tighten the org's 5 and fail the
+  //          run. Reverting `case "assembly"` leaves this GREEN, because the merge never reads a
+  //          tier. A test that asserted only this would be green for the wrong reason.
+  //        * THE LABEL — the persisted contributor names tier `assembly`. Reverting `case
+  //          "assembly"` turns it into `component` and ONLY this arm goes red.
+  //
+  //      A LOOSE `service` FLOOR IS AUTHORED ALONGSIDE so the assertion also rules out the other
+  //      plausible mislabel (reporting the assembly at its parent's tier): three contributors, three
+  //      distinct labels, one of which can only come from the new switch case.
+  //
+  //      MUTATION-PROVEN (measured 2026-08-17): reverting `case "assembly"` in `tierForObjectType`
+  //      fails ONLY the label arm — `expected 'component' to be 'assembly'` — while the enforcement
+  //      arm above it stays green and the run still fails at maxHigh 0. That contrast is the result,
+  //      not a side effect of it.
+  // -----------------------------------------------------------------------------------------
+
+  it("(a2) an ASSEMBLY-anchored ceiling is reported at tier 'assembly' — and still BINDS, which is the half that was never broken", async () => {
+    await setInstanceFloors({}); // org-and-below only: the contributor set below must be exhaustive
+
+    const org = await createTestOrg(server, "assembly-tier");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const { service, assembly, component } = await buildChain(admin, "assembly-tier", {
+      withAssembly: true
+    });
+    expect(assembly, "the fixture is meaningless without the assembly rung").toBeDefined();
+
+    await scanFloorPolicy(admin, "floor-org", org.orgId, { maxHigh: 5 });
+    // LOOSE, so it cannot be the thing that binds — it is here purely so `service` and `assembly`
+    // are two separately-observable labels on the same chain.
+    await scanFloorPolicy(admin, "floor-service", service.id, { maxMedium: 9 });
+    // THE BINDING CEILING, anchored at the assembly.
+    await scanFloorPolicy(admin, "floor-assembly", assembly!.id, { maxHigh: 0 });
+
+    const control = await scanControl(admin, org, {
+      suffix: "assembly-tier",
+      severities: ["HIGH", "HIGH"]
+    });
+    await requireScanControl(admin, "scan-gate", component.id, control.id);
+
+    const change = await admin.changes.propose({
+      name: "assembly-tier-change",
+      targets: [component.id]
+    });
+    const run = await waitForControlRun(admin, change.id, control.id, "fail");
+    const evidence = run.evidence as unknown as ScanEvidenceShape;
+
+    // ARM 1 — ENFORCEMENT IS UNCHANGED. The assembly's 0 beat the org's 5 and the two HIGHs failed.
+    // This arm passes with `case "assembly"` reverted; that is exactly what makes arm 2 meaningful.
+    expect(evidence.threshold.maxHigh).toBe(0);
+    expect(run.detail).toMatch(/exceeds/i);
+    await assertStaysExecuting(server, org.orgId, change.id);
+
+    // ARM 2 — THE LABEL, read back out of the evidence the REAL gate persisted.
+    const contributors = evidence.thresholdContributors ?? [];
+    const fromAssembly = contributors.find((c) => c.source.includes("floor-assembly"));
+    expect(fromAssembly, "the assembly-anchored policy must appear as a contributor").toBeDefined();
+    // The `objectTypeId` is read straight off the containment chain and was ALWAYS right — it is
+    // asserted here to localize the defect: the graph knew what this object was; the hardcoded rung
+    // list did not.
+    expect(fromAssembly!.objectTypeId).toBe("assembly");
+    expect(fromAssembly!.tier).toBe("assembly"); // "component" before M22.0
+    expect(fromAssembly!.threshold).toEqual({ maxHigh: 0 });
+
+    // ...and the whole contributor set, so a mislabel cannot hide behind a coincidence: three tiers,
+    // all distinct. Reverting `case "assembly"` yields ["component","org","service"].
+    expect([...contributors].map((c) => c.tier).sort()).toEqual(["assembly", "org", "service"]);
+  });
+
+  // -----------------------------------------------------------------------------------------
   // (b) A COMPONENT floor tighter than its org's BLOCKS a promotion the org floor alone passes —
   //     both arms run at the REAL gate, so this is not a merge-function tautology.
   // -----------------------------------------------------------------------------------------
@@ -369,6 +504,9 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
         timeoutMs: 25_000
       }
     );
+    // The run above authorized the WAVE boundary. `accept` reads the run made for the accept edge
+    // itself (M22.0a) — written by the prewarm a moment after the transition this wait observed.
+    await waitForAcceptEdgeControlRun(adminA, changeA.id, controlA.id, "pass");
     expect((await adminA.changes.accept(changeA.id)).state).toBe("accepted");
 
     // ARM 2 — the SAME org floor, plus a COMPONENT floor that TIGHTENS maxHigh to 0. Identical
@@ -591,6 +729,9 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
         timeoutMs: 25_000
       }
     );
+    // See ARM 1 of (b): the accept edge is decided by its OWN run, not by the wave-boundary one
+    // `waitForControlRun` returned above.
+    await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
     expect((await admin.changes.accept(change.id)).state).toBe("accepted");
   });
 

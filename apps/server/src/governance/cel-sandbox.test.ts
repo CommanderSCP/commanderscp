@@ -300,7 +300,16 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
     // expression successfully — proving the pool healed rather than staying wedged.
     const recovered = await sandbox.evaluate("1 == 1", {});
     expect(recovered).toEqual({ ok: true, value: true });
-  }, 10_000);
+    // THE PER-TEST 10_000 OVERRIDE IS GONE (M23.1f clause 6, recorded rather than gated). It was
+    // NARROWER than this package's own 20,000ms budget, and it was the thing that fired: two runs
+    // of this file timed out at 10,017ms under `pnpm -w test`'s 109-task parallel graph — a
+    // terminate-and-respawn of a wedged worker thread being starved of CPU, not a hung evaluation.
+    // NOTHING IS WEAKENED BY REMOVING IT: the claim this test makes is the `< 5000` assertion above,
+    // which is unchanged and is what separates "bounded" from "wedged". The outer number was only
+    // ever a backstop, and a backstop set tighter than the suite's own is a flake generator.
+    // `@scp/source-census`'s test-budget-census.test.ts deliberately does NOT gate per-test
+    // overrides — an override is an explicit choice, and this one was simply the wrong number.
+  });
 });
 
 // A worker entry that hangs only on the "__HANG__" sentinel (evaluating everything else) — used by

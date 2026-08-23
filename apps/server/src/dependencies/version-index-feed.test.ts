@@ -248,3 +248,81 @@ describe("loadDependencyIndexFeedBlob — verify, then install; never the other 
     ).rejects.toThrow(/feed '.*nope\.json' not found/);
   });
 });
+
+/**
+ * HIGH CLASS, LOW BLAST RADIUS (M23.0 verification pass 7's census of "slice a string at a code-unit
+ * offset, then persist it"; fixed pass 8).
+ *
+ * WHERE THIS MESSAGE GOES, which is the whole reason it is not a log-line concern:
+ *
+ *   parseDependencyIndexFeed throws
+ *     -> readDependencyIndexFeed catches   -> FeedRead.detail
+ *     -> version-index.ts                  -> unavailableOutcome(...).detail
+ *     -> version-poll.ts `decisionFor`     -> reasonTree.detail
+ *     -> insertDecision                    -> a `Decision`'s JSONB
+ *
+ * `JSON.stringify` escapes lone surrogates and U+0000 to ASCII, so the ONLY way an ill-formed string
+ * gets out of `.slice(0, 120)` is a WELL-FORMED astral pair straddling the cut — and that is
+ * reachable, not theoretical: measured, an 86-character `coordinate` followed by an emoji does it.
+ * `jsonb` then refuses the row, so a malformed feed entry would take the poll's own Decision with it
+ * and the operator would be told nothing at all.
+ */
+describe("HIGH class: the malformed-entry preview is cut at a CODE POINT, not a code unit", () => {
+  /** The exact shape measured to break the old slice: the emoji's two code units straddle 120. */
+  const straddlingEntry = {
+    ecosystem: "npm",
+    coordinate: `${"a".repeat(86)}\u{1F600}b`,
+    versions: 1
+  };
+
+  /** An escape, not a literal: a NUL byte in a tracked source file is dropped by every
+   *  recursive search this repository runs (CLAUDE.md). */
+  const NUL = "\u0000";
+
+  function isWellFormed(str: string): boolean {
+    return (str as unknown as { isWellFormed(): boolean }).isWellFormed();
+  }
+
+  function feedWith(entry: unknown): string {
+    return JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      entries: [entry]
+    });
+  }
+
+  it("NON-VACUITY: the OLD slice really is ill-formed for this entry", () => {
+    // The control. If this ever goes green the arm below proves nothing — it would mean the fixture
+    // no longer straddles the cut and the test would be passing for the wrong reason.
+    const raw = JSON.stringify(straddlingEntry);
+    expect(isWellFormed(raw), "JSON.stringify itself is always well-formed").toBe(true);
+    expect(isWellFormed(raw.slice(0, 120))).toBe(false);
+  });
+
+  it("the thrown message is well-formed — Postgres would accept it in a Decision row", () => {
+    let message = "";
+    try {
+      parseDependencyIndexFeed(feedWith(straddlingEntry));
+      throw new Error("expected a refusal");
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain("malformed entry");
+    expect(isWellFormed(message), "a cut landed inside a surrogate pair").toBe(true);
+    expect(message.includes(NUL)).toBe(false);
+    // AND IT IS STILL A USEFUL PREVIEW — a "fix" that reported nothing would satisfy the above.
+    expect(message).toContain('"ecosystem":"npm"');
+    expect(message).toContain("characters elided");
+  });
+
+  it("an ordinary short preview is unchanged — the bound is a ceiling, not a rewrite", () => {
+    // The counter-arm: this path produces a short preview every day and it must not be mangled.
+    expect(() =>
+      parseDependencyIndexFeed(
+        feedWith({ ecosystem: "npm", coordinate: "left-pad", versions: "not-an-array" })
+      )
+    ).toThrow(
+      'malformed entry ({"ecosystem":"npm","coordinate":"left-pad","versions":"not-an-array"})'
+    );
+  });
+});

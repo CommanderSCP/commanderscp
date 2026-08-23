@@ -516,50 +516,78 @@
     {
       "idx": 73,
       "version": "7",
-      "when": 1788134217409,
-      "tag": "0073_remove_initiative",
+      "when": 1788133001000,
+      "tag": "0073_scan_findings",
       "breakpoints": true
     },
     {
       "idx": 74,
       "version": "7",
-      "when": 1788135388731,
-      "tag": "0074_source_mapping_mirror_of_shared",
+      "when": 1788133002000,
+      "tag": "0074_scan_exclusion_admissions",
       "breakpoints": true
     },
     {
       "idx": 75,
       "version": "7",
-      "when": 1788136459053,
-      "tag": "0075_source_mapping_enabled",
+      "when": 1788133003000,
+      "tag": "0075_scan_declarations_and_override_grants",
       "breakpoints": true
     },
     {
       "idx": 76,
       "version": "7",
-      "when": 1788137199877,
-      "tag": "0076_source_mapping_disabled_until",
+      "when": 1788133004000,
+      "tag": "0076_operator_write_role",
       "breakpoints": true
     },
     {
       "idx": 77,
       "version": "7",
-      "when": 1788138770502,
-      "tag": "0077_target_facet_and_publishes_to",
+      "when": 1788134217409,
+      "tag": "0077_remove_initiative",
       "breakpoints": true
     },
     {
       "idx": 78,
       "version": "7",
-      "when": 1788139911505,
-      "tag": "0078_source_mapping_scope",
+      "when": 1788135388731,
+      "tag": "0078_source_mapping_mirror_of_shared",
       "breakpoints": true
     },
     {
       "idx": 79,
       "version": "7",
+      "when": 1788136459053,
+      "tag": "0079_source_mapping_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1788137199877,
+      "tag": "0080_source_mapping_disabled_until",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1788138770502,
+      "tag": "0081_target_facet_and_publishes_to",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1788139911505,
+      "tag": "0082_source_mapping_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
       "when": 1788141000000,
-      "tag": "0079_governance_move_rungs",
+      "tag": "0083_governance_move_rungs",
       "breakpoints": true
     }
   ]

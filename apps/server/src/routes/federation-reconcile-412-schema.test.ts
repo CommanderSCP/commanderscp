@@ -21,9 +21,17 @@ import { preconditionFailed, ProblemError, sendProblem, badRequest } from "../er
  * 500, not a 412.
  *
  * This test reproduces the exact serialization path the real app uses (the same
- * `fastify-type-provider-zod` compilers, the same `setErrorHandler` shape as `app.ts`) around a
+ * `fastify-type-provider-zod` compilers, an error handler carrying `app.ts`'s branches) around a
  * single throwaway route, rather than the full app + Testcontainers DB — nothing about this
  * failure mode depends on auth, tenancy, or persistence.
+ *
+ * ONLY THE FIRST BRANCH IS ON THIS TEST'S PATH — measured by instrumenting the handler, not
+ * inferred. It is entered exactly ONCE, with the thrown `ProblemError`, and answers 412. The 500
+ * then comes from Fastify's own response-serialization failure, which does NOT re-enter the user
+ * error handler: no second entry was observed. So neither the catch-all nor `app.ts`'s
+ * framework-status branch (`frameworkClientProblem`, `errors.ts`) is exercised here, and copying
+ * the rest of `app.ts` in would buy no coverage while creating a second implementation to keep in
+ * step.
  */
 describe("OutpostReconcileStaleProblemSchema — a bare 412 (no claimants extension) serializes as 412, not 500", () => {
   async function buildMinimalApp() {

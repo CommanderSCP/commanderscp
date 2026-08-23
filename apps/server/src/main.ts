@@ -240,6 +240,30 @@ async function main(): Promise<void> {
   const scheme = config.federationServerMtls ? "https" : "http";
   app.log.info(`scp (${config.role}) listening on ${scheme}://${config.host}:${config.port}`);
 
+  // GRACEFUL SHUTDOWN ON SIGINT/SIGTERM — newly required by `host.ts`'s process-group kill fix.
+  // Plugin subprocesses are now spawned `detached: true` (their own process group, so a hang-
+  // timeout SIGKILL can take down a `docker` child with it instead of orphaning it — see that
+  // file's `killInstanceProcess` doc comment). The side effect: they no longer sit in THIS
+  // process's foreground process group, so a terminal Ctrl-C (`pnpm dev`) no longer reaches them
+  // for free the way it used to — nothing here previously called `app.close()` on a signal either,
+  // so a plain container SIGTERM (Kubernetes pod termination, pid 1, never a process-group signal)
+  // was already not gracefully handled before this change. Both paths now go through the same
+  // `onClose` hooks above, which is where `pluginHost.stop()`/`backgroundLoops.stop()`/etc. already
+  // live — one graceful-shutdown path instead of relying on OS job-control as an accident of the
+  // process tree shape.
+  let shuttingDown = false;
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.log.info(`received ${signal} — closing gracefully`);
+    app
+      .close()
+      .catch((err: unknown) => app.log.error({ err }, "error during graceful shutdown"))
+      .finally(() => process.exit(0));
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+
   // M9.3 (ADR-0001 §8): CRL reload without a full restart, so a revocation can take effect in a
   // running (possibly air-gapped) instance by dropping in a new CRL file and signaling this
   // process — no network fetch, matching CLAUDE.md principle 5. Re-runs the SAME loader used at

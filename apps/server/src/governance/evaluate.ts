@@ -142,7 +142,10 @@ function effectKey(policyObjectId: string, policyVersion: number, effectIndex: n
  * must run/materialize. `celContext` is `buildCelContext(context)` (built once by the caller).
  */
 export async function resolveFiredPolicies(
-  sandbox: CelSandbox,
+  /** Only `evaluate` is ever called, and ONLY for a contributor that carries a `condition`. Typed
+   *  structurally (M22.2) so a caller with no conditions to evaluate can pass a thunk that never
+   *  constructs a real sandbox — `new CelSandbox()` spawns its worker pool in the constructor. */
+  sandbox: Pick<CelSandbox, "evaluate">,
   effectivePolicies: EffectivePolicy[],
   celContext: Record<string, unknown>
 ): Promise<FiredPolicy[]> {

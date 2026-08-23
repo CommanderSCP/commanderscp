@@ -43,9 +43,13 @@ Every container this chart renders (api, worker, migrations Job) gets, by defaul
 - `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities.drop: [ALL]`,
   `seccompProfile: RuntimeDefault` (container level) — writable paths are explicit `emptyDir`
   mounts (`/tmp`) or PVCs (object storage), never the root filesystem
-- `automountServiceAccountToken: false` on `api` (never talks to the Kubernetes API); `worker`
-  only automounts a token when `managedIac.enabled` (needs the Kubernetes API to launch runner
-  Jobs)
+- `automountServiceAccountToken: false` on `api` and on `worker` by default. A token is mounted on
+  BOTH only when `managedRunners.launcher=kubernetes` AND some managed class is enabled — the
+  launcher is what talks to the Kubernetes API, so a `docker` deployment with `managedIac.enabled`
+  gets no token at all. **Corrected 2026-08-20:** this bullet used to say "`worker` only automounts
+  a token when `managedIac.enabled`", which was already wrong at M23.2 in two directions (it gave
+  a token to a docker deployment that makes no API call, and none to a `managedDep`- or
+  `managedScan`-only Kubernetes deployment that makes nothing but) and is gated in CI job 4b
 - Default-deny NetworkPolicy + explicit allows (DNS, Postgres, optionally NATS, ingress to `api`
   only) — see `templates/networkpolicy.yaml`'s own doc comment for exactly what's allowed and why.
   Coordinating an existing execution system (Mode A / BYO-coordinate — an existing Argo CD,
@@ -162,21 +166,57 @@ reconcile ticks cannot both fire the same real deployment. See that module's doc
 `coordination.integration.test.ts`'s "multi-replica trigger claim is single-flight" suite for the
 concurrent-replica proof.
 
-## Managed-IaC (Mode 2) — known gap
+## Managed execution on Kubernetes — what runs, and what still does not
 
-`managedIac.enabled: true` grants the `worker` ServiceAccount RBAC to create/watch/delete `Job`s
-and ships a reference Job manifest (ConfigMap) for the `scp-runner-iac` image. **This is on-ramp
-infrastructure, not a working end-to-end path yet**: `packages/plugins/managed-iac`'s current
-implementation launches the runner via `docker create`/`docker cp`/`docker start` (a host Docker
-socket), which does not work unmodified inside a standard Kubernetes pod — and this chart
-deliberately does not paper over that by mounting a host Docker socket (a real container-escape
-risk). Mode 2 works under docker-compose/VM deployments today — with the two operator steps that
-shape makes possible and Kubernetes does not: giving the `scp` container a docker CLI (the scpd
-image ships none; `SCP_MANAGED_RUNNER_DOCKER_BINARY` points at the one you mount) and a reachable
-Docker daemon. Neither is arranged for you; the shipped compose file mounts no socket. Wiring the
-plugin to
-launch Kubernetes Jobs via the API (using the RBAC + template this chart already ships) is tracked
-follow-up work. `managedIac.enabled` defaults to `false`.
+**REWRITTEN 2026-08-20 (M23.4). This section used to be headed "Managed-IaC (Mode 2) — known gap"
+and said the RBAC was "on-ramp infrastructure, not a working end-to-end path yet". That stopped
+being true at M23.2 and is fully false now; the old text is replaced rather than annotated, because
+a reader deciding whether to deploy needs the current answer, not its history.**
+
+Set `managedRunners.launcher=kubernetes` and each managed run launches as an ephemeral `Job`
+through the API server — no Docker socket, which this chart still refuses to mount (a real
+container-escape risk it does not paper over) and the scpd image still ships no docker binary.
+`packages/runner-launcher`'s Kubernetes adapter is driven against a real cluster by CI job 4e.
+
+What the launcher needs, all of it refused at RENDER time rather than discovered as a hang:
+
+- **An EXISTING ReadWriteMany PVC** named in `managedRunners.kubernetes.workspace.claimName`.
+  Kubernetes has no universal `docker cp`, so the run's inputs and evidence move through a volume
+  the worker and the Job both mount. This chart does not create it — RWX is a storage-class
+  capability you provision.
+- **At least one managed class enabled**: `managedIac.enabled` (with `managedIac.runnerImage`),
+  `managedDep.runnerImage`, or `managedScan.runnerImage`. All three are off by default.
+
+The RBAC — `batch/jobs` create/get/list/patch/delete, `pods` list, `pods/log` get, `events` list,
+and `secrets` create/delete — renders whenever the Kubernetes launcher is selected and any class is
+enabled, into `managedRunners.kubernetes.namespace` (defaulting to the release namespace). It does
+NOT render for a `docker` deployment.
+
+Those verbs are not maintained here by hand and this sentence is not free prose: it is read by
+`packages/source-census`'s documented-grant gate and compared to `kubernetesRunnerRbac()` in
+`@scp/runner-launcher`, which `kubernetes-rbac-contract.test.ts` derives from the wire by driving
+the adapter over a recording io. This paragraph was WRONG for a full milestone after M23.6 narrowed
+the Role — it still described the `watch` the adapter never issues and the collapsed `pods`/`pods/log`
+verb list that gave each resource the other's verbs — which is why it is now gated rather than
+restated.
+
+**The `secrets` grant is the owner's, taken 2026-08-20** (ADR-0035 §6). Only `managed-iac` carries
+a credential; it reaches the runner as a per-run Secret plus `envFrom.secretRef`, owned by the Job
+so the cluster deletes it even if the launcher is killed mid-run. `managedRunners.kubernetes.
+perRunSecrets=false` declines the grant and makes managed-iac refuse loudly instead of falling back
+to `env[].value`. See that value's comment in `values.yaml` for what the grant does and does not
+include, and **ADR-0035 §6a for the containment combination accepted along with it**.
+
+**What still does not work, stated rather than implied:** `--network none` is NOT honoured and
+cannot be — no pod-spec field removes a pod's network namespace. Runner pods carry
+`scp.launcher.network=<requested mode>` so a NetworkPolicy can select them, which is traffic denial
+rather than interface absence, and is **fail-open on a CNI that does not enforce**. On the docker
+launcher `--network none` denied that path outright.
+
+The `docker` launcher (the default) remains correct for docker-compose and VM deployments, with the
+two operator steps that shape makes possible and Kubernetes does not: giving the container a docker
+CLI (`SCP_MANAGED_RUNNER_DOCKER_BINARY` points at the one you mount) and a reachable daemon.
+Neither is arranged for you; the shipped compose file mounts no socket.
 
 ## Federation mTLS — three distinct knobs, and which one you need
 
@@ -251,16 +291,17 @@ from Helm until this chart grows a value for it. That was a standing gap through
 below now exist, and `tools/helm-verify` asserts each one **both ways** (absent on a default render,
 present and correct when enabled) so the next one cannot be forgotten silently.
 
-| Values key                     | Env                                                                       | Notes                                                                                    |
-| ------------------------------ | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `federation.sync.*`            | `SCP_FEDERATION_SYNC_LOOP` + cadences                                     | M14.0/M14.4 live-pull. Off by default.                                                   |
-| `federation.relay.inbox.*`     | `SCP_INBOX_LOOP`, tick interval                                           | M13.1a staging-node ingest. Off by default.                                              |
-| `federation.relay.autoRelay.*` | `SCP_RETRANS_AUTO_RELAY` + interval/attempts/lease                        | M13.1b unattended byte egress. Off by default; belongs on the **low-side** retrans only. |
-| `artifactChannel.*`            | `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` / `_BLOB_BASE_URLS` / `_INSECURE_HOSTS` | ADR-0019 §4. Fail-closed when unset.                                                     |
-| `operatorApi.enabled`          | `SCP_OPERATOR_TOKEN` (secretKeyRef)                                       | Requires `appSecrets.existingSecret`; render fails fast without it.                      |
-| `internalBaseUrl`              | `SCP_INTERNAL_BASE_URL`                                                   | How this instance names itself to a human — the CLI device-login URL.                    |
-| `api.role`                     | `SCP_ROLE` on the api pods                                                | `api` (default) or `all`.                                                                |
-| `managedDep.*`                 | `SCP_MANAGED_DEP_RUNNER_IMAGE` / `_WORKSPACE_ROOT`                        | M21.5 dependency-bump actuator. Empty image (default) = OFF, fail-closed at dispatch.    |
+| Values key                     | Env                                                                       | Notes                                                                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `federation.sync.*`            | `SCP_FEDERATION_SYNC_LOOP` + cadences                                     | M14.0/M14.4 live-pull. Off by default.                                                                                     |
+| `federation.relay.inbox.*`     | `SCP_INBOX_LOOP`, tick interval                                           | M13.1a staging-node ingest. Off by default.                                                                                |
+| `federation.relay.autoRelay.*` | `SCP_RETRANS_AUTO_RELAY` + interval/attempts/lease                        | M13.1b unattended byte egress. Off by default; belongs on the **low-side** retrans only.                                   |
+| `artifactChannel.*`            | `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` / `_BLOB_BASE_URLS` / `_INSECURE_HOSTS` | ADR-0019 §4. Fail-closed when unset.                                                                                       |
+| `operatorApi.*`                | `SCP_OPERATOR_TOKEN` + `SCP_OPERATOR_DATABASE_URL` (both secretKeyRefs)   | Requires `appSecrets.existingSecret` **and** `operatorApi.databaseUrlSecret`; render fails fast without either. See below. |
+| `internalBaseUrl`              | `SCP_INTERNAL_BASE_URL`                                                   | How this instance names itself to a human — the CLI device-login URL.                                                      |
+| `api.role`                     | `SCP_ROLE` on the api pods                                                | `api` (default) or `all`.                                                                                                  |
+| `managedDep.*`                 | `SCP_MANAGED_DEP_RUNNER_IMAGE` / `_WORKSPACE_ROOT`                        | M21.5 dependency-bump actuator. Empty image (default) = OFF, fail-closed at dispatch.                                      |
+| `managedRunners.*`             | `SCP_MANAGED_RUNNER_LAUNCHER` / `_K8S_*`                                  | M23.2. `docker` (default) = today's behaviour; `kubernetes` launches each run as a Job.                                    |
 
 **Still NOT settable, and why.** The retrans **byte plumbing** — `SCP_RELAY_OUT_DIR` / `IN_DIR` /
 `BLOB_OUT_DIR`, `SCP_RELAY_SOURCE_REPO` / `DEST_REPO` / `CERT_DIR`, and the `SCP_DELIVERY_ROOTS`
@@ -275,17 +316,91 @@ managed-DEP runner is NOT in that list: `managedDep.runnerImage` reaches
 `SCP_MANAGED_DEP_RUNNER_IMAGE`, because a class that cannot be switched on by any shipped
 deployment is a class whose charter clauses are enforced by nothing — ADR-0032 §8e.)
 
-**Corrected 2026-08-17 (M21.7).** "Reaches the env var" is not "can run", and the distinction was
-being blurred here. **No managed-execution runner — iac, scan or dep — can be launched by this
-chart at all**, whatever its values say. All three orchestrator plugins launch their runner with the
-docker CLI (`docker create` / `docker cp` / `docker start`): a pod has no docker socket, this chart
-deliberately mounts none, the scpd image ships no docker binary, and no Kubernetes-native launch
-mode exists yet (`templates/runner-iac.yaml`, "HONEST SCOPE"). So `managedDep.runnerImage` buys a
-failure at dispatch rather than a failure at config, and `managedIac.enabled` renders an RBAC +
-Job-template on-ramp nothing consumes. Managed execution runs on a compose/VM deployment today —
-which is why the air-gap `install.sh` prints the pinned runner refs under `--mode helm` as an
-inventory and prescribes no knob there: there is none to prescribe, and an instruction that
-silently does nothing is worse than silence.
+**Corrected 2026-08-17 (M21.7), and SUPERSEDED IN PART 2026-08-20 (M23.2) — read both.** The 2026-08-17
+correction said: "Reaches the env var" is not "can run", and **no managed-execution runner — iac,
+scan or dep — can be launched by this chart at all**, whatever its values say. That was exactly true
+of the chart as it then stood: all three plugins launched their runner with the docker CLI, a pod has
+no docker socket, this chart deliberately mounts none, the scpd image ships no docker binary, and no
+Kubernetes-native launch mode existed.
+
+**M23.2 closed the launch half and closed it behind a switch.** With `managedRunners.launcher:
+kubernetes` the three plugins launch each run as an ephemeral `batch/v1` Job through the API server
+(`@scp/runner-launcher`'s Kubernetes adapter), and the chart now renders the RBAC, the
+service-account token, the API-server egress allow and the injected settings that path needs — each
+of them gated by `tools/helm-verify` and exercised against a real cluster by CI job 4e. **The default
+is unchanged**: `launcher: docker` renders byte-for-byte what it rendered before, and the sentence
+above still describes it exactly.
+
+**WHAT IS STILL TRUE, and it is the part not to skim.** (i) The Kubernetes launcher requires an
+EXISTING **ReadWriteMany** PVC named in `managedRunners.kubernetes.workspace.claimName` — Kubernetes
+has no `docker cp`, so the runner's inputs and evidence move through a volume the worker and the Job
+both mount. The chart refuses to render without it rather than hanging. (ii) `--network none` is NOT
+honoured and cannot be; runner pods carry `scp.launcher.network=<requested mode>` so a NetworkPolicy
+can select them, which is traffic denial, not interface absence, and is fail-open on a CNI that does
+not enforce. (iii) **SUPERSEDED 2026-08-20 (M23.4).** This used to read "`managed-iac` still cannot run on
+Kubernetes unless `managedRunners.kubernetes.perRunSecrets` is set, because that RBAC grant is
+opt-in". The owner granted the RBAC, so `perRunSecrets` now defaults to **true**: the chart renders
+`secrets: create,delete` on the runner Role and managed-iac launches. Setting it back to `false`
+remains supported and still produces a loud refusal at the run's first step rather than a fallback to
+`env[].value`. See the `perRunSecrets` comment in `values.yaml` for what the grant does and does not
+include, and ADR-0035 for the combination the owner accepted along with it.
+(iv) **CLOSED 2026-08-20 (M23.4).** This used to read "`SCP_MANAGED_SCAN_RUNNER_IMAGE` STILL HAS NO
+CHART VALUE". It has one now — `managedScan.runnerImage`, empty by default, exactly like
+`managedDep.runnerImage`. It was found while granting the Secret RBAC "for all three managed
+classes": two of the three could be enabled from the chart and the third could not be enabled at all,
+on either substrate.
+(v) **A THIRD THING THAT WAS WRONG AND IS NOW FIXED, recorded because a reader of the old text would
+have believed it.** The runner Role and RoleBinding were gated on `managedIac.enabled` and rendered
+unconditionally into the release namespace. So (a) enabling only `managedDep` or only `managedScan`
+on the Kubernetes launcher produced a worker with a service-account token and **no RBAC at all** —
+every `jobs: create` a 403 — and (b) setting `managedRunners.kubernetes.namespace`, which this chart
+offers, put the Role in one namespace and the Jobs in another, with the same result. Both are gated
+in CI job 4b now, per class and per namespace.
+
+### Operator write surface — the token is only half of it (M22.9)
+
+`operatorApi.enabled` opens four instance-scoped write endpoints (scan floors, scanner assignments,
+the scan-DB staleness policy, and the scan-exclusion admissions ADR-0033 §7a requires). Enabling it
+needs **two** secrets, and the second one is not optional:
+
+| What                        | Where                                                                          | Why it is separate                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `SCP_OPERATOR_TOKEN`        | `appSecrets.existingSecret`, key `appSecrets.existingSecretKeys.operatorToken` | Authorizes the **caller**. A human must be able to read it, so the chart never generates it. |
+| `SCP_OPERATOR_DATABASE_URL` | `operatorApi.databaseUrlSecret`, key `operatorApi.databaseUrlSecretKey`        | Lets the server **execute** the write.                                                       |
+
+**Why a third database credential exists at all.** `api`/`worker` pods deliberately hold no admin
+`DATABASE_URL` (only the migrations Job does — see "Hardened defaults"), and the request-serving
+`scp_app` role holds `SELECT` only on those four tables, enforced twice over: no write GRANT, and
+RLS with no write policy. That is by design — instance config must not be writable by the role that
+serves tenant traffic. `apps/server/drizzle/0076` therefore creates `scp_operator`: `NOSUPERUSER`,
+`NOBYPASSRLS`, and `INSERT`/`UPDATE`/`DELETE` on exactly those four tables and nothing else.
+
+**One-time setup.** Unlike `scp_app`/`scp_pgboss`, whose passwords `migrate-bin.js` sets at install
+time, `scp_operator` has no boot-time provisioner yet, so give it a login once against your admin
+connection _after the first `helm upgrade` has run migrations_:
+
+```sql
+ALTER ROLE scp_operator WITH LOGIN PASSWORD '<pick one>';
+```
+
+```sh
+kubectl create secret generic scp-operator-db \
+  --from-literal=SCP_OPERATOR_DATABASE_URL='postgres://scp_operator:<pick one>@<host>:5432/scp'
+helm upgrade ... --set operatorApi.enabled=true \
+  --set appSecrets.existingSecret=<yours> \
+  --set operatorApi.databaseUrlSecret=scp-operator-db
+```
+
+**What this replaced, and why it is called out rather than quietly fixed.** The chart used to render
+the token alone. The resulting install looked entirely healthy — pods ready, render green — and
+every operator write returned a bare 500: the handlers opened `config.databaseUrl`, which with no
+`DATABASE_URL` in the pod falls back to `postgres://scp:scp@localhost:5432/scp`, so they dialed
+127.0.0.1 inside their own pod. For M22 that was total: `scan_exclusion_admissions` stayed empty on
+every Helm deployment, and an empty admissions table fails the exclusion AND at its top rung for
+every clause, so the whole shipped exclusion dimension was inert. The API now answers a **503 naming
+the missing credential** instead of a 500, and the chart refuses to render the half-configured
+shape at all — `tools/helm-verify` asserts both the pairing and the refusal, and both assertions
+were confirmed to fail when the fix is removed.
 
 ## Other known gaps (honestly flagged, not silently worked around)
 

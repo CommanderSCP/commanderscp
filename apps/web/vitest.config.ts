@@ -51,6 +51,11 @@ import { configDefaults, defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     exclude: [...configDefaults.exclude, "e2e/**/*.spec.ts"],
+    // THE PER-TEST BUDGET, DECLARED RATHER THAN INHERITED (M23.1f clause 6). Vitest's implicit
+    // default is 5,000ms; `@scp/runner-launcher` flaked on it under `pnpm -w test`'s parallel
+    // graph while never failing once in 420 isolated runs. Gated for every package by
+    // `@scp/source-census`'s `test-budget-census.test.ts` — a number must be chosen, not inherited.
+    testTimeout: 20_000,
     coverage: {
       provider: "v8",
       reporter: ["text-summary"],

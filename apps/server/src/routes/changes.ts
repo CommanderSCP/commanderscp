@@ -348,7 +348,15 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
             evidence: r.evidence,
             detail: r.detail,
             decisionId: r.decisionId,
-            createdAt: r.createdAt.toISOString()
+            createdAt: r.createdAt.toISOString(),
+            // M22.8 — the SECOND projection of `ControlRunSchema`, filled in the same increment as
+            // the first. `/control-runs` and `/explain` both render this shape, and shipping the
+            // crossing on one but not the other would make "which run authorized production" a
+            // question whose answer depends on which endpoint you happened to open — the exact
+            // half-installed shape a filterless census of `ControlRunSchema`'s consumers exists to
+            // catch. Those two handlers are the complete census.
+            gateKind: r.gateKind as "lifecycle_edge" | "wave_boundary",
+            gateRef: r.gateRef
           })),
           waitStatus,
           stageDependencyStatus,

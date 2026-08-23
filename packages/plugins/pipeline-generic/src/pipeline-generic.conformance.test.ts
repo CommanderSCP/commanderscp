@@ -18,13 +18,12 @@
  * that precision belongs in index.test.ts, which asserts exact request shapes and exact call
  * counts for the dedup/idempotency behavior this suite only smoke-tests.
  */
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll } from "vitest";
 import nock from "nock";
-import { runExecutorConformanceSuite } from "@scp/plugin-testkit";
+import { runExecutorConformanceSuite, mkdtempTracked } from "@scp/plugin-testkit";
 import { createPipelineGenericExecutorPlugin } from "./index.js";
 import { realHttpPluginContext } from "./test-support/real-http-client.js";
 
@@ -57,7 +56,7 @@ afterAll(() => {
 
 runExecutorConformanceSuite("pipeline-generic", async () => {
   const statePath = join(
-    await mkdtemp(join(tmpdir(), "pipeline-generic-conformance-")),
+    await mkdtempTracked(join(tmpdir(), "pipeline-generic-conformance-")),
     "state.json"
   );
   const build = (): {

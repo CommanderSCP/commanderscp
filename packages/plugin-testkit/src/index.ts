@@ -19,6 +19,22 @@
  */
 import { describe, expect, it } from "vitest";
 
+/**
+ * Re-exported so every fixture that already imports from this package for the conformance suites
+ * themselves — every `*.conformance.test.ts` in `packages/plugins/*` — gets the tracked-tempdir
+ * allocator for free, with no new `package.json` dependency. Each fixture's factory calls
+ * `runExecutorConformanceSuite`'s `factory` once PER `it()` (see that export below), so a fixture
+ * that `mkdtemp`s its own `statePath` leaks one directory per assertion in the shared suite if it
+ * uses the raw allocator instead of this one — see `@scp/test-tmpdir`'s module doc for the class
+ * this closes.
+ */
+export {
+  mkdtempTracked,
+  mkdtempTrackedSync,
+  mkdtempTrackedForFile,
+  mkdtempTrackedForFileSync
+} from "@scp/test-tmpdir";
+
 // LEVER 1: the shared runner-image resolver (prebuilt-pull with local-build fallback), re-exported
 // from the package root so both real-Docker integration suites (@scp/server promotion-scan-step,
 // @scp/plugin-managed-iac) import it the same way.

@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
@@ -14,6 +12,23 @@ import type {
   PluginManifest,
   TriggerIntent
 } from "@scp/plugin-api";
+import {
+  MANAGED_RUN_TIMEOUT_MAX_MS,
+  RUN_OUTCOME_CACHE_MAX_IN_MEMORY,
+  boundDetail,
+  MANAGED_RUN_TIMEOUT_MIN_MS,
+  resolveRunnerLauncher,
+  runnerOutcomeDetail,
+  toRunnerRunId,
+  pruneOutcomeMap,
+  type BoundedDetail,
+  type KubernetesLauncherSettings,
+  type ResolveRunnerLauncher,
+  // THE PORT'S OWN RESULT TYPE rather than an inline `{ succeeded, stdout, stderr }`: a structural
+  // restatement of a union whose false arm REQUIRES a failure diagnosis is a restatement that drops
+  // the diagnosis, and dropping it is the defect this plugin's failure `detail` was built out of.
+  type RunnerResult
+} from "@scp/runner-launcher";
 import {
   coordinateRuleCandidates,
   isDependencyEcosystem,
@@ -38,8 +53,6 @@ import {
   locateVersionLine,
   verifyManifestOnlyEdit
 } from "./write-guard.js";
-
-const execFileAsync = promisify(execFile);
 
 /**
  * `@scp/plugin-managed-dep` — the `scp-managed-dep` executor (charter Managed Execution Exception,
@@ -181,6 +194,23 @@ export interface ManagedDepConfig {
    * defences, which is the point.
    */
   dockerBinary?: string;
+
+  /**
+   * SERVER-INJECTED (never tenant) — WHICH LAUNCHER ADAPTER RUNS THIS PLUGIN'S RUNNER (M23.2).
+   *
+   * Absent, or anything other than `"kubernetes"`, means the Docker adapter — so a deployment that
+   * does not opt in behaves byte-identically, which is what makes a second adapter safe to merge.
+   * The same TWO INDEPENDENT DEFENCES `dockerBinary` has apply here from day one: this plugin's
+   * manifest is `additionalProperties: false` with these keys absent, so a binding carrying either
+   * is rejected at the write door (`plugin-manifests-runner-launcher.test.ts` pins the refusal by
+   * name), and the server injects them LAST so a regression in the write door downgrades from a
+   * launcher swap to an accepted-but-overwritten key.
+   */
+  runnerLauncher?: "docker" | "kubernetes";
+  /** SERVER-INJECTED (never tenant): the Kubernetes launcher's deployment settings. Required when
+   *  {@link runnerLauncher} is `"kubernetes"` — the resolver refuses BY NAME when it is missing,
+   *  rather than producing a TypeError inside a half-built Job manifest. */
+  kubernetes?: KubernetesLauncherSettings;
 
   // --- The git-provider identity (TENANT config — the App the component's team installed) --------
   /** Only `github` is implementable under the charter's credential clause today; see
@@ -592,44 +622,60 @@ function asConfig(config: unknown): ManagedDepConfig {
     runnerImage: c.runnerImage,
     workspaceRoot: c.workspaceRoot,
     timeoutMs: c.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    dockerBinary: c.dockerBinary ?? "docker"
+    dockerBinary: c.dockerBinary ?? "docker",
+    // CARRIED THROUGH THE NORMALISER, and its absence would have been silent: `asConfig` REBUILDS
+    // the object field by field, so a server-injected key it does not name is dropped before the
+    // resolver ever sees it — the launcher selection would have been accepted at every layer and
+    // then discarded here.
+    runnerLauncher: c.runnerLauncher,
+    kubernetes: c.kubernetes
   };
 }
 
 // -------------------------------------------------------------------------------------------
 // The runner container — COPY the one manifest in, COPY the edited manifest out. Never a bind
-// mount, never a docker socket, always the server-fixed `--network` (default `none`). Identical in
-// shape to managed-iac/managed-scan's launch, for the identical reason (a host-path escape is
-// structurally impossible when nothing is mounted).
+// mount, never a docker socket, always `--network none`. Identical in shape to
+// managed-iac/managed-scan's launch, for the identical reason (a host-path escape is structurally
+// impossible when nothing is mounted) — and since M23.1 that shape is literally the same code:
+// `@scp/runner-launcher`, the one port all three managed executors launch through.
+//
+// WHAT DID NOT MOVE INTO THE PORT, AND MUST NOT: the network mode. It is passed from here as the
+// LITERAL {@link RUNNER_NETWORK_MODE}, so the charter clause and the value it fixes stay in the same
+// file. A port that read `config.networkMode` uniformly for all three callers would turn an
+// unqualified charter clause into an operator-settable default; the golden's third case names a
+// different mode in the context and still requires `none` on the command line.
 // -------------------------------------------------------------------------------------------
 
 async function runEditorContainer(
   config: ManagedDepConfig,
+  resolveLauncher: ResolveRunnerLauncher,
+  /** This run's own key — see `RunnerSpec.runId` on why the CALLER supplies the identity. */
+  runKey: string,
   spec: ManifestBumpSpec,
   inDir: string,
   outDir: string
-): Promise<{ succeeded: boolean; stdout: string; stderr: string }> {
-  const docker = config.dockerBinary ?? "docker";
-  const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxBuffer = 8 * 1024 * 1024;
-
-  // The edit is described ENTIRELY on argv — five strings that name a declaration and a version,
-  // plus (M21.7, split shapes only) the two that name WHICH LINE carries it. Nothing on this command
-  // line can be a file body, a path outside the container, or a command: the anchor text is one line
-  // the container already has in the file it was handed, and the shim only ever COMPARES it.
-  //
-  // THE PAIR IS APPENDED ONLY WHEN THERE IS AN ANCHOR, which is what makes version skew fail-closed
-  // in both directions (`run.sh`'s argv contract): a five-operand invocation is byte-for-byte the
-  // one every previously-shipped image understands, and an image that predates the anchor ignores
-  // the extra two and refuses the split shape it could not have edited anyway.
-  const { stdout: createOut } = await execFileAsync(
-    docker,
-    [
-      "create",
-      // THE LITERAL, never a config read — see {@link RUNNER_NETWORK_MODE}.
-      "--network",
-      RUNNER_NETWORK_MODE,
-      config.runnerImage,
+): Promise<RunnerResult> {
+  return resolveLauncher({
+    dockerBinary: config.dockerBinary,
+    runnerLauncher: config.runnerLauncher,
+    kubernetes: config.kubernetes
+  }).run({
+    // The same key `externalId` is built from, so an orphan is traceable to the bump it was editing.
+    runId: toRunnerRunId(runKey),
+    // ATTRIBUTION FOR AN ORPHAN (M23.0 defect 1) — the only way an operator finds a container left
+    // behind by a `create` that timed out after the daemon had already made it.
+    labels: { "scp.executor": "scp-managed-dep", "scp.run-id": toRunnerRunId(runKey) },
+    image: config.runnerImage,
+    // The edit is described ENTIRELY on argv — five strings that name a declaration and a version,
+    // plus (M21.7, split shapes only) the two that name WHICH LINE carries it. Nothing here can be a
+    // file body, a path outside the container, or a command: the anchor text is one line the
+    // container already has in the file it was handed, and the shim only ever COMPARES it.
+    //
+    // THE PAIR IS APPENDED ONLY WHEN THERE IS AN ANCHOR, which is what makes version skew
+    // fail-closed in both directions (`run.sh`'s argv contract): a five-operand invocation is
+    // byte-for-byte the one every previously-shipped image understands, and an image that predates
+    // the anchor ignores the extra two and refuses the split shape it could not have edited anyway.
+    operands: [
       spec.ecosystem,
       spec.manifestPath,
       spec.coordinate,
@@ -637,43 +683,29 @@ async function runEditorContainer(
       spec.toVersion,
       ...(spec.anchor ? [String(spec.anchor.line), spec.anchor.text] : [])
     ],
-    { timeout, maxBuffer }
-  );
-  const containerId = createOut.trim();
-
-  try {
-    await execFileAsync(docker, ["cp", `${inDir}/.`, `${containerId}:/work/in`], {
-      timeout,
-      maxBuffer
-    });
-
-    let succeeded: boolean;
-    let stdout: string;
-    let stderr: string;
-    try {
-      const r = await execFileAsync(docker, ["start", "-a", containerId], { timeout, maxBuffer });
-      succeeded = true;
-      stdout = r.stdout;
-      stderr = r.stderr;
-    } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; message: string };
-      succeeded = false;
-      stdout = e.stdout ?? "";
-      stderr = e.stderr ?? e.message;
-    }
-
-    if (succeeded) {
-      await execFileAsync(docker, ["cp", `${containerId}:/work/out/.`, outDir], {
-        timeout,
-        maxBuffer
-      });
-    }
-    return { succeeded, stdout, stderr };
-  } finally {
-    await execFileAsync(docker, ["rm", "-f", containerId], { timeout: 30_000 }).catch(
-      () => undefined
-    );
-  }
+    // THE LITERAL, never a config read — see {@link RUNNER_NETWORK_MODE}.
+    networkMode: RUNNER_NETWORK_MODE,
+    // NO ENVIRONMENT AT ALL, SECRET OR OTHERWISE. The runner holds no credential — the orchestrator
+    // does, on this side of the boundary (charter `scp-managed-dep`, amended 2026-08-15) — so both
+    // lists are empty and no `--env-file` is ever written for this plugin.
+    env: [],
+    secretEnv: [],
+    copyIn: [{ hostDir: inDir, containerPath: "/work/in" }],
+    // Only on success — there is nothing to salvage from a runner that did not finish the edit, and
+    // copying out a partial manifest would put unverified bytes where the verifiers read from. Not
+    // guarded either: `trigger()`'s outer catch is what turns a failed copy-out into a `failed` run
+    // (managed-scan's escapes its `trigger()`; managed-iac's is swallowed — three answers to one
+    // Docker failure, all three pinned by goldens).
+    copyOut: {
+      containerPath: "/work/out",
+      hostDir: outDir,
+      when: "on-success",
+      onFailure: "propagate"
+    },
+    timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    // 8 MiB — the smallest of the three, because this runner edits one manifest and prints nothing.
+    maxBuffer: 8 * 1024 * 1024
+  });
 }
 
 // -------------------------------------------------------------------------------------------
@@ -682,7 +714,12 @@ async function runEditorContainer(
 
 interface RunOutcome {
   succeeded: boolean;
-  detail: string;
+  /** {@link BoundedDetail}, NOT `string` — see `@scp/runner-launcher`'s `RUNNER_DETAIL_MAX_CHARS`.
+   *  Most of the writes below record a THROWN `Error`'s freeform `.message`, or a verifier verdict
+   *  derived from manifest TEXT; neither has a length this plugin chose, and `status().detail` is
+   *  copied into a `Decision`'s `inputContext`. The type is what makes every one of those sites
+   *  prove it bounded the string. */
+  detail: BoundedDetail;
   result?: RepoWriteResult;
   /** Set by the merge action. Reported through `status().stateRef` so the SERVER records what the
    *  provider actually did rather than what it asked for. */
@@ -695,10 +732,65 @@ interface RunOutcome {
  *  converges on the same branch and the same pull request. */
 const outcomes = new Map<string, RunOutcome>();
 
+/**
+ * WHAT THE CODE BELOW COMPOSES — a `detail` that is a plain `string`, because a composition site is
+ * the wrong place to remember to bound one (MEDIUM, M23.0 verification pass 7 finding M3).
+ *
+ * THE 26-CALL-SITE PROBLEM, AND WHY THE BRAND DID NOT SOLVE IT. `RunOutcome.detail` is
+ * {@link BoundedDetail}, which makes "you cannot store an unbounded reason" a compile error — good,
+ * and it is why every site here HAD a bound. But a brand on a FIELD forces a conversion at every
+ * literal that constructs the record, so this file alone carried FOURTEEN `boundDetail(...)` calls,
+ * of which a delete-the-wiring sweep found most pinned by no failing test. This repository's own
+ * rule is that three sites of one concept means the boundary is in the wrong place, and 15 is not a
+ * reason to write 15 tests.
+ *
+ * SO THE BOUND MOVED TO THE STORE. The brand stays exactly where it was — a READER of `RunOutcome`
+ * still cannot be handed a megabyte — and `recordOutcome` below is the only thing that can mint one.
+ * Composition sites deal in `string`, which is what they actually have, and there is now ONE place
+ * in this file where an unbounded value becomes a bounded one instead of fifteen.
+ */
+type PendingOutcome = Omit<RunOutcome, "detail"> & { detail: string };
+
+/**
+ * THE ONLY WAY AN OUTCOME ENTERS THE CACHE. Bounds the detail (finding M3) and bounds the number of
+ * entries (finding M1) — the two halves of "bounding one entry did not bound the map".
+ *
+ * A LOOSER ENTRY CAP THAN managed-iac's, deliberately: that plugin re-parses its whole durable
+ * ledger on every `status()` poll, so its size is CPU per tick, while this is a `Map.get` — O(1)
+ * whatever the size — that is lost on restart anyway. What an entry has to outlive is short and
+ * knowable: `trigger()` runs the job synchronously to completion BEFORE recording, so the only
+ * reader left is reconcile's next poll about a second later, plus a crash-and-retry window in which
+ * reconcile re-issues the same `idempotencyKey`. {@link RUN_OUTCOME_CACHE_MAX_IN_MEMORY} is orders
+ * of magnitude above anything that can be in flight, not the smallest number that would work.
+ */
+function recordOutcome(ctx: PluginContext, externalId: string, outcome: PendingOutcome): void {
+  outcomes.set(externalId, { ...outcome, detail: boundDetail(outcome.detail) });
+  const pruned = pruneOutcomeMap(outcomes, RUN_OUTCOME_CACHE_MAX_IN_MEMORY);
+  if (pruned > 0) {
+    ctx.logger.info("managed-dep: pruned the oldest outcome-cache entries", {
+      pruned,
+      kept: outcomes.size
+    });
+  }
+}
+
 /** Exported for tests only: the outcome cache is process-lifetime state, and a test that asserts a
  *  refusal must not be able to see a previous test's run. */
 export function __resetManagedDepOutcomes(): void {
   outcomes.clear();
+}
+
+/**
+ * Exported for tests only — READ THE STORE, not what `status()` chose to return.
+ *
+ * LOW (M23.0 verification pass 7, finding L2): a test claiming "THE OUTCOME MAP ENTRY IS BOUNDED,
+ * not just the value `status()` returns" read the value THROUGH `status()`, and its own comment
+ * admitted that reading it that way twice cannot distinguish the two. It was true only because the
+ * `.slice` in `status()` had been removed; re-adding one would have made the test green and the
+ * claim false. A claim about the store has to be measured at the store.
+ */
+export function __managedDepStoredDetail(externalId: string): string | undefined {
+  return outcomes.get(externalId)?.detail;
 }
 
 async function observe(_ctx: PluginContext, _since?: Cursor): Promise<ExecutorEvent[]> {
@@ -725,7 +817,7 @@ async function triggerMerge(
   try {
     descriptor = parseBumpMergeDescriptor(intent);
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
       detail: err instanceof Error ? err.message : String(err)
     });
@@ -736,7 +828,7 @@ async function triggerMerge(
   try {
     writer = resolveRepoWriter(writerConfig);
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
       detail: err instanceof Error ? err.message : String(err)
     });
@@ -756,7 +848,7 @@ async function triggerMerge(
         commitTitle: descriptor.commitTitle
       })
     );
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       // A PROVIDER REFUSAL IS A FAILED RUN, not a succeeded one with a note. The server records the
       // phase, and "the merge did not happen" must not read as "done".
       succeeded: merge.merged,
@@ -771,16 +863,22 @@ async function triggerMerge(
       merged: merge.merged
     });
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
       detail: `managed-dep: ${err instanceof Error ? err.message : String(err)}`
     });
   }
 }
 
-async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
+async function trigger(
+  ctx: PluginContext,
+  intent: TriggerIntent,
+  resolveLauncher: ResolveRunnerLauncher
+): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
-  const externalId = `managed-dep::${intent.idempotencyKey ?? `${Date.now()}`}`;
+  // THE BARE KEY, because it becomes a container NAME — see managed-scan's note of the same shape.
+  const runKey = intent.idempotencyKey ?? `${Date.now()}`;
+  const externalId = `managed-dep::${runKey}`;
   const cached = outcomes.get(externalId);
   if (cached) return { externalId };
 
@@ -788,7 +886,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
   try {
     action = parseIntentAction(intent);
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
       detail: err instanceof Error ? err.message : String(err)
     });
@@ -803,7 +901,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
   try {
     descriptor = parseBumpDescriptor(intent);
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
       detail: err instanceof Error ? err.message : String(err)
     });
@@ -814,20 +912,26 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
   try {
     writer = resolveRepoWriter(config);
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
       detail: err instanceof Error ? err.message : String(err)
     });
     return { externalId };
   }
 
-  await mkdir(config.workspaceRoot, { recursive: true });
-  const scratch = await mkdtemp(join(config.workspaceRoot, "scp-dep-"));
-  const inDir = join(scratch, "in");
-  const outDir = join(scratch, "out");
+  // LOW-6: `scratch` DECLARED OUTSIDE, INITIALISED INSIDE THE `try` — `mkdir`/`mkdtemp` used to run
+  // BEFORE this `try` began, so a disk error here (permissions, ENOSPC) rejected `trigger()`
+  // UNRECORDED: no `outcomes.set(externalId, …)`, and the caller's `status()` would report `pending`
+  // forever. Moving them inside closes it the same way the descriptor/writer refusals above already
+  // are; the `finally` below is `undefined`-safe for the case where `mkdtemp` itself is what failed.
+  let scratch: string | undefined;
   const fileName = "manifest";
 
   try {
+    await mkdir(config.workspaceRoot, { recursive: true });
+    scratch = await mkdtemp(join(config.workspaceRoot, "scp-dep-"));
+    const inDir = join(scratch, "in");
+    const outDir = join(scratch, "out");
     const outcome = await writer.withRunCredential(ctx, descriptor.repo, async (session) => {
       // 1. READ the manifest as the repository holds it, with the run's own credential. The bytes
       //    never travelled through the intent — see "THE DESCRIPTOR IS NOT CONTENT".
@@ -836,7 +940,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
         return {
           succeeded: false,
           detail: `managed-dep: '${descriptor.spec.manifestPath}' is not present on '${descriptor.repo}@${descriptor.baseBranch}' — refusing to edit a file this component does not contain`
-        } satisfies RunOutcome;
+        } satisfies PendingOutcome;
       }
 
       // 1b. LOCATE THE VERSION LINE, from the bytes just read (M21.7, split shapes).
@@ -877,7 +981,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
             `resolve that declaration to a single line carrying it. The inventory row may be stale, or this file may ` +
             `declare the same image identically in more than one place, which has no single edit site. ` +
             `Nothing was written to '${descriptor.repo}' and no container was started.`
-        } satisfies RunOutcome;
+        } satisfies PendingOutcome;
       }
 
       // 2. EDIT, in the isolated single-shot runner. It gets the file and five argv strings (seven
@@ -885,12 +989,18 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
       await mkdir(inDir, { recursive: true });
       await mkdir(outDir, { recursive: true });
       await writeFile(join(inDir, fileName), original.content, "utf8");
-      const run = await runEditorContainer(config, spec, inDir, outDir);
+      const run = await runEditorContainer(config, resolveLauncher, runKey, spec, inDir, outDir);
       if (!run.succeeded) {
+        // `runnerOutcomeDetail`, NOT `run.stderr` — `promisify(execFile)` always attaches `stderr`
+        // as a string, so for a budget-killed runner and for a `docker` that never spawned this
+        // read `— ` and stopped. See `@scp/runner-launcher`'s `classifyRunnerFailure`.
         return {
           succeeded: false,
-          detail: `managed-dep: the runner failed to edit '${descriptor.spec.manifestPath}' — ${run.stderr.slice(0, 2000)}`
-        } satisfies RunOutcome;
+          // NOT `.slice(0, 2000)`. Like managed-scan's, that front-slice could never reach the
+          // runner's last words at any output size: the port appended them behind `err.message`,
+          // which carries the whole of stderr. Bounded at composition instead, END kept.
+          detail: `managed-dep: the runner failed to edit '${descriptor.spec.manifestPath}' — ${runnerOutcomeDetail(run)}`
+        } satisfies PendingOutcome;
       }
 
       let edited: string;
@@ -900,7 +1010,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
         return {
           succeeded: false,
           detail: `managed-dep: the runner produced no '${fileName}' for '${descriptor.spec.manifestPath}'`
-        } satisfies RunOutcome;
+        } satisfies PendingOutcome;
       }
 
       // 3. VERIFY before anything is written anywhere. This is the charter's "never authors any
@@ -918,8 +1028,10 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
       if (!verdict.ok) {
         return {
           succeeded: false,
+          // `verdict.detail` quotes MANIFEST TEXT the tenant supplied, so this refusal has no
+          // length of its own — the one write in this file whose size a hostile input picks.
           detail: `managed-dep: REFUSED (${verdict.reason}) — ${verdict.detail}. Nothing was written to '${descriptor.repo}'.`
-        } satisfies RunOutcome;
+        } satisfies PendingOutcome;
       }
 
       //    ...and only the second one MINTS. The proof is an HMAC over these exact bytes at this
@@ -982,21 +1094,23 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
         detail: result.merged
           ? `managed-dep: ${descriptor.spec.coordinate} ${descriptor.spec.fromVersion} -> ${descriptor.spec.toVersion} merged as ${result.commitSha} (#${result.pullRequestNumber})`
           : `managed-dep: ${descriptor.spec.coordinate} ${descriptor.spec.fromVersion} -> ${descriptor.spec.toVersion} opened as ${result.pullRequestUrl || `#${result.pullRequestNumber}`}${result.mergeRefusal ? ` — ${result.mergeRefusal}` : ""}${downgraded}`
-      } satisfies RunOutcome;
+      } satisfies PendingOutcome;
     });
-    outcomes.set(externalId, outcome);
+    recordOutcome(ctx, externalId, outcome);
     ctx.logger.info("managed-dep: run complete", {
       externalId,
       repo: descriptor.repo,
       succeeded: outcome.succeeded
     });
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
       detail: `managed-dep: ${err instanceof Error ? err.message : String(err)}`
     });
   } finally {
-    await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+    // `scratch` is `undefined` exactly when `mkdir`/`mkdtemp` themselves are what threw — nothing to
+    // remove in that case.
+    if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
   }
   return { externalId };
 }
@@ -1011,7 +1125,8 @@ async function status(_ctx: PluginContext, ref: ExternalRunRef): Promise<Executi
   }
   return {
     phase: outcome.succeeded ? "succeeded" : "failed",
-    detail: outcome.detail.slice(0, 4000),
+    // NO SLICE — bounded at capture (`RunOutcome.detail` is `BoundedDetail`), both ends kept.
+    detail: outcome.detail,
     // The authored commit + pull request (or, for a merge run, what the provider actually did), so
     // the server can record the outcome without re-asking the provider.
     stateRef: outcome.result ?? outcome.merge,
@@ -1041,17 +1156,35 @@ function describeCapabilities(): ExecutorCapabilities {
   };
 }
 
-export const managedDepExecutorPlugin: ExecutorPlugin = {
-  observe,
-  trigger,
-  status,
-  abort,
-  describeCapabilities
-};
-
-export function createManagedDepExecutorPlugin(): ExecutorPlugin {
-  return managedDepExecutorPlugin;
+/**
+ * THE LAUNCHER SEAM (M23.1). `resolveLauncher` defaults to the Docker adapter — the only one that
+ * exists until M23.2 — and is a FACTORY PARAMETER rather than a config field on purpose: adapter
+ * selection is not tenant-facing, and any new config field would have to join the server-injected,
+ * never-tenant-settable class in all three enforcement layers (this manifest's `configSchema`, the
+ * four `validatePluginConfig` write doors, and the LAST-wins injection sites) on day one. Note what
+ * the seam does NOT carry: the network mode, which this class fixes as a literal rather than a
+ * setting (ADR-0032 §8d).
+ */
+export function createManagedDepExecutorPlugin(
+  // THE DEFAULT IS THE SELECTING RESOLVER, NOT THE DOCKER ONE — M23.2, AND THIS LINE IS THE WIRING.
+  // `subprocess-entry.ts` constructs this plugin with NO argument, so whatever stands here is what
+  // every production run uses. While it was `resolveDockerRunnerLauncher`, an operator could set
+  // `runnerLauncher: "kubernetes"` through every layer of the chart and every managed run would
+  // still shell out to a `docker` binary the `scpd` image does not ship — a feature correctly built
+  // and installed nowhere, which is this repository's dominant defect class (CLAUDE.md). Delete
+  // this and `runner-launcher-selection.test.ts`'s named case for this plugin dies.
+  resolveLauncher: ResolveRunnerLauncher = resolveRunnerLauncher
+): ExecutorPlugin {
+  return {
+    observe,
+    trigger: (ctx, intent) => trigger(ctx, intent, resolveLauncher),
+    status,
+    abort,
+    describeCapabilities
+  };
 }
+
+export const managedDepExecutorPlugin: ExecutorPlugin = createManagedDepExecutorPlugin();
 
 /**
  * Manifest `configSchema` is the TENANT-facing surface ONLY. `additionalProperties: false`, and the
@@ -1076,7 +1209,17 @@ export const manifest: PluginManifest = {
       installationId: { type: "string", minLength: 1 },
       privateKeySecretKey: { type: "string", minLength: 1 },
       apiBaseUrl: { type: "string", minLength: 1 },
-      timeoutMs: { type: "integer", minimum: 1000, default: DEFAULT_TIMEOUT_MS }
+      // BOUNDED AT BOTH ENDS (M23.1c). The `maximum` is the half that was missing: with only a
+      // floor, a tenant could set 2^31 and make the runner unkillable by its own timeout AND
+      // unbound the plugin-host RPC budget derived from it. Enforced at every write door by
+      // `validatePluginConfig` (Ajv honours `maximum`), and clamped again host-side for rows
+      // stored before the ceiling existed.
+      timeoutMs: {
+        type: "integer",
+        minimum: MANAGED_RUN_TIMEOUT_MIN_MS,
+        maximum: MANAGED_RUN_TIMEOUT_MAX_MS,
+        default: DEFAULT_TIMEOUT_MS
+      }
     }
   }
 };

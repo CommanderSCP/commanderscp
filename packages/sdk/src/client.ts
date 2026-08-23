@@ -153,6 +153,7 @@ import {
   ingestChangeSourceWebhook as ingestChangeSourceWebhookRequest,
   reportChangeSource as reportChangeSourceRequest,
   getComponentPipeline as getComponentPipelineRequest,
+  getComponentScanRequirements as getComponentScanRequirementsRequest,
   createSourceMapping as createSourceMappingRequest,
   deleteSourceMapping as deleteSourceMappingRequest,
   listSourceMappings as listSourceMappingsRequest,
@@ -175,6 +176,7 @@ import {
   upsertControlByUrn as upsertControlByUrnRequest,
   putControlBinding as putControlBindingRequest,
   listChangeControlRuns as listChangeControlRunsRequest,
+  listControlRunFindings as listControlRunFindingsRequest,
   listApprovals as listApprovalsRequest,
   getApproval as getApprovalRequest,
   listApprovalVotes as listApprovalVotesRequest,
@@ -196,6 +198,15 @@ import {
   // M17.5 (ADR-0016) — instance-scoped scan-requirement floors.
   listInstanceScanFloors as listInstanceScanFloorsRequest,
   putInstanceScanFloor as putInstanceScanFloorRequest,
+  // M22.9 (ADR-0033 §1/§7a) — instance-scoped exclusion admissions.
+  listInstanceScanExclusionAdmissions as listInstanceScanExclusionAdmissionsRequest,
+  putInstanceScanExclusionAdmissions as putInstanceScanExclusionAdmissionsRequest,
+  // M22.6 (ADR-0033 §6a) — standing, expiring scan override grants.
+  createScanOverrideGrant as createScanOverrideGrantRequest,
+  listScanOverrideGrants as listScanOverrideGrantsRequest,
+  approveScanOverrideGrant as approveScanOverrideGrantRequest,
+  denyScanOverrideGrant as denyScanOverrideGrantRequest,
+  revokeScanOverrideGrant as revokeScanOverrideGrantRequest,
   // M13.3a (ADR-0020) — instance-scoped scanner assignments.
   listScannerAssignments as listScannerAssignmentsRequest,
   putScannerAssignment as putScannerAssignmentRequest,
@@ -319,6 +330,7 @@ import type {
   DecisionListResponse,
   DecisionListQuery,
   ComponentPipelineResponse,
+  ComponentScanRequirementsResponse,
   CreateSourceMappingRequest,
   DeleteSourceMappingRequest,
   DeleteSourceMappingResponse,
@@ -331,6 +343,8 @@ import type {
   ControlBinding,
   CreateControlBindingRequest,
   ControlRunListResponse,
+  ControlRunFindingsResponse,
+  CursorPageQuery,
   ApprovalRequest,
   ApprovalRequestListQuery,
   ApprovalRequestListResponse,
@@ -352,6 +366,12 @@ import type {
   InitFederationRequest,
   FederationPeer,
   InstanceScanFloor,
+  InstanceScanExclusionAdmission,
+  PutInstanceScanExclusionAdmissionsRequest,
+  ScanOverrideGrant,
+  CreateScanOverrideGrantRequest,
+  ApproveScanOverrideGrantRequest,
+  DecideScanOverrideGrantRequest,
   PutInstanceScanFloorRequest,
   ScannerAssignment,
   PutScannerAssignmentRequest,
@@ -1090,6 +1110,21 @@ export class ScpClient {
         });
         return unwrap(result);
       },
+      /** M22.8 — THE SCAN RULES IN FORCE FOR THIS COMPONENT: the resolved six-tier severity ceiling
+       *  with every tier that contributed to it (ADR-0016), plus which exclusion classes the tiers
+       *  above admit and at which tiers a clause of each would actually take effect (ADR-0033 §1).
+       *
+       *  READS ONLY — it writes no Decision, which is exactly why it exists beside `policyEvaluate`
+       *  rather than being folded into it. `policyEvaluate` runs the real orchestrator and writes a
+       *  Decision row per call with no suppression, so polling it from a UI reproduces the
+       *  1.44 GB/day amplification ADR-0024 §D0 exists over. Poll THIS one. */
+      scanRequirements: async (idOrUrn: string): Promise<ComponentScanRequirementsResponse> => {
+        const result = await getComponentScanRequirementsRequest({
+          client: this.client,
+          path: { idOrUrn }
+        });
+        return unwrap(result);
+      },
       ...this.ownerMethods({
         add: addComponentOwnerRequest,
         list: listComponentOwnersRequest,
@@ -1629,6 +1664,30 @@ export class ScpClient {
         path: { idOrUrn: changeId }
       });
       return unwrap(result);
+    },
+    /**
+     * The persisted findings of ONE scan control run (M22.1b/ADR-0033 §7), paged by ordinal.
+     *
+     * OPT-IN, and separate from `listForChange` on purpose: a run can carry up to
+     * `SCAN_FINDINGS_PERSIST_CAP` rows, so folding them into the run listing would put thousands of
+     * rows on a surface every change page reads.
+     *
+     * ALWAYS READ `findingsRecord` BEFORE THE ROWS. It is `truncated`, `unsupported`, or absent, and
+     * each of those means every exclusion for that scan was REFUSED — you cannot except what you did
+     * not record. A caller handed only `items` cannot distinguish "nothing was excluded" from "the
+     * finding set was capped and exclusions were therefore disallowed", which is the whole reason the
+     * marker travels with the page rather than beside it.
+     */
+    findings: async (
+      controlRunId: string,
+      query: CursorPageQuery = { limit: 20 }
+    ): Promise<ControlRunFindingsResponse> => {
+      const result = await listControlRunFindingsRequest({
+        client: this.client,
+        path: { id: controlRunId },
+        query
+      });
+      return unwrap(result);
     }
   };
 
@@ -1728,6 +1787,58 @@ export class ScpClient {
   // EVERY org on the deployment, so `put` is an OPERATOR action: it carries the deployment's
   // `x-scp-operator-token`, never a tenant role. `list` is an ordinary authenticated read.
   // -----------------------------------------------------------------------------------------
+  // -----------------------------------------------------------------------------------------
+  // M22.6 (ADR-0033 §6a) — the override request: a STANDING grant per (component x finding) with an
+  // EXPIRY. `create` raises one (`object:write` at the component); `approve`/`deny`/`revoke` are the
+  // authority acts and each needs `policy:write` at the object naming the tier that SET the rule
+  // (D3). Every act writes a Decision AND a high-severity hash-chained audit event, copying
+  // `freeze.override` — never the approvals path, where a vote writes no audit event today.
+  // -----------------------------------------------------------------------------------------
+  readonly scanOverrideGrants = {
+    create: async (req: CreateScanOverrideGrantRequest): Promise<ScanOverrideGrant> => {
+      const result = await createScanOverrideGrantRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    /** COMPONENT-SCOPED and the component is required — an unscoped list of every accepted risk in
+     *  the org is a wider disclosure than the read that authorized it. Includes expired, denied and
+     *  revoked grants: an operator asking "what has been granted here" must see the ones that no
+     *  longer apply. */
+    listForComponent: async (componentIdOrUrn: string): Promise<ScanOverrideGrant[]> => {
+      const result = await listScanOverrideGrantsRequest({
+        client: this.client,
+        query: { component: componentIdOrUrn }
+      });
+      return unwrap(result).items;
+    },
+    approve: async (
+      id: string,
+      req: ApproveScanOverrideGrantRequest
+    ): Promise<ScanOverrideGrant> => {
+      const result = await approveScanOverrideGrantRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
+      return unwrap(result);
+    },
+    deny: async (id: string, req: DecideScanOverrideGrantRequest): Promise<ScanOverrideGrant> => {
+      const result = await denyScanOverrideGrantRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
+      return unwrap(result);
+    },
+    revoke: async (id: string, req: DecideScanOverrideGrantRequest): Promise<ScanOverrideGrant> => {
+      const result = await revokeScanOverrideGrantRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
+      return unwrap(result);
+    }
+  };
+
   readonly instanceScanFloors = {
     list: async (): Promise<InstanceScanFloor[]> => {
       const result = await listInstanceScanFloorsRequest({ client: this.client });
@@ -1746,6 +1857,36 @@ export class ScpClient {
         headers: { "x-scp-operator-token": operatorToken }
       });
       return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // M22.9: instance-scoped scan-exclusion admissions (ADR-0033 §1, §7a) — the `platform` and
+  // `trust_domain` rungs of the monotone AND. NO POLICY CAN EVER CONTRIBUTE THESE TWO
+  // (`tierForObjectType` maps graph object types and `containmentChain` is org-rooted), so without
+  // this surface every exclusion clause on a deployment fails the AND at the top rung and the whole
+  // dimension is inert. The five org-and-below rungs admit through the ordinary `scanExclusion`
+  // policy effect and are NOT here. The twin of `instanceScanFloors`, on purpose.
+  // -----------------------------------------------------------------------------------------
+  readonly instanceScanExclusionAdmissions = {
+    list: async (): Promise<InstanceScanExclusionAdmission[]> => {
+      const result = await listInstanceScanExclusionAdmissionsRequest({ client: this.client });
+      return unwrap(result).items;
+    },
+    /** REPLACE the admitted class set at one instance tier — `classes: []` is the revocation.
+     *  `operatorToken` is the deployment-level `SCP_OPERATOR_TOKEN`; no tenant role can grant this. */
+    put: async (
+      tier: "platform" | "trust_domain",
+      req: PutInstanceScanExclusionAdmissionsRequest,
+      operatorToken: string
+    ): Promise<InstanceScanExclusionAdmission[]> => {
+      const result = await putInstanceScanExclusionAdmissionsRequest({
+        client: this.client,
+        path: { tier },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result).items;
     }
   };
 

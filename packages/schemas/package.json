@@ -9,13 +9,14 @@
   "exports": {
     ".": "./dist/index.js",
     "./audit-chain": "./dist/audit-chain.js",
+    "./canonical-json": "./dist/canonical-json.js",
     "./federation-journal": "./dist/federation-journal.js"
   },
   "scripts": {
     "build": "tsc -b",
     "dev": "tsc -b -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
     "zod": "^4.0.0"

@@ -5,6 +5,7 @@ import {
 } from "@scp/dependency-manifests";
 import type { DependencyEcosystem } from "@scp/schemas";
 import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
+import { isPersistedJsonEntriesElision } from "@scp/runner-launcher";
 
 /**
  * M21.4 — WHICH VERSION DID THIS RELEASE PUBLISH? (ADR-0032 §7)
@@ -117,6 +118,24 @@ export type ReleaseVersionUnknownReason =
   | "no_observed_images"
   /** Images were observed, but none of them names this line's coordinate. */
   | "no_matching_image_ref"
+  /**
+   * THE OBSERVED-IMAGE LIST WAS CUT SHORT before this coordinate could be ruled out — MEDIUM, M23.0
+   * verification pass 8, and its own reason for the reason `no_strategy_for_ecosystem` is its own.
+   *
+   * `observed_state` is a plugin-supplied `jsonb` payload bounded at the store
+   * (`wave-targets-repo.ts`), and an Argo CD Application's `status.summary.images` is the uncapped
+   * image list across every managed resource — an umbrella app blows the whole-value budget on its
+   * own, at a measured 73 refs. The bound then truncates the array's tail and leaves a recognisable
+   * marker in its place ({@link isPersistedJsonEntriesElision}).
+   *
+   * A MISS AFTER A CUT IS NOT EVIDENCE OF ABSENCE. Reported as `no_matching_image_ref` it says "the
+   * executor deployed these images and none of them was yours", which is a statement about the
+   * EXECUTOR and is false — the platform stopped writing the list down. That is the provenance-label
+   * failure this repository has already shipped (charter principle 6), and it is the one that makes
+   * the difference operationally: the remedy for `no_matching_image_ref` is to look at what the
+   * pipeline actually pushed, and the remedy for this is to raise the bound or narrow the reading.
+   */
+  | "observed_images_elided"
   /** The matching image ref is digest-only (`repo@sha256:…`). Bytes, not a release name. */
   | "image_ref_has_no_tag"
   /** Two observed refs name this coordinate at DIFFERENT tags. Picking one would be a guess. */
@@ -361,12 +380,33 @@ function resolveFromObservedImages(input: ResolveReleasedVersionInput): Released
     };
   }
 
+  // WAS THE LIST CUT? Read BEFORE the match loop is judged, because it changes what a miss means.
+  // The entry is left in `observedImages` rather than filtered out on the way here on purpose: it is
+  // part of the honest record, it is what lands in the Decision's `inputContext`, and a reader that
+  // stripped it would have destroyed the only evidence that the reading is incomplete.
+  const elided = input.observedImages.some(
+    (raw) => typeof raw === "string" && isPersistedJsonEntriesElision(raw)
+  );
+
   const matches: ParsedImageRef[] = [];
   for (const raw of input.observedImages) {
     const parsed = parseImageRef(raw);
     if (parsed && parsed.repository === input.line.coordinate) matches.push(parsed);
   }
   if (matches.length === 0) {
+    // A MISS AFTER A CUT IS NOT A MISS. `no_matching_image_ref` asserts something about the
+    // executor; only the un-cut case is entitled to say it.
+    if (elided) {
+      return {
+        determined: false,
+        reason: "observed_images_elided",
+        detail:
+          `none of the RECORDED image refs names '${input.line.coordinate}', and the recorded list ` +
+          `was truncated by the persisted-JSON bound — the refs after the cut were never compared, ` +
+          `so this is not a statement that the executor did not deploy it (observed: ` +
+          `${input.observedImages.join(", ")})`
+      };
+    }
     return {
       determined: false,
       reason: "no_matching_image_ref",
@@ -411,7 +451,16 @@ function resolveFromObservedImages(input: ResolveReleasedVersionInput): Released
     // "1.2.4 is these bytes" about bytes that are 1.2.3's. The version and its digest are written
     // together by `recordDependencyLineHead`, which is why this field cannot be omitted.
     digest: distinctDigests[0] ?? null,
-    why: `observed image ref '${input.line.coordinate}:${tag}' on the succeeded prod wave target`
+    // A MATCH IN A TRUNCATED LIST STILL DETERMINES, and says so. Refusing would silence the feature
+    // for exactly the large applications the truncation happens to; but the checks above —
+    // "observed at more than one tag", "at more than one digest" — could only see the refs that were
+    // recorded, so the `why` states the limit of what was compared rather than implying a whole-list
+    // agreement nobody verified.
+    why: elided
+      ? `observed image ref '${input.line.coordinate}:${tag}' on the succeeded prod wave target — ` +
+        `the recorded image list was truncated by the persisted-JSON bound, so the disagreement ` +
+        `checks saw only the refs before the cut`
+      : `observed image ref '${input.line.coordinate}:${tag}' on the succeeded prod wave target`
   };
 }
 

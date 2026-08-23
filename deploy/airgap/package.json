@@ -13,7 +13,7 @@
     "build": "tsc -b && chmod +x dist/build-bundle.js dist/verify-bundle.js",
     "dev": "tsc -b -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "bundle": "tsx src/build-bundle.ts",
     "verify": "tsx src/verify-bundle.ts"
   },

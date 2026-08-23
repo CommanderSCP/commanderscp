@@ -115,16 +115,27 @@ The bundle carries all three ephemeral runner images — \`scp-runner-iac\`, \`s
 Two things do not follow from that, and both are worth knowing before you plan a rollout: none of
 them is **enabled**, and not every deployment mode can **run** one.
 
-**\`--mode helm\` cannot start any of them today, and no chart value changes that.** The
-orchestrator plugins launch a runner with the docker CLI (\`docker create\` / \`docker cp\` /
-\`docker start\`) against a host Docker daemon. A Kubernetes pod has none, this chart deliberately
-mounts no docker socket (a container-escape risk it will not paper over), and the plugins have no
-Kubernetes-native launch mode yet — see \`helm/templates/runner-iac.yaml\` ("HONEST SCOPE") and
-\`helm/README.md\`. Under helm, \`install.sh\` therefore prints the pinned refs as an **inventory**,
-not as an instruction: there is nothing to set that would make managed execution run.
-\`managedIac.enabled=true\` renders the env vars and the Job-template on-ramp; it does not launch a
-container. \`SCP_MANAGED_SCAN_RUNNER_IMAGE\` has no chart value at all. Plan managed execution on a
-compose/VM instance until that changes.
+**\`--mode helm\` CAN start them, as of 2026-08-20 (M23.4) — this paragraph said the opposite until
+then, and an operator who read the old text and planned around it should re-plan.** What changed is
+that the orchestrator plugins no longer launch a runner only with the docker CLI: with
+\`managedRunners.launcher=kubernetes\` each run is an ephemeral \`Job\` created through the API
+server. Still NO docker socket — this chart mounts none and never will (a container-escape risk it
+will not paper over). Three values enable it, and the chart refuses to render if any is missing
+rather than hanging: \`managedRunners.launcher=kubernetes\`, an EXISTING ReadWriteMany claim in
+\`managedRunners.kubernetes.workspace.claimName=<your-claim>\` (Kubernetes has no \`docker cp\`, so
+inputs and evidence move through a volume the worker and the Job both mount — this chart does not
+create it), and at least one class: \`managedIac.enabled=true\` with \`managedIac.runnerImage=<ref>\`,
+\`managedDep.runnerImage=<ref>\`, or \`managedScan.runnerImage=<ref>\`.
+
+**Two things to know before you turn it on under helm.** managed-IaC's credentials reach the runner
+as a per-run Secret, which needs \`secrets: create,delete\` on the worker ServiceAccount — the chart
+grants it by default and \`managedRunners.kubernetes.perRunSecrets=false\` declines it, in which case
+managed-IaC refuses loudly rather than putting the credential in a pod env var. And \`--network
+none\` is NOT honoured on Kubernetes and cannot be: no pod-spec field removes a pod's network
+namespace, so runner pods carry the label \`scp.launcher.network\` (its value is the requested mode)
+for a NetworkPolicy to select, which
+is traffic denial rather than interface absence and is fail-open on a CNI that does not enforce. On
+compose/VM, \`--network none\` denies that path outright. See \`helm/README.md\` and ADR-0035 §6a.
 
 **\`--mode compose\` — which is also what the \`scp.platform\` Ansible role runs on a VM — is the
 mode where they work.** Each class is off until you name its image, that image setting IS the

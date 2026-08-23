@@ -15,12 +15,15 @@
  * see fake-executor's/webhook-control's own conformance files, neither of which makes assertions
  * beyond wiring the factory).
  */
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
-import { runDiscoveryConformanceSuite, runExecutorConformanceSuite } from "@scp/plugin-testkit";
+import {
+  runDiscoveryConformanceSuite,
+  runExecutorConformanceSuite,
+  mkdtempTracked
+} from "@scp/plugin-testkit";
 import nock from "nock";
 import { createGithubDiscoveryPlugin, createGithubExecutorPlugin } from "./index.js";
 import {
@@ -138,7 +141,7 @@ runExecutorConformanceSuite("github", async () => {
   // A durable statePath (fresh per factory() call) so the cross-restart dedup test reads on-disk
   // state, not the first instance's memory (MAJOR #4). `executorConfig` is shared across the file
   // so the installation-token/dispatch fixtures keep matching; only statePath varies per call.
-  const statePath = join(await mkdtemp(join(tmpdir(), "github-conformance-")), "state.json");
+  const statePath = join(await mkdtempTracked(join(tmpdir(), "github-conformance-")), "state.json");
   const build = (): {
     plugin: ReturnType<typeof createGithubExecutorPlugin>;
     ctx: PluginContext;

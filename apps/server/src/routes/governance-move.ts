@@ -46,7 +46,7 @@ import {
  *    the instance rung binds every org on the deployment. Byte-for-byte the
  *    `dependency_subscription_unlock` shape (`routes/dependency-subscriptions.ts`): tenant-readable
  *    `GET`, operator-only `PUT` through a raw admin pool, because `scp_app` has neither a write grant
- *    nor a write RLS policy on that table (drizzle/0079 §2, two independent barriers).
+ *    nor a write RLS policy on that table (drizzle/0083 §2, two independent barriers).
  *
  * THE EXPLAIN READ ANSWERS ABOUT ONE OBJECT'S CHAIN, AND A MOVE HAS TWO ENDS. `enforced: false` here
  * does NOT promise a move of this object is ungoverned — the destination's chain is ORed in at the
@@ -353,7 +353,7 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
   });
 
   // THE INSTANCE RUNG — operator-only write, through the admin connection (`scp_app` holds neither
-  // a write grant nor a write policy on this table — drizzle/0079 §2).
+  // a write grant nor a write policy on this table — drizzle/0083 §2).
   typed.route({
     method: "PUT",
     url: "/api/v1/instance/governance-move-enforcement",

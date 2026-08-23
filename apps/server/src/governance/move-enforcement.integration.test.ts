@@ -118,7 +118,7 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     /** …and its stored URN, which the IaC and discovery-accept `contains` cases name it by. */
     orphanComponentUrn: string;
     /** Operator at the org root: holds `object:write` + `relationship:write` EVERYWHERE, and does
-     *  NOT hold `governance:move` (drizzle/0079 grants it to Administrator + Owner only). */
+     *  NOT hold `governance:move` (drizzle/0083 grants it to Administrator + Owner only). */
     operatorToken: string;
     /** Administrator at the org root: holds `governance:move`. */
     administratorToken: string;
@@ -654,7 +654,7 @@ describe("governance:move enforcement (proposal §9.2)", () => {
   });
 
   it("RLS: a TENANT connection cannot write the instance table — the second barrier", async () => {
-    // Barrier 1 is the missing grant, barrier 2 the missing write policy (drizzle/0079 §2). A
+    // Barrier 1 is the missing grant, barrier 2 the missing write policy (drizzle/0083 §2). A
     // `scp_app` connection with the tenant GUC set must fail on INSERT even though it can SELECT.
     const pool = new pg.Pool({ connectionString: testDatabaseUrl(), max: 1 });
     try {

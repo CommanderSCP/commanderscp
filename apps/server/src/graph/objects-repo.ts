@@ -34,6 +34,15 @@ import {
   assertMayWriteGovernanceLabels,
   assertSelectorKeysAreGovernanceLabels
 } from "../governance/governance-labels.js";
+import { assertValidComponentSecurityDeclarations } from "../governance/component-declaration-guard.js";
+import {
+  assertDeclaredFactClauseIsNarrowed,
+  assertScanRuleRequiresScanControl
+} from "../governance/scan-rule-authoring-guard.js";
+import {
+  assertScanOverrideGrantNotSelfDecided,
+  type ScanOverrideGrantDecisionWrite
+} from "../governance/scan-override-grant-authoring-guard.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
 import {
@@ -130,7 +139,7 @@ export async function getOrgRootObjectId(tx: TenantTx, orgId: string): Promise<s
   return row.id;
 }
 
-export interface CreateObjectInput {
+export interface CreateObjectInput extends ScanOverrideGrantDecisionWrite {
   orgId: string;
   typeId: string;
   actorObjectId: string;
@@ -418,7 +427,23 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // calls the guard itself, before its upsert. That is the identical shape M16.2 clause (4) uses two
   // blocks above, for the identical reason, against the identical two-module census.
   if (!input.federationImport) {
+    // M22.5 (ADR-0033 §6 guard 3) — the component's security DECLARATIONS, strict at the local
+    // author's door and open on the wire. Installed HERE rather than at the component routes for
+    // exactly the reason the two guards below are: a filterless census of doors reaching this
+    // function with free-form `properties` found four, and a per-route install would have missed
+    // three of them (`governance/component-declaration-guard.ts` names them).
+    assertValidComponentSecurityDeclarations({ typeId: input.typeId, properties });
     assertEnforceableDependencySubscriptionScope({ typeId: input.typeId, properties });
+    // M22.5 — the OTHER half of ADR-0033 §6's split, and the half the line above cannot reach. That
+    // one bounds what a COMPONENT may declare; this one bounds what a POLICY may do with a
+    // declaration. A `declared_fact` clause carrying no narrowing matcher excludes every finding at
+    // every severity, and admission is per CLASS — so no tier above can see the clause's reach and
+    // consent to it. See `scan-rule-authoring-guard.ts`.
+    //
+    // Ordered here, among the SYNCHRONOUS refusals and ahead of every awaited one, for the reason
+    // stated on the M22.8 guard below: it reads only the document, so a bad write is rejected before
+    // anything pays for a round trip.
+    assertDeclaredFactClauseIsNarrowed({ typeId: input.typeId, properties });
     // M21.5 — the SECOND dependency-subscription authoring refusal, installed at this same choke
     // point for the same reasons and under the same `federationImport` exemption (see above and
     // `subscription-authoring-guard.ts`'s M21.5 section). It is `await`ed because it reads a stored
@@ -444,6 +469,36 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
       before: {},
       after: labels,
       subject: `${input.typeId} '${input.name}'`
+    });
+    // M22.8 — the FIFTH authoring refusal at this choke point, and the one that ends M22's most
+    // common first-time experience: a `scanThreshold`/`scanExclusion` rule that requires no scan
+    // control constrains nothing, silently (the reconcile prewarm never even resolves the two
+    // dimensions, and no scan verdict is ever produced for them to act on). Installed here rather
+    // than at the `/policies` route for the reason the four above are — `POST /plans` +
+    // `/plans/{id}/apply`, `POST /federation/hand-fill` and `POST /federation/overlays` all reach
+    // this function with a free-form `typeId` and free-form `properties`, and a per-route install
+    // would miss all three.
+    //
+    // Ordered LAST of the five deliberately: it is the only one that issues a query of its own (it
+    // reads the org's controls to ask whether any scan control is required), so every cheaper
+    // refusal above — two of them purely synchronous — gets to reject a bad write before this one
+    // spends a round trip.
+    await assertScanRuleRequiresScanControl(tx, {
+      orgId: input.orgId,
+      typeId: input.typeId,
+      properties
+    });
+    // M22.6 (ADR-0033 §6a) — the FOURTH authoring refusal at this choke point, and the one that ends
+    // the override design's second door. `scan_override_grant` being governance-managed maps the IaC
+    // path to `policy:write`, which a routine domain-scoped policy author holds — so the manifest
+    // `{status: "approved", expiresAt: "2999-…"}` was accepted with no tier check on the rule being
+    // waived, no Decision and no audit event. Installed here for the reason the three above are: a
+    // per-route install would miss `POST /plans` + `/plans/{id}/apply`, `POST /federation/hand-fill`,
+    // `POST /federation/overlays` and the typed registries.
+    assertScanOverrideGrantNotSelfDecided({
+      typeId: input.typeId,
+      properties,
+      isDecisionWrite: input.scanOverrideGrantDecision
     });
   }
 
@@ -724,7 +779,7 @@ export async function listObjects(
   };
 }
 
-export interface UpdateObjectInput {
+export interface UpdateObjectInput extends ScanOverrideGrantDecisionWrite {
   orgId: string;
   typeId: string;
   actorObjectId: string;
@@ -859,10 +914,23 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   // un-editable until its scope is fixed — which is the remedy the error already names, and is the
   // fail-closed direction.
   if (!input.federationImport) {
+    // M22.5 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
+    // the identical reason the two below are.
+    assertValidComponentSecurityDeclarations({
+      typeId: input.typeId,
+      properties: nextProperties
+    });
     assertEnforceableDependencySubscriptionScope({
       typeId: input.typeId,
       properties: nextProperties
     });
+    // M22.5 — the UPDATE half of the unnarrowed-`declared_fact` refusal, checked against
+    // `nextProperties` for the identical reason its neighbours are, and it is the half that matters:
+    // the attack is an EDIT. A policy authored with `pkgName: "openssl"` clears the create guard, and
+    // a later PATCH that merely DROPS that key widens the clause from one package to every finding —
+    // the same bytes-on-the-wire ambiguity the label delta below describes, where only the stored row
+    // can tell a narrowing from a removal. Synchronous, so it sits ahead of the awaited refusals.
+    assertDeclaredFactClauseIsNarrowed({ typeId: input.typeId, properties: nextProperties });
     // M21.5 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
     // the identical reason the line above is: an ordinary PATCH that rewrites `scope`/`effects` can
     // turn an inert policy into an enabling one without ever passing through a create.
@@ -909,6 +977,28 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       objectId: existing.id,
       before: existing.properties as Record<string, unknown>,
       after: nextProperties
+    });
+    // M22.8 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
+    // the identical reason the three above are: a PATCH that adds a `scanThreshold` effect, or one
+    // that strips the `requireControls` effect out from under an existing ceiling, turns an
+    // enforceable rule into an inert one without ever passing through a create.
+    //
+    // Ordered LAST of the four for the same reason as on the create half: it is the only one here
+    // that issues its own query, so the synchronous selector check and the delta-gated label check
+    // both get to refuse before this one pays for a round trip.
+    await assertScanRuleRequiresScanControl(tx, {
+      orgId: input.orgId,
+      typeId: input.typeId,
+      properties: nextProperties
+    });
+    // M22.6 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
+    // the identical reason the four above are. It is the half that matters MOST here: the same IaC
+    // door that could mint an approved grant could also flip an already-DENIED one to `approved`,
+    // which the `decide` route explicitly refuses.
+    assertScanOverrideGrantNotSelfDecided({
+      typeId: input.typeId,
+      properties: nextProperties,
+      isDecisionWrite: input.scanOverrideGrantDecision
     });
   }
 

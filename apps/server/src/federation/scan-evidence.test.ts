@@ -299,6 +299,120 @@ describe("the operator's instance floor binds at the boundary (ADR-0016 §3)", (
   });
 });
 
+describe("M22.9 — a verdict is only current while the exclusion set it was judged under is", () => {
+  const H1 = "1111111111111111111111111111111111111111111111111111111111111111";
+  const H2 = "2222222222222222222222222222222222222222222222222222222222222222";
+
+  /** The gate call WITH the M22.9 argument. `covers()` above deliberately omits it, so every other
+   *  test in this file is also a standing check that a caller which never opts in is unaffected. */
+  function coversUnder(runs: ScanRunLike[], expected: string | undefined, floor = NO_FLOOR) {
+    return evaluateScanCoverage({
+      digest: DIGEST,
+      runs,
+      instanceFloor: floor,
+      expectedExclusionSetHash: expected
+    });
+  }
+
+  it("NOTHING RESOLVED, NOTHING RECORDED — byte-identical to before this check existed", () => {
+    // M22.2's promise to every deployment that has authored no exclusion, which is nearly all of
+    // them. `undefined !== undefined` is false, so the check cannot fire.
+    const plain = run({});
+    expect(covers([plain]).covered).toBe(true);
+    // ...and passing the argument explicitly as `undefined` is the SAME call, by construction: the
+    // comparison is a value test, not a key-presence test, so no caller can half-opt-in.
+    expect(coversUnder([plain], undefined).covered).toBe(true);
+  });
+
+  it("the set has not moved — the verdict stands", () => {
+    expect(
+      coversUnder([run({ evidence: passingEvidence({ exclusionSetHash: H1 }) })], H1).covered
+    ).toBe(true);
+  });
+
+  it("REFUSES a pass judged under a set that has since moved — THE defect this closes", () => {
+    // The scenario end to end: an override grant was live, the scan passed under it, the grant
+    // expired. NOTHING about the row changes on expiry — it is a read-time window in the resolver,
+    // ADR-0033 having rejected a status-flipping sweeper — so without this the same row keeps
+    // authorizing crossings and `promotion-repo.ts` signs a bundle on a waiver that is gone.
+    const v = coversUnder([run({ evidence: passingEvidence({ exclusionSetHash: H1 }) })], H2);
+    expect(v.covered).toBe(false);
+    if (v.covered) throw new Error("unreachable");
+    expect(v.code).toBe("stale_exclusion_set");
+    // Both sides in the Decision: "the set moved" and "this run predates stamping" are different
+    // things to go and fix.
+    expect(v.detail.recordedExclusionSetHash).toBe(H1);
+    expect(v.detail.expectedExclusionSetHash).toBe(H2);
+  });
+
+  it("REFUSES an UNSTAMPED (pre-M22.7) run when clauses ARE in force — fail-closed", () => {
+    // The honest reading of a missing stamp is "unknown", never "fine". It costs a re-scan on the
+    // short-circuit's side of this rule and a re-export on the gate's; it never costs a crossing.
+    const v = coversUnder([run({ evidence: passingEvidence() })], H1);
+    expect(v.covered).toBe(false);
+    if (v.covered) throw new Error("unreachable");
+    expect(v.code).toBe("stale_exclusion_set");
+    expect(v.detail.recordedExclusionSetHash).toBe(null);
+  });
+
+  it("REFUSES a stamped run once EVERY clause has been withdrawn", () => {
+    // The other direction of the same asymmetry, and the one an operator reaches by deleting the
+    // policy rather than by waiting: the verdict was judged under a strictly looser set than the
+    // (empty) one now in force.
+    const v = coversUnder(
+      [run({ evidence: passingEvidence({ exclusionSetHash: H1 }) })],
+      undefined
+    );
+    expect(v.covered).toBe(false);
+    if (v.covered) throw new Error("unreachable");
+    expect(v.code).toBe("stale_exclusion_set");
+  });
+
+  it("is checked BEFORE the instance floor — the counts are a product of the set", () => {
+    // Order is load-bearing rather than incidental: the number the floor compares is derived from
+    // the exclusion set (literally so once `effectiveSeverityCounts` is what gets compared —
+    // ADR-0033 §2), so "which set was this judged under" has to be settled first. If the floor check
+    // ran first this would report `below_instance_floor` and an operator would go and edit a floor.
+    const v = coversUnder(
+      [run({ evidence: passingEvidence({ exclusionSetHash: H1 }, { high: 4 }) })],
+      H2,
+      { maxHigh: 0 }
+    );
+    expect(v.covered).toBe(false);
+    if (v.covered) throw new Error("unreachable");
+    expect(v.code).toBe("stale_exclusion_set");
+  });
+
+  it("is checked AFTER the digest binding — a verdict about another artifact is not a stale answer", () => {
+    const v = coversUnder(
+      [run({ evidence: passingEvidence({ artifactDigest: OTHER, exclusionSetHash: H1 }) })],
+      H2
+    );
+    expect(v.covered).toBe(false);
+    if (v.covered) throw new Error("unreachable");
+    expect(v.code).toBe("not_digest_bound");
+  });
+
+  it("a stale hash does not mask a newer FAILURE — supersession still decides first", () => {
+    const control = "c0000000-0000-4000-8000-0000000000cc";
+    const pass = run({
+      controlObjectId: control,
+      createdAt: new Date(1000),
+      evidence: passingEvidence({ exclusionSetHash: H1 })
+    });
+    const laterFail = run({
+      controlObjectId: control,
+      createdAt: new Date(2000),
+      status: "fail",
+      evidence: { expectedDigest: DIGEST }
+    });
+    const v = coversUnder([pass, laterFail], H2);
+    expect(v.covered).toBe(false);
+    if (v.covered) throw new Error("unreachable");
+    expect(v.code).toBe("not_passing");
+  });
+});
+
 describe("fail-closed on nothing at all", () => {
   it("no runs whatsoever refuses, and says so as `no_scan_outcome`", () => {
     const v = covers([]);
