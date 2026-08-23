@@ -622,10 +622,12 @@ describe("no HOOK runs on a deadline nobody chose either", () => {
     ).toStrictEqual([]);
   });
 
-  it("EVERY package declares one, including the fourteen that have no hook today", () => {
+  it("EVERY package declares one, including the ones that have no hook today", () => {
     // No allowlist, deliberately, and this asserts that choice rather than leaving it to drift.
-    // Fourteen of the thirty-six unit suites contain no hook at all right now, so a budget there
-    // bounds nothing — but the cost of declaring it is a line, and the cost of NOT declaring it is
+    // Fourteen of the thirty-six unit suites contained no hook at all when this was written
+    // (measured 2026-08-23; the assertion below deliberately does not pin the count, which would
+    // red on the next package added rather than on anything going wrong), so a budget there
+    // bounds nothing today — but the cost of declaring it is a line, and the cost of NOT declaring it is
     // that the next hook to be added arrives on the implicit default with nobody looking. That is
     // the precise shape of the defect this file exists for, so uniformity wins over minimalism.
     const files = trackedFiles();
