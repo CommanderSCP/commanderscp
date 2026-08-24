@@ -3001,6 +3001,179 @@ describe("the BUILD tile — the SBOM alone (§10.1), present or stated absent; 
   });
 });
 
+/* ================================================================================================
+ * component-journey-view.md §3 Segment 2 — the "upstream build" marker: the observed CI run line
+ * beneath "built upstream of CommanderSCP". Server-composed text rendered verbatim; the line exists
+ * ONLY in the upstream case (no build binding) and ONLY when the server named a run.
+ * ============================================================================================== */
+
+type ObservedRun = NonNullable<ComponentPipelineResponse["observedRun"]>;
+
+function observedRunFixture(over: Partial<ObservedRun> = {}): ObservedRun {
+  return {
+    sourceKind: "github",
+    repo: "acme/checkout-api",
+    runId: "30858160395",
+    workflowName: "CI",
+    workflowPath: ".github/workflows/ci.yml",
+    url: "https://github.com/acme/checkout-api/actions/runs/30858160395",
+    observedAt: "2026-08-20T12:00:00.000Z",
+    changeId: "019f0000-0000-7000-8000-00000000d00d",
+    ...over
+  };
+}
+
+describe('the BUILD tile\'s observed-run line — "GitHub Actions · CI · run …", the §3 Segment 2 upstream marker', () => {
+  it("renders with a link to observedRun.url — provider label, workflow name, run id, verbatim, in that order", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest bindings={[]} artifact={null} observedRun={observedRunFixture()} />
+    );
+    expect(html).toContain('data-testid="pipeline-build-observed-run"');
+    expect(html).toContain('data-testid="pipeline-build-observed-run-link"');
+    expect(html).toContain('href="https://github.com/acme/checkout-api/actions/runs/30858160395"');
+    expect(html).toContain("GitHub Actions · CI · run 30858160395");
+  });
+
+  it("renders WITHOUT a link when observedRun.url is null — plain text, no href, same label", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={null}
+        observedRun={observedRunFixture({ url: null })}
+      />
+    );
+    expect(html).toContain('data-testid="pipeline-build-observed-run"');
+    expect(html).not.toContain('data-testid="pipeline-build-observed-run-link"');
+    expect(html).not.toContain("<a ");
+    expect(html).toContain("GitHub Actions · CI · run 30858160395");
+  });
+
+  it("falls back to workflowPath when workflowName is null, then to 'CI' when both are null", () => {
+    const byPath = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={null}
+        observedRun={observedRunFixture({ workflowName: null })}
+      />
+    );
+    expect(byPath).toContain("GitHub Actions · .github/workflows/ci.yml · run 30858160395");
+
+    const bare = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={null}
+        observedRun={observedRunFixture({ workflowName: null, workflowPath: null })}
+      />
+    );
+    expect(bare).toContain("GitHub Actions · CI · run 30858160395");
+  });
+
+  it("the title tooltip carries observedAt in the viewer's LOCAL clock", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest bindings={[]} artifact={null} observedRun={observedRunFixture()} />
+    );
+    expect(html).toContain(`title="${new Date("2026-08-20T12:00:00.000Z").toLocaleString()}"`);
+  });
+
+  it("gitea/gitlab providers get their own label; an unrecognized sourceKind falls back to itself verbatim", () => {
+    const gitea = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={null}
+        observedRun={observedRunFixture({
+          sourceKind: "gitea",
+          workflowName: null,
+          workflowPath: null
+        })}
+      />
+    );
+    expect(gitea).toContain("Gitea Actions · CI · run 30858160395");
+
+    const gitlab = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={null}
+        observedRun={observedRunFixture({
+          sourceKind: "gitlab",
+          workflowName: null,
+          workflowPath: null
+        })}
+      />
+    );
+    expect(gitlab).toContain("GitLab CI · CI · run 30858160395");
+
+    const other = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={null}
+        observedRun={observedRunFixture({
+          sourceKind: "bitbucket",
+          workflowName: null,
+          workflowPath: null
+        })}
+      />
+    );
+    expect(other).toContain("bitbucket · CI · run 30858160395");
+  });
+
+  it("ABSENT observedRun (undefined or null) → the tile renders EXACTLY as before, byte for byte — absence is not an empty claim", () => {
+    const withoutProp = renderToStaticMarkup(<BuildNodeForTest bindings={[]} artifact={null} />);
+    const explicitUndefined = renderToStaticMarkup(
+      <BuildNodeForTest bindings={[]} artifact={null} observedRun={undefined} />
+    );
+    const explicitNull = renderToStaticMarkup(
+      <BuildNodeForTest bindings={[]} artifact={null} observedRun={null} />
+    );
+    expect(withoutProp).not.toContain("pipeline-build-observed-run");
+    expect(explicitUndefined).toBe(withoutProp);
+    expect(explicitNull).toBe(withoutProp);
+  });
+
+  it("the COORDINATED case (a build binding exists) never shows the line, even when observedRun is present", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[BUILD_BINDING]}
+        artifact={null}
+        observedRun={observedRunFixture()}
+      />
+    );
+    expect(html).not.toContain("pipeline-build-observed-run");
+    expect(html).not.toContain("built upstream of");
+  });
+
+  it("laneNodes threads observedRun from the response onto the build node (buildsHere true via a build-category source)", () => {
+    const nodes = laneNodes(
+      {
+        sources: [source({ id: "s1", type: "image", category: "build" })],
+        stages: [],
+        registry: null,
+        artifact: null,
+        observedRun: observedRunFixture()
+      },
+      [],
+      SOFTWARE_LANE
+    );
+    const buildNode = nodes.find((n) => n.kind === "build");
+    expect(buildNode).toBeDefined();
+    expect(buildNode?.kind === "build" && buildNode.observedRun).toEqual(observedRunFixture());
+  });
+
+  it("laneNodes carries observedRun through as undefined on an older server (the field absent from the response)", () => {
+    const nodes = laneNodes(
+      {
+        sources: [source({ id: "s1", type: "image", category: "build" })],
+        stages: [],
+        registry: null,
+        artifact: null
+      },
+      [],
+      SOFTWARE_LANE
+    );
+    const buildNode = nodes.find((n) => n.kind === "build");
+    expect(buildNode?.kind === "build" && buildNode.observedRun).toBeUndefined();
+  });
+});
+
 describe("the BUILD review dialog body renders the SBOM VERBATIM, and NOTHING of the manifest (portal-free)", () => {
   it("every SBOM reference field, by its wire name; the dialog is titled 'SBOM reference'", () => {
     const html = renderToStaticMarkup(<BuildReviewBody artifact={artifact({ sbom: sbom() })} />);

@@ -238,6 +238,11 @@ type ArtifactOnWire = ComponentPipelineArtifact | null | undefined;
 type PromotionExport = ComponentPipelineArtifact["signing"]["promotionExports"][number];
 type SbomRef = NonNullable<ComponentPipelineArtifact["sbom"]>;
 
+/** §9.3's `observedRun` reading, mirrored: `undefined` = an older server (not known either way);
+ *  `null` = the server SAYS no change of this component names a run; an object = the pick. */
+type ComponentPipelineObservedRun = NonNullable<ComponentPipelineResponse["observedRun"]>;
+type ObservedRunOnWire = ComponentPipelineObservedRun | null | undefined;
+
 /** The target's substrate facet as the wire carries it on both stage shapes (§9.1). */
 type DeploymentTargetFacet = Pick<
   ComponentPipelineStage["deploymentTarget"],
@@ -1309,6 +1314,7 @@ type LaneNode =
       key: string;
       bindings: ComponentPipelineStage["bindings"];
       artifact: ArtifactOnWire;
+      observedRun: ObservedRunOnWire;
     }
   | {
       kind: "registry";
@@ -1327,7 +1333,10 @@ type LaneNode =
  * Scan & sign node is never drawn on a guess.
  */
 export function laneNodes(
-  data: Pick<ComponentPipelineResponse, "sources" | "stages" | "registry" | "artifact">,
+  data: Pick<
+    ComponentPipelineResponse,
+    "sources" | "stages" | "registry" | "artifact" | "observedRun"
+  >,
   waves: JourneyWave[],
   lane: Lane,
   instanceRole?: InstanceRole | undefined
@@ -1353,10 +1362,11 @@ export function laneNodes(
   // `undefined` (older server) is carried through as-is: each node states "not known" for it,
   // which is a different sentence from `null`'s "no artifact yet".
   const artifact: ArtifactOnWire = data.artifact;
+  const observedRun: ObservedRunOnWire = data.observedRun;
 
   if (buildsHere) {
     nodes.push({ kind: "source", key: "src-build", label: "Source code", sources: buildSources });
-    nodes.push({ kind: "build", key: "build", bindings: uniqueBuilds, artifact });
+    nodes.push({ kind: "build", key: "build", bindings: uniqueBuilds, artifact, observedRun });
   }
   // Between build and config, where the GLOSSARY puts it — and only in a lane that has one at all
   // (infra produces no registry artifact to advance by digest).
@@ -2913,10 +2923,17 @@ function ArtifactFieldList({
  */
 function BuildNode({
   bindings,
-  artifact
+  artifact,
+  observedRun
 }: {
   bindings: ComponentPipelineStage["bindings"];
   artifact: ArtifactOnWire;
+  /** §3 Segment 2's "upstream build" marker (component-journey-view.md) — omit the prop entirely
+   *  (as `BuildNodeForTest`'s callers that predate it do) to mean "older server", the same
+   *  undefined-vs-null-vs-object reading every other §9.3 field on this tile follows. Rendered ONLY
+   *  in the upstream case (`bindings.length === 0`) — a coordinated build already names its own
+   *  executor line above, so drawing this too would be two answers to "where does the build run?" */
+  observedRun?: ObservedRunOnWire;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const reviewable = buildHasReview(artifact);
@@ -2935,10 +2952,13 @@ function BuildNode({
         }
       >
         {bindings.length === 0 ? (
-          <p className="text-slate-400">
-            No build executor is bound — this component&rsquo;s artifact is built upstream of
-            CommanderSCP.
-          </p>
+          <>
+            <p className="text-slate-400">
+              No build executor is bound — this component&rsquo;s artifact is built upstream of
+              CommanderSCP.
+            </p>
+            {observedRun ? <ObservedRunLine observedRun={observedRun} /> : null}
+          </>
         ) : (
           bindings.map((binding) => (
             <div
@@ -3008,6 +3028,57 @@ function BuildArtifactLines({ artifact }: { artifact: ArtifactOnWire }): React.J
         </span>
       ) : (
         <span className="text-slate-400">no SBOM reported for this artifact</span>
+      )}
+    </p>
+  );
+}
+
+/** The provider label named in the observed-run line — see `ObservedRunLine`. Falls back to the
+ *  `sourceKind` VERBATIM for anything not named here rather than inventing a label; today only
+ *  github/gitea/gitlab ever reach this component (`observed-run-facts.ts` reads run identity out of
+ *  no other sourceKind), so the fallback is defensive, not expected to render. */
+const OBSERVED_RUN_PROVIDER_LABELS: Record<string, string> = {
+  github: "GitHub Actions",
+  gitea: "Gitea Actions",
+  gitlab: "GitLab CI"
+};
+
+/**
+ * component-journey-view.md §3 Segment 2's "upstream build" marker — "GitHub Actions · CI · run
+ * 30858160395 ↗", never "build: unknown". Every word left of the dots is server-composed and
+ * rendered VERBATIM; the dots themselves are the only invented copy. Linked to `observedRun.url`
+ * when the server named one; plain text (no affordance invented) when it did not — the `object_
+ * attributes` GitLab webhook shape names a run with no citable url (see `observed-run-facts.ts`).
+ * The title tooltip carries `observedAt` in the viewer's LOCAL clock (the `toLocaleString()` idiom
+ * this file already uses for every other timestamp it surfaces to a person).
+ */
+function ObservedRunLine({
+  observedRun
+}: {
+  observedRun: ComponentPipelineObservedRun;
+}): React.JSX.Element {
+  const provider = OBSERVED_RUN_PROVIDER_LABELS[observedRun.sourceKind] ?? observedRun.sourceKind;
+  const workflow = observedRun.workflowName ?? observedRun.workflowPath ?? "CI";
+  const label = `${provider} · ${workflow} · run ${observedRun.runId}`;
+  const observedAtLocal = new Date(observedRun.observedAt).toLocaleString();
+  return (
+    <p className="text-slate-400" data-testid="pipeline-build-observed-run" title={observedAtLocal}>
+      {observedRun.url ? (
+        <a
+          href={observedRun.url}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            "inline-flex items-center gap-1 rounded underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900",
+            focusRing
+          )}
+          data-testid="pipeline-build-observed-run-link"
+        >
+          {label}
+          <ExternalLink className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+        </a>
+      ) : (
+        label
       )}
     </p>
   );
@@ -3095,13 +3166,18 @@ export function BuildReviewBody({
 export function BuildNodeForTest(props: {
   bindings: ComponentPipelineStage["bindings"];
   artifact: ArtifactOnWire;
+  observedRun?: ObservedRunOnWire;
   /** §10.3 — see `StageCardForTest`. The Build tile has NO Details today (its compact set is
    *  everything it knows), so this only pins that no toggle appears whatever is asked. */
   detailsExpanded?: boolean;
 }): React.JSX.Element {
   return (
     <TileDetailsForTest expanded={props.detailsExpanded}>
-      <BuildNode bindings={props.bindings} artifact={props.artifact} />
+      <BuildNode
+        bindings={props.bindings}
+        artifact={props.artifact}
+        observedRun={props.observedRun}
+      />
     </TileDetailsForTest>
   );
 }
@@ -4561,7 +4637,11 @@ export function ComponentPipelinePage({
                         />
                       )}
                       {node.kind === "build" && (
-                        <BuildNode bindings={node.bindings} artifact={node.artifact} />
+                        <BuildNode
+                          bindings={node.bindings}
+                          artifact={node.artifact}
+                          observedRun={node.observedRun}
+                        />
                       )}
                       {node.kind === "registry" && (
                         <RegistryNode
