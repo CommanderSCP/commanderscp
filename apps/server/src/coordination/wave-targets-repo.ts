@@ -1,4 +1,15 @@
-import { and, desc, eq, getTableColumns, inArray, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  getTableColumns,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql
+} from "drizzle-orm";
 import type { ExecutionStatus } from "@scp/plugin-api";
 import {
   PERSISTED_JSON_MAX_CHARS,
@@ -10,6 +21,11 @@ import type { ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changes, changeWaveTargets, changeWaves, objects } from "../db/schema.js";
 import { WAVE_TARGET_TOMBSTONED_STATUS } from "./target-liveness.js";
+import {
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
+  WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
+  WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS
+} from "./campaign-recipe.js";
 
 /**
  * DB access `coordination/reconcile.ts` needs around `change_wave_targets`/`change_waves` beyond
@@ -490,6 +506,40 @@ export function observedStateFrom(
 }
 
 /**
+ * EVERY terminal status that means "reconcile REFUSED to drive this target", as ONE list.
+ *
+ * It exists because the set was previously spelled out by hand in FIVE places — `blockWaveTarget`'s
+ * parameter union, `terminalizeRefusedWaveTarget`'s parameter union, {@link
+ * TERMINAL_WAVE_TARGET_STATUSES}, `reconcile.ts`'s per-target terminal skip and `service-board.ts`'s
+ * `FAILED_STATUSES` — and the two lists nearest each other already carry a comment warning that
+ * "adding a terminal status to only one of them is how a wave gets kept alive forever by a row
+ * nothing will ever come back for". A warning is not a mechanism. This is the mechanism: the union
+ * type makes the compiler refuse a status that is not in the list, and every consumer derives from
+ * the list rather than restating it, so a sixth cause cannot be added to four places out of five.
+ *
+ * `service-board.ts` is the one consumer that must keep its own literal set, because it also
+ * contains `failed`/`aborted` (genuine outcomes, not refusals) — it spreads this list into its own.
+ */
+export const REFUSED_WAVE_TARGET_STATUSES = [
+  "no_executor",
+  WAVE_TARGET_TOMBSTONED_STATUS,
+  WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS,
+  WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
+  // M25.4 / OQ-5 — a recipe aimed at one of CommanderSCP's OWN actuators. The mechanism above did
+  // its job on the very next status added: this line is the ONLY edit that was needed, and
+  // `blockWaveTarget`, `terminalizeRefusedWaveTarget`, the per-target terminal skip and
+  // `service-board.ts` all picked it up from the type.
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS
+] as const;
+export type RefusedWaveTargetStatus = (typeof REFUSED_WAVE_TARGET_STATUSES)[number];
+
+/** Is this status one reconcile refused to drive? Used by the per-target loop's terminal skip, so
+ *  that branch and the terminalizer can never disagree about the set. */
+export function isRefusedWaveTargetStatus(status: string): status is RefusedWaveTargetStatus {
+  return (REFUSED_WAVE_TARGET_STATUSES as readonly string[]).includes(status);
+}
+
+/**
  * Terminalize a wave target that reconcile REFUSED to drive, on a dedicated per-cause status. A
  * DISTINCT terminal value (never `failed`) so `scp change explain`/the UI can name the actual cause,
  * mirroring `campaign_waves`' purpose-built `blocked`. Two causes exist today, and the status is a
@@ -502,6 +552,14 @@ export function observedStateFrom(
  *    (or the half of a placement's pair it depends on has), so there is nothing live to release to.
  *    Reporting that as a binding gap would be the provenance-label mistake: a label named after the
  *    branch that happened to match rather than after what is true.
+ *  * `recipe_unsupported` (M25.4, `campaign-recipe.ts`) — the target IS bound, for the right Type,
+ *    and the executor it resolved to does not serve the trigger KIND the change's recipe asked for
+ *    (`describeCapabilities().triggerKinds`). `trigger()` is never called: falling back to the
+ *    executor's default verb would run the target's ordinary pipeline and record a migration that
+ *    never happened.
+ *  * `recipe_unreadable` (M25.4) — the change carries a `properties.recipe` that does not parse.
+ *    Driving it anyway would mean triggering with no parameters, which is the same lie by a
+ *    different route.
  *
  * Guarded on `status IN ('pending','triggering')` and RETURNING so the caller emits the block
  * Decision + hash-chained audit event EXACTLY ONCE: a later reconcile tick that finds the target
@@ -513,7 +571,7 @@ export async function terminalizeRefusedWaveTarget(
   tx: TenantTx,
   orgId: string,
   targetId: string,
-  status: "no_executor" | typeof WAVE_TARGET_TOMBSTONED_STATUS
+  status: RefusedWaveTargetStatus
 ): Promise<boolean> {
   const result = await tx
     .update(changeWaveTargets)
@@ -553,8 +611,7 @@ const TERMINAL_WAVE_TARGET_STATUSES: string[] = [
   "succeeded",
   "failed",
   "aborted",
-  "no_executor",
-  WAVE_TARGET_TOMBSTONED_STATUS
+  ...REFUSED_WAVE_TARGET_STATUSES
 ];
 
 /**
@@ -760,6 +817,62 @@ export async function findLatestSucceededExecution(
  *  state handle, and passing one produced by a DIFFERENT executor into this instance's rollback
  *  `trigger()` is meaningless (and dangerous). When the original ran on another executor, no row
  *  matches and the rollback carries a null `priorStateRef`. */
+/**
+ * DID THE ORIGINAL CHANGE EVER HAND THIS TARGET TO AN EXECUTOR? — the question owner decision D7's
+ * rollback exemption turns out to need, and the one that keeps it from becoming a door.
+ *
+ * D7 exempts rollbacks from freezes because holding a rollback pins a BROKEN RELEASE in place for
+ * the whole window. That reasoning is about a target the broken release actually reached. Per-target
+ * admission (M25.2) makes the other case reachable for the first time: a wave of four regions with a
+ * freeze over `amer` now SHIPS the other three, so one of them can FAIL, so an `autoRollbackOnFailure`
+ * policy can mint a rollback whose targets are ALL FOUR of the original's — including `amer`, which
+ * the freeze successfully held and which never received the change. Under a bare `isRollback`
+ * exemption SCP then dispatches an unattended `rollback` trigger into a scope under a declared
+ * freeze, to undo a release that never happened there. `argocd` and `managed-iac` fail closed on the
+ * resulting null `priorStateRef`; `pipeline-generic` and `github` dispatch the workflow anyway.
+ *
+ * So the exemption is qualified by this predicate rather than by the change's kind alone: there is
+ * nothing to roll back at a target the original never dispatched, D7's rationale does not reach it,
+ * and it stays held like any other frozen target until the window closes. This REFUSES more than
+ * D7's letter and permits nothing D7 does not — and pre-M25.2 that target was freeze-blocked too, so
+ * it is not a regression on any behaviour that ever shipped.
+ *
+ * "DISPATCHED" IS `attempt > 0` OR A NON-NULL `executor_ref`, not `status`, and the two arms are
+ * both needed. `claimWaveTargetForTriggering` increments `attempt` and sets `triggering` BEFORE the
+ * executor call, so a trigger that was made and then THREW carries `attempt: 1` with a null ref —
+ * that call still reached the executor and may well have started something. `markWaveTargetTriggered`
+ * writes the ref on success. A target terminalized by `blockWaveTarget` (`no_executor`,
+ * `target_deleted`) touched neither, which is correct: nothing was dispatched there either.
+ *
+ * NOT SCOPED TO AN EXECUTOR INSTANCE, unlike `findOriginalWaveTarget` above — that one is choosing a
+ * `priorStateRef` it must be able to interpret, this one is asking a yes/no question about history,
+ * and narrowing it by plugin instance would answer "no" for a target dispatched under an executor
+ * that has since been rebound. "No" is the answer that HOLDS, so a false "no" is the safe direction,
+ * but an unnecessary one.
+ */
+export async function originalChangeDispatchedTarget(
+  tx: TenantTx,
+  orgId: string,
+  originalChangeObjectId: string,
+  targetObjectId: string
+): Promise<boolean> {
+  const rows = await tx
+    .select({ id: changeWaveTargets.id })
+    .from(changeWaveTargets)
+    .innerJoin(changeWaves, eq(changeWaveTargets.waveId, changeWaves.id))
+    .innerJoin(changePlans, eq(changeWaves.planId, changePlans.id))
+    .where(
+      and(
+        eq(changeWaveTargets.orgId, orgId),
+        eq(changePlans.changeObjectId, originalChangeObjectId),
+        eq(changeWaveTargets.targetObjectId, targetObjectId),
+        or(gt(changeWaveTargets.attempt, 0), isNotNull(changeWaveTargets.executorRef))
+      )
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
 export async function findOriginalWaveTarget(
   tx: TenantTx,
   orgId: string,

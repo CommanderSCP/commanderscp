@@ -263,6 +263,9 @@ export function PeerSettingsCard({
   onSave: (draft: PeerSettingsDraft) => void;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<PeerSettingsDraft>(() => draftFromPeer(peer));
+  // THE NOUN, ROLE-AWARE — this IS the peer row for a retrans peer too (identity, transport,
+  // reachability all apply to it exactly as to an outpost; only the word naming it was wrong).
+  const isRetrans = peer.role === "retrans";
   const patch = peerSettingsPatch(peer, draft);
   const nothingToSave = Object.keys(patch).length === 0;
   const currentMode = peerSyncScopeMode(peer);
@@ -280,9 +283,11 @@ export function PeerSettingsCard({
       <CardHeader>
         <CardTitle>Settings</CardTitle>
         <CardDescription>
-          This outpost&apos;s <strong>peer row</strong>: identity and transport. Local to this
-          instance and never journaled — nothing here is sent to the outpost. Saved through the
-          keyless peer PATCH, which carries no key material at all.
+          This {isRetrans ? "retrans peer's" : "outpost's"}{" "}
+          <strong>{isRetrans ? "row" : "peer row"}</strong>: identity and transport. Local to this
+          instance and never journaled — nothing here is sent to the{" "}
+          {isRetrans ? "peer" : "outpost"}. Saved through the keyless peer PATCH, which carries no
+          key material at all.
         </CardDescription>
       </CardHeader>
       <CardContent>

@@ -190,7 +190,35 @@ export const FreezeSchema = z.object({
   endsAt: z.string().datetime(),
   reason: z.string(),
   createdByActorId: z.string().uuid(),
-  createdAt: z.string().datetime()
+  createdAt: z.string().datetime(),
+  /** M25.2 / owner decision D5 — does this freeze park the WHOLE wave, or only the targets it
+   *  covers? `false` (the default) is per-target admission: a freeze over one region holds that
+   *  region and its siblings ship. `true` restores pre-M25.2 all-or-nothing behaviour, for the
+   *  coupled case where half-applied is worse than not-applied.
+   *
+   *  A REQUIRED response property, which is additive and oasdiff-safe (the standing rule is never
+   *  to make an EXISTING required field optional). Required rather than optional deliberately: the
+   *  column is `NOT NULL DEFAULT false`, so every row has an answer, and an operator asking "will
+   *  this freeze stop the whole release?" must not have to distinguish absent from false. */
+  atomic: z.boolean(),
+  /** M25.1 — when this freeze was RETRACTED, or `null` while it still stands. A lifted freeze is
+   *  no longer in force whatever `endsAt` says, and it is still returned by `GET /freezes/{id}` and
+   *  `GET /freezes` FOREVER: a `gate`/`freeze_admission` Decision cites `freeze.id` in its
+   *  `inputContext`, and "what was this freeze that blocked me?" must stay answerable (charter
+   *  principle 6). LIFTED IS A FIELD, NOT AN ABSENCE — read it, don't infer it from a 404.
+   *
+   *  REQUIRED AND NULLABLE, exactly like `name` above: every row has an answer to "was this
+   *  retracted", and `null` is that answer for the overwhelming majority. Adding a required
+   *  response property is additive and oasdiff-safe (the rule is never to make an EXISTING required
+   *  field optional). */
+  liftedAt: z.string().datetime().nullable(),
+  /** The actor object that lifted it, or `null`. */
+  liftedByActorId: z.string().uuid().nullable(),
+  /** Why it was lifted — mandatory and non-empty whenever `liftedAt` is set, `null` otherwise. A
+   *  lift is a governance LOOSENING that applies to everyone at once; `freeze:override` already
+   *  refuses to bypass a freeze for a single change without a reason, and retracting one outright
+   *  cannot be held to a lower standard. */
+  liftReason: z.string().nullable()
 });
 export type Freeze = z.infer<typeof FreezeSchema>;
 
@@ -199,13 +227,61 @@ export const CreateFreezeRequestSchema = z.object({
   name: z.string().optional(),
   startsAt: z.string().datetime(),
   endsAt: z.string().datetime(),
-  reason: z.string().min(1)
+  reason: z.string().min(1),
+  /** M25.2 / owner decision D5 — opt this freeze OUT of per-target admission (see `FreezeSchema`).
+   *
+   *  OPTIONAL, defaulting to `false` server-side, which is a request widening and therefore
+   *  oasdiff-safe. It exists because D5 is a change that newly PERMITS and applies RETROACTIVELY to
+   *  every freeze already authored: the day per-target admission ships, an operator who freezes a
+   *  service during an incident gets three quarters of a release instead of none. `atomic: true` is
+   *  the escape hatch that decision was taken on the strength of, so it ships in the SAME increment
+   *  as the loosening rather than in the one after it — a mitigation that lands later is a window
+   *  in which the mitigation does not exist. */
+  atomic: z.boolean().optional()
 });
 export type CreateFreezeRequest = z.infer<typeof CreateFreezeRequestSchema>;
 
 export const FreezeIdParamSchema = z.object({ id: z.string().uuid() });
 export const FreezeListResponseSchema = cursorPageResponseSchema(FreezeSchema);
 export type FreezeListResponse = z.infer<typeof FreezeListResponseSchema>;
+
+/**
+ * M25.1 — the body of `DELETE /api/v1/freezes/{id}`.
+ *
+ * A BODY ON A DELETE, following `DeleteSourceMappingRequestSchema` (the shipped precedent on
+ * `DELETE /change-sources/{sourceKind}/mappings`), because the reason is MANDATORY and a free-text
+ * governance justification does not belong in a query string.
+ *
+ * `reason` IS REQUIRED, and that is the whole schema. Lifting a freeze retracts a protection for
+ * EVERYONE covered by it — a strictly wider blast radius than `freeze:override`, which lets one
+ * change past and leaves the freeze standing, and which has refused to work without a reason since
+ * M4 (DESIGN §10.3). A loosening with no recorded reason is exactly what that refusal exists to
+ * prevent.
+ */
+export const LiftFreezeRequestSchema = z.object({
+  reason: z.string().min(1)
+});
+export type LiftFreezeRequest = z.infer<typeof LiftFreezeRequestSchema>;
+
+/**
+ * M25.1 — the body of `PATCH /api/v1/freezes/{id}`: move `endsAt`, in either direction.
+ *
+ * SHORTENING is a LOOSENING (governance stops protecting sooner) and EXTENDING is a TIGHTENING.
+ * Both need `freeze:write` at the freeze's own scope and both require a reason; the server records
+ * which direction it was, together with the old and new instants, in the audit event and the
+ * Decision — "who made governance weaker, and when" is the question an audit log is read with.
+ *
+ * `startsAt` IS DELIBERATELY NOT EDITABLE. Moving the start of an open window is either a no-op or
+ * a rewriting of history ("this freeze was in force from a time it was not"), and `endsAt` is the
+ * whole of the escape hatch M25.1 exists to provide. Shortening `endsAt` to a past instant is
+ * allowed and is NOT re-labelled a lift: same effect on admission, different and truthful record,
+ * and reversible where a lift is not.
+ */
+export const UpdateFreezeWindowRequestSchema = z.object({
+  endsAt: z.string().datetime(),
+  reason: z.string().min(1)
+});
+export type UpdateFreezeWindowRequest = z.infer<typeof UpdateFreezeWindowRequestSchema>;
 
 // -------------------------------------------------------------------------------------------
 // `scp policy evaluate` (BUILD_AND_TEST.md §8 M4 item 7) — a dry-run gate evaluation against a
@@ -225,3 +301,161 @@ export const PolicyEvaluateResponseSchema = z.object({
   inputContext: z.record(z.string(), z.unknown())
 });
 export type PolicyEvaluateResponse = z.infer<typeof PolicyEvaluateResponseSchema>;
+
+// ===========================================================================================
+// M25.3 — THE INSTANCE-SCOPED (PLATFORM) FREEZE TIER'S WIRE CONTRACT (drizzle/0086,
+// docs/proposals/campaigns-rework.md §2, owner decision D1).
+//
+// THE DELIBERATE TWIN of `InstanceScanFloor*` (supply-chain.ts) and
+// `InstanceScanExclusionAdmission*`: same instance scope, same DESIGN §4.2 `org_id` exception,
+// same two audiences and two credentials — tenant-facing READ (charter principle 6: a change
+// blocked by a freeze must be able to name it), operator-only WRITE gated on
+// `SCP_OPERATOR_TOKEN`, no RBAC permission anywhere on the write side.
+//
+// THESE ARE ON THE WIRE. `supply-chain.ts`'s M22.8 note is worth repeating here because it
+// corrects a claim that was once made wrongly in this repo: `/instance/scan-floors` and
+// `/instance/scan-floors/{tier}` are published in `openapi.v1.json`, and so will these be.
+// Editing any of the schemas below after they ship is an oasdiff-gated API change, not a
+// refactor.
+// ===========================================================================================
+
+/**
+ * WHERE a platform freeze applies — a STAGE COORDINATE, never an object id.
+ *
+ * `freezes.scopeObjectId` names a graph object and the containment walk decides coverage. That is
+ * structurally unavailable above org: object ids are per-org rows, `containmentChain` is
+ * org-filtered on every join, and there is no object every tenant shares — one id would name at
+ * most one tenant's object. So a platform freeze addresses the coordinate SCP already defines and
+ * already reads (M15.6 / ADR-0017 §3): `properties.environment` (+ optional `properties.region`)
+ * on a `deployment-target`.
+ *
+ * `allEnvironments` IS THE EXPLICIT DEPLOYMENT-WIDE FORM, and an omitted `environment` is NOT it.
+ * The proposal sketched `match_environment IS NULL` = everything; that was changed deliberately.
+ * A deployment-wide freeze stops every release for every tenant on the instance — the widest
+ * governance act this surface can express — and reaching it by OMITTING a field means a client
+ * that drops empty strings, a typo'd key, or a partially filled form authors maximum blast radius
+ * with no error anywhere. This repo already refuses to let a LOOSENING default on; the widest
+ * TIGHTENING gets the same treatment for the same reason. Send `allEnvironments: true` and mean it.
+ *
+ * `allEnvironments: true` is also the only form that covers a target declaring no coordinate at
+ * all (a legacy component-shaped wave target, or a stage whose deployment-target sets no
+ * `environment`). An environment-addressed freeze reaches the stages that SAY they are that
+ * environment — ADR-0031's rule that locality is declared, never inferred.
+ */
+export const InstanceFreezeMatchSchema = z
+  .object({
+    /** Deployment-wide. Mutually exclusive with `environment` (refused 400, and by a DB CHECK). */
+    allEnvironments: z.boolean().optional(),
+    /** A `deployment-target`'s `properties.environment`, e.g. `"prod"`. With no `region`, this
+     *  matches EVERY region of that environment — including a stage that declares no region.
+     *
+     *  TRIMMED BEFORE `min(1)`, AND THE TRIM IS A CORRECTNESS FIX, NOT TIDINESS (M25.3 review
+     *  finding 3). `readStageCoordinate` trims what the GRAPH declares, and `instanceFreezeCovers`
+     *  compares the two with `!==`. Stored untrimmed, `" prod"` therefore matches NOTHING while the
+     *  PUT returns 200 and `GET /v1/instance/freezes` lists the row cleanly — a freeze an operator
+     *  believes is in force and which holds nothing, which is the exact failure mode a freeze must
+     *  never have. The DB CHECK cannot close this: `length(btrim(...)) > 0` TESTS a value, it does
+     *  not STORE one, so `" prod"` passes it. Trimming here is one barrier ahead of the table and
+     *  covers every writer that goes through the API, which is all of them.
+     *
+     *  `.trim()` before `.min(1)` also makes an all-whitespace value a 400 naming the addressing
+     *  rule rather than a row that silently matches nothing. It changes no emitted JSON Schema
+     *  (`z.toJSONSchema` still yields `{"type":"string","minLength":1}`), so it is not an API
+     *  change — verified against the generated document, not inferred. */
+    environment: z.string().trim().min(1).optional(),
+    /** Narrows `environment` to one `properties.region`, e.g. `"amer"`. A target that declares no
+     *  region does NOT match a region-narrowed freeze: it has not said it is that region.
+     *  Trimmed for exactly the reason `environment` is — same comparison, same silent no-match. */
+    region: z.string().trim().min(1).optional()
+  })
+  .refine((m) => (m.allEnvironments === true) !== (m.environment !== undefined), {
+    message:
+      "exactly one addressing form: allEnvironments: true (the whole deployment), or environment (optionally narrowed by region). An absent environment is NOT deployment-wide — say allEnvironments: true and mean it."
+  })
+  .refine((m) => m.region === undefined || m.environment !== undefined, {
+    message:
+      "region requires environment — a region without an environment is a coordinate with no origin"
+  });
+// BOTH REFINEMENTS ARE ENFORCED AT RUNTIME AND NEITHER APPEARS IN `openapi.v1.json`, which is
+// worth stating because the generated spec is what a reader inspects. `app.ts` installs
+// fastify-type-provider-zod's `validatorCompiler`, so request bodies are validated by the ZOD
+// schema itself and a body with neither addressing form (or with both) is a 400 naming the rule.
+// A cross-field constraint is not expressible in JSON Schema, so the emitted document shows three
+// independent optional properties; the DB CHECK `instance_freezes_match_ck` is the second barrier
+// behind it, for any writer that ever reaches the table without passing this schema.
+export type InstanceFreezeMatch = z.infer<typeof InstanceFreezeMatchSchema>;
+
+/** One instance-scoped freeze — the API projection of `instance_freezes` (no `orgId`: it binds
+ *  EVERY org on the deployment). */
+export const InstanceFreezeSchema = z.object({
+  /** A real uuid, and the SAME id the gate's block Decision and the service board carry. It does
+   *  NOT resolve through `GET /v1/freezes/{id}`, which is org-scoped — the block Decision states
+   *  its `tier` so a reader knows to come here instead. */
+  id: z.string().uuid(),
+  /** The operator slug: the `PUT`/`DELETE` path segment, and the name a remedy sentence quotes. */
+  key: z.string().min(1),
+  name: z.string().nullable(),
+  startsAt: z.string().datetime(),
+  endsAt: z.string().datetime(),
+  reason: z.string(),
+  match: z.object({
+    allEnvironments: z.boolean(),
+    environment: z.string().nullable(),
+    region: z.string().nullable()
+  }),
+  /** Owner decision D5, identical semantics to `FreezeSchema.atomic` one tier down. */
+  atomic: z.boolean(),
+  /** Whether ANY tenant role may override this freeze. `false` (the default) means none can,
+   *  however privileged — not an org-root Owner. `true` means the OPERATOR has admitted tenant
+   *  override for this freeze, and an actor holding `freeze:override` AT THE ORG ROOT may then
+   *  override it with the same mandatory reason. Two independent authorities, both required. */
+  overridable: z.boolean(),
+  note: z.string().nullable(),
+  /** When it was RETRACTED, or null while it stands. Lifted rows are returned FOREVER: a
+   *  `gate`/`freeze_admission` Decision cites this id and "what was this freeze that blocked me?"
+   *  must stay answerable (charter principle 6). LIFTED IS A FIELD, NOT AN ABSENCE. */
+  liftedAt: z.string().datetime().nullable(),
+  liftReason: z.string().nullable(),
+  updatedAt: z.string().datetime()
+});
+export type InstanceFreeze = z.infer<typeof InstanceFreezeSchema>;
+
+export const InstanceFreezeListResponseSchema = z.object({
+  items: z.array(InstanceFreezeSchema)
+});
+export type InstanceFreezeListResponse = z.infer<typeof InstanceFreezeListResponseSchema>;
+
+export const InstanceFreezeKeyParamSchema = z.object({ key: z.string().min(1).max(200) });
+
+/**
+ * Operator-authored write body for `PUT /v1/instance/freezes/{key}` — a full replace of the row
+ * at that key, never a partial merge, the same posture `PutInstanceScanFloorRequest` takes.
+ *
+ * `overridable` DEFAULTS TO FALSE and that default is the floor property. Nothing an org can
+ * author subtracts from a platform freeze — the merge across tiers is a UNION — so the ONLY place
+ * tenant relief exists is this bit, and a loosening never defaults on.
+ */
+export const PutInstanceFreezeRequestSchema = z.object({
+  name: z.string().max(200).nullish(),
+  startsAt: z.string().datetime(),
+  endsAt: z.string().datetime(),
+  reason: z.string().min(1).max(2000),
+  match: InstanceFreezeMatchSchema,
+  atomic: z.boolean().optional(),
+  overridable: z.boolean().optional(),
+  note: z.string().max(500).nullish()
+});
+export type PutInstanceFreezeRequest = z.infer<typeof PutInstanceFreezeRequestSchema>;
+
+/**
+ * The body of `DELETE /v1/instance/freezes/{key}` — the SOFT retraction.
+ *
+ * A body on a DELETE, following `LiftFreezeRequestSchema` and `DeleteSourceMappingRequestSchema`,
+ * because the reason is mandatory and a free-text governance justification does not belong in a
+ * query string. Retracting a platform freeze un-protects every org on the deployment at once —
+ * a strictly wider blast radius than the org-tier lift this rule already applies to.
+ */
+export const LiftInstanceFreezeRequestSchema = z.object({
+  reason: z.string().min(1).max(2000)
+});
+export type LiftInstanceFreezeRequest = z.infer<typeof LiftInstanceFreezeRequestSchema>;

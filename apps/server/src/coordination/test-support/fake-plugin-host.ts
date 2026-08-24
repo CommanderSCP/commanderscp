@@ -1,4 +1,4 @@
-import type { PluginContext } from "@scp/plugin-api";
+import type { PluginContext, TriggerIntent } from "@scp/plugin-api";
 import { createFakeExecutorPlugin } from "@scp/plugin-fake-executor";
 import type {
   ControlPluginClient,
@@ -221,4 +221,61 @@ export function withFailOnceAfterRealTrigger(
     }
   };
   return { host, calls };
+}
+
+/**
+ * M25.4 — records the WHOLE `TriggerIntent`, and optionally narrows what the executor says it can
+ * do.
+ *
+ * TWO THINGS THE EXISTING WRAPPERS CANNOT DO, both needed to test a recipe honestly:
+ *
+ *   * `FiredTriggerCall` keeps `targetRef` and `idempotencyKey` only, so a recipe's `parameters`
+ *     and its `kind` — the two fields M25.4 exists to put on the wire — are invisible to every
+ *     assertion built on it. A test that asserted only "trigger was called" would pass with the
+ *     channel still unwired, which is exactly the vacuous green this repo has paid for repeatedly.
+ *   * `@scp/plugin-fake-executor` declares ALL FOUR trigger kinds, so no capability refusal is
+ *     reachable through it. `triggerKinds` narrows that to a REAL adapter's set (`argocd` is
+ *     `["sync","rollback"]`, `github` is `["workflow_dispatch","custom"]` — measured at HEAD) so the
+ *     refusal is exercised against a shape production actually produces.
+ *
+ * `intents` logs EVERY call through this host — see `FiredTriggerCall`'s warning; filter by
+ * `targetRef` before asserting counts.
+ */
+export function withRecordedIntents(
+  inner: PluginHost,
+  /** Called on EVERY `describeCapabilities()`, never read once at wrap time — one host is shared by
+   *  a whole suite, so a case that needs a narrowed executor sets a mutable variable this closure
+   *  reads. Returning `undefined` leaves the real fake's declaration alone. */
+  triggerKinds?: () => TriggerIntent["kind"][] | undefined
+): { host: PluginHost; intents: TriggerIntent[] } {
+  const intents: TriggerIntent[] = [];
+  const host: PluginHost = {
+    start: (configs) => inner.start(configs),
+    stop: () => inner.stop(),
+    stopInstances: (ids) => inner.stopInstances(ids),
+    control: (instanceId) => inner.control(instanceId),
+    discovery: (instanceId) => inner.discovery(instanceId),
+    notification: (instanceId) => inner.notification(instanceId),
+    federationTransport: (instanceId) => inner.federationTransport(instanceId),
+    dependencyIndex: (instanceId) => inner.dependencyIndex(instanceId),
+    gitFileRead: (instanceId) => inner.gitFileRead(instanceId),
+    executor(instanceId) {
+      const real = inner.executor(instanceId);
+      return {
+        ...real,
+        describeCapabilities: async () => {
+          const declared = await real.describeCapabilities();
+          const override = triggerKinds?.();
+          return override ? { ...declared, triggerKinds: override } : declared;
+        },
+        trigger: async (intent) => {
+          // Recorded BEFORE the call, so a trigger that throws is still visible to the "zero
+          // trigger() calls" assertion the capability refusal is judged on.
+          intents.push(intent);
+          return real.trigger(intent);
+        }
+      };
+    }
+  };
+  return { host, intents };
 }

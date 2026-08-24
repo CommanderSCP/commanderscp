@@ -12134,6 +12134,7 @@ export type ExplainChangeResponses = {
                     status: 'created' | 'submitted' | 'confirmed';
                     peerDomainId: string;
                     checksum: string | null;
+                    channel?: 'metadata' | 'bytes' | null;
                     observedAt: string;
                 }>;
                 observedAt: string | null;
@@ -14832,6 +14833,10 @@ export type ListFreezesResponses = {
             reason: string;
             createdByActorId: string;
             createdAt: string;
+            atomic: boolean;
+            liftedAt: string | null;
+            liftedByActorId: string | null;
+            liftReason: string | null;
         }>;
         nextCursor: string | null;
     };
@@ -14846,6 +14851,7 @@ export type CreateFreezeData = {
         startsAt: string;
         endsAt: string;
         reason: string;
+        atomic?: boolean;
     };
     path?: never;
     query?: never;
@@ -14903,10 +14909,107 @@ export type CreateFreezeResponses = {
         reason: string;
         createdByActorId: string;
         createdAt: string;
+        atomic: boolean;
+        liftedAt: string | null;
+        liftedByActorId: string | null;
+        liftReason: string | null;
     };
 };
 
 export type CreateFreezeResponse = CreateFreezeResponses[keyof CreateFreezeResponses];
+
+export type LiftFreezeData = {
+    body: {
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/freezes/{id}';
+};
+
+export type LiftFreezeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type LiftFreezeError = LiftFreezeErrors[keyof LiftFreezeErrors];
+
+export type LiftFreezeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        scopeObjectId: string;
+        name: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        createdByActorId: string;
+        createdAt: string;
+        atomic: boolean;
+        liftedAt: string | null;
+        liftedByActorId: string | null;
+        liftReason: string | null;
+    };
+};
+
+export type LiftFreezeResponse = LiftFreezeResponses[keyof LiftFreezeResponses];
 
 export type GetFreezeData = {
     body?: never;
@@ -14968,10 +15071,108 @@ export type GetFreezeResponses = {
         reason: string;
         createdByActorId: string;
         createdAt: string;
+        atomic: boolean;
+        liftedAt: string | null;
+        liftedByActorId: string | null;
+        liftReason: string | null;
     };
 };
 
 export type GetFreezeResponse = GetFreezeResponses[keyof GetFreezeResponses];
+
+export type UpdateFreezeWindowData = {
+    body: {
+        endsAt: string;
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/freezes/{id}';
+};
+
+export type UpdateFreezeWindowErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateFreezeWindowError = UpdateFreezeWindowErrors[keyof UpdateFreezeWindowErrors];
+
+export type UpdateFreezeWindowResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        scopeObjectId: string;
+        name: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        createdByActorId: string;
+        createdAt: string;
+        atomic: boolean;
+        liftedAt: string | null;
+        liftedByActorId: string | null;
+        liftReason: string | null;
+    };
+};
+
+export type UpdateFreezeWindowResponse = UpdateFreezeWindowResponses[keyof UpdateFreezeWindowResponses];
 
 export type PolicyEvaluateData = {
     body: {
@@ -15566,6 +15767,265 @@ export type PutInstanceScanFloorResponses = {
 };
 
 export type PutInstanceScanFloorResponse = PutInstanceScanFloorResponses[keyof PutInstanceScanFloorResponses];
+
+export type ListInstanceFreezesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/freezes';
+};
+
+export type ListInstanceFreezesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListInstanceFreezesError = ListInstanceFreezesErrors[keyof ListInstanceFreezesErrors];
+
+export type ListInstanceFreezesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            key: string;
+            name: string | null;
+            startsAt: string;
+            endsAt: string;
+            reason: string;
+            match: {
+                allEnvironments: boolean;
+                environment: string | null;
+                region: string | null;
+            };
+            atomic: boolean;
+            overridable: boolean;
+            note: string | null;
+            liftedAt: string | null;
+            liftReason: string | null;
+            updatedAt: string;
+        }>;
+    };
+};
+
+export type ListInstanceFreezesResponse = ListInstanceFreezesResponses[keyof ListInstanceFreezesResponses];
+
+export type LiftInstanceFreezeData = {
+    body: {
+        reason: string;
+    };
+    path: {
+        key: string;
+    };
+    query?: never;
+    url: '/instance/freezes/{key}';
+};
+
+export type LiftInstanceFreezeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type LiftInstanceFreezeError = LiftInstanceFreezeErrors[keyof LiftInstanceFreezeErrors];
+
+export type LiftInstanceFreezeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        key: string;
+        name: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        match: {
+            allEnvironments: boolean;
+            environment: string | null;
+            region: string | null;
+        };
+        atomic: boolean;
+        overridable: boolean;
+        note: string | null;
+        liftedAt: string | null;
+        liftReason: string | null;
+        updatedAt: string;
+    };
+};
+
+export type LiftInstanceFreezeResponse = LiftInstanceFreezeResponses[keyof LiftInstanceFreezeResponses];
+
+export type PutInstanceFreezeData = {
+    body: {
+        name?: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        match: {
+            allEnvironments?: boolean;
+            environment?: string;
+            region?: string;
+        };
+        atomic?: boolean;
+        overridable?: boolean;
+        note?: string | null;
+    };
+    path: {
+        key: string;
+    };
+    query?: never;
+    url: '/instance/freezes/{key}';
+};
+
+export type PutInstanceFreezeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutInstanceFreezeError = PutInstanceFreezeErrors[keyof PutInstanceFreezeErrors];
+
+export type PutInstanceFreezeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        key: string;
+        name: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        match: {
+            allEnvironments: boolean;
+            environment: string | null;
+            region: string | null;
+        };
+        atomic: boolean;
+        overridable: boolean;
+        note: string | null;
+        liftedAt: string | null;
+        liftReason: string | null;
+        updatedAt: string;
+    };
+};
+
+export type PutInstanceFreezeResponse = PutInstanceFreezeResponses[keyof PutInstanceFreezeResponses];
 
 export type ListInstanceScanExclusionAdmissionsData = {
     body?: never;
@@ -17492,6 +17952,42 @@ export type ListCampaignsResponses = {
             topologyObjectId: string | null;
             topologyVersion: number | null;
             status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+            recipe?: {
+                version: 1;
+                trigger: {
+                    kind: 'sync' | 'workflow_dispatch' | 'custom';
+                    parameters?: {
+                        [key: string]: unknown;
+                    };
+                };
+                adoption?: {
+                    kind: 'delivered';
+                } | {
+                    kind: 'dependency';
+                    ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate: string;
+                    minVersion: string;
+                } | {
+                    kind: 'control';
+                    controlObjectId: string;
+                };
+                guidance?: {
+                    title: string;
+                    summary?: string;
+                    docsUrl?: string;
+                };
+            };
+            deadline: {
+                at: string;
+                adoptionSignal?: 'delivered' | 'dependency' | 'control';
+                overrides?: Array<{
+                    targetObjectId: string;
+                    reason: string;
+                    actorId: string;
+                    at: string;
+                    until?: string;
+                }>;
+            } | null;
             createdAt: string;
             updatedAt: string;
         }>;
@@ -17513,6 +18009,35 @@ export type ProposeCampaignData = {
         };
         topology?: string;
         type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        recipe?: {
+            version: 1;
+            trigger: {
+                kind: 'sync' | 'workflow_dispatch' | 'custom';
+                parameters?: {
+                    [key: string]: unknown;
+                };
+            };
+            adoption?: {
+                kind: 'delivered';
+            } | {
+                kind: 'dependency';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                minVersion: string;
+            } | {
+                kind: 'control';
+                controlObjectId: string;
+            };
+            guidance?: {
+                title: string;
+                summary?: string;
+                docsUrl?: string;
+            };
+        };
+        deadline?: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+        };
         targets: Array<string>;
     };
     path?: never;
@@ -17572,6 +18097,42 @@ export type ProposeCampaignResponses = {
         topologyObjectId: string | null;
         topologyVersion: number | null;
         status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        recipe?: {
+            version: 1;
+            trigger: {
+                kind: 'sync' | 'workflow_dispatch' | 'custom';
+                parameters?: {
+                    [key: string]: unknown;
+                };
+            };
+            adoption?: {
+                kind: 'delivered';
+            } | {
+                kind: 'dependency';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                minVersion: string;
+            } | {
+                kind: 'control';
+                controlObjectId: string;
+            };
+            guidance?: {
+                title: string;
+                summary?: string;
+                docsUrl?: string;
+            };
+        };
+        deadline: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+            overrides?: Array<{
+                targetObjectId: string;
+                reason: string;
+                actorId: string;
+                at: string;
+                until?: string;
+            }>;
+        } | null;
         createdAt: string;
         updatedAt: string;
     };
@@ -17640,6 +18201,42 @@ export type GetCampaignResponses = {
         topologyObjectId: string | null;
         topologyVersion: number | null;
         status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        recipe?: {
+            version: 1;
+            trigger: {
+                kind: 'sync' | 'workflow_dispatch' | 'custom';
+                parameters?: {
+                    [key: string]: unknown;
+                };
+            };
+            adoption?: {
+                kind: 'delivered';
+            } | {
+                kind: 'dependency';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                minVersion: string;
+            } | {
+                kind: 'control';
+                controlObjectId: string;
+            };
+            guidance?: {
+                title: string;
+                summary?: string;
+                docsUrl?: string;
+            };
+        };
+        deadline: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+            overrides?: Array<{
+                targetObjectId: string;
+                reason: string;
+                actorId: string;
+                at: string;
+                until?: string;
+            }>;
+        } | null;
         createdAt: string;
         updatedAt: string;
     };
@@ -17709,6 +18306,42 @@ export type ExplainCampaignResponses = {
             topologyObjectId: string | null;
             topologyVersion: number | null;
             status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+            recipe?: {
+                version: 1;
+                trigger: {
+                    kind: 'sync' | 'workflow_dispatch' | 'custom';
+                    parameters?: {
+                        [key: string]: unknown;
+                    };
+                };
+                adoption?: {
+                    kind: 'delivered';
+                } | {
+                    kind: 'dependency';
+                    ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate: string;
+                    minVersion: string;
+                } | {
+                    kind: 'control';
+                    controlObjectId: string;
+                };
+                guidance?: {
+                    title: string;
+                    summary?: string;
+                    docsUrl?: string;
+                };
+            };
+            deadline: {
+                at: string;
+                adoptionSignal?: 'delivered' | 'dependency' | 'control';
+                overrides?: Array<{
+                    targetObjectId: string;
+                    reason: string;
+                    actorId: string;
+                    at: string;
+                    until?: string;
+                }>;
+            } | null;
             createdAt: string;
             updatedAt: string;
         };
@@ -17760,6 +18393,324 @@ export type ExplainCampaignResponses = {
 };
 
 export type ExplainCampaignResponse = ExplainCampaignResponses[keyof ExplainCampaignResponses];
+
+export type CampaignAdoptionData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/campaigns/{id}/adoption';
+};
+
+export type CampaignAdoptionErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CampaignAdoptionError = CampaignAdoptionErrors[keyof CampaignAdoptionErrors];
+
+export type CampaignAdoptionResponses = {
+    /**
+     * Success
+     */
+    200: {
+        campaignObjectId: string;
+        evidence: {
+            kind: 'delivered';
+        } | {
+            kind: 'dependency';
+            ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+            coordinate: string;
+            minVersion: string;
+        } | {
+            kind: 'control';
+            controlObjectId: string;
+        } | null;
+        targets: Array<{
+            targetObjectId: string;
+            targetUrn?: string;
+            targetName?: string;
+            verdict: 'adopted' | 'not_adopted' | 'unknown';
+            summary: string;
+            observations: Array<string>;
+        }>;
+        unresolvedTargets: Array<string>;
+    };
+};
+
+export type CampaignAdoptionResponse = CampaignAdoptionResponses[keyof CampaignAdoptionResponses];
+
+export type SetCampaignDeadlineData = {
+    body: {
+        deadline: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+        } | null;
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/campaigns/{id}/deadline';
+};
+
+export type SetCampaignDeadlineErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type SetCampaignDeadlineError = SetCampaignDeadlineErrors[keyof SetCampaignDeadlineErrors];
+
+export type SetCampaignDeadlineResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        description: string | null;
+        targets: Array<string>;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        recipe?: {
+            version: 1;
+            trigger: {
+                kind: 'sync' | 'workflow_dispatch' | 'custom';
+                parameters?: {
+                    [key: string]: unknown;
+                };
+            };
+            adoption?: {
+                kind: 'delivered';
+            } | {
+                kind: 'dependency';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                minVersion: string;
+            } | {
+                kind: 'control';
+                controlObjectId: string;
+            };
+            guidance?: {
+                title: string;
+                summary?: string;
+                docsUrl?: string;
+            };
+        };
+        deadline: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+            overrides?: Array<{
+                targetObjectId: string;
+                reason: string;
+                actorId: string;
+                at: string;
+                until?: string;
+            }>;
+        } | null;
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type SetCampaignDeadlineResponse = SetCampaignDeadlineResponses[keyof SetCampaignDeadlineResponses];
+
+export type OverrideCampaignDeadlineData = {
+    body: {
+        targets?: Array<string>;
+        reason: string;
+        until?: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/campaigns/{id}/deadline-override';
+};
+
+export type OverrideCampaignDeadlineErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type OverrideCampaignDeadlineError = OverrideCampaignDeadlineErrors[keyof OverrideCampaignDeadlineErrors];
+
+export type OverrideCampaignDeadlineResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        description: string | null;
+        targets: Array<string>;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        recipe?: {
+            version: 1;
+            trigger: {
+                kind: 'sync' | 'workflow_dispatch' | 'custom';
+                parameters?: {
+                    [key: string]: unknown;
+                };
+            };
+            adoption?: {
+                kind: 'delivered';
+            } | {
+                kind: 'dependency';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                minVersion: string;
+            } | {
+                kind: 'control';
+                controlObjectId: string;
+            };
+            guidance?: {
+                title: string;
+                summary?: string;
+                docsUrl?: string;
+            };
+        };
+        deadline: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+            overrides?: Array<{
+                targetObjectId: string;
+                reason: string;
+                actorId: string;
+                at: string;
+                until?: string;
+            }>;
+        } | null;
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type OverrideCampaignDeadlineResponse = OverrideCampaignDeadlineResponses[keyof OverrideCampaignDeadlineResponses];
 
 export type RollbackCampaignData = {
     body: {
@@ -17878,6 +18829,17 @@ export type InitFederationData = {
 };
 
 export type InitFederationErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
     /**
      * Error
      */
@@ -18523,6 +19485,7 @@ export type GetFederationStatusResponses = {
                 sinceSequence: number | null;
                 throughSequence: number | null;
                 checksum?: string | null;
+                channel?: 'metadata' | 'bytes' | null;
                 createdAt: string;
                 confirmedAt: string | null;
             }>;
@@ -19320,6 +20283,78 @@ export type ImportRelayTarballResponses = {
 };
 
 export type ImportRelayTarballResponse = ImportRelayTarballResponses[keyof ImportRelayTarballResponses];
+
+export type ListFederationRelayBuildsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        status?: 'pending' | 'built' | 'forwarded' | 'exhausted';
+        limit?: number;
+    };
+    url: '/federation/relay-builds';
+};
+
+export type ListFederationRelayBuildsErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListFederationRelayBuildsError = ListFederationRelayBuildsErrors[keyof ListFederationRelayBuildsErrors];
+
+export type ListFederationRelayBuildsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            changeObjectId: string;
+            sourceChangeObjectId: string | null;
+            status: 'pending' | 'built' | 'forwarded' | 'exhausted';
+            attempts: number;
+            failedAttempts: number;
+            nextAttemptAt: string;
+            claimedUntil: string | null;
+            lastReason: string | null;
+            lastDecisionId: string | null;
+            tarballPath: string | null;
+            createdAt: string;
+            updatedAt: string;
+        }>;
+    };
+};
+
+export type ListFederationRelayBuildsResponse = ListFederationRelayBuildsResponses[keyof ListFederationRelayBuildsResponses];
 
 export type FederationPokeData = {
     body?: never;

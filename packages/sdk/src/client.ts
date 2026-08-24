@@ -185,6 +185,8 @@ import {
   createFreeze as createFreezeRequest,
   listFreezes as listFreezesRequest,
   getFreeze as getFreezeRequest,
+  liftFreeze as liftFreezeRequest,
+  updateFreezeWindow as updateFreezeWindowRequest,
   policyEvaluate as policyEvaluateRequest,
   // M5: Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
   proposeCampaign as proposeCampaignRequest,
@@ -192,6 +194,10 @@ import {
   getCampaign as getCampaignRequest,
   explainCampaign as explainCampaignRequest,
   rollbackCampaign as rollbackCampaignRequest,
+  // M25.6a (owner decision D4) — the deadline's set/move/CLEAR verb.
+  setCampaignDeadline as setCampaignDeadlineRequest,
+  // M25.6b (§4.5) — the per-target waiver of that deadline.
+  overrideCampaignDeadline as overrideCampaignDeadlineRequest,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
   initFederation as initFederationRequest,
   getFederationSelf as getFederationSelfRequest,
@@ -199,6 +205,10 @@ import {
   // M17.5 (ADR-0016) — instance-scoped scan-requirement floors.
   listInstanceScanFloors as listInstanceScanFloorsRequest,
   putInstanceScanFloor as putInstanceScanFloorRequest,
+  // M25.3 (campaigns-rework §2, owner decision D1) — instance-scoped (platform) freezes.
+  listInstanceFreezes as listInstanceFreezesRequest,
+  putInstanceFreeze as putInstanceFreezeRequest,
+  liftInstanceFreeze as liftInstanceFreezeRequest,
   // M22.9 (ADR-0033 §1/§7a) — instance-scoped exclusion admissions.
   listInstanceScanExclusionAdmissions as listInstanceScanExclusionAdmissionsRequest,
   putInstanceScanExclusionAdmissions as putInstanceScanExclusionAdmissionsRequest,
@@ -253,6 +263,8 @@ import {
   // M15.5(c) — the retrans validate-then-relay (ADR-0019 §2).
   buildRelayTarball as buildRelayTarballRequest,
   importRelayTarball as importRelayTarballRequest,
+  // M13.1b — the auto-relay build ledger's operator read surface (owner ask).
+  listFederationRelayBuilds as listFederationRelayBuildsRequest,
   createOverlay as createOverlayRequest,
   getMergedOverlayView as getMergedOverlayViewRequest,
   handFillObject as handFillObjectRequest,
@@ -354,6 +366,8 @@ import type {
   CastApprovalVoteRequest,
   Freeze,
   CreateFreezeRequest,
+  LiftFreezeRequest,
+  UpdateFreezeWindowRequest,
   FreezeListResponse,
   PolicyEvaluateResponse,
   // M5: Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
@@ -361,6 +375,8 @@ import type {
   CampaignListQuery,
   CampaignListResponse,
   CampaignExplainResponse,
+  CampaignDeadlineInput,
+  OverrideCampaignDeadlineRequest,
   CreateCampaignRequest,
   RollbackCampaignResponse,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
@@ -369,6 +385,9 @@ import type {
   FederationPeer,
   FederationResyncResult,
   InstanceScanFloor,
+  InstanceFreeze,
+  PutInstanceFreezeRequest,
+  LiftInstanceFreezeRequest,
   InstanceScanExclusionAdmission,
   PutInstanceScanExclusionAdmissionsRequest,
   ScanOverrideGrant,
@@ -428,6 +447,9 @@ import type {
   RelayBuildResponse,
   RelayImportRequest,
   RelayImportResponse,
+  // M13.1b — the auto-relay build ledger's operator read surface (owner ask).
+  RelayBuild,
+  RelayBuildStatus,
   // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN §11/§12).
   CreateWebhookSecretRequest,
   WebhookSecretConfiguredResponse,
@@ -1743,6 +1765,30 @@ export class ScpClient {
     get: async (id: string): Promise<Freeze> => {
       const result = await getFreezeRequest({ client: this.client, path: { id } });
       return unwrap(result);
+    },
+    /** M25.1 — LIFT (retract) a freeze: it stops being in force immediately, whatever `endsAt`
+     *  says. `freeze:write` AT THE FREEZE'S OWN SCOPE (`routes/governance.ts` states why that, and
+     *  not `freeze:override`), and the `reason` is mandatory — lifting is a governance LOOSENING
+     *  that applies to everyone the freeze covered.
+     *
+     *  A SOFT lift: the returned row is the freeze, still readable by `get(id)` forever with
+     *  `liftedAt` set, because a `gate`/`freeze_admission` Decision cites `freeze.id` in its
+     *  `inputContext` and that citation must keep resolving (charter principle 6). */
+    lift: async (id: string, req: LiftFreezeRequest): Promise<Freeze> => {
+      const result = await liftFreezeRequest({ client: this.client, path: { id }, body: req });
+      return unwrap(result);
+    },
+    /** M25.1 — move a freeze's `endsAt`, in EITHER direction. Shortening it is a loosening and
+     *  extending it is a tightening; both take `freeze:write` at the freeze's own scope, both
+     *  require a reason, and the server records which direction it was along with the old and new
+     *  instants. Shortening to a past instant is allowed and is NOT re-labelled a lift. */
+    updateWindow: async (id: string, req: UpdateFreezeWindowRequest): Promise<Freeze> => {
+      const result = await updateFreezeWindowRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
+      return unwrap(result);
     }
   };
 
@@ -1782,6 +1828,55 @@ export class ScpClient {
     },
     explain: async (id: string): Promise<CampaignExplainResponse> => {
       const result = await explainCampaignRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    /**
+     * M25.6a (owner decision D4) — SET, MOVE or CLEAR this campaign's deadline. `deadline: null`
+     * CLEARS it, which releases every target the deadline was withholding fan-out from on the next
+     * tick. That is the BLUNT exit; `overrideDeadline` below is the per-target one.
+     *
+     * `CampaignDeadlineInput`, not `CampaignDeadline`: the stored document carries `overrides[]` and
+     * this verb cannot author them — it runs at plain `object:write`, while minting a waiver takes
+     * the Owner-only `campaign:deadline-override`. Waivers already in force survive a set or a move.
+     *
+     * `reason` is MANDATORY on all three acts including the clear: the audit event records the
+     * operator's own words and the Decision it cites carries the PREVIOUS value, without which "the
+     * deadline slipped four times" is unreconstructible.
+     */
+    setDeadline: async (
+      id: string,
+      deadline: CampaignDeadlineInput | null,
+      reason: string
+    ): Promise<Campaign> => {
+      const result = await setCampaignDeadlineRequest({
+        client: this.client,
+        path: { id },
+        body: { deadline, reason }
+      });
+      return unwrap(result);
+    },
+    /**
+     * M25.6b (§4.5) — WAIVE this campaign's deadline for named targets, so one laggard can be
+     * excused without clearing the deadline for everybody.
+     *
+     * Takes `campaign:deadline-override` (Owner-only) AT THE CAMPAIGN — the thing being waived is
+     * *this campaign's* deadline, and a target-scoped check would hand the laggard their own waiver
+     * — PLUS `object:write` at each named target. OMITTING `targets` waives every target the
+     * campaign declares, which still is not the same as clearing: the deadline stands, each waiver
+     * is audited per target, and `until` expires them individually.
+     *
+     * `until` is a BOUNDARY with read-time expiry: an instant in the past is stored, audited, and
+     * simply not effective. There is no un-waive verb, for the same reason there is no unlock verb.
+     */
+    overrideDeadline: async (
+      id: string,
+      req: OverrideCampaignDeadlineRequest
+    ): Promise<Campaign> => {
+      const result = await overrideCampaignDeadlineRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
       return unwrap(result);
     },
     /** Rolls back every currently-eligible member Change (DESIGN §9.4/§9.5) — each becomes its
@@ -1849,6 +1944,53 @@ export class ScpClient {
         client: this.client,
         path: { id },
         body: req
+      });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // M25.3: instance-scoped (PLATFORM) freezes — the freeze tier ABOVE org (drizzle/0086,
+  // campaigns-rework §2, owner decision D1). One row binds EVERY org on the deployment, so the
+  // two write verbs take the deployment-level operator token and NO tenant role can grant them —
+  // the twin of `instanceScanFloors`, on purpose. `list` is tenant-readable, deliberately: a
+  // platform freeze is the one freeze a tenant can neither author nor (by default) override, so a
+  // tenant that cannot read it cannot be told why its release stopped.
+  // -----------------------------------------------------------------------------------------
+  readonly instanceFreezes = {
+    /** Every instance freeze, including RETRACTED ones — a block Decision cites the id forever. */
+    list: async (): Promise<InstanceFreeze[]> => {
+      const result = await listInstanceFreezesRequest({ client: this.client });
+      return unwrap(result).items;
+    },
+    /** Declare or edit the freeze at `key` (a full replace of that row, never a partial merge).
+     *  `operatorToken` is the deployment-level `SCP_OPERATOR_TOKEN`. */
+    put: async (
+      key: string,
+      req: PutInstanceFreezeRequest,
+      operatorToken: string
+    ): Promise<InstanceFreeze> => {
+      const result = await putInstanceFreezeRequest({
+        client: this.client,
+        path: { key },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    /** RETRACT the freeze at `key` — it stops being in force immediately, whatever `endsAt` says.
+     *  A SOFT lift: the row stays readable through `list` forever. The reason is mandatory and a
+     *  retraction is final (a second lift is a 409; re-PUTting the key is refused). */
+    lift: async (
+      key: string,
+      req: LiftInstanceFreezeRequest,
+      operatorToken: string
+    ): Promise<InstanceFreeze> => {
+      const result = await liftInstanceFreezeRequest({
+        client: this.client,
+        path: { key },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
       });
       return unwrap(result);
     }
@@ -2380,6 +2522,25 @@ export class ScpClient {
     relayImport: async (req: RelayImportRequest): Promise<RelayImportResponse> => {
       const result = await importRelayTarballRequest({ client: this.client, body: req });
       return unwrap(result);
+    },
+    /** M13.1b operator read surface (owner ask) — the auto-relay build ledger's queue depth and
+     *  exhausted rows, `GET /federation/relay-builds`. ROLE-AGNOSTIC: rows exist only on a
+     *  `role: retrans` instance (seeded at promotion import there — `relay-builds-repo.ts`'s
+     *  `listRelayBuilds` doc); on any other role this returns an empty array rather than a 409,
+     *  matching every other read in this codebase. `opts.status` narrows to one bucket; `opts.limit`
+     *  is server-bounded (default 100, max 500) — both omitted apply the server defaults. */
+    listRelayBuilds: async (
+      opts: { status?: RelayBuildStatus; limit?: number } = {}
+    ): Promise<RelayBuild[]> => {
+      const query = {
+        ...(opts.status !== undefined ? { status: opts.status } : {}),
+        ...(opts.limit !== undefined ? { limit: opts.limit } : {})
+      };
+      const result = await listFederationRelayBuildsRequest({
+        client: this.client,
+        ...(Object.keys(query).length > 0 ? { query } : {})
+      });
+      return unwrap(result).items;
     },
     createOverlay: async (req: {
       base: string;

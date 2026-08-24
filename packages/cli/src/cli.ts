@@ -46,6 +46,9 @@ import type {
   FederationPeer,
   FederationStatusResponse,
   ImportBundleRequest,
+  // M13.1b — the auto-relay build ledger's operator read surface (owner ask).
+  RelayBuild,
+  RelayBuildStatus,
   // M13.2/M13.3b — the two scan surfaces whose table rows are now exported formatters (Y2).
   InstanceScanFloor,
   InstanceScanExclusionAdmission,
@@ -296,6 +299,20 @@ export function campaignDetailRow(c: Campaign): Record<string, string> {
     targets: c.targets.join(", "),
     topologyObjectId: c.topologyObjectId ?? "",
     topologyVersion: isAbsent(c.topologyVersion) ? "" : String(c.topologyVersion),
+    // M25.6a — the deadline is a REQUIRED, nullable response property, so the guard here is defence
+    // in depth (the SDK rejects a body missing it) rather than the only bar. Blank for "none", never
+    // the word `undefined`: an operator reading "deadline: undefined" cannot tell whether this
+    // campaign withholds nothing or whether their client is older than the field.
+    deadline: isAbsent(c.deadline) ? "" : c.deadline.at,
+    adoptionSignal: isAbsent(c.deadline) ? "" : (c.deadline.adoptionSignal ?? ""),
+    // M25.6b — WHICH targets are excused, so `scp campaign deadline-override` has a signal beside
+    // its lever. Ids only: the stored waiver's `reason`, `actorId` and `at` are on the hash chain
+    // (`campaign.deadline.override`), and a table cell is the wrong place to render prose an
+    // operator would then be tempted to treat as the record. BLANK when there are none, never the
+    // word `undefined` — the same rule the two rows above it follow.
+    deadlineOverrides: isAbsent(c.deadline)
+      ? ""
+      : (c.deadline.overrides ?? []).map((o) => o.targetObjectId).join(", "),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
   };
@@ -490,6 +507,33 @@ export function outpostConfigRow(o: OutpostConfig): Record<string, string> {
     revision: String(o.revision),
     version: String(o.version),
     notObservable: (o.unknownFields ?? []).join(", ") || "-"
+  };
+}
+
+/**
+ * One auto-relay build ledger row as a table row (`scp federation relay-builds`, M13.1b operator
+ * read surface) — exported for the same reason as `peerRow`/`outpostConfigRow`: a guard no test can
+ * invoke is a guard nothing holds in place.
+ *
+ * `sourceChangeObjectId`, `claimedUntil`, `lastReason` and `lastDecisionId` are ALL genuinely
+ * nullable on the wire (relay-builds-repo.ts's `RelayBuildLedgerRow` doc: no source id was
+ * recorded / unclaimed / no verdict yet / no verdict Decision yet) — `null` there is a real fact,
+ * not an omission an older server would produce, but `isAbsent` still guards it the same way every
+ * other nullable column in this file does, so an older/newer server that omits the key outright
+ * prints `-` instead of the literal `undefined`. `attempts`/`failedAttempts` are printed EXACTLY AS
+ * THE RESPONSE STATES — it carries no verdict cap, so this row never computes or implies one.
+ */
+export function relayBuildRow(row: RelayBuild): Record<string, string> {
+  return {
+    change: row.changeObjectId,
+    sourceChange: isAbsent(row.sourceChangeObjectId) ? "-" : row.sourceChangeObjectId,
+    status: row.status,
+    attempts: String(row.attempts),
+    failedAttempts: String(row.failedAttempts),
+    nextAttempt: row.nextAttemptAt,
+    claimedUntil: isAbsent(row.claimedUntil) ? "-" : row.claimedUntil,
+    lastReason: isAbsent(row.lastReason) ? "-" : row.lastReason,
+    decisionId: isAbsent(row.lastDecisionId) ? "-" : row.lastDecisionId
   };
 }
 
@@ -1336,7 +1380,15 @@ function freezeRow(f: Freeze): Record<string, string> {
     name: f.name ?? "",
     startsAt: f.startsAt,
     endsAt: f.endsAt,
-    reason: f.reason
+    reason: f.reason,
+    // D5: whether this freeze parks the whole wave or only what it covers is the single most
+    // consequential thing about it, so it is on the default table row rather than json-only.
+    atomic: String(f.atomic),
+    // M25.1 — on the DEFAULT row, not json-only, because `scp freeze list` returns lifted freezes
+    // too (they stay readable forever so a Decision citing one resolves) and a retracted freeze
+    // that renders identically to a live one is a list an operator cannot act on. Empty means
+    // still standing.
+    liftedAt: f.liftedAt ?? ""
   };
 }
 
@@ -3599,11 +3651,18 @@ export function buildProgram(): Command {
   freezeCmd
     .command("create")
     .description("Declare a freeze window over a scope")
-    .requiredOption("--scope <idOrUrn>", "the org/domain/service/component this freeze covers")
+    .requiredOption(
+      "--scope <idOrUrn>",
+      "the org/domain/service/component/deployment-target this freeze covers (a deployment-target scope freezes a whole region — ADR-0026 containment route 4)"
+    )
     .requiredOption("--starts-at <iso>", "ISO 8601 start")
     .requiredOption("--ends-at <iso>", "ISO 8601 end")
     .requiredOption("--reason <text>", "mandatory reason")
     .option("--name <name>", "human-readable label")
+    .option(
+      "--atomic",
+      "park the WHOLE wave rather than only the targets this freeze covers (owner decision D5) — use it when half-applied is worse than not-applied, e.g. a schema migration and the service that reads it"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -3614,6 +3673,7 @@ export function buildProgram(): Command {
           endsAt: string;
           reason: string;
           name?: string;
+          atomic?: boolean;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -3622,7 +3682,11 @@ export function buildProgram(): Command {
           startsAt: opts.startsAt,
           endsAt: opts.endsAt,
           reason: opts.reason,
-          name: opts.name
+          name: opts.name,
+          // Sent only when the flag is present, so an ordinary `scp freeze create` keeps sending a
+          // byte-identical body and the server-side default (`false`) stays the one place the
+          // default lives.
+          ...(opts.atomic ? { atomic: true } : {})
         });
         printResult(freeze, opts.output, (item) => freezeRow(item as Freeze));
       }
@@ -3648,6 +3712,48 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const found = await client.freezes.get(id);
       printResult(found, opts.output, (item) => freezeRow(item as Freeze));
+    });
+
+  // M25.1 — THE EXITS. `scp freeze` was create/list/get, so an operator could declare a freeze and
+  // had no way to take it back: the only escapes were `scp change cancel` / `scp change rollback`,
+  // which throw the RELEASE away rather than lifting the FREEZE. Since M25.2's per-target
+  // admission that is worse than waiting — a mistyped `--ends-at` year now holds a SUBSET of a
+  // wave's targets while the siblings have already shipped.
+  freezeCmd
+    .command("lift <id>")
+    .description(
+      "Lift (retract) a freeze — it stops being in force immediately, whatever endsAt says"
+    )
+    .requiredOption(
+      "--reason <text>",
+      "mandatory reason — lifting a freeze is a governance LOOSENING that applies to everyone it covered"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts & { reason: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      // The lifted row comes back rather than an empty 204: `liftedAt`/`liftedBy`/`liftReason` are
+      // on it, and a lifted freeze stays gettable by id forever so a Decision citing it resolves.
+      const lifted = await client.freezes.lift(id, { reason: opts.reason });
+      printResult(lifted, opts.output, (item) => freezeRow(item as Freeze));
+    });
+
+  freezeCmd
+    .command("update <id>")
+    .description(
+      "Move a freeze's endsAt — shortening it is a loosening, extending it is a tightening"
+    )
+    .requiredOption("--ends-at <iso>", "the new ISO 8601 end (must still be after startsAt)")
+    .requiredOption("--reason <text>", "mandatory reason, in BOTH directions")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts & { endsAt: string; reason: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const updated = await client.freezes.updateWindow(id, {
+        endsAt: opts.endsAt,
+        reason: opts.reason
+      });
+      printResult(updated, opts.output, (item) => freezeRow(item as Freeze));
     });
 
   const policyCmd = program.commands.find((c) => c.name() === "policy")!;
@@ -3758,6 +3864,112 @@ export function buildProgram(): Command {
       const result = await client.campaigns.explain(id);
       printCampaignExplainResult(result, opts.output);
     });
+
+  /**
+   * M25.6a (owner decision D4) — SET, MOVE or CLEAR the deadline. `--clear` is THE BLUNT EXIT: it
+   * releases every target the deadline was withholding this campaign's fan-out from, on the next
+   * tick, with no unlock verb. `scp campaign deadline-override` (M25.6b) is the per-target one, and
+   * costs the Owner-only `campaign:deadline-override` where this costs plain `object:write`.
+   *
+   * `--reason` is required on ALL THREE acts, clear included: it is the operator's own words on the
+   * hash chain, beside a Decision carrying the previous instant.
+   */
+  campaignCmd
+    .command("deadline <id>")
+    .description(
+      "Set, move or clear a Campaign's deadline — past it, targets this campaign cannot observe as migrated stop receiving ITS changes (unrelated releases are unaffected)"
+    )
+    .option("--at <iso>", "the deadline instant (ISO 8601, e.g. 2026-12-31T23:59:59Z)")
+    .option(
+      "--adoption-signal <kind>",
+      "which adoption evidence this deadline was authored against: delivered|dependency|control (declarative — the verdict always comes from the campaign's own recipe)"
+    )
+    .option("--clear", "CLEAR the deadline — releases every locked target on the next tick")
+    .requiredOption("--reason <text>", "why (required on set, move AND clear)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        id: string,
+        opts: BaseCliOpts & {
+          at?: string;
+          adoptionSignal?: string;
+          clear?: boolean;
+          reason: string;
+        }
+      ) => {
+        // REFUSED HERE RATHER THAN GUESSED. `--clear --at ...` is two contradictory intents, and
+        // silently picking one is how an operator comes to believe they cleared a deadline that is
+        // still standing and still withholding their campaign's changes.
+        if (opts.clear === true && opts.at !== undefined) {
+          throw new Error("--clear and --at are mutually exclusive");
+        }
+        if (opts.clear !== true && opts.at === undefined) {
+          throw new Error("pass --at <iso> to set or move the deadline, or --clear to remove it");
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const updated = await client.campaigns.setDeadline(
+          id,
+          opts.clear === true
+            ? null
+            : {
+                at: opts.at!,
+                ...(opts.adoptionSignal !== undefined
+                  ? {
+                      adoptionSignal: opts.adoptionSignal as "delivered" | "dependency" | "control"
+                    }
+                  : {})
+              },
+          opts.reason
+        );
+        printResult(updated, opts.output, (item) => campaignDetailRow(item as Campaign));
+      }
+    );
+
+  /**
+   * M25.6b (§4.5) — WAIVE the deadline for NAMED targets: excuse one laggard without clearing the
+   * deadline for everybody, which is all `deadline --clear` can do.
+   *
+   * Takes `campaign:deadline-override` (Owner-only) AT THE CAMPAIGN plus `object:write` at each
+   * named target. `--target` is REPEATABLE; omitting it waives every target the campaign declares,
+   * which is still not the same act as clearing — the deadline stands, each waiver is audited
+   * separately, and `--until` expires them one by one.
+   *
+   * `--until` is a BOUNDARY with READ-TIME expiry: past it the deadline applies again on the next
+   * tick with no job to run. An instant already in the past is accepted, stored and audited, and is
+   * simply not effective — which is the honest outcome rather than a special case.
+   */
+  campaignCmd
+    .command("deadline-override <id>")
+    .description(
+      "Waive a Campaign's deadline for named targets — excuses a laggard without clearing the deadline for everyone"
+    )
+    .option(
+      "--target <idOrUrn>",
+      "a target to excuse; repeatable. Omit to waive every target this campaign declares",
+      (value: string, previous: string[] = []) => [...previous, value]
+    )
+    .requiredOption("--reason <text>", "why this target is excused (required — it is on the chain)")
+    .option(
+      "--until <iso>",
+      "expiry boundary (ISO 8601). Omitted means in force until the deadline is cleared or the target adopts"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        id: string,
+        opts: BaseCliOpts & { target?: string[]; reason: string; until?: string }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const updated = await client.campaigns.overrideDeadline(id, {
+          ...(opts.target !== undefined && opts.target.length > 0 ? { targets: opts.target } : {}),
+          reason: opts.reason,
+          ...(opts.until !== undefined ? { until: opts.until } : {})
+        });
+        printResult(updated, opts.output, (item) => campaignDetailRow(item as Campaign));
+      }
+    );
 
   campaignCmd
     .command("rollback <id>")
@@ -5622,6 +5834,31 @@ export function buildProgram(): Command {
       console.log(
         "The receiving M17.4(a)+(b) gates still verify everything before any deploy (zero trust in the relay)."
       );
+    });
+
+  // M13.1b — the auto-relay build ledger's OPERATOR READ SURFACE (owner ask): see queue depth and
+  // exhausted rows without DB surgery. ROLE-AGNOSTIC BY CONSTRUCTION (relay-builds-repo.ts's
+  // `listRelayBuilds` doc): rows exist only on a `role: retrans` instance, seeded at promotion
+  // import there; on any other role the table is honestly empty, so this never 409s on role — an
+  // empty table is the truth, matching every other read surface in this codebase. Mirrors
+  // docs/runbooks/retrans-relay.md's "Seeing queue depth and exhausted rows without database
+  // surgery" section, including its exit from `exhausted`.
+  federationCmd
+    .command("relay-builds")
+    .description(
+      "Operator triage: the auto-relay build ledger's queue depth and exhausted rows (populated only on role:retrans instances — seeded at promotion import there; honestly empty on a commander/outpost, never a 409). Exit an `exhausted` row with `scp federation relay --change <id>`"
+    )
+    .option("--status <status>", "pending|built|forwarded|exhausted")
+    .option("--limit <n>", "max rows (server-bounded: default 100, max 500)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { status?: RelayBuildStatus; limit?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const rows = await client.federation.listRelayBuilds({
+        ...(opts.status !== undefined ? { status: opts.status } : {}),
+        ...(opts.limit !== undefined ? { limit: Number(opts.limit) } : {})
+      });
+      printResult(rows, opts.output, (raw) => relayBuildRow(raw as RelayBuild));
     });
 
   federationCmd

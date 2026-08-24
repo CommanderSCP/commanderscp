@@ -1,5 +1,5 @@
 import type PgBoss from "pg-boss";
-import type { TriggerIntent } from "@scp/plugin-api";
+import type { ExecutorCapabilities, TriggerIntent } from "@scp/plugin-api";
 import { boundDetail } from "@scp/runner-launcher";
 import type { ExecutorType, TrustDomainId } from "@scp/schemas";
 import type { Db } from "../db/client.js";
@@ -23,6 +23,13 @@ import {
   evaluateStageDependencies,
   type StageDependencyVerdict
 } from "./stage-dependency-hold.js";
+import {
+  describeFreezeHold,
+  describeHeldTargets,
+  evaluateFreezeHolds,
+  type FreezeHoldVerdict
+} from "./freeze-hold.js";
+import { rollbackExemptible } from "../governance/freeze-scope.js";
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
 import {
@@ -40,6 +47,8 @@ import {
 import {
   claimWaveTargetForTriggering,
   findLatestSucceededExecution,
+  isRefusedWaveTargetStatus,
+  type RefusedWaveTargetStatus,
   findOriginalWaveTarget,
   getWaveStatus,
   markWaveRunning,
@@ -48,6 +57,7 @@ import {
   markWaveTargetTriggerFailed,
   markWaveTerminal,
   observedStateFrom,
+  originalChangeDispatchedTarget,
   updateWaveTargetObserved
 } from "./wave-targets-repo.js";
 import {
@@ -60,12 +70,30 @@ import {
 } from "./target-liveness.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
+import {
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION,
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
+  WAVE_TARGET_RECIPE_UNREADABLE_AUDIT_ACTION,
+  WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
+  WAVE_TARGET_RECIPE_UNSUPPORTED_AUDIT_ACTION,
+  WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS,
+  executorSupportsTriggerKind,
+  isRecipeForbiddenExecutorModule,
+  recipeTriggerParameters,
+  resolveChangeRecipe,
+  type RecipeResolution
+} from "./campaign-recipe.js";
 import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
-import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
+import {
+  insertDecision,
+  insertDecisionIfChanged,
+  latestDecisionForSubjectKind
+} from "./decisions-repo.js";
 import { describeError } from "../errors.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
+import type { PluginModule } from "../plugin-host/contract.js";
 import { resolveExecutorPluginInstance, DEFAULT_BINDING_TYPE } from "./executor-bindings-repo.js";
 import {
   listVisibleBindingsForTarget,
@@ -720,6 +748,20 @@ async function reconcileExecutingChange(
     return;
   }
 
+  /**
+   * IS THIS CHANGE A ROLLBACK? — read ONCE, above the wave gate, because BOTH freeze seams need it
+   * (owner decision D7) and two readings of one fact is how they drift.
+   *
+   * `evaluateLifecycleGate` has always exempted rollbacks at `validating->accepted` (DESIGN §9.4 —
+   * "no human-review step to wait for"). The WAVE boundary never learned the same fact, so a
+   * rollback of a broken release into a frozen scope was refused by the very mechanism meant to
+   * protect the scope — pinning the broken release in place for the whole window. D7 closes that at
+   * both places: the gate (below, via `EvaluateWaveGateContext.isRollback`) and the per-target hold
+   * (the actuator's `!isRollback`, further down). Both are needed and neither is sufficient: the
+   * gate covers the ALL-frozen wave, the actuator covers every partially-frozen one.
+   */
+  const isRollback = change.rollbackOfObjectId !== null;
+
   if (activeWave.status === "pending") {
     // MULTI-REPLICA SINGLE-FLIGHT (M8 hardening follow-up, adversarial review MINOR #5): the SAME
     // per-change advisory lock advanceProposedChanges/advanceEvaluatedChanges/
@@ -762,7 +804,8 @@ async function reconcileExecutingChange(
             emergency: change.emergency,
             topologyObjectId: plan.topologyObjectId,
             waveIndex: activeWave.waveIndex,
-            targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+            targetObjectIds: activeWave.targets.map((t) => t.targetObjectId),
+            isRollback
           },
           gateDeps
         );
@@ -870,7 +913,6 @@ async function reconcileExecutingChange(
   // independently-committed transaction rather than one giant per-wave transaction, triggering
   // target A and polling target B in the same tick can't half-commit anything: each target's
   // durable state is exactly as fresh as its own last transaction, no more and no less.
-  const isRollback = change.rollbackOfObjectId !== null;
   /**
    * Targets still in flight when this loop ends — HELD ONES INCLUDED. A count rather than the
    * `allTerminal` boolean it replaces, because the terminalization at the bottom has to tell
@@ -893,6 +935,19 @@ async function reconcileExecutingChange(
   // guard. Named because the guarantee matters: holding a rollback behind a dependency would keep a
   // broken release in place while waiting for the very component it is trying to get away from.
   const declared = stageDependenciesOf(changeProperties);
+
+  /**
+   * M25.4 — THE CAMPAIGN RECIPE (owner decision D3), resolved ONCE per change per tick, in memory,
+   * beside the stage-dependency declarations and for the same reasons: this loop runs on every tick
+   * of every executing change on the instance, and a change without a recipe must pay a single
+   * key-absence check and nothing else (`resolveChangeRecipe` returns before parsing anything).
+   *
+   * It is read off the CHANGE, not off the campaign that fanned it out. `campaign-reconcile.ts`
+   * copies the recipe by value onto each member change's `properties` at fan-out (see that call
+   * site), which is what makes this path campaign-agnostic: a promoted change carrying a recipe
+   * through a federation bundle, or a directly authored one, drives exactly the same code.
+   */
+  const recipe = resolveChangeRecipe(changeProperties);
 
   /**
    * THE OTHER HALF OF THE HOLD'S DEPENDENCY SET (ADR-0028 decision 6) — plain `depends_on` edges
@@ -919,6 +974,63 @@ async function reconcileExecutingChange(
         ? []
         : await withTenantTx(db, orgId, (tx) => loadDependsOnEdges(tx, orgId, changeTargets)));
 
+  /**
+   * THE FREEZE HOLD (M25.2) — resolved ONCE per change per tick, for the WHOLE wave, and memoised
+   * exactly like the edge set beside it.
+   *
+   * ONE CALL FOR THE WAVE, NOT ONE PER TARGET, and that is what keeps the cost honest: the whole
+   * point of `freezesByTarget` is that it asks "does this org have ANY active freeze right now?"
+   * once, on an indexed window read, and returns every target unfrozen without walking a single
+   * containment chain when the answer is no. Calling it per target would issue that read per target
+   * instead. See `governance/freeze-scope.ts`'s inertness property, which has its own counting test.
+   *
+   * LAZY, for the same reason `loadInTargetSetEdges` is: the call sits inside the trigger branch, so
+   * a wave that is purely POLLING in-flight targets does not consult freezes at all. A freeze cannot
+   * withdraw a trigger already made (`ExecutorPlugin` has no pause verb — ADR-0008), so there is
+   * nothing for it to say about a target already in flight.
+   *
+   * RESOLVED EVERY TICK, never once at the wave boundary. That is the second half of what M25.2
+   * fixes: `evaluateWaveGate` fires exactly once on `pending -> running`, so a freeze DECLARED
+   * MID-WAVE was previously never seen at all. Memoisation is per tick, so the next tick asks again
+   * — which is also how a freeze CLEARS, in one second, with no scheduler and no status flip.
+   */
+  let freezeHolds: Map<string, FreezeHoldVerdict> | undefined;
+  const loadFreezeHolds = async (): Promise<Map<string, FreezeHoldVerdict>> =>
+    (freezeHolds ??= await withTenantTx(db, orgId, (tx) =>
+      evaluateFreezeHolds(tx, {
+        orgId,
+        targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+      })
+    ));
+
+  /**
+   * THE ONE QUALIFIER ON D7'S ROLLBACK EXEMPTION — see `originalChangeDispatchedTarget`.
+   *
+   * `false` for every non-rollback change WITHOUT touching the database, so the ordinary path pays
+   * nothing; and for a rollback it is asked ONLY about a target a freeze is actually holding, which
+   * is the rarest shape on this loop. Memoised per target per tick alongside the hold map itself,
+   * because a rollback whose whole wave is frozen would otherwise re-ask once per target per tick
+   * for the length of the window.
+   */
+  const rollbackUndoable = new Map<string, boolean>();
+  const rollbackHasSomethingToUndoAt = async (targetObjectId: string): Promise<boolean> => {
+    if (!isRollback || !change.rollbackOfObjectId) return false;
+    const memo = rollbackUndoable.get(targetObjectId);
+    if (memo !== undefined) return memo;
+    const dispatched = await withTenantTx(db, orgId, (tx) =>
+      originalChangeDispatchedTarget(tx, orgId, change.rollbackOfObjectId!, targetObjectId)
+    );
+    rollbackUndoable.set(targetObjectId, dispatched);
+    return dispatched;
+  };
+
+  /** Did any target of this wave reach `triggerWaveTarget` on this tick? The release condition for
+   *  the freeze hold's Decision — see `clearFreezeAdmissionHold`. Set BEFORE the call rather than
+   *  after it, because a trigger that THREW still handed the target to its executor (the attempt is
+   *  durable and the executor may well have started something), and a hold that stayed on record
+   *  after that would be the same stale row this release exists to end. */
+  let anyTargetTriggered = false;
+
   /** Every target held this tick, with the verdict that held it — collected across the whole loop so
    *  ONE Decision covers the change rather than one per target. That is not tidiness: `decisions`
    *  are deduped per `(subject_id, kind)` on the LATEST row, so per-target rows for a multi-target
@@ -944,24 +1056,34 @@ async function reconcileExecutingChange(
    *  something they have to deduce. */
   const unscopeableTargets: { targetObjectId: string; verdicts: StageDependencyVerdict[] }[] = [];
 
+  /** Every target this tick that an active freeze covered (M25.2). Collected separately from
+   *  `heldTargets` because the two carry different explanations and write different Decisions —
+   *  but they are counted TOGETHER in the terminalization below, and the two sets are DISJOINT BY
+   *  CONSTRUCTION because the freeze `continue` fires before the stage-dependency check can run.
+   *  If that ordering ever changes, the arithmetic at the bottom of this loop goes negative and a
+   *  wave with live targets terminalizes. */
+  const frozenTargets: FreezeHoldVerdict[] = [];
+
   for (const target of activeWave.targets) {
     if (target.status === "succeeded") continue;
     if (target.status === "failed" || target.status === "aborted") {
       anyFailed = true;
       continue;
     }
-    if (target.status === "no_executor" || target.status === WAVE_TARGET_TOMBSTONED_STATUS) {
+    if (isRefusedWaveTargetStatus(target.status)) {
       // Terminal + a wave failure — reconcile REFUSED to drive this target and already blocked,
       // audited and parked the change when it terminalized the row: a masking executor-binding gap
-      // (docs/adr/0006) or a tombstoned target object (`target-liveness.ts`). Counts toward
-      // `anyFailed` but is NEVER re-triggered (that would duplicate the block Decision + audit
-      // event).
+      // (docs/adr/0006), a tombstoned target object (`target-liveness.ts`), or M25.4's two recipe
+      // refusals (`campaign-recipe.ts`). Counts toward `anyFailed` but is NEVER re-triggered (that
+      // would duplicate the block Decision + audit event).
       //
-      // BOTH REFUSAL STATUSES ARE NAMED HERE, and this branch is exactly half of a two-place
-      // invariant: `wave-targets-repo.ts`'s TERMINAL_WAVE_TARGET_STATUSES is the same list read the
-      // other way round. A terminal status added to only one of them falls through to the poll arm
-      // below, increments `nonTerminalTargets` forever, and keeps a settled wave alive for the
-      // lifetime of the database while its change holds a BATCH_LIMIT slot. Add to both or neither.
+      // THE SET IS IMPORTED, NOT RESTATED, and that is the M25.4 change to this branch. It used to
+      // name its two statuses as literals, and it is exactly half of a two-place invariant:
+      // `wave-targets-repo.ts`'s TERMINAL_WAVE_TARGET_STATUSES is the same list read the other way
+      // round. A terminal status added to only one of them falls through to the poll arm below,
+      // increments `nonTerminalTargets` forever, and keeps a settled wave alive for the lifetime of
+      // the database while its change holds a BATCH_LIMIT slot. Now both derive from
+      // `REFUSED_WAVE_TARGET_STATUSES`, so they cannot disagree.
       anyFailed = true;
       continue;
     }
@@ -983,6 +1105,75 @@ async function reconcileExecutingChange(
       // the state a refusal leaves behind.
       const backoffMs = target.status === "triggering" ? triggerBackoffMs(target.attempt) : 0;
       if (backoffMs > 0 && Date.now() - Date.parse(target.updatedAt) < backoffMs) continue;
+
+      // ==========================================================================================
+      // THE FREEZE HOLD — M25.2's ACTUATOR (docs/proposals/campaigns-rework.md §1.2)
+      // ==========================================================================================
+      // THIS `continue` IS THE REFUSAL. Delete it and the target triggers into an active freeze,
+      // and every test in `freeze-admission.integration.test.ts` that asserts an executor was never
+      // called goes red. Nothing else in this file withholds a trigger for a freeze: the wave gate
+      // above now only blocks the ALL-frozen wave.
+      //
+      // FIVE INVARIANTS, each with a named prior incident. Every one is load-bearing:
+      //
+      //   1. COUNTED FIRST. `nonTerminalTargets++` happened at the top of this branch, BEFORE this
+      //      `continue`. A frozen target is still in flight. Copied verbatim from the backoff gate
+      //      and from ADR-0028's hold below, and for the same reason: without it a wave whose only
+      //      remaining target is frozen marks itself `succeeded` and the change completes green
+      //      with a target that never ran — silent-success masking, the class ADR-0006 exists to
+      //      prevent.
+      //   2. BEFORE `triggerWaveTarget`. No advisory trigger-claim lock is taken and no executor
+      //      binding is re-read for a call we are not going to make. `attempt` therefore stays 0 on
+      //      a target held from its first tick, which is what the actuator test measures.
+      //   3. THE ROLLBACK EXEMPTION (owner decision D7), AND ITS ONE QUALIFIER.
+      //      `evaluateLifecycleGate` already exempts rollbacks (`gates.ts` — DESIGN §9.4, "no
+      //      human-review step to wait for"), but `EvaluateWaveGateContext` carried no `isRollback`
+      //      at all, so a rollback's wave targets were freeze-blocked. Holding a rollback pins a
+      //      BROKEN RELEASE in place for the whole window — the one change a freeze most wants to
+      //      let through. This is a change that newly permits, which is why it is an owner decision
+      //      and gets a test in both directions.
+      //
+      //      The qualifier is `rollbackHasSomethingToUndoAt` below: D7's reasoning is about a
+      //      target the broken release ACTUALLY REACHED, and per-target admission makes the other
+      //      case reachable for the first time (freeze holds `amer`, a sibling ships and fails,
+      //      `autoRollbackOnFailure` mints a rollback over ALL FOUR original targets). Exempting
+      //      `amer` there would dispatch an unattended executor call into a declared freeze to undo
+      //      a release that never happened. See that function for the full chain.
+      //   4. BEFORE THE STAGE-DEPENDENCY HOLD. Only one `continue` can fire, so the two hold sets
+      //      are DISJOINT BY CONSTRUCTION — which is exactly what the terminalization arithmetic at
+      //      the bottom of this loop depends on. Stated consequence: a target that is both frozen
+      //      and dependency-held records only the freeze this tick, and resumes producing
+      //      `stage_dependency` verdicts the tick the freeze lifts. A frozen target should also not
+      //      spend a graph read per tick on a coupling it cannot act on either way.
+      //   5. AFTER THE BACKOFF GATE. A `triggering` target has ALREADY been handed to its executor.
+      //      `ExecutorPlugin` is observe/trigger/status/abort and nothing else (ADR-0008 forbids
+      //      adding a pause verb), so a freeze cannot un-ring that bell. What it withholds here is
+      //      the RETRY, not the original call. That is the honest boundary of what a freeze buys,
+      //      and for a `pending` target — every first trigger, the case this is about — `backoffMs`
+      //      is 0 and the two orders are identical anyway.
+      //
+      //      AND ITS SECOND QUALIFIER, `rollbackExemptible` (M25.3 review finding 1). D7 is an
+      //      ORG-TIER decision: a PLATFORM freeze is never stood aside for a rollback. Shipped
+      //      tier-blind, this line was the CHEAPEST of the two routes past a freeze that `checkFreeze`
+      //      tells the caller "no tenant role can override, however privileged" — `POST
+      //      /v1/changes/{id}/rollback` requires `object:write` at the org and nothing else, so it
+      //      needed neither `freeze:override`, nor a reason, nor the operator token. It is the same
+      //      one predicate `gate-orchestrator.ts`'s `freezeExemptRollback` consults, deliberately: two
+      //      seams enforcing one rule must not be two copies of it. Reading `frozen.freezes` (which
+      //      already carries every freeze HOLDING this target, including one that only reaches it
+      //      because a SIBLING is covered by an `atomic` freeze) is what makes the atomic case fall
+      //      out with no extra branch.
+      const frozen = (await loadFreezeHolds()).get(target.targetObjectId);
+      if (
+        frozen &&
+        !(
+          rollbackExemptible(frozen.freezes) &&
+          (await rollbackHasSomethingToUndoAt(target.targetObjectId))
+        )
+      ) {
+        frozenTargets.push(frozen);
+        continue;
+      }
 
       // STAGE-DEPENDENCY HOLD (ADR-0028 decision 2) — withhold this target's trigger while a
       // dependency of its component is not yet satisfied AT THIS PLACE: one its own CI declared, or
@@ -1057,6 +1248,10 @@ async function reconcileExecutingChange(
         }
       }
       try {
+        // `anyTargetTriggered` is what gates the freeze hold's RELEASE row below (§1.5): a hold
+        // clears on the tick a previously-held target actually reaches its executor, which is the
+        // one tick on which "the window closed" is an observation rather than a guess.
+        anyTargetTriggered = true;
         await triggerWaveTarget(
           db,
           orgId,
@@ -1069,6 +1264,7 @@ async function reconcileExecutingChange(
           // non-default binding triggerable.
           (target.type as ExecutorType | null) ?? DEFAULT_BINDING_TYPE,
           isRollback,
+          recipe,
           host,
           masterKey
         );
@@ -1094,7 +1290,9 @@ async function reconcileExecutingChange(
       continue;
     }
     try {
-      const instanceId = await ensureExecutorInstanceStarted(
+      // `module` is deliberately not destructured — the poll path must not read it (see the helper's
+      // fall-back branch, where a persisted id's module is unknowable).
+      const { instanceId } = await ensureExecutorInstanceStarted(
         db,
         orgId,
         host,
@@ -1167,6 +1365,12 @@ async function reconcileExecutingChange(
     await recordStageDependencyHold(db, orgId, change, activeWave, heldTargets);
   }
 
+  if (frozenTargets.length > 0) {
+    await recordFreezeAdmissionHold(db, orgId, change, activeWave, frozenTargets);
+  } else if (anyTargetTriggered) {
+    await clearFreezeAdmissionHold(db, orgId, change, activeWave);
+  }
+
   // TERMINALIZATION, IN TWO RULES RATHER THAN ONE — because a held target is in flight (invariant 1
   // above) and a single `if (!allTerminal) return` therefore kept an already-FAILED wave alive
   // forever. A wave with one failed target and one held one never reached `markWaveTerminal`, so the
@@ -1185,7 +1389,22 @@ async function reconcileExecutingChange(
   // it — and from the next tick on the `failed` branch returns before this loop is reached at all.
   // Its hold Decision was written just above, so what kept it from running stays on record beside
   // the failure that ended the wave.
-  if (nonTerminalTargets - heldTargets.length > 0) {
+  //
+  // M25.2 ADDS A SECOND HOLD SET TO BOTH LINES, and getting either one wrong is the sharpest
+  // regression risk in that increment:
+  //
+  //   * Miss it in the FIRST guard and `nonTerminalTargets - heldCount` goes NEGATIVE (a frozen
+  //     target is counted in `nonTerminalTargets` but not in the subtrahend, or the reverse), the
+  //     guard passes, and a wave with genuinely live targets terminalizes.
+  //   * Miss it in the SECOND and a wave whose only remaining targets are frozen falls through to
+  //     `markWaveTerminal(..., "succeeded")` — the wave completes GREEN with a target that was
+  //     never deployed. Silent-success masking, the class ADR-0006 exists to prevent.
+  //
+  // The two sets are DISJOINT BY CONSTRUCTION: the freeze `continue` in the loop above fires
+  // before the stage-dependency evaluation can run, so no target can appear in both. That is a
+  // property of the ordering, not of the data, which is why it is stated at both places.
+  const heldCount = heldTargets.length + frozenTargets.length;
+  if (nonTerminalTargets - heldCount > 0) {
     // ROUND-ROBIN BUMP (4 of 5) — THE FIFTH INSTANCE OF THE STARVATION CLASS, and the one the
     // gate-blocked bump ~300 lines up does NOT cover. That bump fires only while the wave is still
     // `pending`. The moment the gate ALLOWS, `markWaveRunning` moves the wave to `running` and
@@ -1243,7 +1462,7 @@ async function reconcileExecutingChange(
     );
     return; // something is genuinely still running
   }
-  if (heldTargets.length > 0 && !anyFailed) return; // the PURE hold: unchanged, still in flight
+  if (heldCount > 0 && !anyFailed) return; // the PURE hold: unchanged, still in flight
   await withTenantTx(db, orgId, (tx) =>
     markWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded")
   );
@@ -1365,6 +1584,163 @@ async function recordStageDependencyHold(
 }
 
 /**
+ * THE EXPLAINABILITY HALF OF THE FREEZE HOLD (M25.2, charter principle 6) — and the
+ * anti-write-amplification contract that makes it safe to write from a 1 s loop.
+ *
+ * Four properties, each defending a named prior incident. All four are copied from
+ * `recordStageDependencyHold` above, which is the point: this is the same seam one mechanism over,
+ * and it is the seam that produced this project's worst production incident.
+ *
+ * `kind: "freeze_admission"`, DISTINCT FROM `"gate"`. `insertDecisionIfChanged` compares against
+ * the LATEST row of the same `(subject_id, kind)`. Sharing `gate` would make these rows and the
+ * wave gate's own rows for the same change ALTERNATE — each differing from the one before it — and
+ * suppression would never fire once. That is ADR-0024's measured 1.44 GB/day rebuilt from parts.
+ *
+ * `verdict: "hold"`, NEVER `"block"`. `latestBlockDecisionForSubject` selects the newest row with
+ * `verdict = 'block'` for a subject, filtered on the VERDICT ALONE — no kind, no recency, no
+ * change-state gate — and `service-board.ts` feeds it straight into a component row's
+ * `attention.blocked`. Nothing ever writes a clearing row. A `block` here would mark the component
+ * blocked permanently: after the freeze lifted, after the change was accepted, forever. And unlike
+ * the nineteen other `block` writers, this one fires on EVERY release into a frozen window BY
+ * DESIGN, so it would make the attention signal permanently wrong for exactly the orgs that use
+ * freezes.
+ *
+ * ONE ROW PER CHANGE, NOT PER TARGET. Per-target rows for a four-region wave would alternate under
+ * the same `(subject_id, kind)` comparison and suppression would never fire. `subjectId` is the
+ * CHANGE, and the held set is an array inside one `inputContext`.
+ *
+ * `endsAt`, NEVER `now`. The freeze's own window boundary is in the context and the clock is not —
+ * `gate-orchestrator.ts`'s trick, copied exactly. Every field written here is a uuid, a small
+ * integer, a type-id string, a freeze name, or an ISO instant read straight off `freezes.ends_at`;
+ * none is derived from `Date.now()`, `attempt`, or an observed weight. BOTH SORTS (targets by
+ * `targetObjectId` here, freezes by id in `freeze-hold.ts`) are load-bearing for the same reason: a
+ * reordered `activeWave.targets` must not make an unchanged situation look new. So tick N+1 produces
+ * a byte-identical candidate, `restatesDecision` is true, and nothing is written. A three-week
+ * freeze over a held change is ONE row, not 1.8 million.
+ *
+ * THE `reconcile_cursor_at` BUMP IS NOT OPTIONAL, and it goes in the SAME transaction as the
+ * Decision so a hold can never be recorded without its change also moving to the back of the queue.
+ * A change whose targets are all frozen stays `executing` with its wave `running`, so nothing else
+ * writes its row; `listChangeRowsInStates` serves oldest-`reconcile_cursor_at`-first capped at
+ * `BATCH_LIMIT`, so more than `BATCH_LIMIT` frozen changes would own every slot of every tick and
+ * every change queued behind them would never be evaluated even once. That is not hypothetical: the
+ * identical property stopped all coordination on the homelab for 13 days behind green health
+ * checks. This is bump 6 of 6, and `candidate-loop-registry.test.ts` is the CI gate that notices if
+ * it goes missing — its `advanceExecutingChanges` entry names this function and counts this bump.
+ * `state_entered_at` and `updated_at` are deliberately untouched (migration 0058's split): the
+ * watchdog's stall SLA must keep measuring from when the change entered `executing`, and a frozen
+ * change must not advertise itself to an operator as freshly updated every second it waits.
+ */
+async function recordFreezeAdmissionHold(
+  db: Db,
+  orgId: string,
+  change: ChangeRow,
+  activeWave: { id: string; waveIndex: number },
+  frozenTargets: FreezeHoldVerdict[]
+): Promise<void> {
+  const held = describeHeldTargets(frozenTargets);
+
+  const firstHold = await withTenantTx(db, orgId, async (tx) => {
+    const recorded = await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "freeze_admission",
+      subjectId: change.objectId,
+      verdict: "hold",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held },
+      reasonTree: {
+        summary: `${held.length} wave target(s) held: an active freeze covers that scope — siblings proceed`,
+        held: frozenTargets
+          .map((verdict) => describeFreezeHold(verdict))
+          .sort((a, b) => a.localeCompare(b))
+      }
+    });
+    await tx
+      .update(changes)
+      .set({ reconcileCursorAt: new Date() })
+      .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)));
+    return recorded;
+  });
+
+  // Logged exactly once per distinct hold, on the tick that actually persisted it — the same
+  // `created` signal the gate-blocked and stage-dependency log lines use, and for the same reason:
+  // a target frozen for a fortnight is one line, not 1,209,600.
+  if (firstHold.created) {
+    console.info(
+      `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by an active freeze — decision ${firstHold.decision.id} (scp decision get ${firstHold.decision.id}); re-evaluated every tick until the window closes`
+    );
+  }
+}
+
+/**
+ * HOLD -> RELEASE (proposal §1.5) — the clearing counterpart ADR-0028's stage-dependency hold does
+ * NOT have, and the omission `routes/changes.ts` had to work around.
+ *
+ * THE DEFECT THIS EXISTS TO PREVENT, stated verbatim by the file that already hit it
+ * (`routes/changes.ts`, on the `stage_dependency` Decision): *"that row is a historical record with
+ * no clearing counterpart, so it still says `hold` long after the hold released"*. A freeze holds
+ * `amer` for two hours, the window closes, `amer` ships, the change completes — and the newest
+ * `freeze_admission` row for that change still reads `hold`, naming a freeze whose `endsAt` is in
+ * the past, with nothing in `scp change explain` contradicting it. ADR-0028 paid for that lesson by
+ * adding a re-evaluated `resolveStageDependencyStatus` beside the raw Decision list; M25.2 copied
+ * the hold's shape from that seam, so it copies the fix too — in the cheaper of the two available
+ * forms, because a freeze hold (unlike a dependency) has an unambiguous release EVENT to hang a row
+ * on: the tick a target actually reached its executor with nothing held.
+ *
+ * THREE GUARDS, so this cannot become a writer:
+ *
+ *   1. It is called ONLY on a tick where `frozenTargets` is empty AND some target triggered. A
+ *      change that was never held never reaches this function at all.
+ *   2. It READS the latest `(subject_id, kind)` row first and returns unless that row is a `hold`.
+ *      So the release is written at most once per hold, not once per subsequent trigger.
+ *   3. `insertDecisionIfChanged` is used anyway, so even if both guards were somehow defeated the
+ *      second identical release would be suppressed. Belt, braces, and the ADR-0024 lesson.
+ *
+ * NO CURSOR BUMP, deliberately, and it is the one function in this file's Decision-writing family
+ * without one: reaching here means a target was triggered on this very tick, so
+ * `markWaveTargetTriggered` has already written `change_wave_targets` and the terminalization
+ * arithmetic below bumps `reconcile_cursor_at` for a wave still in flight. There is no
+ * not-advanced path here to starve. `candidate-loop-registry.test.ts` counts the bumps that DO
+ * exist; this function is deliberately absent from its `bumpIn` list.
+ *
+ * `held: []` AND THE SAME `kind`, so `scp change explain` shows the pair — hold, then release —
+ * under one filter rather than making an operator correlate two vocabularies. `verdict: "allow"`
+ * (never `"block"`, for the reason `recordFreezeAdmissionHold` states at length).
+ */
+async function clearFreezeAdmissionHold(
+  db: Db,
+  orgId: string,
+  change: ChangeRow,
+  activeWave: { id: string; waveIndex: number }
+): Promise<void> {
+  await withTenantTx(db, orgId, async (tx) => {
+    const latest = await latestDecisionForSubjectKind(
+      tx,
+      orgId,
+      change.objectId,
+      "freeze_admission"
+    );
+    if (!latest || latest.verdict !== "hold") return;
+    await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "freeze_admission",
+      subjectId: change.objectId,
+      verdict: "allow",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held: [] },
+      reasonTree: {
+        summary:
+          "no wave target is held by a freeze any more — the window closed (or the freeze was " +
+          "lifted) and the previously-held target has been handed to its executor",
+        releases: latest.id
+      }
+    });
+  }).catch((err) => {
+    // Best effort, exactly like the hold's own logging: failing to record that a hold RELEASED must
+    // never fail the tick that released it. The next trigger on this change retries.
+    logChangeError(orgId, change, "freeze-admission-release", err);
+  });
+}
+
+/**
  * THE FAIL-OPEN, MADE VISIBLE (ADR-0028 decision 4, unreadable/unscopeable branch). A wave target
  * that is not a live `placement` — a legacy-shaped topology whose waves name the change's own
  * targets, or NO resolvable topology at all, which puts the plan on `compilePlan`'s toposort path —
@@ -1464,7 +1840,7 @@ async function blockWaveTarget(
     targetObjectId: string;
     /** The terminal status this refusal earns. Explicit at every call site — see
      *  `terminalizeRefusedWaveTarget` for why it is not a literal in one place. */
-    status: "no_executor" | typeof WAVE_TARGET_TOMBSTONED_STATUS;
+    status: RefusedWaveTargetStatus;
     action: string;
     summary: string;
     remediation: string;
@@ -1503,6 +1879,114 @@ async function blockWaveTarget(
   await markWaveTerminal(tx, args.orgId, args.waveId, "failed");
   await markChangeReconcileBlocked(tx, args.orgId, args.change.objectId);
   return true;
+}
+
+/**
+ * M25.4 — is this target's resolved executor able to honour the change's recipe? Returns the
+ * refusal's whole shape, or `undefined` when there is nothing to refuse.
+ *
+ * TWO CAUSES, TWO STATUSES, ONE REMEDY EACH — `terminalizeRefusedWaveTarget`'s rule (the status is a
+ * parameter "precisely so a second cause could not be smuggled in under the first one's name"):
+ *
+ *   * `recipe_unreadable` — the document does not parse. Fix the document.
+ *   * `recipe_unsupported` — the document is fine; THIS executor has no such verb. Fix the binding,
+ *     or narrow the campaign's targets.
+ *
+ * NEITHER EVER FALLS BACK TO A DEFAULT, and that is the point of the whole function. `github` and
+ * `gitea` resolve `intent.parameters?.workflowId ?? config.defaultWorkflowId`, so a silently-dropped
+ * recipe does not error — it dispatches the target's ORDINARY workflow, that run succeeds, the wave
+ * target goes `succeeded`, and the campaign reports a migration that never happened. A refusal with
+ * a `decision_id` is the only outcome that leaves nobody with a false belief (charter principle 6).
+ *
+ * `describeCapabilities()` is an RPC across the plugin-host seam. It is called ONLY when the change
+ * actually carries a recipe, so a recipe-less instance pays nothing for this. A THROWN call is not a
+ * refusal: it propagates to the caller's per-target catch and the target is retried next tick with
+ * nothing terminalized — the same fail direction `readTargetLiveness` documents, and for the same
+ * reason (a plugin-host blip must never be mistaken for "this executor cannot do that").
+ */
+async function resolveRecipeRefusal(
+  client: { describeCapabilities: () => Promise<ExecutorCapabilities> },
+  recipe: RecipeResolution,
+  /** The plugin module this target's binding resolved to — for the OQ-5 managed-actuator refusal.
+   *  Comes from `ensureExecutorInstanceStarted`'s return so it is the same answer the trigger will
+   *  act on, never a second query. */
+  executorModule: PluginModule
+): Promise<
+  | {
+      status: RefusedWaveTargetStatus;
+      action: string;
+      summary: string;
+      remediation: string;
+      inputContext: Record<string, unknown>;
+    }
+  | undefined
+> {
+  if (recipe.outcome === "none") return undefined;
+  if (recipe.outcome === "malformed") {
+    return {
+      status: WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
+      action: WAVE_TARGET_RECIPE_UNREADABLE_AUDIT_ACTION,
+      summary:
+        `this change carries a 'properties.recipe' that does not parse (${recipe.detail}), so the ` +
+        `trigger it names cannot be performed`,
+      remediation:
+        `fix the recipe on the campaign that fanned this change out (or on the change itself), then ` +
+        `cancel/rollback/re-propose the change. Driving it anyway would trigger the target's ` +
+        `DEFAULT pipeline with no recipe parameters and record a coordination that did not happen`,
+      inputContext: { recipe: { readable: false, detail: recipe.detail } }
+    };
+  }
+  const kind = recipe.recipe.trigger.kind;
+  // =============================================================================================
+  // OQ-5 (UNRULED) — A RECIPE MAY NOT DRIVE ONE OF COMMANDERSCP'S OWN ACTUATORS.
+  // =============================================================================================
+  // CHECKED BEFORE `describeCapabilities()`, and the order is the point: all three managed modules
+  // ANSWER YES to `"custom"` (measured — `managed-dep` and `managed-scan` declare exactly
+  // `["custom"]`, `managed-iac` declares `["sync","rollback","custom"]`), so asking the capability
+  // question first would return `undefined` and the recipe's author-controlled `parameters` would
+  // reach the bump actuator as `{action:"bump", ...}`. The capability check is about what an
+  // executor CAN do; this is about what CommanderSCP MAY ask it to, and only the second one is a
+  // charter question.
+  //
+  // This is a fail-closed default on an unruled question, not a ruling. If OQ-5 later says a
+  // campaign MAY drive a managed actuator, this branch is the single seam that changes.
+  if (isRecipeForbiddenExecutorModule(executorModule)) {
+    return {
+      status: WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
+      action: WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION,
+      summary:
+        `this target is bound to '${executorModule}', one of CommanderSCP's own managed actuators, ` +
+        `and a campaign recipe may not drive those — a recipe coordinates a TENANT's pipeline`,
+      remediation:
+        `remove this target from the campaign, or bind it to the pipeline that actually performs ` +
+        `this migration. CommanderSCP's managed executors act under a narrow charter grant and are ` +
+        `driven by the server (dependency-bump dispatch, promotion scanning), never by an authored ` +
+        `document — letting a recipe supply their parameters would let a campaign author choose ` +
+        `what CommanderSCP writes into a repository`,
+      inputContext: { recipe: { readable: true, kind }, executorModule, managedActuator: true }
+    };
+  }
+  const capabilities = await client.describeCapabilities();
+  if (executorSupportsTriggerKind(capabilities, kind)) return undefined;
+  const supported = Array.isArray(capabilities?.triggerKinds)
+    ? [...capabilities.triggerKinds].sort()
+    : [];
+  return {
+    status: WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS,
+    action: WAVE_TARGET_RECIPE_UNSUPPORTED_AUDIT_ACTION,
+    summary:
+      `the executor bound to this target cannot perform a '${kind}' trigger (it declares ` +
+      `${supported.length > 0 ? supported.map((k) => `'${k}'`).join(", ") : "none"}), so this ` +
+      `change's recipe cannot be honoured here`,
+    remediation:
+      `bind an executor that supports '${kind}' for this target, or remove this target from the ` +
+      `campaign — CommanderSCP will not substitute a different trigger, because the target's ` +
+      `default pipeline would succeed and report a coordination that did not happen`,
+    /** CONTENT-STABLE — the recipe's kind and the executor's own declared set, both sorted, and no
+     *  clock-shaped value anywhere. This Decision is written once (the status guard), but the rule
+     *  is the instance-wide one from the measured 1.44 GB/day incident and it costs nothing to keep. */
+    inputContext: { recipe: { readable: true, kind }, supportedTriggerKinds: supported }
+  };
 }
 
 /**
@@ -1552,6 +2036,9 @@ async function triggerWaveTarget(
   targetObjectId: string,
   type: ExecutorType,
   isRollback: boolean,
+  /** M25.4 — what the change's `properties.recipe` says, already parsed. See the capability refusal
+   *  below and `campaign-recipe.ts`. */
+  recipe: RecipeResolution,
   host: PluginHost,
   masterKey: Buffer
 ): Promise<void> {
@@ -1758,7 +2245,7 @@ async function triggerWaveTarget(
     // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
     // Component/DeploymentTarget with no binding configured falls back to the shared default
     // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).
-    const instanceId = await ensureExecutorInstanceStarted(
+    const { instanceId, module: executorModule } = await ensureExecutorInstanceStarted(
       db,
       orgId,
       host,
@@ -1772,9 +2259,78 @@ async function triggerWaveTarget(
     // row's own id already satisfies "IDENTICAL across retries of the same target."
     const idempotencyKey = waveTargetId;
 
+    // =============================================================================================
+    // M25.4 — THE RECIPE, AND THE TWO REFUSALS THAT COME WITH IT (owner decision D3, ADR-0041)
+    // =============================================================================================
+    // A recipe is one authored trigger intent fanned across N targets. Here is where it becomes a
+    // real call to a real executor — and here is where it must STOP if this particular target cannot
+    // honour it, because everything downstream of this point is a side effect in someone's estate.
+    //
+    // A ROLLBACK IGNORES THE RECIPE ENTIRELY — kind AND parameters. `kind` is decided from the
+    // CHANGE below (`isRollback` -> "rollback"), and passing the recipe's migration parameters to a
+    // restore would re-run the migration under the name of undoing it: `github` would resolve the
+    // recipe's `workflowId` and dispatch the python3 workflow again while the operator believed they
+    // were reverting. The recipe schema already refuses `kind: "rollback"` at the door; this is the
+    // other direction of the same rule, and it is the reason the whole block sits behind
+    // `!isRollback` rather than only the kind assignment.
+    //
+    // PLACED AFTER `ensureExecutorInstanceStarted`, NOT BEFORE: the question is not "can any executor
+    // serve this kind" but "can the executor THIS TARGET resolved to serve it", and that instance is
+    // not known until the binding has been resolved. It is a genuinely per-target question — the
+    // measured `triggerKinds` sets of `argocd` (sync, rollback) and `github` (workflow_dispatch,
+    // custom) are DISJOINT, so a single campaign across a mixed estate is answered differently at
+    // each target and could not have been settled once at authoring time.
+    //
+    // AND BEFORE `claimWaveTargetForTriggering`: `blockWaveTarget` terminalizes the row itself, and
+    // claiming it first would move it to `triggering` — outside the `('pending','triggering')` guard
+    // is not the risk (it covers both), but the claim is a statement that this target is being
+    // handed to an executor, which is exactly what is NOT about to happen.
+    const recipeRefusal = !isRollback
+      ? await resolveRecipeRefusal(client, recipe, executorModule)
+      : undefined;
+    if (recipeRefusal) {
+      const refused = await withTenantTx(db, orgId, (tx) =>
+        blockWaveTarget(tx, {
+          orgId,
+          change,
+          waveId,
+          waveTargetId,
+          targetObjectId,
+          status: recipeRefusal.status,
+          action: recipeRefusal.action,
+          summary: recipeRefusal.summary,
+          remediation: recipeRefusal.remediation,
+          reason: recipeRefusal.summary,
+          inputContext: {
+            waveId,
+            targetObjectId,
+            requestedType: type,
+            executorPluginId: instanceId,
+            ...recipeRefusal.inputContext
+          }
+        })
+      );
+      // `refused` is true whether this tick wrote the records or a prior one already had. Either way
+      // this target is terminal and `trigger()` is NEVER called — the assertion the DoD names.
+      if (refused) return;
+    }
+
     const claim = await withTenantTx(db, orgId, async (tx) => {
       let kind: TriggerIntent["kind"];
       let priorStateRef: unknown = null;
+      /**
+       * M25.4 — what rides on `TriggerIntent.parameters`. VERBATIM from the recipe; SCP performs no
+       * cross-provider translation (`recipeTriggerParameters`).
+       *
+       * `undefined` for a rollback and for every recipe-less change, which keeps the intent
+       * BYTE-IDENTICAL to a pre-M25.4 one: `parameters` stays absent rather than becoming `{}`.
+       * `pipeline-generic` passes this bag straight through to a tenant's own HTTP endpoint, so a
+       * new empty object appearing on every trigger on the instance is a wire change, not a no-op.
+       */
+      const parameters =
+        !isRollback && recipe.outcome === "recipe"
+          ? recipeTriggerParameters(recipe.recipe)
+          : undefined;
 
       // The executor-specific target id (e.g. an Argo CD Application name) this object maps to.
       // Falls back to the object id for legacy bindings — so a binding whose object id already IS
@@ -1847,7 +2403,10 @@ async function triggerWaveTarget(
         );
         priorStateRef = originalTarget?.priorStateRef ?? null;
       } else {
-        kind = "sync";
+        // M25.4 — the recipe's kind, when it has one and the capability check above passed. `"sync"`
+        // stays the default for every change that carries no recipe, so this line is byte-identical
+        // to pre-M25.4 behaviour in the overwhelming majority of cases.
+        kind = recipe.outcome === "recipe" ? recipe.recipe.trigger.kind : "sync";
         // Snapshot the target's CURRENT executor-side state (via a fresh status() call against its
         // last successful run, not just whatever a previous poll happened to observe) before this
         // trigger supersedes it — this is the "prior known-good state" a later rollback restores.
@@ -1871,7 +2430,7 @@ async function triggerWaveTarget(
       }
 
       const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
-      return claimed ? { kind, priorStateRef, externalRef } : null;
+      return claimed ? { kind, priorStateRef, externalRef, parameters } : null;
     });
 
     if (!claim) return; // no longer pending/triggering — another tick already handled it.
@@ -1883,7 +2442,14 @@ async function triggerWaveTarget(
         kind: claim.kind,
         targetRef: claim.externalRef ?? targetObjectId,
         priorStateRef: claim.priorStateRef,
-        idempotencyKey
+        idempotencyKey,
+        // M25.4 — THE CHANNEL THAT WAS NEVER WIRED. `TriggerIntent.parameters` has been on the
+        // plugin interface since M3 and every adapter reads it, but until now the only server call
+        // sites that populated it were `bump-dispatch.ts`, `bump-gate.ts` and
+        // `promotion-scan-step.ts` — the generic release path constructed
+        // `{kind, targetRef, priorStateRef, idempotencyKey}` and nothing else. Spread conditionally
+        // so a change with no recipe produces the exact same object it did before.
+        ...(claim.parameters !== undefined ? { parameters: claim.parameters } : {})
       });
     } catch (err) {
       // Step 3' — the executor REACHED and REFUSED this trigger. Record it so the retry backs off
@@ -1937,7 +2503,18 @@ async function ensureExecutorInstanceStarted(
   type: ExecutorType,
   persistedExecutorPluginId: string | null,
   masterKey: Buffer
-): Promise<string> {
+  /**
+   * M25.4 — returns the resolved MODULE alongside the instance id.
+   *
+   * The recipe's managed-executor refusal (`RECIPE_FORBIDDEN_EXECUTOR_MODULES`) has to know which
+   * plugin module this target actually resolved to, and it must be the SAME answer this function
+   * acted on. Re-querying the binding at the refusal site would make two readers of one fact that
+   * can disagree — a binding edited between the two reads, or the `persistedExecutorPluginId`
+   * fall-back branch below (which returns a persisted id whose module is deliberately NOT the
+   * currently-configured one) — and the refusal would then be reasoning about a module that is not
+   * the one about to be triggered.
+   */
+): Promise<{ instanceId: string; module: PluginModule }> {
   // MUST resolve the SAME routing Type the trigger will use (M12 P4A / ADR-0007). Resolving without
   // it would start one Type's plugin instance and then trigger against a different Type's binding — a
   // mismatch that would silently drive the wrong pipeline.
@@ -1970,7 +2547,7 @@ async function ensureExecutorInstanceStarted(
     (!persistedExecutorPluginId || persistedExecutorPluginId === resolved.instanceConfig.id)
   ) {
     await host.start([resolved.instanceConfig]);
-    return resolved.instanceConfig.id;
+    return { instanceId: resolved.instanceConfig.id, module: resolved.instanceConfig.module };
   }
 
   // Either no binding is configured, or a persisted id from an earlier trigger no longer matches
@@ -1986,7 +2563,19 @@ async function ensureExecutorInstanceStarted(
       config: {}
     }
   ]);
-  return persistedExecutorPluginId ?? DEFAULT_EXECUTOR_INSTANCE_ID;
+  // `module` describes what was actually started HERE: the default instance. That is exactly right
+  // for the TRIGGER caller, which is the only one that reads `module` and which always passes
+  // `persistedExecutorPluginId: null` — so it reaches this branch only when the target has no
+  // binding at all, and the default module is genuinely what it is about to trigger.
+  //
+  // The STATUS-POLL caller can reach this branch with a persisted id whose module is unknowable
+  // here (that is the whole point of the branch: the binding has since changed). It ignores
+  // `module`, and must keep ignoring it — a future reader wanting the module on the poll path has
+  // to resolve it from the persisted id, not trust this value.
+  return {
+    instanceId: persistedExecutorPluginId ?? DEFAULT_EXECUTOR_INSTANCE_ID,
+    module: DEFAULT_EXECUTOR_MODULE
+  };
 }
 
 /** All waves of `change`'s plan have succeeded — advance past `executing`. Forward changes stop

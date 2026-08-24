@@ -1,11 +1,16 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type {
   Campaign,
+  CampaignDeadline,
+  CampaignDeadlineInput,
+  CampaignDeadlineOverride,
+  CampaignRecipe,
   CampaignStatus,
   ContainmentDomainId,
   ExecutorType,
   TrustDomainId
 } from "@scp/schemas";
+import { CAMPAIGN_DEADLINE_PROPERTY_KEY, CAMPAIGN_RECIPE_PROPERTY_KEY } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import {
   campaignPlans,
@@ -16,11 +21,14 @@ import {
 } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
-import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { createObject, getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import { authorize } from "../authz/resolve.js";
 import { insertDecision } from "./decisions-repo.js";
 import { computeCampaignStatus, type CampaignWaveStatusInput } from "./campaign-status.js";
+import { evaluateFreezeHolds } from "./freeze-hold.js";
 import { getLatestCampaignPlan } from "./campaign-plan-service.js";
+import { resolveChangeRecipe } from "./campaign-recipe.js";
+import { evaluateCampaignDeadlineLock, resolveCampaignDeadline } from "./campaign-deadline-lock.js";
 
 export type ObjectRow = typeof objects.$inferSelect;
 /** The minimal object shape `toCampaignShape` actually reads — satisfied by both a raw
@@ -35,6 +43,27 @@ type ObjectLike = Pick<ObjectRow, "id" | "orgId" | "urn" | "name"> & {
 
 function isoOf(value: Date | string): string {
   return typeof value === "string" ? value : value.toISOString();
+}
+
+/** M25.4 — the campaign's recipe as the READ surface sees it. `resolveChangeRecipe` is the same
+ *  parse; it is reached through this thin wrapper here because the campaign's own `properties` is
+ *  the AUTHORING copy and the change's is the fanned-out one, and only one of the two is on the
+ *  trigger path. Both parse with `CampaignRecipeSchema` — one schema, two readers, never two
+ *  schemas. */
+function recipeOf(properties: Record<string, unknown>): CampaignRecipe | undefined {
+  const resolved = resolveChangeRecipe(properties);
+  return resolved.outcome === "recipe" ? resolved.recipe : undefined;
+}
+
+/** M25.6a — the campaign's deadline as the READ surface sees it, through the SAME parse the actuator
+ *  uses. `null` covers BOTH "none declared" and "declared but unreadable", and that collapse is
+ *  correct HERE and only here: this is a display surface, and both states have the identical
+ *  operator-visible consequence — nothing is being withheld from anybody. At the ACTUATOR the two
+ *  are emphatically not the same, and `campaign-reconcile.ts` records the unreadable one as a `warn`
+ *  Decision naming what failed to parse. */
+function deadlineOf(properties: Record<string, unknown>): CampaignDeadline | null {
+  const resolved = resolveCampaignDeadline(properties);
+  return resolved.outcome === "deadline" ? resolved.deadline : null;
 }
 
 export function toCampaignShape(object: ObjectLike, status: CampaignStatus): Campaign {
@@ -52,6 +81,16 @@ export function toCampaignShape(object: ObjectLike, status: CampaignStatus): Cam
     topologyObjectId: (properties.topologyObjectId as string | undefined) ?? null,
     topologyVersion: (properties.topologyVersion as number | undefined) ?? null,
     status,
+    // M25.4 — re-parsed through the SAME schema the write door uses rather than cast, so a row
+    // planted by a door that predates the guard cannot make a `Campaign` response fail its own
+    // wire schema. A recipe that no longer parses reads as absent HERE (a display surface, where
+    // absence is honest); at the ACTUATOR the same document is a loud refusal, never an absence —
+    // see `campaign-recipe.ts`.
+    ...(recipeOf(properties) !== undefined ? { recipe: recipeOf(properties) } : {}),
+    // M25.6a — ALWAYS PRESENT, `null` when this campaign declares no deadline. A required nullable
+    // response property, not an optional one: "is anything being withheld from this campaign's
+    // laggards?" must not be answered by an absence a reader has to interpret.
+    deadline: deadlineOf(properties),
     createdAt: isoOf(object.createdAt),
     updatedAt: isoOf(object.updatedAt)
   };
@@ -72,6 +111,20 @@ export interface ProposeCampaignInput {
   /** WHICH pipeline every fanned-out change rolls (M12 P4A) — the routing Type (ADR-0007).
    *  Omitted => 'configuration' (the server default). */
   type?: ExecutorType;
+  /** M25.4 (D3) — the coordination lever: ONE trigger intent fanned across every target. Written
+   *  verbatim to `properties.recipe`; the shape refusal lives at the `objects-repo` choke point
+   *  (`governance/campaign-recipe-guard.ts`), not here, because two other doors reach that property
+   *  without passing through this function. */
+  recipe?: CampaignRecipe;
+  /** M25.6a (D4) — the date past which this campaign stops fanning out to targets it cannot observe
+   *  as migrated. Authored here so a deadlined campaign is one call; MOVED and CLEARED afterwards
+   *  through `POST /campaigns/{id}/deadline`, which demands a reason and records the previous
+   *  value.
+   *
+   *  `CampaignDeadlineInput`, NOT `CampaignDeadline` — the type, like the wire schema, omits
+   *  `overrides`, so a campaign cannot be BORN carrying waivers this route's `object:write` never
+   *  authorized (M25.6b: minting one takes the Owner-only `campaign:deadline-override`). */
+  deadline?: CampaignDeadlineInput;
   /** Object ids or URNs this campaign fans out to — one member Change per target, per wave. */
   targets: string[];
 }
@@ -136,6 +189,14 @@ export async function proposeCampaign(
       // fans out (M12 P4A / ADR-0007). Always written — a campaign object that omitted it would read
       // as 'configuration' anyway, and persisting it explicitly keeps the campaign self-describing.
       type: input.type ?? "configuration",
+      // M25.4 — ONLY written when the author declared one, so a campaign without a recipe is
+      // byte-identical to a pre-M25.4 campaign and every reader's fast path stays a pure absence
+      // check (`resolveChangeRecipe` returns before parsing anything).
+      ...(input.recipe !== undefined ? { [CAMPAIGN_RECIPE_PROPERTY_KEY]: input.recipe } : {}),
+      // M25.6a — ONLY written when the author declared one, so a campaign without a deadline is
+      // byte-identical to a pre-M25.6a campaign and `resolveCampaignDeadline` returns on a pure
+      // key-absence check without parsing anything.
+      ...(input.deadline !== undefined ? { [CAMPAIGN_DEADLINE_PROPERTY_KEY]: input.deadline } : {}),
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(topologyObjectId !== undefined ? { topologyObjectId, topologyVersion } : {})
     },
@@ -169,6 +230,313 @@ async function fetchCampaignObject(tx: TenantTx, orgId: string, id: string): Pro
 }
 
 /**
+ * The object ids a campaign declares as its targets, read off `properties.targets` — the same
+ * filtered read `toCampaignShape` does, WITHOUT deriving status.
+ *
+ * A separate helper because its one caller (`POST /campaigns/{id}/deadline-override`) needs the
+ * target set to make an AUTHORIZATION decision per target, and `getCampaign` would drag
+ * `getCampaignStatus` — the campaign's whole plan, every member change's state, a freeze evaluation
+ * and the deadline predicate — into a path that has not yet decided the actor may act at all.
+ */
+export async function listCampaignTargetObjectIds(
+  tx: TenantTx,
+  orgId: string,
+  campaignObjectId: string
+): Promise<string[]> {
+  const row = await fetchCampaignObject(tx, orgId, campaignObjectId);
+  const properties = (row.properties ?? {}) as Record<string, unknown>;
+  return Array.isArray(properties.targets)
+    ? (properties.targets as unknown[]).filter((t): t is string => typeof t === "string")
+    : [];
+}
+
+/**
+ * M25.6a — SET, MOVE OR CLEAR a campaign's deadline. THE ESCAPE HATCH, and the reason this
+ * increment is not an entrance with no exit.
+ *
+ * CLEARING the deadline unlocks every target of the campaign at once, on the next tick, with no
+ * unlock verb and no backfill. §4.5's second, narrower waiver — `POST
+ * /campaigns/{id}/deadline-override`, per-target, behind the Owner-only
+ * `campaign:deadline-override` (drizzle/0088) — is `overrideCampaignDeadline` below, added in
+ * M25.6b. The two are different prices for different radii and both remain.
+ *
+ * `object:write` AT THE CAMPAIGN, not at the targets — checked by the route. The thing being
+ * configured is this campaign's own policy about its own fan-out, and a target-scoped check would
+ * hand the laggard their own waiver, which is exactly the inversion §4.5 warns about for the
+ * override. `hasPermission` expands the checked scope UPWARD, so an Administrator bound at the
+ * campaign's containment domain can move its deadline and an actor bound at one unrelated service
+ * cannot.
+ *
+ * **THE ROW IS READ `FOR UPDATE`**, and that is not defensive habit — it is M25.1's measured lesson
+ * applied to the identical shape. This is a read-modify-write whose READ decides what goes into a
+ * permanent record: `before` becomes the Decision's `deadline.from` and the audit event's account of
+ * what the deadline used to be. Unlocked under READ COMMITTED, two concurrent moves let the second
+ * compute its `from` against a snapshot that was never live — so the chain would record a slip from
+ * a date nobody ever set. `updateObject` re-locks the same row a moment later (`lockObjectRow`), so
+ * this takes the lock at the START of the sequence rather than in the middle of it.
+ *
+ * RETURNS BOTH VALUES so the route can put the previous one in the record. "The deadline slipped
+ * four times" is otherwise unreconstructible from a chain of writes that each say only where it
+ * landed.
+ */
+export interface SetCampaignDeadlineResult {
+  /** What the campaign's deadline was, immediately before this write — `null` when it had none, and
+   *  ALSO `null` when what it had did not parse. The two are distinguished by `beforeUnreadable`
+   *  rather than collapsed, because "you replaced a broken document" and "you set the first one" are
+   *  different facts and the audit trail should not have to guess. */
+  before: CampaignDeadline | null;
+  /** True when the value being replaced was present but unreadable. */
+  beforeUnreadable: boolean;
+  after: CampaignDeadline | null;
+  campaign: Campaign;
+}
+
+/**
+ * THE CAMPAIGN ROW, LOCKED `FOR UPDATE` — shared by both deadline writers.
+ *
+ * Extracted rather than copied because both are read-modify-writes over the SAME JSON document
+ * (`properties.deadline`) and a second copy of the lock is a second chance to omit it. Two
+ * concurrent writers without it would each compute their edit against a snapshot the other is about
+ * to replace: a move would record a `from` nobody ever set, and — worse for M25.6b — two overrides
+ * minted in the same instant would produce a document containing only one of them, with two audit
+ * events on the chain asserting both.
+ */
+async function lockCampaignRowForUpdate(
+  tx: TenantTx,
+  orgId: string,
+  campaignObjectId: string
+): Promise<ObjectRow> {
+  const locked = await tx
+    .select()
+    .from(objects)
+    .where(
+      and(
+        eq(objects.orgId, orgId),
+        eq(objects.id, campaignObjectId),
+        eq(objects.typeId, "campaign"),
+        sql`${objects.deletedAt} IS NULL`
+      )
+    )
+    .for("update")
+    .limit(1);
+  const row = locked[0];
+  if (!row) throw notFound(`campaign '${campaignObjectId}' not found`);
+  return row;
+}
+
+export async function setCampaignDeadline(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    campaignObjectId: string;
+    actorObjectId: string;
+    requestId: string;
+    /** `null` CLEARS it — the exit. Carries NO `overrides`: the wire schema for this verb is
+     *  `CampaignDeadlineInputSchema`, which omits the key, because this door runs at plain
+     *  `object:write` and minting a waiver takes `campaign:deadline-override`. */
+    deadline: CampaignDeadlineInput | null;
+  }
+): Promise<SetCampaignDeadlineResult> {
+  const row = await lockCampaignRowForUpdate(tx, input.orgId, input.campaignObjectId);
+
+  const properties = (row.properties ?? {}) as Record<string, unknown>;
+  const existing = resolveCampaignDeadline(properties);
+
+  // ==============================================================================================
+  // M25.6b — THE WAIVERS ALREADY IN FORCE SURVIVE A SET OR A MOVE.
+  // ==============================================================================================
+  // This verb's request body CANNOT express `overrides` (that is the whole point of
+  // `CampaignDeadlineInputSchema`), so an author moving the date has said NOTHING about the waivers.
+  // Dropping them would be an unexpressed act — a silent TIGHTENING, re-locking targets an Owner
+  // deliberately excused, performed by someone holding only `object:write`. Carrying them forward is
+  // the reading that matches what a waiver MEANS: "this target is excused from this campaign's
+  // deadline", not "excused from the particular instant it happened to carry that day".
+  //
+  // A CLEAR takes them with it, and that is not an inconsistency: clearing removes the deadline
+  // itself, so there is nothing left to be excused from. Re-setting one afterwards starts clean,
+  // which is the honest default — the old waivers were granted against a deadline that no longer
+  // exists.
+  //
+  // An UNREADABLE previous document loses them, necessarily: `resolveCampaignDeadline` could not
+  // parse it, so there is nothing to carry. The route records that as `beforeUnreadable`.
+  const carriedOverrides =
+    existing.outcome === "deadline" ? existing.deadline.overrides : undefined;
+  const after: CampaignDeadline | null =
+    input.deadline === null
+      ? null
+      : {
+          ...input.deadline,
+          ...(carriedOverrides !== undefined && carriedOverrides.length > 0
+            ? { overrides: carriedOverrides }
+            : {})
+        };
+
+  // `updateObject` replaces `properties` WHOLESALE, so the spread is what preserves `targets`,
+  // `type`, `recipe`, `topologyObjectId` and everything else. Clearing DELETES the key rather than
+  // writing `null`: `resolveCampaignDeadline` treats both as "none", but a stored `null` would make
+  // a cleared campaign textually different from one that never had a deadline, for no gain — and it
+  // is one more shape every future reader of this bag has to know about.
+  const { [CAMPAIGN_DEADLINE_PROPERTY_KEY]: _dropped, ...withoutDeadline } = properties;
+  const nextProperties =
+    after === null
+      ? withoutDeadline
+      : { ...withoutDeadline, [CAMPAIGN_DEADLINE_PROPERTY_KEY]: after };
+
+  const updated = await updateObject(tx, {
+    orgId: input.orgId,
+    typeId: "campaign",
+    actorObjectId: input.actorObjectId,
+    requestId: input.requestId,
+    idOrUrn: input.campaignObjectId,
+    properties: nextProperties
+  });
+
+  const status = await getCampaignStatus(
+    tx,
+    input.orgId,
+    input.campaignObjectId,
+    nextProperties as Record<string, unknown>
+  );
+
+  return {
+    before: existing.outcome === "deadline" ? existing.deadline : null,
+    beforeUnreadable: existing.outcome === "malformed",
+    // WHAT WAS STORED, not what was asked for — the two differ by exactly the carried waivers, and
+    // the Decision this feeds must record the document that now exists rather than the request that
+    // produced it.
+    after,
+    campaign: toCampaignShape(updated, status)
+  };
+}
+
+export interface OverrideCampaignDeadlineResult {
+  /** The waivers as stored after this write — at most one per target, sorted by `targetObjectId`. */
+  overrides: CampaignDeadlineOverride[];
+  /** The targets this call excused, resolved to object ids and SORTED. Feeds the Decision's
+   *  `inputContext` verbatim and drives one audit event each. */
+  targetObjectIds: string[];
+  campaign: Campaign;
+}
+
+/**
+ * M25.6b (§4.5) — MINT A PER-TARGET WAIVER of this campaign's deadline.
+ *
+ * ================================================================================================
+ * THE AUTHORITY CHECKS ARE THE ROUTE'S, AND THEY ARE TWO, AT TWO DIFFERENT OBJECTS
+ * ================================================================================================
+ * `routes/campaigns.ts` demands `campaign:deadline-override` AT THE CAMPAIGN (Owner-only,
+ * drizzle/0088) and plain `object:write` AT EACH NAMED TARGET, in that order, before calling this.
+ * They are not duplicated here for the reason `proposeCampaign`'s own doc gives about the inverse
+ * case: one authority decision, made once, against the real requesting actor, at the door — not
+ * scattered so that a future second caller can silently acquire a different one.
+ *
+ * WHY THE CAMPAIGN AND NOT THE TARGET, restated where the write happens because it is the load-
+ * bearing decision of this milestone: the thing being waived is *this campaign's* deadline. A
+ * target-scoped check would hand the laggard their own waiver — the component's own operator
+ * excusing the component from the migration the campaign exists to force, which inverts the entire
+ * mechanism. `object:write` at the target is a second, NARROWER bar (an actor with no standing on a
+ * component cannot mint a governance record about it), never a substitute for the first.
+ *
+ * ================================================================================================
+ * AT MOST ONE WAIVER PER TARGET, AND THE ARRAY IS STORED SORTED
+ * ================================================================================================
+ * Re-overriding a target REPLACES its entry rather than appending: the newest reason and the newest
+ * `until` are the ones in force, and the superseded one survives on the hash chain, which is where
+ * history belongs. Append-only would grow `campaign.properties` without bound — this document rides
+ * `object_upsert` to every federated replica and is content-hashed on every write — and would make
+ * "which waiver applies?" a question about array order.
+ *
+ * The sort is the same discipline `describeLockedTargets` documents one module over: a re-issued
+ * waiver over an unchanged set must produce a byte-identical document, or every restatement
+ * re-hashes the object and re-federates it.
+ *
+ * REFUSES A CAMPAIGN WITH NO DEADLINE (400). A waiver of nothing is dead data in a permanent record,
+ * and an operator who believes they have excused a target that was never locked is worse off than
+ * one who got an error.
+ */
+export async function overrideCampaignDeadline(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    campaignObjectId: string;
+    actorObjectId: string;
+    requestId: string;
+    /** Already resolved to object ids and verified to be targets of this campaign — the ROUTE does
+     *  both, because both need the same `getObjectByIdOrUrnAnyType` lookup the per-target
+     *  `object:write` check is made against. */
+    targetObjectIds: string[];
+    reason: string;
+    until?: string | undefined;
+    /** The write's own clock, stamped into every entry's `at`. Injected for the same reason
+     *  `evaluateCampaignDeadlineLock`'s `now` is: a test must be able to mint a waiver whose `until`
+     *  is in the past without waiting for it to become so. */
+    now: Date;
+  }
+): Promise<OverrideCampaignDeadlineResult> {
+  const row = await lockCampaignRowForUpdate(tx, input.orgId, input.campaignObjectId);
+
+  const properties = (row.properties ?? {}) as Record<string, unknown>;
+  const existing = resolveCampaignDeadline(properties);
+  if (existing.outcome !== "deadline") {
+    throw badRequest(
+      existing.outcome === "malformed"
+        ? `campaign '${input.campaignObjectId}' has an unreadable deadline (${existing.detail}) — ` +
+            `it is withholding nothing from anybody, so there is nothing to waive. Fix or clear it ` +
+            `with POST /campaigns/{id}/deadline first`
+        : `campaign '${input.campaignObjectId}' declares no deadline — there is nothing to waive`
+    );
+  }
+
+  const at = input.now.toISOString();
+  const minted = new Map<string, CampaignDeadlineOverride>();
+  for (const override of existing.deadline.overrides ?? []) {
+    minted.set(override.targetObjectId, override);
+  }
+  for (const targetObjectId of input.targetObjectIds) {
+    minted.set(targetObjectId, {
+      targetObjectId,
+      reason: input.reason,
+      actorId: input.actorObjectId,
+      at,
+      ...(input.until !== undefined ? { until: input.until } : {})
+    });
+  }
+  const overrides = [...minted.values()].sort((a, b) =>
+    a.targetObjectId.localeCompare(b.targetObjectId)
+  );
+
+  const nextProperties = {
+    ...properties,
+    [CAMPAIGN_DEADLINE_PROPERTY_KEY]: { ...existing.deadline, overrides }
+  };
+
+  // THROUGH `updateObject`, so this is a versioned, content-hashed, ordinarily-audited graph write
+  // underneath the governance record the route writes on top of it. No side door into
+  // `objects.properties` — the same rule `setCampaignDeadline` follows.
+  const updated = await updateObject(tx, {
+    orgId: input.orgId,
+    typeId: "campaign",
+    actorObjectId: input.actorObjectId,
+    requestId: input.requestId,
+    idOrUrn: input.campaignObjectId,
+    properties: nextProperties
+  });
+
+  const status = await getCampaignStatus(
+    tx,
+    input.orgId,
+    input.campaignObjectId,
+    nextProperties as Record<string, unknown>
+  );
+
+  return {
+    overrides,
+    targetObjectIds: [...input.targetObjectIds].sort((a, b) => a.localeCompare(b)),
+    campaign: toCampaignShape(updated, status)
+  };
+}
+
+/**
  * The status-derivation DB helper (campaign-status.ts's module doc: campaign status is ALWAYS
  * re-derived, never stored). Loads the campaign's latest compiled plan (if any) and every wave
  * target's member Change's CURRENT state in one batched query, then hands off to the pure
@@ -178,8 +546,26 @@ async function fetchCampaignObject(tx: TenantTx, orgId: string, id: string): Pro
 export async function getCampaignStatus(
   tx: TenantTx,
   orgId: string,
-  campaignObjectId: string
+  campaignObjectId: string,
+  /**
+   * The campaign object's OWN `properties` — where its deadline and recipe live.
+   *
+   * REQUIRED, not optional, and both call sites already hold the row. Making it optional would let a
+   * future caller silently get the no-deadline answer for a deadlined campaign, which is this
+   * project's recurring "fixed some call sites of a concept" failure with a status field attached.
+   */
+  properties: Record<string, unknown> | null
 ): Promise<CampaignStatus> {
+  // ============================================================================================
+  // THE COST GUARD (§4.6) — RESOLVED BEFORE ANY QUERY IN THIS FUNCTION.
+  // ============================================================================================
+  // `getCampaignStatus` runs once per campaign inside `listCampaigns`'s already-N+1 loop, so a
+  // per-target read added here is multiplied by the page size. A campaign with no deadline — every
+  // campaign authored before M25.6a, and every one that simply does not want the feature — must pay
+  // exactly what it paid before, and it does: this is a pure key-absence check on an object already
+  // in hand, decided before `getLatestCampaignPlan` is even called.
+  const deadline = resolveCampaignDeadline(properties);
+
   const plan = await getLatestCampaignPlan(tx, orgId, campaignObjectId);
   if (!plan) return computeCampaignStatus({ hasPlan: false, waves: [] });
 
@@ -195,9 +581,67 @@ export async function getCampaignStatus(
     for (const row of rows) stateByChangeId.set(row.objectId, row.state);
   }
 
+  // M25.2 — WHICH TARGETS A FREEZE IS HOLDING RIGHT NOW, re-evaluated here rather than read off the
+  // campaign's `freeze_admission` Decision. The Decision is a historical record; a status derived
+  // from it would keep saying `blocked` after the window closed, which is the same stale-hold defect
+  // `routes/changes.ts` documents against ADR-0028's `stage_dependency` row. Re-evaluating costs one
+  // indexed window read per status render and NOTHING else when the org has no active freeze
+  // (`freezesByTarget`'s inertness property).
+  //
+  // SCOPED TO THE RUNNING WAVE. Only the active wave fans out, so a freeze over a target of a wave
+  // that has not started yet is not withholding anything and must not make the campaign read
+  // `blocked` weeks early. A target that already minted its member change is likewise past this
+  // seam — the freeze bites that change's own wave targets, one layer down.
+  const runningWaveTargetIds = plan.waves
+    .filter((w) => w.status === "running")
+    .flatMap((w) => w.targets.filter((t) => t.memberChangeObjectId === null))
+    .map((t) => t.targetObjectId);
+  const frozenTargetIds =
+    runningWaveTargetIds.length === 0
+      ? new Set<string>()
+      : new Set(
+          (await evaluateFreezeHolds(tx, { orgId, targetObjectIds: runningWaveTargetIds })).keys()
+        );
+
+  // M25.6a — WHICH TARGETS THIS CAMPAIGN'S OWN DEADLINE IS LOCKING OUT RIGHT NOW, re-evaluated here
+  // rather than read off the standing `campaign_deadline` Decision, for the identical reason the
+  // freeze holds directly above are: a Decision is a historical record, and a status derived from
+  // one keeps saying `blocked` after the component migrated or the deadline moved.
+  //
+  // SCOPED TO THE SAME CANDIDATE SET AS THE FREEZE HOLD — the running wave's not-yet-fanned-out
+  // targets — and for the same two reasons. A deadline over a target of a wave that has not started
+  // is withholding nothing yet, and a target that already minted its member change is past this
+  // seam entirely.
+  //
+  // NOT DUE COSTS NOTHING: `evaluateCampaignDeadlineLock` compares two instants and returns before
+  // touching `tx`. Past the deadline it costs one adoption read per candidate, which is exactly what
+  // the reconciler pays for the same answer — one resolution core, one price.
+  const deadlineLockedTargetIds =
+    deadline.outcome !== "deadline" || runningWaveTargetIds.length === 0
+      ? new Set<string>()
+      : new Set(
+          (
+            await evaluateCampaignDeadlineLock(tx, {
+              orgId,
+              campaignObjectId,
+              targetObjectIds: runningWaveTargetIds,
+              deadline: deadline.deadline,
+              at: deadline.at,
+              recipe: recipeOf((properties ?? {}) as Record<string, unknown>),
+              // A READ, so the clock is read HERE: there is no batch to keep internally consistent
+              // (one request, one campaign) and nothing durable is written from this path.
+              now: new Date()
+            })
+          ).locked.map((entry) => entry.targetObjectId)
+        );
+
   const waves: CampaignWaveStatusInput[] = plan.waves.map((w) => ({
     waveIndex: w.waveIndex,
     waveStatus: w.status as CampaignWaveStatusInput["waveStatus"],
+    frozenTargetCount: w.targets.filter((t) => frozenTargetIds.has(t.targetObjectId)).length,
+    deadlineLockedTargetCount: w.targets.filter((t) =>
+      deadlineLockedTargetIds.has(t.targetObjectId)
+    ).length,
     targets: w.targets.map((t) => ({
       targetObjectId: t.targetObjectId,
       memberChangeState:
@@ -214,7 +658,12 @@ export async function getCampaignStatus(
 
 export async function getCampaign(tx: TenantTx, orgId: string, id: string): Promise<Campaign> {
   const object = await fetchCampaignObject(tx, orgId, id);
-  const status = await getCampaignStatus(tx, orgId, id);
+  const status = await getCampaignStatus(
+    tx,
+    orgId,
+    id,
+    object.properties as Record<string, unknown> | null
+  );
   return toCampaignShape(object, status);
 }
 
@@ -252,7 +701,12 @@ export async function listCampaigns(
 
   const items: Campaign[] = [];
   for (const row of page) {
-    const status = await getCampaignStatus(tx, orgId, row.id);
+    const status = await getCampaignStatus(
+      tx,
+      orgId,
+      row.id,
+      row.properties as Record<string, unknown> | null
+    );
     if (query.status && query.status !== status) continue;
     items.push(toCampaignShape(row, status));
   }

@@ -257,50 +257,156 @@ export function SetupChecklistCard({ data }: { data: SetupChecklistData }): Reac
 // a freeze lifts only by reaching its own `endsAt`. Every row says so in its tooltip.
 // -------------------------------------------------------------------------------------------
 
-export type FreezeWindowStatus = "active" | "upcoming" | "past";
+export type FreezeWindowStatus = "active" | "upcoming" | "past" | "lifted";
 
+/**
+ * `lifted` is checked FIRST and outranks the window, because after M25.1 the window is no longer
+ * the only thing that ends a freeze: `liftFreeze` retracts one immediately, whatever `endsAt`
+ * says. Reading the window first would render a lifted-but-not-yet-expired freeze as `active` —
+ * the UI asserting a freeze is in force that the engine has already stopped enforcing.
+ */
 export function freezeWindowStatus(
-  freeze: Pick<Freeze, "startsAt" | "endsAt">,
+  freeze: Pick<Freeze, "startsAt" | "endsAt" | "liftedAt">,
   now: Date
 ): FreezeWindowStatus {
+  if (freeze.liftedAt !== null) return "lifted";
   const t = now.getTime();
   if (t < new Date(freeze.startsAt).getTime()) return "upcoming";
   if (t > new Date(freeze.endsAt).getTime()) return "past";
   return "active";
 }
 
-/** Active + upcoming freezes, soonest-starting first. Past ones (already lifted by their own
- *  `endsAt`) are dropped — there is nothing an operator can do about one that already ended. */
+/**
+ * Active + upcoming freezes, soonest-starting first — plus freezes LIFTED early whose window has
+ * not yet passed.
+ *
+ * That last clause is the whole reason this is not a one-line filter. A lift is a governance act
+ * with a mandatory reason, and if the row vanished the instant it succeeded the operator would get
+ * no confirmation that the thing they just retracted is actually retracted — the surface would go
+ * silent at exactly the moment it should be most legible. Keeping it visible until the window it
+ * WOULD have run to has passed bounds the list (it does not accumulate lifted rows forever) while
+ * still showing the outcome. A freeze that simply expired is dropped as before: nothing was done
+ * to it and there is nothing to confirm.
+ */
 export function activeAndUpcomingFreezes(freezes: Freeze[], now: Date): Freeze[] {
   return freezes
-    .filter((f) => freezeWindowStatus(f, now) !== "past")
+    .filter((f) => {
+      if (now.getTime() > new Date(f.endsAt).getTime()) return false; // window gone, lifted or not
+      return true;
+    })
     .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
 }
 
-const NO_EARLY_LIFT_SENTENCE =
-  "This freeze lifts automatically at its end time — there is no early-lift or delete control yet, so it runs in full until then.";
+/**
+ * REPLACES the pre-M25.1 `NO_EARLY_LIFT_SENTENCE`, which said "there is no early-lift or delete
+ * control yet". That was true of the server it was written against and became false the moment
+ * `DELETE /api/v1/freezes/{id}` shipped. It is replaced in the SAME change that wires the Lift
+ * control, so there is never a build in which the sentence and the surface disagree.
+ */
+const LIFT_SENTENCE =
+  "This freeze runs until its end time unless it is lifted early. Lifting takes effect immediately and needs a reason.";
 
-export function FreezeRow({ freeze, now }: { freeze: Freeze; now: Date }): React.JSX.Element {
+function freezeStatusBadge(status: FreezeWindowStatus): {
+  label: string;
+  variant: "warning" | "neutral" | "success";
+} {
+  if (status === "active") return { label: "Active", variant: "warning" };
+  if (status === "lifted") return { label: "Lifted", variant: "success" };
+  return { label: "Upcoming", variant: "neutral" };
+}
+
+export interface FreezeRowProps {
+  freeze: Freeze;
+  now: Date;
+  /** Omitted on a read-only render (and in the unit tests that assert copy). When present, the row
+   *  offers Lift. */
+  onLift?: (id: string, reason: string) => void;
+  liftPending?: boolean;
+  liftError?: unknown;
+}
+
+export function FreezeRow({
+  freeze,
+  now,
+  onLift,
+  liftPending = false,
+  liftError
+}: FreezeRowProps): React.JSX.Element {
   const status = freezeWindowStatus(freeze, now);
+  const badge = freezeStatusBadge(status);
+  const [reason, setReason] = useState("");
+  const lifted = status === "lifted";
+
   return (
     <div
       className="flex flex-col gap-1 py-3"
       data-testid="freeze-row"
-      title={`${NO_EARLY_LIFT_SENTENCE} Ends ${formatDate(freeze.endsAt)}.`}
+      title={`${LIFT_SENTENCE} Ends ${formatDate(freeze.endsAt)}.`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-medium text-slate-900">
           {freeze.name ?? "Untitled freeze"}
         </span>
-        <Badge variant={status === "active" ? "warning" : "neutral"}>
-          {status === "active" ? "Active" : "Upcoming"}
-        </Badge>
+        <Badge variant={badge.variant}>{badge.label}</Badge>
       </div>
       <p className="text-xs text-slate-500">
         {formatDate(freeze.startsAt)} – {formatDate(freeze.endsAt)} · scope{" "}
         <span className="font-mono">{freeze.scopeObjectId}</span>
+        {freeze.atomic ? " · atomic" : null}
       </p>
       <p className="text-sm text-slate-700">{freeze.reason}</p>
+
+      {/* A lifted freeze keeps its row rather than disappearing: the lift reason and instant ARE
+          the record an operator came back to read, and a `freeze_admission` Decision still cites
+          this freeze's id (charter principle 6). */}
+      {lifted ? (
+        <p className="text-xs text-slate-500" data-testid="freeze-lifted-note">
+          Lifted {formatDate(freeze.liftedAt!)}
+          {freeze.liftReason ? ` — ${freeze.liftReason}` : null}
+        </p>
+      ) : null}
+
+      {/* OFFERED UNCONDITIONALLY, never role-gated — this page's standing rule (outpost-ui.md §2/§6:
+          "client-side pre-blocking of writes" is rejected). `freeze:write` is checked server-side AT
+          THE FREEZE'S OWN SCOPE, so a caller who may lift one freeze on this list may legitimately
+          be refused another; only the server knows which. The refusal is rendered verbatim. */}
+      {onLift && !lifted ? (
+        <form
+          className="mt-1 flex flex-col gap-2"
+          data-testid="freeze-lift-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onLift(freeze.id, reason.trim());
+          }}
+        >
+          <div className="flex items-end gap-2">
+            <div className="flex flex-1 flex-col gap-1.5">
+              <label
+                htmlFor={`freeze-lift-reason-${freeze.id}`}
+                className="text-xs font-medium text-slate-700"
+              >
+                Reason for lifting
+              </label>
+              <Input
+                id={`freeze-lift-reason-${freeze.id}`}
+                data-testid="freeze-lift-reason-input"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="why this freeze is being retracted early"
+                required
+              />
+            </div>
+            <Button type="submit" variant="outline" disabled={liftPending}>
+              {liftPending ? "Lifting…" : "Lift"}
+            </Button>
+          </div>
+          {liftError ? (
+            <Alert tone="danger" data-testid="freeze-lift-error">
+              {queryErrorMessage(liftError)}
+            </Alert>
+          ) : null}
+        </form>
+      ) : null}
     </div>
   );
 }
@@ -311,10 +417,13 @@ export interface FreezeFormState {
   startsAt: string;
   endsAt: string;
   reason: string;
+  /** D5's escape hatch. Default OFF, matching the server default — per-target admission is the
+   *  normal behaviour and all-or-nothing is the deliberate exception. */
+  atomic: boolean;
 }
 
 export function emptyFreezeForm(): FreezeFormState {
-  return { scopeObjectId: "", name: "", startsAt: "", endsAt: "", reason: "" };
+  return { scopeObjectId: "", name: "", startsAt: "", endsAt: "", reason: "", atomic: false };
 }
 
 /**
@@ -331,7 +440,11 @@ export function buildCreateFreezePayload(form: FreezeFormState): CreateFreezeReq
     ...(trimmedName ? { name: trimmedName } : {}),
     startsAt: new Date(form.startsAt).toISOString(),
     endsAt: new Date(form.endsAt).toISOString(),
-    reason: form.reason.trim()
+    reason: form.reason.trim(),
+    // Sent explicitly rather than omitted-when-false. `atomic` changes what the freeze DOES to a
+    // multi-target wave, so the request should say which behaviour was chosen instead of relying
+    // on a server default the operator never saw.
+    atomic: form.atomic
   };
 }
 
@@ -424,8 +537,8 @@ export function DeclareFreezeForm({
                 onChange={(e) => set("endsAt", e.target.value)}
                 required
               />
-              <p className="text-xs text-slate-500" title={NO_EARLY_LIFT_SENTENCE}>
-                Runs until this instant — no early lift yet.
+              <p className="text-xs text-slate-500" title={LIFT_SENTENCE}>
+                Runs until this instant unless lifted early.
               </p>
             </div>
           </div>
@@ -448,6 +561,24 @@ export function DeclareFreezeForm({
                 focusRing
               )}
             />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="flex items-start gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                data-testid="freeze-atomic-input"
+                checked={value.atomic}
+                onChange={(e) => set("atomic", e.target.checked)}
+                className={cn("mt-0.5 size-4 rounded border-slate-300", focusRing)}
+              />
+              <span className="font-medium">Hold the whole wave</span>
+            </label>
+            <p className="text-xs text-slate-500">
+              By default a freeze holds only the targets it covers, and a wave still deploys to the
+              rest — freezing one region does not stop the other three. Tick this to hold every
+              target in any wave this freeze touches, including ones it does not cover.
+            </p>
           </div>
 
           {error !== undefined && (
@@ -530,6 +661,18 @@ export function SetupPage(): React.JSX.Element {
     createFreeze.mutate(buildCreateFreezePayload(freezeForm));
   }
 
+  /**
+   * Lift, scoped per row. `variables` is read back for the error case so a refusal renders under
+   * the row it belongs to: `freeze:write` is checked AT EACH FREEZE'S OWN SCOPE, so a caller can
+   * legitimately be allowed to lift one freeze in this list and refused another, and a single
+   * card-level error banner would attribute the refusal to whichever row was clicked last.
+   */
+  const liftFreeze = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason: string }) =>
+      client.freezes.lift(id, { reason }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["setup", "freezes"] })
+  });
+
   // One `now` per render, not per row: two rows straddling the instant a render happens must
   // still agree on which side of it they're on.
   const now = new Date();
@@ -568,7 +711,18 @@ export function SetupPage(): React.JSX.Element {
           ) : (
             <div className="flex flex-col divide-y divide-slate-200" data-testid="freeze-list">
               {freezes?.map((freeze) => (
-                <FreezeRow key={freeze.id} freeze={freeze} now={now} />
+                <FreezeRow
+                  key={freeze.id}
+                  freeze={freeze}
+                  now={now}
+                  onLift={(id, reason) => liftFreeze.mutate({ id, reason })}
+                  liftPending={liftFreeze.isPending && liftFreeze.variables?.id === freeze.id}
+                  liftError={
+                    liftFreeze.isError && liftFreeze.variables?.id === freeze.id
+                      ? liftFreeze.error
+                      : undefined
+                  }
+                />
               ))}
             </div>
           )}

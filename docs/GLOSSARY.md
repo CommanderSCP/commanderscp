@@ -339,6 +339,122 @@ Today the same information is carried by **env-suffixed component pairs** — `a
 
 ---
 
+### freeze
+
+**Definition.** A **time-windowed refusal to start work** under a scope. A freeze has a window (`startsAt`/`endsAt`), a scope, a mandatory reason, and nothing else — it holds no state machine and evaluates no expression.
+
+**Not a policy effect.** A freeze is a first-class mechanism with its own table, its own scope column and its own override permission, *not* a species of the CEL policy model. DESIGN.md §10.4's Decision `kind` enum lists `policy` and `freeze` as coordinate kinds. (Text in §10.3 called it "a built-in policy effect" until 2026-08-23; that contradicted the enum nine lines below it.)
+
+**Six scope tiers**, in order: **platform (instance) → org → containment domain → service → component → deployment target**. The five org-and-below tiers are graph objects resolved over the containment chain. The platform tier is instance-scoped and addressed differently — see `platform-tier freeze`.
+
+**It refuses to start; it cannot stop.** `ExecutorPlugin` is exactly `observe`/`trigger`/`status`/`abort`/`describeCapabilities` and [ADR-0008](adr/0008-observe-enrichment-signals.md) forbids adding a pause verb, so the finest grain enforceable is *"is this triggered at this place at all"*. **A freeze declared while a target is already executing does not pause it** — SCP watches it finish. Any copy promising otherwise is promising something the interface cannot express.
+
+**Per target, not per wave.** A freeze covering one of four regions holds that region and admits the other three, unless declared `atomic` (see `per-target admission`).
+
+**Override** needs `freeze:override` **at that freeze's own scope**, held individually for *every* active freeze covering the target, plus a mandatory reason. Checking only the first match was a shipped bug.
+
+**Not to be confused with:** a *campaign deadline lock* (scoped to one campaign's own targets, not a scope-wide refusal); a *pinned* or *frozen* dependency version (an unrelated sense of the word); a *hold* from a stage dependency (same per-target mechanism, different cause).
+
+**In the code.** `freezes` and `instance_freezes` in `apps/server/src/db/schema.ts`; resolved by `governance/freeze-scope.ts`'s `freezesByTarget`; enforced at `governance/gate-orchestrator.ts`'s `checkFreeze` and, per target, at `coordination/freeze-hold.ts` + the reconciler's trigger loop. DESIGN.md §10.3.
+
+---
+
+### platform-tier freeze
+
+**Definition.** A freeze declared by the **deployment's operator**, binding **every organization** hosted on that instance. Stored in `instance_freezes` — no `org_id`, operator-write / tenant-read (the DESIGN.md §4.2 exception).
+
+**Addressed by stage coordinate, never by object id.** It matches `properties.environment` and optionally `properties.region` on a deployment target, because no object id exists across organizations. Deployment-wide is an explicit flag: leaving the environment unset does **not** mean "everywhere", so the widest blast radius cannot be reached by omitting a field.
+
+**Not overridable by any tenant role**, however privileged — that asymmetry is the point of the tier. The authoring operator may mark one `overridable`, admitting override at the org root under the same mandatory-reason rule.
+
+**Merges by UNION, not MIN.** Unlike ADR-0016's scan floors (a threshold, merged per-severity minimum), a freeze is a predicate: the verdict is the OR of every applicable window. Hence one above-org rung here where scan requirements have two — a second rung would be indistinguishable.
+
+**Does not federate, under any decision.** The sync journal is org-scoped at every layer and a platform freeze has no `org_id`. It is per-instance operator config, distributed by deployment tooling.
+
+**In the code.** `instance_freezes` (`drizzle/0086`), `governance/instance-freezes-repo.ts`, `routes/instance-freezes.ts`. [ADR-0040](adr/0040-platform-tier-freezes.md).
+
+---
+
+### per-target admission
+
+**Definition.** The wave-boundary property that a freeze covering **one** target holds that target and **admits its siblings** — a wave deploys to three of four regions when only one is frozen.
+
+**A granularity, not a scope model.** Nothing about *what* a freeze covers changed; what changed is whether the answer is computed once for a whole wave or once per target.
+
+**Why it could not be the wave gate.** `evaluateWaveGate` issues one verdict for the whole wave with no target dimension, and fires exactly once on `pending → running`, so it could not re-evaluate a freeze declared mid-wave even if it were per-target. Enforcement is therefore a refusal to trigger in the reconciler's per-target loop, following [ADR-0028](adr/0028-stage-scoped-component-coupling.md)'s stage-dependency hold. The whole-wave block survives for the all-frozen case.
+
+**`atomic` opts out.** A freeze declared atomic holds every target in any wave it touches. It **defaults to false**, so per-target admission is the default behaviour — which means shipping it *loosened* every freeze already authored on an estate.
+
+**In the code.** `coordination/freeze-hold.ts` (the predicate), the `continue` before `triggerWaveTarget` in `coordination/reconcile.ts` (the actuator), and the `partiallyFrozen` guard in `governance/gate-orchestrator.ts`. [ADR-0039](adr/0039-per-target-freeze-admission.md).
+
+---
+
+### campaign
+
+**Definition.** A graph object that `coordinates` many member Changes across many targets, with its own plan and waves over the same machinery a Change uses. One intent, many targets.
+
+**Its status is derived, never stored.** There is no campaign state machine mirroring `ChangeState`; status is aggregated from its waves and member changes on read.
+
+**Fan-out mints real Changes.** Each campaign wave target becomes an ordinary Change with exactly one target, linked by a `coordinates` relationship, which then runs the completely unmodified change lifecycle — so per-target governance works after fan-out as a side effect of one-target-per-change.
+
+**Not to be confused with:** an *initiative* (a grouping above campaigns, removed 2026-08-10); a *change* (a campaign's member, not a synonym).
+
+**In the code.** Object type `campaign`; `campaign_plans` / `campaign_waves` / `campaign_wave_targets`; `coordination/campaign-reconcile.ts`. DESIGN.md §9.5.
+
+---
+
+### coordination lever
+
+**Definition.** A campaign **recipe**: *one* authored trigger intent, fanned across N components, wave-ordered, gated, with per-component binding resolution, explainability and rollback. It is what "1-click migration" means here.
+
+**It is not an authoring lever, and that is the whole distinction.** **CommanderSCP never writes the patch.** The recipe *triggers*; the tenant's own workflow performs the edit. A tenant with no such workflow has nothing to trigger, and the honest outcome is a refusal rather than a managed migration. No charter amendment was sought for it, because none is needed — this is charter principle 1 unchanged (owner decision D3, 2026-08-23).
+
+**What crosses to the executor.** The recipe's `trigger.parameters` bag, **verbatim**, through `TriggerIntent.parameters` — a channel that was already on the executor interface and already read by every adapter, and which the generic release path had simply never populated. There is **no cross-provider translation**: a recipe written in `github` keys is never guessed into `gitlab` shape, because a wrong guess does not fail — it triggers the *wrong automation* in the tenant's own repository.
+
+**Three refusals, and `trigger()` is never called on any of them:** the bound executor cannot serve the recipe's kind; the recipe does not parse (a malformed recipe is a **refusal, never an absence** — degrading to "no recipe" would roll a bare sync at every target and report a migration that never happened); or the target is bound to one of CommanderSCP's **own** managed actuators, which a recipe may not drive while OQ-5 is unruled.
+
+**Not to be confused with:** a **campaign deadline lock** (a per-target admission gate, not a trigger); the dependency-subscription actuator (which *does* write to tenant repositories, under a separate and narrower charter grant).
+
+**In the code.** `campaign.properties.recipe`; `packages/schemas/src/campaigns.ts`; `coordination/campaign-recipe.ts` (the read side); `governance/campaign-recipe-guard.ts` (the author's door, installed at the `graph/objects-repo.ts` choke point so it covers all three write doors, not just the typed route). [ADR-0041](adr/0041-campaign-recipes.md).
+
+---
+
+### adoption evidence
+
+**Definition.** The source a campaign recipe **names** for the question *"has this component migrated yet?"*. Three kinds ship: `delivered` (this campaign's own wave target succeeded), `dependency` (the component's ingested manifests place it at or above a version floor), `control` (a governed control run passed).
+
+**Absent evidence is `unknown`, never `adopted`.** This is the whole point of the term, and it is `boundary-segment.ts`'s honesty rule R3 — *silence is never a pass* — applied to migration. CommanderSCP cannot know in general whether a component has been migrated; a recipe that names no evidence gets `unknown`, and so does one whose evidence cannot be read.
+
+**The distinction that carries the rule.** A component with **no dependency inventory rows at all** is `unknown` — never ingested is a fact about *CommanderSCP*, not about the component. A component whose manifests **have** been ingested and simply do not declare the coordinate is `adopted`. Collapsing those two is precisely the silence-as-pass failure, and they are the two cases most easily conflated.
+
+**`delivered` is not `migrated`.** It means SCP triggered the tenant's pipeline and the change was accepted — not that the code changed. The verdict string says `delivered` for that reason.
+
+**Positive evidence of non-adoption outranks an indeterminate sibling.** One manifest pinning below the floor and another declaring an open range reads `not_adopted`: the range tells us nothing, the pin tells us something, and *"we cannot tell"* must not dilute a fact we can.
+
+**`declared` is deliberately not shipped.** A fourth, self-attested kind is designed and withheld pending an owner ruling (OQ-6): the beneficiary of *"I have migrated"* is exactly the party a deadline exists to coerce, writing at plain `object:write` on their own component. Its absence is a decision, not an omission.
+
+**In the code.** `coordination/campaign-adoption.ts` — read-time, no stored status column, no scheduler. `GET /api/v1/campaigns/{id}/adoption`. [ADR-0041](adr/0041-campaign-recipes.md).
+
+---
+
+### campaign deadline lock
+
+**Definition.** A per-(campaign × target) admission gate. Past a date, a target this campaign cannot observe as migrated stops receiving **this campaign's** changes.
+
+**Its radius is the campaign, and that is the whole distinction.** Unrelated releases — **including security fixes** — keep flowing to that component. It is **not** a freeze on the component, and it is not a pipeline lock: a freeze at that component's scope would stop the laggard shipping *anything*, which turns a migration deadline into an outage of that team's ability to patch. Owner decision D4 excludes it explicitly.
+
+**Nothing is ever written to mean "locked".** The lock is a read-time predicate re-derived every tick from `(deadline.at, adoption)`, which is what lets a late adoption, a moved deadline or a cleared one release it **with no unlock verb**. The deadline itself is *configuration*, not status — campaign status stays derived.
+
+**`unknown` locks.** Only `adopted` releases a target. That is the mirror of **[adoption evidence](#adoption-evidence)**'s rule: if silence is never a pass, then a target whose migration cannot be observed is still one the deadline applies to — otherwise the deadline evaporates for exactly the components least visible to the platform.
+
+**Call it a tripwire, not a lock.** Under the `delivered` signal it is very nearly a no-op, because a target is only a candidate while `pending` — meaning the campaign never reached it. It acquires force with evidence observed *outside* the campaign's own fan-out, or as the durable signed record that "component X missed campaign Y's deadline on date Z".
+
+**Not to be confused with:** a **[freeze](#freeze)** (scope-based, time-windowed, blocks everything in scope); a **coordination lever** (the recipe that triggers, not a gate that refuses).
+
+**In the code.** `coordination/campaign-deadline-lock.ts` (the predicate), the `continue` before `proposeChange` in `coordination/campaign-reconcile.ts` (the actuator), `POST /api/v1/campaigns/{id}/deadline` and `scp campaign deadline` (set / move / clear — the exit). [ADR-0042](adr/0042-deadline-triggered-campaign-lock.md).
+
+---
+
 ### wave
 
 **Definition.** One ordered step of a **compiled plan**: **the set of one-or-more stages advanced at once**, and the targets within them. Wave order is computed from graph `depends_on` edges (topological sort with cycle rejection) plus explicit coordination rules such as "infrastructure before application". Waves sharing an index run in parallel (fan-out); a fan-in gate requires every target of the previous wave to have succeeded.

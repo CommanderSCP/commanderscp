@@ -17,6 +17,7 @@ import {
 import { dependencyVersionPollRoleGuard, startDependencyVersionPollLoop } from "./version-poll.js";
 import { bumpDispatchRoleGuard, startBumpDispatchLoop } from "./bump-dispatch.js";
 import { startBumpGateLoop } from "./bump-gate.js";
+import { startBumpFreezeRedriveLoop } from "./bump-freeze-redrive.js";
 import {
   internalReleaseDetectionRoleGuard,
   startInternalReleaseLoop
@@ -70,6 +71,11 @@ import {
  * That is now a derived fact rather than a remembered one: {@link JOB_GUARDS} is computed from
  * {@link DEPENDENCY_JOBS} by de-duplicating on guard IDENTITY, so a loop that quietly grew its own
  * copy of the predicate appears as a fifth guard and gets checked like the rest.
+ *
+ * M25.8b ADDED A SIXTH LOOP — `startBumpFreezeRedriveLoop`, on `bumpDispatchRoleGuard` again — and
+ * the census is what said so: it landed in `unclassified` on the first run after the file was
+ * created, before anyone thought to come here. That is the sentence above being true rather than
+ * merely written down.
  */
 
 /** Every deployment shape a guard can see — the full product of the three axes, not a sample. */
@@ -162,6 +168,24 @@ const DEPENDENCY_JOBS: readonly DependencyJob[] = [
     loop: startBumpGateLoop,
     start: (boss, config) =>
       startBumpGateLoop(boss, { config } as unknown as Parameters<typeof startBumpGateLoop>[1])
+  },
+  {
+    // THE SIXTH LOOP (M25.8b), and the SECOND to import the dispatcher's guard rather than declare
+    // one. It has to be that guard, in both directions: this sweep exists to re-drive the auto-merge
+    // gate, so an outpost running it would initiate exactly the repository write the gate refuses to
+    // initiate there — and a refused gate loop never CREATES `dependency-bump-gate`, so a sweep that
+    // ran anyway would send to a queue that does not exist, once a minute, for ever.
+    name: "bump freeze redrive",
+    guard: bumpDispatchRoleGuard,
+    loop: startBumpFreezeRedriveLoop,
+    start: (boss, config) =>
+      startBumpFreezeRedriveLoop(
+        boss,
+        // Read-before-touch, exactly as the poll's entry above: the loop decides on config alone and
+        // returns before dereferencing the Db on a refusal.
+        undefined as unknown as Parameters<typeof startBumpFreezeRedriveLoop>[1],
+        config
+      )
   }
 ];
 

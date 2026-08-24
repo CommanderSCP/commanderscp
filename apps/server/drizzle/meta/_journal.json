@@ -591,6 +591,41 @@
       "breakpoints": true
     },
     {
+      "idx": 84,
+      "version": "7",
+      "when": 1788142000000,
+      "tag": "0084_freeze_atomic",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1788143000000,
+      "tag": "0085_freeze_lift",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1788144000000,
+      "tag": "0086_instance_freezes",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1788145000000,
+      "tag": "0087_bundle_transfers_channel",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1788146000000,
+      "tag": "0088_campaign_deadline_override_permission",
+      "breakpoints": true
+    },
+    {
       "idx": 90,
       "version": "7",
       "when": 1788150000000,

@@ -506,6 +506,10 @@ const UNIT_HOOK_OVERRIDES: Record<string, { ms: number; why: string }> = {
     ms: 30_000,
     why: "same warm-up; the 5,400ms cold-CI-runner measurement that sets REVIEWED_HOOK_BUDGETS_MS was taken here"
   },
+  "packages/cli/src/relay-builds-cli.test.ts": {
+    ms: 30_000,
+    why: "same warm-up"
+  },
   "packages/cli/src/scan-exclusion-admissions-cli.test.ts": {
     ms: 30_000,
     why: "same warm-up"

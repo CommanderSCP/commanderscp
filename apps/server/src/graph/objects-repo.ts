@@ -35,6 +35,7 @@ import {
   assertSelectorKeysAreGovernanceLabels
 } from "../governance/governance-labels.js";
 import { assertValidComponentSecurityDeclarations } from "../governance/component-declaration-guard.js";
+import { assertValidCampaignRecipe } from "../governance/campaign-recipe-guard.js";
 import {
   assertDeclaredFactClauseIsNarrowed,
   assertScanRuleRequiresScanControl
@@ -445,6 +446,13 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
     // function with free-form `properties` found four, and a per-route install would have missed
     // three of them (`governance/component-declaration-guard.ts` names them).
     assertValidComponentSecurityDeclarations({ typeId: input.typeId, properties });
+    // M25.4 (ADR-0041) — the CAMPAIGN RECIPE, here for the identical reason its neighbours are and
+    // against the identical `federationImport` census. `POST /campaigns` is only ONE of the three
+    // doors that reach `campaign.properties`; IaC apply (`iac/plans-repo.ts`) calls this function
+    // DIRECTLY with a free-form `typeId` and free-form `properties`, so a guard at the campaign
+    // route would never see it. See `governance/campaign-recipe-guard.ts`, including why `change`
+    // is deliberately NOT guarded here.
+    assertValidCampaignRecipe({ typeId: input.typeId, properties });
     assertEnforceableDependencySubscriptionScope({ typeId: input.typeId, properties });
     // M22.5 — the OTHER half of ADR-0033 §6's split, and the half the line above cannot reach. That
     // one bounds what a COMPONENT may declare; this one bounds what a POLICY may do with a
@@ -934,6 +942,11 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       typeId: input.typeId,
       properties: nextProperties
     });
+    // M25.4 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
+    // the identical reason its neighbours are: `updateObject` replaces `properties` wholesale, so an
+    // ordinary PATCH/PUT — or an IaC apply's diff — can rewrite a valid recipe into an unreadable
+    // one, or into a `rollback` kind, without ever passing through a create.
+    assertValidCampaignRecipe({ typeId: input.typeId, properties: nextProperties });
     assertEnforceableDependencySubscriptionScope({
       typeId: input.typeId,
       properties: nextProperties

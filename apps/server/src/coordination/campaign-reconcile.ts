@@ -1,5 +1,6 @@
 import type { Db } from "../db/client.js";
-import type { TrustDomainId } from "@scp/schemas";
+import type { CampaignDeadline, TrustDomainId } from "@scp/schemas";
+import { CAMPAIGN_RECIPE_PROPERTY_KEY } from "@scp/schemas";
 import { and, eq } from "drizzle-orm";
 import { objects } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -9,7 +10,17 @@ import { badRequest, describeError } from "../errors.js";
 import { getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
-import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
+import {
+  insertDecision,
+  insertDecisionIfChanged,
+  latestDecisionForSubjectKind
+} from "./decisions-repo.js";
+import {
+  describeFreezeHold,
+  describeHeldTargets,
+  evaluateFreezeHolds,
+  type FreezeHoldVerdict
+} from "./freeze-hold.js";
 import { proposeChange, typeOf } from "./changes-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -31,14 +42,31 @@ import {
   getLatestCampaignPlan,
   markCampaignPlanCompleted
 } from "./campaign-plan-service.js";
+import { tryAcquireCampaignCoordinationLock } from "./campaign-coordination-lock.js";
+import { resolveChangeRecipe } from "./campaign-recipe.js";
 import {
   markCampaignWaveBlocked,
   markCampaignWaveRunning,
   markCampaignWaveTargetProposed,
   markCampaignWaveTargetTerminal,
   markCampaignWaveTerminal,
+  terminalizeAdoptedCampaignWaveTarget,
   terminalizeRefusedCampaignWaveTarget
 } from "./campaign-wave-targets-repo.js";
+import {
+  CAMPAIGN_ADOPTION_AUDIT_ACTION,
+  CAMPAIGN_ADOPTION_DECISION_KIND,
+  evaluateCampaignAdoption
+} from "./campaign-adoption.js";
+import {
+  CAMPAIGN_DEADLINE_DECISION_KIND,
+  CAMPAIGN_DEADLINE_LOCK_AUDIT_ACTION,
+  describeCampaignDeadlineLock,
+  describeLockedTargets,
+  evaluateCampaignDeadlineLock,
+  resolveCampaignDeadline,
+  type CampaignDeadlineLockVerdict
+} from "./campaign-deadline-lock.js";
 
 /**
  * The campaign reconciler (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5) — a THIN extension of M3's
@@ -81,15 +109,57 @@ function logCampaignError(
   );
 }
 
+/**
+ * ONE CAMPAIGN'S UNIT OF WORK. THE CALLER HOLDS THIS CAMPAIGN'S ADVISORY LOCK for the whole of
+ * this function — see `campaign-coordination-lock.ts` for the race it closes and why the campaign
+ * side had NO backstop at all (no unique constraint on `campaign_plans.campaign_object_id`, no
+ * transition-guarded state machine, so both racing ticks committed a full duplicate plan silently).
+ *
+ * `staleCampaignObject` IS THE BATCH READ'S SNAPSHOT AND IS DELIBERATELY NOT USED FOR ANYTHING BUT
+ * ITS ID. It was taken by `listActiveCampaignObjectIds` OUTSIDE the lock, which is precisely the
+ * window the lock exists to make survivable, so this function's first act is to re-read the row
+ * fresh — half (b) of the fix. Two things depend on it:
+ *
+ *  - `properties`, which the compile path below both READS (targets, topology) and WRITES BACK
+ *    (the URN-normalisation `updateObject`). A racing tick that already normalised them would be
+ *    undone from a stale snapshot, bumping the object's version and audit trail for a write the
+ *    winner already made.
+ *  - The row still EXISTING and still being ours. A campaign tombstoned (or handed to another
+ *    domain) between the batch read and this lock is a clean no-op, not a plan compiled against a
+ *    deleted campaign. The `origin_domain_id` predicate is the same S10 single-writer condition
+ *    `listActiveCampaignObjectIds` filters on, re-asserted here where it is actually fresh.
+ *
+ * The plan read immediately below is the OTHER fresh re-read, and it is the one that makes "another
+ * tick already compiled this plan" an ordinary drive-path tick rather than a compile failure.
+ */
 async function reconcileOneCampaign(
   db: Db,
   orgId: string,
-  campaignObject: ObjectRow,
+  staleCampaignObject: ObjectRow,
   host: PluginHost,
-  sandbox: CelSandbox
+  sandbox: CelSandbox,
+  selfDomainId: TrustDomainId,
+  /** THE TICK'S CLOCK, resolved ONCE by `reconcileCampaignsOrgTick` for the WHOLE batch and threaded
+   *  down — see that function. Never re-read here: two campaigns straddling the same deadline
+   *  instant, evaluated 40 ms apart inside one tick, must not disagree about whether it has passed. */
+  now: Date
 ): Promise<void> {
   const gateDeps: GateDeps = { sandbox, host };
-  const campaignObjectId = campaignObject.id;
+  const campaignObjectId = staleCampaignObject.id;
+
+  const campaignObject = await withTenantTx(db, orgId, (tx) =>
+    tx.query.objects.findFirst({
+      where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+        andOp(
+          eqOp(t.orgId, orgId),
+          eqOp(t.id, campaignObjectId),
+          eqOp(t.typeId, "campaign"),
+          eqOp(t.originDomainId, selfDomainId),
+          isNullOp(t.deletedAt)
+        )
+    })
+  );
+  if (!campaignObject) return;
 
   let plan = await withTenantTx(db, orgId, (tx) =>
     getLatestCampaignPlan(tx, orgId, campaignObjectId)
@@ -254,7 +324,11 @@ async function reconcileOneCampaign(
           emergency: false,
           topologyObjectId: plan!.topologyObjectId,
           waveIndex: activeWave.waveIndex,
-          targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+          targetObjectIds: activeWave.targets.map((t) => t.targetObjectId),
+          // EXPLICIT, not defaulted (M25.2 / D7): a campaign is never itself a rollback. Campaign
+          // rollback (`campaign-rollback.ts`) mints a per-member rollback CHANGE, and each of those
+          // carries the flag on its own wave, where the exemption belongs.
+          isRollback: false
         },
         gateDeps
       );
@@ -309,6 +383,109 @@ async function reconcileOneCampaign(
 
   let allTerminal = true;
   let anyFailed = false;
+
+  /**
+   * THE FREEZE HOLD, CAMPAIGN SIDE (M25.2, docs/proposals/campaigns-rework.md §1.3) — memoised once
+   * per campaign per tick, exactly like `reconcile.ts`'s twin, and lazy for the same reason: a wave
+   * with nothing `pending` never asks.
+   *
+   * OPERABILITY, NOT CORRECTNESS, and worth stating so nobody deletes it thinking it is redundant.
+   * A member Change fanned out into a freeze WOULD be held at the change-side actuator anyway — the
+   * fan-out mints a change with exactly one target, and that change's own per-target loop refuses to
+   * trigger it. But without this seam a 40-target campaign entering a two-week freeze mints 40 real
+   * Changes that each compile a plan, enter `executing`, and trip the watchdog's 30-minute stall SLA
+   * for a fortnight. Holding the fan-out keeps the estate clean.
+   *
+   * CAMPAIGN WAVE TARGETS ARE COMPONENTS, not placements, so only org/domain/service/component
+   * -scoped freezes reach them. A region freeze correctly does NOT stop fan-out — it stops the
+   * member change's placement targets, one layer down, at the actuator that can see a place.
+   */
+  let campaignFreezeHolds: Map<string, FreezeHoldVerdict> | undefined;
+  const loadCampaignFreezeHolds = async (): Promise<Map<string, FreezeHoldVerdict>> =>
+    (campaignFreezeHolds ??= await withTenantTx(db, orgId, (tx) =>
+      evaluateFreezeHolds(tx, {
+        orgId,
+        targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+      })
+    ));
+  /**
+   * M25.4 — the campaign's own recipe, resolved ONCE per campaign per tick and copied verbatim onto
+   * every member change this wave fans out (see the `proposeChange` call below for why by value).
+   *
+   * `{}` — not `{ recipe: undefined }` — when the campaign declares none, so `proposeChange`'s
+   * property spread is byte-identical to a pre-M25.4 fan-out.
+   *
+   * A MALFORMED RECIPE IS NOT COPIED AND NOT SILENTLY DROPPED. It cannot normally exist — the
+   * authoring guard at `graph/objects-repo.ts` refuses it on all three write doors — but a row
+   * planted before that guard, or by a peer speaking a newer vocabulary, can. `resolveChangeRecipe`
+   * reports `malformed` distinctly from `none`, and copying the raw bytes through would push the
+   * refusal down to N member changes instead of raising it once here. The member changes are still
+   * proposed (the campaign's targets are real work), and each one's own trigger path then finds no
+   * recipe — which is why the warning is loud: it is the one place an operator can see that the
+   * campaign fanned out WITHOUT the lever it was authored to carry.
+   */
+  const campaignRecipe = resolveChangeRecipe(
+    campaignObject.properties as Record<string, unknown> | null
+  );
+  if (campaignRecipe.outcome === "malformed") {
+    logCampaignError(
+      orgId,
+      campaignObjectId,
+      "recipe",
+      new Error(
+        `campaign properties.recipe is unreadable (${campaignRecipe.detail}) — every member change ` +
+          `this campaign fans out will roll its target's DEFAULT pipeline with no recipe parameters`
+      )
+    );
+  }
+  const recipeProperties: Record<string, unknown> =
+    campaignRecipe.outcome === "recipe"
+      ? { [CAMPAIGN_RECIPE_PROPERTY_KEY]: campaignRecipe.recipe }
+      : {};
+  /**
+   * M25.5 — the SAME parsed recipe, hoisted here so the adoption seam in the per-target loop below
+   * reads one document rather than re-deciding per target what `resolveChangeRecipe` already
+   * decided once for the campaign.
+   *
+   * `undefined` covers BOTH "no recipe" and "malformed", and that second half is deliberate: a
+   * document the schema refuses is not evidence of anything, so the adoption predicate is not asked
+   * about it and every target of such a campaign fans out normally. The refusal is already loud —
+   * the warning above is logged once per campaign per tick — and turning an unparseable document
+   * into a silent `adopted` would be exactly the failure this milestone exists to refuse.
+   */
+  const adoptionRecipe = campaignRecipe.outcome === "recipe" ? campaignRecipe.recipe : undefined;
+
+  /**
+   * M25.6a — THE DEADLINE, resolved ONCE per campaign per tick beside the recipe, for the same
+   * reason: the seam below asks about it once per target, and a document parsed per target is a
+   * document that can be read two ways in one pass.
+   *
+   * FAIL OPEN, LOUDLY (§4.2), and the departure from `stage-dependency-hold.ts`'s fail-CLOSED
+   * `undeclarable` branch is deliberate. That one guards a SAFETY coupling — dropping the hold
+   * deploys a component ahead of a dependency it was declared to stand behind. A deadline is a
+   * COERCION mechanism, and failing closed on an unreadable one parks an ENTIRE campaign on a typo,
+   * behind a document that by definition cannot explain itself. So a malformed bag locks nothing,
+   * and the `warn` Decision below is the "loudly" half: without it the operator's only signal that
+   * their deadline is inert would be its silence, which is indistinguishable from never having set
+   * one.
+   */
+  const campaignDeadline = resolveCampaignDeadline(
+    campaignObject.properties as Record<string, unknown> | null
+  );
+  if (campaignDeadline.outcome === "malformed") {
+    await recordUnreadableCampaignDeadline(db, orgId, campaignObjectId, campaignDeadline.detail);
+  }
+
+  /** Every target this tick an active freeze covered — one Decision for the campaign, never one per
+   *  target (`insertDecisionIfChanged` dedupes on the LATEST row of a `(subject_id, kind)`, so
+   *  per-target rows would alternate and suppression would never fire). */
+  const frozenTargets: FreezeHoldVerdict[] = [];
+  /** Every target this tick the campaign's own deadline withheld fan-out from. One Decision per
+   *  CAMPAIGN, never one per target, for the identical dedup reason as `frozenTargets`. */
+  const deadlineLockedTargets: CampaignDeadlineLockVerdict[] = [];
+  /** Did any target of this wave get past the freeze seam on this tick? The release condition for
+   *  the hold Decision below. */
+  let anyTargetFannedOut = false;
 
   for (const target of activeWave.targets) {
     if (target.status === "succeeded") continue;
@@ -391,6 +568,247 @@ async function reconcileOneCampaign(
         anyFailed = true;
         continue;
       }
+
+      // ==========================================================================================
+      // THE FREEZE HOLD — M25.2's SECOND ACTUATOR. This `continue` is the refusal.
+      // ==========================================================================================
+      // AFTER THE LIVENESS GATE, deliberately: a tombstoned target is dead regardless of any
+      // freeze, and terminalizing it is PROGRESS — holding it instead would keep a dead row
+      // non-terminal for the length of the freeze window and hide the block Decision the liveness
+      // gate exists to write. BEFORE `proposeChange`, so no member Change, no `coordinates` edge,
+      // and no `campaign_wave_targets.member_change_object_id` is written for a fan-out we are
+      // declining to perform.
+      //
+      // `allTerminal` IS ALREADY FALSE — set at the top of this `pending` branch — so this
+      // `continue` cannot let the wave terminalize behind a held target. That is the campaign-side
+      // equivalent of `reconcile.ts`'s "counted first" invariant, and it is inherited rather than
+      // restated: there is no separate count here to get wrong.
+      //
+      // NO CURSOR BUMP IS NEEDED. `reconcileCampaignsOrgTick` already bumps `objects.updated_at`
+      // UNCONDITIONALLY for every locally-owned campaign it examines (starvation-class instance 4,
+      // verified at that call site), so a campaign every one of whose targets is frozen still
+      // rotates through the batch. The change side needs its own bump only because nothing there
+      // writes the `changes` row on the held path.
+      const frozen = (await loadCampaignFreezeHolds()).get(target.targetObjectId);
+      if (frozen) {
+        frozenTargets.push(frozen);
+        continue;
+      }
+
+      // ==========================================================================================
+      // THE ADOPTION SEAM — M25.5's ACTUATOR. This `continue` is the refusal to do work.
+      // ==========================================================================================
+      // WHAT IT BUYS: a campaign is IDEMPOTENT against a component that migrated on its own. Half a
+      // 47-component estate is usually already on python3 when the campaign is authored, and without
+      // this seam each of those gets a real member Change, a plan, an `executing` state and a
+      // triggered pipeline run to re-do work that is done. Worse, the campaign then reports having
+      // migrated them — which is true of the trigger and false of the component.
+      //
+      // ORDERING, WHICH IS INHERITED FROM THE TWO SEAMS ABOVE RATHER THAN INVENTED:
+      //
+      //  * AFTER THE LIVENESS GATE. A tombstoned target is dead regardless of what its inventory
+      //    says, and terminalizing it `failed` is PROGRESS. Asking about adoption first would read a
+      //    deleted component's stale inventory and terminalize it `succeeded` — a campaign reporting
+      //    a migration for an object that no longer exists.
+      //  * AFTER THE M25.2 FREEZE HOLD. A freeze is a HOLD, not a terminal state: the campaign is
+      //    meant to resume when the window closes. Terminalizing a frozen target `succeeded` here
+      //    would make the hold irreversible and would write a permanent Decision during a window in
+      //    which the campaign was explicitly told to do nothing. Held first, asked later.
+      //  * BEFORE `proposeChange`. That is the whole point — no member Change, no `coordinates`
+      //    edge, no `member_change_object_id` for a fan-out we are declining to perform.
+      //
+      // `allTerminal` IS ALREADY FALSE (set at the top of this `pending` branch), so nothing here
+      // depends on getting a count right; the terminalizing write below is what lets the wave finish.
+      //
+      // INERT BY DEFAULT: the recipe was parsed ONCE for this campaign above, so a campaign that
+      // declares no `adoption` costs exactly one property read and not a single query. The predicate
+      // early-returns on the same condition — the guard is stated twice on purpose, because a guard
+      // that lives only at the call site is a guard that survives until the second call site.
+      //
+      // NO MEMOISATION, and that is the M22.0a lesson rather than an oversight: each `(campaign,
+      // target)` is evaluated exactly once per tick by this loop, so a cache would buy nothing and
+      // would introduce the one thing that failure was made of — a key coarser than the question.
+      //
+      // FAIL DIRECTION: a thrown predicate is caught and the target is fanned out NORMALLY. An
+      // unreadable inventory must never be mistaken for "already migrated" — that is the same
+      // silence-as-a-pass this feature exists to refuse, arriving as an exception instead of a NULL.
+      if (adoptionRecipe?.adoption !== undefined) {
+        const adopted = await withTenantTx(db, orgId, async (tx) => {
+          const adoption = await evaluateCampaignAdoption(
+            tx,
+            orgId,
+            campaignObjectId,
+            target.targetObjectId,
+            adoptionRecipe
+          );
+          // ONLY `adopted` acts. `not_adopted` and `unknown` both fan out — an unknown verdict is an
+          // absence of evidence and must never be treated as adoption (R3). This asymmetry is the
+          // feature's safety property in one line.
+          if (adoption.verdict !== "adopted") return false;
+
+          // The guard makes the Decision + audit pair fire exactly once per target, ever, however
+          // many ticks arrive — the same shape as the liveness gate's refusal directly above.
+          const terminalized = await terminalizeAdoptedCampaignWaveTarget(tx, orgId, target.id);
+          if (!terminalized) return true;
+
+          // `insertDecisionIfChanged` as well as the guard, belt AND braces. The guard is what
+          // bounds this today; the persist-on-change wrapper is what keeps it bounded if a future
+          // edit ever moves this write out from behind it. `inputContext` carries the EVIDENCE and
+          // nothing clock-shaped — see `CampaignAdoptionResult.inputContext` for the named ban list
+          // and the 1.44 GB/day measurement behind it.
+          const recorded = await insertDecisionIfChanged(tx, {
+            orgId,
+            kind: CAMPAIGN_ADOPTION_DECISION_KIND,
+            subjectId: campaignObjectId,
+            // `allow` rather than `block`/`hold`: nothing is being withheld from anyone. The campaign
+            // is recording that this target needed no work. `latestBlockDecisionForSubject` filters
+            // on the verdict alone, so a `block` here would leave a campaign looking permanently
+            // blocked by its own good news.
+            verdict: "allow",
+            inputContext: {
+              ...adoption.inputContext,
+              waveId: activeWave.id,
+              waveIndex: activeWave.waveIndex
+            },
+            reasonTree: {
+              summary: `no member change proposed for this campaign target: ${adoption.summary}`,
+              // Echoed under its own key as well as inside `inputContext` so `scp campaign explain`
+              // shows the evidence beside the sentence it justifies. Already sorted and bounded by
+              // the predicate; re-sorting here would be a second ordering rule to keep in step.
+              observations: adoption.observations
+            }
+          });
+          if (recorded.created) {
+            await appendAuditEvent(tx, {
+              orgId,
+              actorId: SYSTEM_ACTOR_ID,
+              action: CAMPAIGN_ADOPTION_AUDIT_ACTION,
+              subjectId: campaignObjectId,
+              reason: `campaign target ${target.targetObjectId} was already migrated: ${adoption.summary}`,
+              decisionId: recorded.decision.id,
+              requestId: "campaign-reconcile"
+            });
+          }
+          return true;
+        }).catch((err) => {
+          logCampaignError(
+            orgId,
+            campaignObjectId,
+            `wave ${activeWave.waveIndex} target ${target.targetObjectId} adoption`,
+            err
+          );
+          return false; // unreadable — NOT "adopted". Fanned out normally, retried next tick.
+        });
+        if (adopted) continue;
+      }
+
+      // ==========================================================================================
+      // THE DEADLINE LOCK — M25.6a's ACTUATOR. This `continue` is the refusal.
+      // ==========================================================================================
+      // > `reconcileOneCampaign`'s per-target `pending` branch is the function that refuses. The
+      // > refusal is: IT DOES NOT CALL `proposeChange`.
+      //
+      // THE RADIUS IS THIS CAMPAIGN'S OWN TARGETS (owner decision D4), and that is a property of
+      // WHERE this sits rather than of anything it computes. It withholds one campaign's fan-out
+      // from one component. The component keeps receiving every other change on the estate,
+      // INCLUDING SECURITY FIXES, because nothing here touches the component's gates, its freezes,
+      // or any change but the one this campaign would have minted. Routing it through `checkFreeze`
+      // instead would have stopped all of those — see `campaign-deadline-lock.ts` for why neither
+      // that nor `evaluateWaveGate` is the seam.
+      //
+      // ORDERING, INHERITED FROM THE THREE SEAMS ABOVE RATHER THAN INVENTED:
+      //
+      //  * AFTER THE LIVENESS GATE. A tombstoned target is dead regardless of any calendar, and
+      //    terminalizing it is PROGRESS. Locking it instead would keep a dead row non-terminal
+      //    forever — a deadline, unlike a freeze window, never closes on its own — and would defer
+      //    the tombstone's own audit event for just as long.
+      //  * AFTER THE M25.2 FREEZE HOLD. A freeze is the more specific and the more urgent fact: it
+      //    is an operator saying "stop, right now", it clears by itself, and only one `continue` can
+      //    fire per tick. A frozen target records the freeze this tick and starts recording the
+      //    deadline the tick the window closes. The two sets are therefore DISJOINT by
+      //    construction, which is what keeps the two Decisions from describing the same target twice.
+      //  * AFTER THE M25.5 ADOPTION CHECK. An already-migrated component must terminalize
+      //    `succeeded`, not be locked out of a campaign it has already satisfied. Asking about the
+      //    deadline first would produce a permanent, hash-chained record asserting that a component
+      //    which HAD migrated missed the deadline — the single worst output this feature can
+      //    produce, and the one its whole evidence discipline exists to prevent.
+      //  * BEFORE `proposeChange`. That is the whole point: no member Change, no `coordinates` edge,
+      //    no `member_change_object_id` for a fan-out we are declining to perform.
+      //
+      // `allTerminal` IS ALREADY FALSE (set at the top of this `pending` branch), so this `continue`
+      // cannot let the wave terminalize behind a locked target. §4.6's consequence, stated rather
+      // than changed: SIBLINGS SHIP AND REACH `accepted`, but the wave never terminalizes and later
+      // waves never start. Both alternatives are worse — terminalizing a locked target `failed`
+      // parks the campaign anyway AND makes the lock irreversible (a terminal wave is never
+      // re-served), while `skipped` produces a campaign that "completed" while a target it was
+      // created for never migrated, a lie in the one record the feature exists to produce. That is
+      // the existing campaign wave engine's shape; changing it is a separate decision.
+      //
+      // NOTHING IS WRITTEN TO THE TARGET ROW. The lock is re-derived from `(deadline.at, adoption)`
+      // on every subsequent tick, which is precisely what makes a late adoption or a moved deadline
+      // clear it with NO UNLOCK VERB — the same read-time-predicate payoff M22.6 already ruled for
+      // expiry and M25.2 for the freeze window. There is correspondingly no hold->release row here:
+      // a lock that lifts does so because the target became `adopted` (which writes its own
+      // `campaign_adoption`/`allow` row as it terminalizes) or because the deadline was moved or
+      // cleared (which writes its own `campaign_deadline_set`/`allow` row and audit event at the
+      // route). Both clearings are already on the record under the kind that names what actually
+      // changed; a third writer restating them would be a second account of one event.
+      //
+      // NO CURSOR BUMP, exactly as for the freeze hold directly above: `reconcileCampaignsOrgTick`
+      // bumps `objects.updated_at` unconditionally for every locally-owned campaign it examines
+      // (starvation-class instance 4), so a campaign every one of whose targets is locked still
+      // rotates through the batch.
+      //
+      // ONE KNOWN WRINKLE, RECORDED RATHER THAN QUIETLY WIDENED. `anyTargetFannedOut` — the
+      // condition M25.2's `clearCampaignFreezeAdmissionHold` releases on — is set BELOW this
+      // `continue`, so a campaign whose freeze window closes on the same tick its deadline starts
+      // locking gets no freeze RELEASE row, and its newest `freeze_admission` row keeps reading
+      // `hold` while the truth is that the deadline is now what withholds it. The shape is
+      // pre-existing (M25.5's adoption seam `continue`s above the same flag) rather than introduced
+      // here, and it is an explainability wrinkle rather than a correctness one — the standing
+      // `campaign_deadline` block Decision is the newer row and says exactly what is happening. The
+      // honest fix is to release on "no target is held by a FREEZE any more" rather than on "some
+      // target fanned out", which is an edit to M25.2's seam and belongs with M25.2's own tests.
+      //
+      // COST WHEN NOT DUE: ZERO QUERIES. `evaluateCampaignDeadlineLock` compares two instants and
+      // returns before touching `tx`. A campaign with no deadline at all never reaches this branch.
+      if (campaignDeadline.outcome === "deadline") {
+        const lock = await withTenantTx(db, orgId, (tx) =>
+          evaluateCampaignDeadlineLock(tx, {
+            orgId,
+            campaignObjectId,
+            targetObjectIds: [target.targetObjectId],
+            deadline: campaignDeadline.deadline,
+            at: campaignDeadline.at,
+            recipe: adoptionRecipe,
+            // THE TICK'S CLOCK, threaded from `reconcileCampaignsOrgTick` — never `new Date()`.
+            now
+          })
+        ).catch((err) => {
+          logCampaignError(
+            orgId,
+            campaignObjectId,
+            `wave ${activeWave.waveIndex} target ${target.targetObjectId} deadline`,
+            err
+          );
+          // UNREADABLE IS NOT LOCKED. A database blip must never withhold a campaign's fan-out: the
+          // fail-open direction this whole mechanism is built on, applied to the transient case as
+          // well as to the malformed one.
+          return undefined;
+        });
+        const locked = lock?.locked[0];
+        if (locked) {
+          deadlineLockedTargets.push(locked);
+          continue; // <- THE REFUSAL
+        }
+      }
+
+      // Set BEFORE `proposeChange` for the same reason the change side sets its flag before
+      // `triggerWaveTarget`: this target was NOT held on this tick, which is the observation the
+      // release row records. A `proposeChange` that then throws is retried next tick and the
+      // release is idempotent.
+      anyTargetFannedOut = true;
+
       try {
         await withTenantTx(db, orgId, async (tx) => {
           const targetObject = await tx.query.objects.findFirst({
@@ -411,6 +829,31 @@ async function reconcileOneCampaign(
             sourceKind: "campaign",
             sourceRef: { campaignObjectId, waveIndex: activeWave.waveIndex },
             targets: [target.targetObjectId],
+            // ===================================================================================
+            // M25.4 — THE RECIPE, COPIED ONTO THE MEMBER CHANGE. This is the "1-click": the author
+            // configured one trigger intent on the campaign, and every one of N targets now carries
+            // it into its own governed change.
+            // ===================================================================================
+            // COPIED BY VALUE, NOT RESOLVED BY REFERENCE AT TRIGGER TIME, and the difference is
+            // load-bearing three times over:
+            //
+            //   * IMMUTABILITY. Editing the campaign later cannot retroactively re-narrate what an
+            //     already-fanned-out change did — the `control_runs.plugin_module` rule applied to
+            //     the same class of question ("what did this actually run with?").
+            //   * FEDERATION REACH. `promotion-repo.ts` re-proposes a promoted change LOCALLY with
+            //     `properties` carried through, stripping exactly `requires` and `stageDependencies`
+            //     — so a recipe on the CHANGE arrives at an outpost intact and that outpost's own
+            //     reconcile resolves the OUTPOST's binding and triggers through its own local gates.
+            //     A recipe left only on the campaign object would reach the outpost as an inert
+            //     replica (`listActiveCampaignObjectIds` filters foreign-origin campaigns out, and
+            //     that filter is correct — see `foreign-origin-campaign.integration.test.ts`).
+            //   * ONE READER. `reconcile.ts`'s trigger path then needs no campaign lookup, no
+            //     `coordinates`-edge walk and no second code path for "is this a member change" —
+            //     it reads `change.properties` exactly as it already does for `stageDependencies`.
+            //
+            // ONLY WRITTEN WHEN THE CAMPAIGN DECLARES ONE, so a recipe-less campaign fans out a
+            // byte-identical change to a pre-M25.4 one.
+            properties: recipeProperties,
             // Every change a campaign fans out rolls the CAMPAIGN's pipeline (M12 P4A / ADR-0007) —
             // one intent, many targets. Without this an `infrastructure` campaign would trigger each
             // target's `configuration` binding: the wrong pipeline, an actively wrong release.
@@ -469,10 +912,274 @@ async function reconcileOneCampaign(
     }
   }
 
+  if (deadlineLockedTargets.length > 0 && campaignDeadline.outcome === "deadline") {
+    await recordCampaignDeadlineLock(
+      db,
+      orgId,
+      campaignObjectId,
+      activeWave,
+      campaignDeadline.deadline,
+      deadlineLockedTargets
+    );
+  }
+
+  if (frozenTargets.length > 0) {
+    await recordCampaignFreezeAdmissionHold(db, orgId, campaignObjectId, activeWave, frozenTargets);
+  } else if (anyTargetFannedOut) {
+    // HOLD -> RELEASE (proposal §1.5), the campaign-side twin of `reconcile.ts`'s
+    // `clearFreezeAdmissionHold`. Without it the newest `freeze_admission` row for a campaign that
+    // was held for a fortnight still reads `hold` after the window closed and every member change
+    // was minted — a historical record with no clearing counterpart, which is the exact defect
+    // `routes/changes.ts` documents against ADR-0028's identical omission.
+    await clearCampaignFreezeAdmissionHold(db, orgId, campaignObjectId, activeWave);
+  }
+
   if (!allTerminal) return;
   await withTenantTx(db, orgId, (tx) =>
     markCampaignWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded")
   );
+}
+
+/**
+ * THE EXPLAINABILITY HALF OF THE CAMPAIGN-SIDE FREEZE HOLD (M25.2) — the same Decision shape
+ * `reconcile.ts`'s `recordFreezeAdmissionHold` writes, with the CAMPAIGN as the subject.
+ *
+ * Every property that file's docblock argues at length applies here unchanged and for the same
+ * reasons: `kind: "freeze_admission"` distinct from `"gate"` (sharing it would make these rows and
+ * the campaign wave gate's own rows alternate under `insertDecisionIfChanged`'s
+ * latest-row-per-`(subject_id, kind)` comparison, and suppression would never fire);
+ * `verdict: "hold"` and never `"block"` (`latestBlockDecisionForSubject` filters on the verdict
+ * ALONE and nothing writes a clearing row); ONE row per campaign rather than per target; and
+ * `endsAt` in the context with the clock deliberately absent, which is what makes a fortnight-long
+ * hold one row instead of 1.2 million.
+ *
+ * NO CURSOR BUMP, unlike the change side, and the asymmetry is checked rather than assumed:
+ * `reconcileCampaignsOrgTick` bumps `objects.updated_at` unconditionally for every locally-owned
+ * campaign it examines, below its S10 guard. `candidate-loop-registry.test.ts` records that as this
+ * loop's one bump.
+ */
+/**
+ * The campaign-side HOLD -> RELEASE row (proposal §1.5). Three guards, identical to
+ * `reconcile.ts`'s `clearFreezeAdmissionHold`: reached only on a tick with nothing held and
+ * something fanned out; returns unless the newest `(campaign, freeze_admission)` row is a `hold`;
+ * and written through `insertDecisionIfChanged` regardless. Best-effort — failing to record that a
+ * hold released must not fail the tick that released it.
+ */
+async function clearCampaignFreezeAdmissionHold(
+  db: Db,
+  orgId: string,
+  campaignObjectId: string,
+  activeWave: { id: string; waveIndex: number }
+): Promise<void> {
+  await withTenantTx(db, orgId, async (tx) => {
+    const latest = await latestDecisionForSubjectKind(
+      tx,
+      orgId,
+      campaignObjectId,
+      "freeze_admission"
+    );
+    if (!latest || latest.verdict !== "hold") return;
+    await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "freeze_admission",
+      subjectId: campaignObjectId,
+      verdict: "allow",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held: [] },
+      reasonTree: {
+        summary:
+          "no campaign wave target is held by a freeze any more — the window closed (or the " +
+          "freeze was lifted) and fan-out has resumed",
+        releases: latest.id
+      }
+    });
+  }).catch((err) => {
+    logCampaignError(orgId, campaignObjectId, `wave ${activeWave.waveIndex} freeze release`, err);
+  });
+}
+
+async function recordCampaignFreezeAdmissionHold(
+  db: Db,
+  orgId: string,
+  campaignObjectId: string,
+  activeWave: { id: string; waveIndex: number },
+  frozenTargets: FreezeHoldVerdict[]
+): Promise<void> {
+  const held = describeHeldTargets(frozenTargets);
+
+  const recorded = await withTenantTx(db, orgId, (tx) =>
+    insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "freeze_admission",
+      subjectId: campaignObjectId,
+      verdict: "hold",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held },
+      reasonTree: {
+        summary: `${held.length} campaign wave target(s) held: an active freeze covers that scope — no member change is fanned out while it stands`,
+        held: frozenTargets
+          .map((verdict) => describeFreezeHold(verdict))
+          .sort((a, b) => a.localeCompare(b))
+      }
+    })
+  ).catch((err) => {
+    logCampaignError(orgId, campaignObjectId, `wave ${activeWave.waveIndex} freeze hold`, err);
+    return undefined;
+  });
+
+  if (recorded?.created) {
+    console.info(
+      `[campaign-reconcile] org ${orgId} campaign ${campaignObjectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by an active freeze — decision ${recorded.decision.id} (scp decision get ${recorded.decision.id}); re-evaluated every tick until the window closes`
+    );
+  }
+}
+
+/**
+ * M25.6a — THE DEADLINE LOCK'S DECISION, the explainability half.
+ *
+ * Every property `recordCampaignFreezeAdmissionHold` argues at length applies here for the same
+ * reasons, with ONE deliberate difference (the verdict) that has to be justified rather than
+ * inherited.
+ *
+ * `kind: "campaign_deadline"`, DISTINCT FROM `gate`, `freeze_admission` AND `campaign_adoption`.
+ * `insertDecisionIfChanged` compares against the LATEST row of the same `(subject_id, kind)`, and
+ * all four of those writers write about the SAME subject — this campaign. Any two of them sharing a
+ * kind would make their rows alternate under one another and suppression would never fire once.
+ *
+ * `verdict: "block"`, AND HERE THAT IS SAFE — which is exactly the opposite of the ruling on the
+ * change side, so it is re-verified rather than assumed. `latestBlockDecisionForSubject` selects the
+ * newest `verdict = 'block'` row for a subject, on the VERDICT ALONE, and `service-board.ts:805`
+ * feeds it straight into a component row's sticky `attention.blocked`, which nothing ever clears.
+ * That is why the freeze hold on a CHANGE must never be a `block`. But that call is
+ * `latestBlockDecisionForSubject(tx, orgId, changeId)` — keyed on the CHANGE object id, taken from a
+ * list of changes — and this Decision's subject is the CAMPAIGN object. A campaign object id is
+ * never a change object id (they are distinct rows of `objects`), so this row is unreachable from
+ * that query and cannot pollute the board. Verified at HEAD, not inherited.
+ *
+ * ONE ROW PER CAMPAIGN, NOT PER TARGET. Per-target rows would alternate under the same
+ * `(subject_id, kind)` comparison and suppression would never fire.
+ *
+ * `deadline.at` AND NOTHING ELSE CLOCK-SHAPED. Banned from this object, permanently and by name:
+ * `now`, `evaluatedAt`, `overdueMs`, `daysLate`, `lockedSince`, any remaining-TTL. `at` is a stored
+ * BOUNDARY, byte-identical on every tick; the clock is not. Both arrays are sorted. So tick N+1
+ * produces a byte-identical candidate, `restatesDecision` is true, and nothing is written: a
+ * six-month lock is ONE row, not 15.7 million. This is the measured 1.44 GB/day incident (ADR-0024)
+ * being defended, not a style preference.
+ *
+ * THE AUDIT EVENT IS APPENDED ONLY WHEN `created` IS TRUE. The chain asserts that something
+ * HAPPENED; appending on a tick that wrote nothing would make it assert an occurrence that did not
+ * occur, once a second, forever. Same pairing as `campaign-adoption`'s.
+ *
+ * NO CURSOR BUMP — see the seam above: this loop bumps `objects.updated_at` unconditionally for
+ * every locally-owned campaign it examines, and `candidate-loop-registry.test.ts` records that as
+ * this loop's one bump.
+ */
+async function recordCampaignDeadlineLock(
+  db: Db,
+  orgId: string,
+  campaignObjectId: string,
+  activeWave: { id: string; waveIndex: number },
+  deadline: CampaignDeadline,
+  lockedTargets: CampaignDeadlineLockVerdict[]
+): Promise<void> {
+  const locked = describeLockedTargets(lockedTargets);
+
+  const recorded = await withTenantTx(db, orgId, async (tx) => {
+    const result = await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: CAMPAIGN_DEADLINE_DECISION_KIND,
+      subjectId: campaignObjectId,
+      verdict: "block",
+      inputContext: {
+        waveId: activeWave.id,
+        waveIndex: activeWave.waveIndex,
+        // THE ONLY CLOCK-SHAPED VALUE IN THIS OBJECT, and it is a stored boundary, not a reading.
+        deadlineAt: deadline.at,
+        locked
+      },
+      reasonTree: {
+        summary:
+          `${locked.length} campaign wave target(s) locked out by this campaign's deadline of ` +
+          `${deadline.at}: no member change is proposed for a target this campaign cannot observe ` +
+          `as migrated. THIS CAMPAIGN'S changes only — unrelated releases, including security ` +
+          `fixes, keep flowing to these components`,
+        locked: lockedTargets
+          .map((verdict) => describeCampaignDeadlineLock(deadline, verdict))
+          .sort((a, b) => a.localeCompare(b))
+      }
+    });
+    if (result.created) {
+      await appendAuditEvent(tx, {
+        orgId,
+        actorId: SYSTEM_ACTOR_ID,
+        action: CAMPAIGN_DEADLINE_LOCK_AUDIT_ACTION,
+        subjectId: campaignObjectId,
+        reason:
+          `${locked.length} target(s) missed this campaign's deadline of ${deadline.at} and are ` +
+          `no longer receiving its changes: ${locked.map((l) => l.targetObjectId).join(", ")}`,
+        decisionId: result.decision.id,
+        requestId: "campaign-reconcile"
+      });
+    }
+    return result;
+  }).catch((err) => {
+    logCampaignError(orgId, campaignObjectId, `wave ${activeWave.waveIndex} deadline lock`, err);
+    return undefined;
+  });
+
+  if (recorded?.created) {
+    console.info(
+      `[campaign-reconcile] org ${orgId} campaign ${campaignObjectId} wave ${activeWave.waveIndex}: ${locked.length} target(s) locked out by the campaign deadline ${deadline.at} — decision ${recorded.decision.id} (scp decision get ${recorded.decision.id}); re-derived every tick, so a late adoption or a moved deadline clears it with no unlock verb`
+    );
+  }
+}
+
+/**
+ * THE "LOUDLY" HALF OF FAIL-OPEN — one `warn` Decision naming what did not parse.
+ *
+ * `verdict: "warn"`, deliberately, and it is the honest one: nothing is being blocked (a malformed
+ * deadline locks NOTHING) and nothing is being allowed that would otherwise be refused. What has
+ * happened is that a governance control an author configured is inert, and the only other signal of
+ * that would be silence — indistinguishable from never having set one.
+ *
+ * SAME KIND as the lock itself, which is safe here and worth stating: a campaign's deadline document
+ * is either readable or it is not, so the `warn` and `block` rows describe MUTUALLY EXCLUSIVE
+ * states of the same document and can never alternate tick by tick. Fixing the document writes one
+ * transition row and then dedupes forever, which is precisely what the record should show.
+ *
+ * NO AUDIT EVENT. Nothing occurred — a document was found unreadable, again, on a timer. The
+ * Decision is the durable record; a hash-chained event per tick for a standing condition is the
+ * shape this whole family exists to refuse.
+ */
+async function recordUnreadableCampaignDeadline(
+  db: Db,
+  orgId: string,
+  campaignObjectId: string,
+  detail: string
+): Promise<void> {
+  const recorded = await withTenantTx(db, orgId, (tx) =>
+    insertDecisionIfChanged(tx, {
+      orgId,
+      kind: CAMPAIGN_DEADLINE_DECISION_KIND,
+      subjectId: campaignObjectId,
+      verdict: "warn",
+      inputContext: { error: detail },
+      reasonTree: {
+        summary:
+          `this campaign's properties.deadline is unreadable (${detail}) — it is withholding ` +
+          `NOTHING from anybody, and every target fans out exactly as it would with no deadline ` +
+          `set. A deadline is a coercion mechanism, so an unreadable one fails OPEN: failing closed ` +
+          `would park the entire campaign on a typo`
+      }
+    })
+  ).catch((err) => {
+    logCampaignError(orgId, campaignObjectId, "deadline", err);
+    return undefined;
+  });
+
+  if (recorded?.created) {
+    console.warn(
+      `[campaign-reconcile] org ${orgId} campaign ${campaignObjectId}: properties.deadline is unreadable (${detail}) — the deadline is INERT and every target fans out normally; decision ${recorded.decision.id}`
+    );
+  }
 }
 
 /** One org's campaign-reconciliation pass — called from `coordination/reconcile.ts`'s
@@ -483,8 +1190,28 @@ export async function reconcileCampaignsOrgTick(
   orgId: string,
   host: PluginHost,
   sandbox: CelSandbox,
-  selfDomainId: TrustDomainId
+  selfDomainId: TrustDomainId,
+  /**
+   * M25.6a — THE TICK'S CLOCK SEAM.
+   *
+   * RESOLVED ONCE, HERE, FOR THE WHOLE BATCH, and threaded into every campaign this pass examines.
+   * The batch is `LIMIT 25` and each campaign's reconciliation is several round trips, so a pass can
+   * easily span tens of milliseconds; two campaigns sharing one deadline instant that fell inside
+   * that span would disagree about whether it had passed, and each would write a permanent record
+   * asserting its own answer. One reading per tick makes the batch internally consistent.
+   *
+   * OPTIONAL, and production passes nothing — the precedent is `watchdog.ts`'s `opts.now`. It exists
+   * because the alternative for a boundary test is a REAL SLEEP, which
+   * `test-support/integration-sleep-census.test.ts` is a CI gate against, and because a deadline
+   * test that could only be written by waiting could only ever be written for deadlines seconds
+   * away — never for the year-out deadline the feature is actually for.
+   *
+   * `reconcileOrgTick` is deliberately UNTOUCHED (proposal §4.2): it calls this with no `opts`, so
+   * the production path is byte-identical to a pre-M25.6a tick.
+   */
+  opts: { now?: Date } = {}
 ): Promise<void> {
+  const now = opts.now ?? new Date();
   // S10 SINGLE-WRITER, filtered IN THE SQL rather than skipped in the loop below — see
   // `campaign-repo.ts`'s doc comment for why, and `reconcile.ts`'s six `advance*` loops for the
   // change-side twin this deliberately matches in shape. A peer's campaign object DOES land here as
@@ -510,10 +1237,31 @@ export async function reconcileCampaignsOrgTick(
     // and single-writer-clean. Pinned by `foreign-origin-campaign.integration.test.ts`, whose
     // "SKIP, NOT DRIVE and SKIP, NOT PARK" case asserts the replica's `updated_at` never moves.
     if (campaignObject.originDomainId !== selfDomainId) continue;
-    try {
-      await reconcileOneCampaign(db, orgId, campaignObject, host, sandbox);
-    } catch (err) {
-      logCampaignError(orgId, campaignObject.id, "reconcile", err);
+
+    // MULTI-REPLICA SINGLE-FLIGHT (`campaign-coordination-lock.ts` — read its docblock for the
+    // confirmed failure). This whole file had ZERO advisory-lock coverage of the read ->
+    // `compileAndPersistCampaignPlan` -> `updateObject` sequence inside `reconcileOneCampaign`,
+    // while the byte-for-byte identical property on the change side has been locked since M8
+    // (`change-coordination-lock.ts` + `reconcile.ts`'s call sites). The chart default is `worker
+    // replicaCount=2`, so two overlapping ticks reaching the same campaign is the ordinary case,
+    // not an exotic one — and unlike the change side there is no unique constraint and no
+    // `FOR UPDATE`-guarded transition anywhere in the sequence to catch the loser, so BOTH
+    // committed a full duplicate plan silently.
+    //
+    // ACQUIRED HERE, BEFORE `reconcileOneCampaign` IS ENTERED, so a loser never compiles a plan,
+    // never evaluates the wave gate, and never fans out a member Change. It backs off immediately
+    // and retries on a later tick, exactly like `triggerWaveTarget` backing off on a failed
+    // trigger claim. The fresh re-reads that make "the winner already did it" a clean no-op rather
+    // than a failure live at the top of `reconcileOneCampaign`, still under this lock.
+    const lock = await tryAcquireCampaignCoordinationLock(db, campaignObject.id);
+    if (lock) {
+      try {
+        await reconcileOneCampaign(db, orgId, campaignObject, host, sandbox, selfDomainId, now);
+      } catch (err) {
+        logCampaignError(orgId, campaignObject.id, "reconcile", err);
+      } finally {
+        await lock.release();
+      }
     }
     // ROUND-ROBIN BUMP — the FOURTH instance of the starvation class, found by censusing the
     // PROPERTY ("a batch-limited, `updated_at`-ordered candidate loop that can re-serve a row
@@ -531,6 +1279,15 @@ export async function reconcileCampaignsOrgTick(
     // Bumped unconditionally, for every campaign examined, because the requirement is "took its
     // turn", not "made progress". Unlike the change-side loops there is no cheap in-loop signal for
     // which of the two happened, and bumping both is correct for fairness either way.
+    //
+    // "UNCONDITIONALLY" ALSO SURVIVES THE ADVISORY LOCK ADDED ABOVE, and that placement is
+    // deliberate rather than incidental. A tick that FAILS to acquire the lock has examined this
+    // campaign and written nothing — which is this exact property, in a loop that really is
+    // `ORDER BY objects.updated_at ASC LIMIT 25`. Gating the bump on holding the lock would make
+    // the lock-miss path a fresh re-serve-without-writing path: instance 4 of the starvation class,
+    // reopened by the fix for a different bug. The bump is legal on this path for the reason the
+    // S10 skip's is not — the row is locally originated (filtered by the candidate query AND the
+    // guard above), so this is a fairness write on our own row, not a write to a replica.
     //
     // "UNCONDITIONALLY" NOW MEANS "for every campaign THIS DOMAIN OWNS". The candidate query filters
     // foreign-origin campaigns out and the S10 guard above `continue`s before reaching here, so this

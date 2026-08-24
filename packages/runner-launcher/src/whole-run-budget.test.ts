@@ -216,9 +216,30 @@ describe("M23.1e HIGH-1: `timeoutMs` bounds the RUN, not each execFile of it", (
       );
     }
     // And it really is the SPENT time that came off, not an arbitrary decrement.
-    expect(timeouts[1]!).toBeLessThanOrEqual(5_000 - 150);
-    expect(timeouts[2]!).toBeLessThanOrEqual(5_000 - 300);
-    expect(timeouts[3]!).toBeLessThanOrEqual(5_000 - 450);
+    //
+    // THE PER-STEP MILLISECOND IS THE CLOCK DISAGREEMENT THIS PACKAGE HAS ALREADY MEASURED AND
+    // WRITTEN DOWN — not a fudge factor bolted on to make a red test green. `RunDeadline` reads
+    // `Date.now()`; each fake step here completes on a libuv timer; the two clocks disagree by up
+    // to a millisecond, so `setTimeout(150)` can hand control back with `Date.now()` having
+    // advanced only 149. `index.ts`'s `isExhausted()` docblock records exactly this mechanism,
+    // measured on three OTHER arms of this same file — "3 runs in 8, a different arm each time,
+    // which is the signature of a boundary the process cannot land on rather than of a test that
+    // is wrong". That fix hardened the production refusal and left this arm's arithmetic still
+    // assuming a step always spends at least its NOMINAL duration. CI then caught it at exactly
+    // one millisecond: `expected 4851 to be less than or equal to 4850`.
+    //
+    // IT ACCUMULATES, so the allowance is per-step rather than a single constant: step N has N
+    // completed sleeps behind it and can therefore under-report by up to N ms.
+    //
+    // AND IT STAYS NON-VACUOUS BY TWO ORDERS OF MAGNITUDE. The hypothesis these three lines exist
+    // to refute is "the budget was decremented by an arbitrary constant rather than by the time
+    // actually spent". A fixed per-step decrement would leave `timeouts[1]` up around 4990 against
+    // a bound of 4851 — a ~140ms gap. Three milliseconds of clock slop does not reach across it,
+    // so every one of these lines still fails against the defect it was written for.
+    const CLOCK_SLOP_MS = 1; // per completed step; see above
+    expect(timeouts[1]!).toBeLessThanOrEqual(5_000 - 150 + 1 * CLOCK_SLOP_MS);
+    expect(timeouts[2]!).toBeLessThanOrEqual(5_000 - 300 + 2 * CLOCK_SLOP_MS);
+    expect(timeouts[3]!).toBeLessThanOrEqual(5_000 - 450 + 3 * CLOCK_SLOP_MS);
   });
 
   it("A STEP REACHED WITH THE BUDGET GONE IS REFUSED BEFORE IT IS ISSUED, naming the deadline", async () => {

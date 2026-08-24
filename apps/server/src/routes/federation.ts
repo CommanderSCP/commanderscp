@@ -29,8 +29,10 @@ import {
   UpdateFederationPeerRequestSchema,
   UpdateOutpostConfigRequestSchema,
   PromotionBundleSchema,
+  RelayBuildListResponseSchema,
   RelayBuildRequestSchema,
   RelayBuildResponseSchema,
+  RelayBuildStatusSchema,
   RelayImportRequestSchema,
   RelayImportResponseSchema,
   SyncBundleSchema
@@ -101,7 +103,7 @@ import {
 import { wakeFederationSyncNow } from "../federation/federation-sync.js";
 import { inboxLoopEnabled, wakeInboxNow } from "../federation/inbox-loop.js";
 import { autoRelayEnabled, wakeAutoRelayNow } from "../federation/auto-relay.js";
-import { reopenRelayBuild } from "../federation/relay-builds-repo.js";
+import { listRelayBuilds, reopenRelayBuild } from "../federation/relay-builds-repo.js";
 import { getChangeRow } from "../coordination/changes-repo.js";
 import { pokeRateLimiter } from "../federation/poke-rate-limit.js";
 import { recordPokeWake } from "../federation/poke-metrics.js";
@@ -170,6 +172,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           name: z.string(),
           role: FederationRoleSchema
         }),
+        400: ProblemSchema,
         401: ProblemSchema,
         403: ProblemSchema
       }
@@ -177,7 +180,8 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     config: {
       openapi: {
         operationId: "initFederation",
-        summary: "Designate this domain's federation role (commander|outpost|retrans)",
+        summary:
+          "Designate this domain's federation role (commander|outpost; retrans only on a deployment that declares SCP_FEDERATION_ROLE=retrans)",
         tags: ["federation"]
       }
     },
@@ -190,6 +194,25 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           permission: "federation:write",
           scopeObjectId: auth.orgId
         });
+        // THE RETRANS DOOR (owner decision 2026-08-24). An org declared `retrans` activates relay
+        // machinery (inbox loop, auto-relay obligations) and flips that org's dependencyManagement
+        // to `managedHere: false` — correct at a CDS boundary, a stray config anywhere else. The
+        // deployment is the arbiter: a real retrans box declares `SCP_FEDERATION_ROLE=retrans` at
+        // install time (which is also what withholds its SPA — retrans-no-spa.integration.test.ts),
+        // so an org-level retrans declaration on any OTHER deployment is refused here, at the sole
+        // write door for `federation_self.role` (initFederationSelf has exactly this one non-test
+        // caller). Sentence-only 400, no decision_id — a door-level refusal, not an engine verdict.
+        // The wire enum deliberately still carries "retrans" (narrowing it is an oasdiff break, and
+        // on a retrans-profile deployment this same route accepts it).
+        if (request.body.role === "retrans" && deps.config.federationRole !== "retrans") {
+          throw badRequest(
+            `an org may be declared 'retrans' only on a deployment that itself declares ` +
+              `SCP_FEDERATION_ROLE=retrans (this deployment: '${deps.config.federationRole}'). ` +
+              `A retrans is a CDS-boundary profile driven via CLI/API; declaring it here would ` +
+              `idle relay machinery on a non-boundary box and disable this org's dependency ` +
+              `management. Set the deployment profile first, or choose commander|outpost`
+          );
+        }
         return initFederationSelf(tx, {
           orgId: auth.orgId,
           name: request.body.name,
@@ -979,6 +1002,63 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         throw conflict(outcome.reason, { decisionId: outcome.decisionId });
       }
       reply.status(200).send(outcome);
+    }
+  });
+
+  // M13.1b — the AUTO-RELAY BUILD LEDGER's OPERATOR READ SURFACE (owner ask): an operator on the
+  // retrans box (CLI/API only — a retrans never serves the SPA, M16.3 P3 owner decision) can see
+  // queue depth and exhausted rows without DB surgery. Simple `authorize`-in-its-own-tx shape,
+  // like GET /federation/status's own permission gate: this handler has no out-of-tx work (no
+  // cosign resolution, no subprocess), so there is no reason to split the transaction the way
+  // /status and the export/relay routes must.
+  //
+  // ROLE-AGNOSTIC BY CONSTRUCTION (see relay-builds-repo.ts's `listRelayBuilds` doc): the ledger is
+  // populated only on a `role: retrans` instance (seeded at promotion import there); on any other
+  // role the table is honestly empty, so this route never 409s on role — an empty `items` array is
+  // the truth, matching every other read surface in this codebase.
+  typed.route({
+    method: "GET",
+    url: "/api/v1/federation/relay-builds",
+    schema: {
+      // No pagination cursor: this is a bounded TRIAGE read (queue depth + exhausted rows), not
+      // enumeration — see RelayBuildListResponseSchema's doc for the `{ items }` shape choice. No
+      // existing route bounds a plain (non-cursor) `limit`, so the default/cap here are this
+      // route's own choice, documented rather than inherited: 100 keeps the common "show me what's
+      // stuck" call cheap, 500 is a generous but finite ceiling against an unbounded scan.
+      querystring: z.object({
+        status: RelayBuildStatusSchema.optional(),
+        limit: z.coerce.number().int().min(1).max(500).default(100)
+      }),
+      response: {
+        200: RelayBuildListResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "listFederationRelayBuilds",
+        summary:
+          "Operator triage: the auto-relay build ledger (queue depth, exhausted rows) — populated on role:retrans instances, honestly empty elsewhere",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const items = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:read",
+          scopeObjectId: auth.orgId
+        });
+        return listRelayBuilds(tx, auth.orgId, {
+          ...(request.query.status !== undefined ? { status: request.query.status } : {}),
+          limit: request.query.limit
+        });
+      });
+      reply.status(200).send({ items });
     }
   });
 

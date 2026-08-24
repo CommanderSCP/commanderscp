@@ -14,6 +14,7 @@ import { startInternalReleaseLoop } from "./dependencies/internal-release-loop.j
 import { startInventoryIngestionLoop } from "./dependencies/inventory-ingestion-loop.js";
 import { startBumpDispatchLoop } from "./dependencies/bump-dispatch.js";
 import { startBumpGateLoop } from "./dependencies/bump-gate.js";
+import { startBumpFreezeRedriveLoop } from "./dependencies/bump-freeze-redrive.js";
 
 /**
  * ================================================================================================
@@ -205,6 +206,21 @@ export const BACKGROUND_LOOPS: readonly BackgroundLoop[] = [
         sandbox: ctx.sandbox,
         config: ctx.config
       })
+  },
+  {
+    // M25.8b the freeze re-drive (owner decision D8) — THE PRODUCER OF "THE NEXT ATTEMPT" the
+    // auto-merge gate's `frozen` refusal promises. That refusal's own Decision told the operator the
+    // pull request would merge once the window closed, and nothing scheduled such an attempt: the
+    // only producer of `dependency-bump-gate` jobs is a PROVIDER WEBHOOK correlated to the bump's
+    // branch, and a freeze expiring, being lifted or being shortened touches no repository. So a
+    // bump refused during a freeze was stranded for ever, silently, with the latest Decision
+    // asserting the opposite. This re-asks `checkBumpMergeFreeze` once a minute for exactly the
+    // bumps that refusal named and re-enqueues the ones nothing covers any more — commander-only
+    // under `bumpDispatchRoleGuard`, the same guard the gate above consults, because a refused gate
+    // loop never creates the queue this one sends to.
+    name: "bump freeze redrive",
+    loop: startBumpFreezeRedriveLoop,
+    start: (ctx) => startBumpFreezeRedriveLoop(ctx.boss, ctx.db, ctx.config)
   }
 ];
 

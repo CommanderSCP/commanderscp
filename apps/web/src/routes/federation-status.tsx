@@ -249,7 +249,7 @@ export function FederationStatusPage(): React.JSX.Element {
 function FederationInitForm(): React.JSX.Element {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
-  const [role, setRole] = useState<"commander" | "outpost" | "retrans">("commander");
+  const [role, setRole] = useState<"commander" | "outpost">("commander");
   const initMutation = useMutation({
     mutationFn: () => client.federation.init({ name: name.trim(), role }),
     onSuccess: async () => {
@@ -288,7 +288,7 @@ function FederationInitForm(): React.JSX.Element {
           <label htmlFor="federation-init-role" className="text-xs font-medium text-slate-600">
             Role
           </label>
-          {/* Native select, deliberately: three fixed options and the ui Select is a heavier
+          {/* Native select, deliberately: two fixed options and the ui Select is a heavier
               Radix surface than this one-shot form warrants. */}
           <select
             id="federation-init-role"
@@ -299,13 +299,27 @@ function FederationInitForm(): React.JSX.Element {
           >
             <option value="commander">commander</option>
             <option value="outpost">outpost</option>
-            <option value="retrans">retrans</option>
           </select>
         </div>
         <Button type="submit" disabled={name.trim().length === 0 || initMutation.isPending}>
           Initialize
         </Button>
       </form>
+      {/* NO `retrans` OPTION — owner decision 2026-08-24, reversing the earlier API-parity
+          framing. A real retrans deployment never serves this UI (`app.ts` gates SPA registration
+          on `federationRole !== "retrans"` — M16.3 P3, `retrans-no-spa.integration.test.ts`), so on
+          any instance where this form can render, declaring an org retrans is by construction a
+          stray config: it idles relay machinery on a non-boundary box and flips the org's
+          dependencyManagement to `managedHere: false`. The server now refuses it at the init door
+          unless the deployment itself declares `SCP_FEDERATION_ROLE=retrans`
+          (`init-role-door.integration.test.ts`), and this form stops offering what every instance
+          that can show it would refuse. The note below keeps the third role discoverable rather
+          than silently absent (§ structural absence ≠ hidden capability). */}
+      <p className="text-xs text-slate-500" data-testid="federation-init-retrans-note">
+        The third role, <code>retrans</code>, is declared on the CDS-boundary deployment itself (
+        <code>SCP_FEDERATION_ROLE=retrans</code>, then <code>scp federation init</code> against it)
+        — that deployment serves no UI, so it is not offered here.
+      </p>
       {initMutation.isError && (
         <Notice tone="danger">
           {initMutation.error instanceof Error

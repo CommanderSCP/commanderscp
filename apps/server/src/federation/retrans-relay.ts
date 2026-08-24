@@ -900,7 +900,9 @@ export async function buildRelayTarball(
         direction: "export",
         kind: "promotion",
         status: "submitted",
-        checksum: null
+        checksum: null,
+        // The RETRANS BUILD hop's own onward submit — the byte leg, not the metadata bundle.
+        channel: "bytes"
       });
     }
     return decision.id;
@@ -1371,7 +1373,9 @@ export async function importRelayTarball(
         direction: "import",
         kind: "promotion",
         status: "confirmed",
-        checksum: tarballSha256
+        checksum: tarballSha256,
+        // The DESTINATION relay-tarball import — the byte leg landing, not a metadata bundle.
+        channel: "bytes"
       });
     }
     return decision.id;
@@ -1588,7 +1592,9 @@ export async function validateAndForwardRelayTarball(
         direction: "import",
         kind: "promotion",
         status: "confirmed",
-        checksum: tarballSha256
+        checksum: tarballSha256,
+        // The VALIDATE-AND-FORWARD hop's inbound confirm — the byte leg, not a metadata bundle.
+        channel: "bytes"
       });
     }
     // M13.1b — TERMINATE this change's auto-relay obligation. Both boundary nodes are `role:
@@ -1616,7 +1622,9 @@ export async function validateAndForwardRelayTarball(
         direction: "export",
         kind: "promotion",
         status: "submitted",
-        checksum: tarballSha256
+        checksum: tarballSha256,
+        // The VALIDATE-AND-FORWARD hop's onward submit — the byte leg, not a metadata bundle.
+        channel: "bytes"
       });
     }
     return decision.id;

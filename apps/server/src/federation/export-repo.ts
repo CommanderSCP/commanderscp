@@ -135,7 +135,9 @@ export async function exportSyncBundle(
     status: "created",
     sinceSequence: since,
     throughSequence,
-    checksum
+    checksum,
+    // An ordinary `.scpbundle` sync export — the metadata leg, never bytes.
+    channel: "metadata"
   });
 
   // DIVERGENCE RAIL 4 (§7.2): sign this domain's own journal tail and attach it OUTSIDE the bundle

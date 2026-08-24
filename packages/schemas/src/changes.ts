@@ -564,6 +564,13 @@ export const BoundaryTransferHopSchema = z.object({
   peerDomainId: z.string().uuid(),
   /** The bundle's Ed25519 checksum — the value that joins this hop to the change (M16.1 I1). */
   checksum: z.string().nullable(),
+  /** drizzle/0087 — WHICH LEG this hop was: `'metadata'` (an ordinary `.scpbundle` sync/promotion
+   *  export or import) or `'bytes'` (a retrans byte-relay hop). Threaded straight from the
+   *  `bundle_transfers` row's own `channel` column (`coordination/boundary-segment.ts`) — this is
+   *  what finally lets a UI tell a retrans's byte-relay hop apart from an ordinary metadata
+   *  promotion transfer of the same `kind`/`direction`/`status`. Optional/additive; `null` = not
+   *  recorded (pre-0087 row, or a writer that genuinely could not determine it). */
+  channel: z.enum(["metadata", "bytes"]).nullable().optional(),
   observedAt: z.string().datetime()
 });
 export type BoundaryTransferHop = z.infer<typeof BoundaryTransferHopSchema>;

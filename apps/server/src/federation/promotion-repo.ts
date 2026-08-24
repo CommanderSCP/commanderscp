@@ -513,7 +513,10 @@ export async function exportPromotionBundle(
       direction: "export",
       kind: "promotion",
       status: "created",
-      checksum
+      checksum,
+      // An ordinary `.scpbundle` promotion export — the metadata leg, never bytes (the byte hop, if
+      // any, is a separate later `buildRelayTarball` transfer at a retrans).
+      channel: "metadata"
     });
 
     // M16.1 (I1) — the per-change join. Written in the SAME tx as the ledger row it points at, so
@@ -1051,7 +1054,9 @@ async function applyPromotionImport(
     direction: "import",
     kind: "promotion",
     status: "confirmed",
-    checksum: bundle.checksum
+    checksum: bundle.checksum,
+    // An ordinary `.scpbundle` promotion import — the metadata leg, never bytes.
+    channel: "metadata"
   });
 
   // M13.1b — THE CAUSAL SEED for the unattended onward BYTE hop (proposal §13.1: "when a promotion

@@ -1,5 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
-import { Buffer } from "node:buffer";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -17,6 +15,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { createPool } from "../db/client.js";
 import { authorize } from "../authz/resolve.js";
+import { operatorTokenMatches } from "./operator-db.js";
 import { forbidden, notFound } from "../errors.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import {
@@ -75,19 +74,6 @@ const ObjectEnforcementParamSchema = z.object({
  *  here because this route was its first home and `GET /decisions?kind=…` consumers import it from
  *  the surface they read about. */
 export { GOVERNANCE_MOVE_DECISION_KIND } from "../governance/move-rung-write.js";
-
-/** Constant-time comparison of the presented operator token against the configured one. The fifth
- *  copy of this helper (`instance-scan-floors.ts`, `scan-db.ts`, `scanner-assignments.ts`,
- *  `dependency-subscriptions.ts` carry the other four) — duplicated rather than extracted because
- *  that is the existing convention for it here, and a shared-secret comparison is exactly the code
- *  a reviewer should be able to read in full at the door it guards. */
-function operatorTokenMatches(presented: unknown, configured: string | undefined): boolean {
-  if (!configured || typeof presented !== "string" || presented.length === 0) return false;
-  const a = Buffer.from(presented, "utf8");
-  const b = Buffer.from(configured, "utf8");
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
 
 function requireOperator(deps: AppDeps, request: FastifyRequest): void {
   if (!deps.config.operatorToken) {
