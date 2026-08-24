@@ -1,0 +1,87 @@
+# TWO-MEMBER-CLUSTER topology (multi-region-instance-resilience.md §7.5): ONE Postgres primary, TWO
+# compute member clusters (member-a, member-b) each SCP_ROLE=all, sharing that one database and the
+# SAME vault secrets. This is the member-cluster model of §5 in miniature — it exercises what a split
+# install has that the single-process eval stack cannot:
+#   * SSE fan-out ACROSS processes (each member runs its own outbox→NOTIFY→sse-bridge, §7.1.1);
+#   * competing workers on one outbox (FOR UPDATE SKIP LOCKED — no double-relay, no duplicate plans);
+#   * D6 shared-secret requirement (B3/B4): both members MUST use the identical SCP_SECRETS_MASTER_KEY
+#     and SCP_COOKIE_SECRET, or the second member holds every vault row undecryptable / logs everyone
+#     out on failover — so they are set to ONE shared value here, on purpose;
+#   * §7.4 version heartbeats: distinct SCP_CLUSTER_ID per member (member-a, member-b).
+#
+# Exactly ONE member runs migrations (member-a); member-b sets SCP_SKIP_MIGRATIONS=true and waits for
+# member-a to be healthy — the §7.4 "exactly one member cluster runs the migrations Job" rule.
+#
+# Bring up:  docker compose -f docker-compose.two-member.yml up --build
+#   member-a  -> http://localhost:8081     member-b -> http://localhost:8082
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: scp
+      POSTGRES_PASSWORD: scp
+      POSTGRES_DB: scp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scp -d scp"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - scp-two-member-data:/var/lib/postgresql/data
+
+  member-a:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        - SKOPEO_IMAGE
+        - COSIGN_IMAGE
+    environment:
+      SCP_ROLE: all
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: postgres://scp:scp@postgres:5432/scp
+      SCP_SEED_DEMO: "false"
+      # A production posture with EXPLICIT SHARED secrets — the faithful multi-member contract (D6).
+      SCP_DEPLOYMENT_MODE: production
+      SCP_SECRETS_MASTER_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      SCP_COOKIE_SECRET: "two-member-shared-cookie-secret"
+      SCP_CLUSTER_ID: member-a
+      SCP_APP_VERSION: two-member-dev
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  member-b:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        - SKOPEO_IMAGE
+        - COSIGN_IMAGE
+    environment:
+      SCP_ROLE: all
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: postgres://scp:scp@postgres:5432/scp
+      SCP_SEED_DEMO: "false"
+      # §7.4: only member-a runs migrations; member-b connects as the already-provisioned scp_app.
+      SCP_SKIP_MIGRATIONS: "true"
+      SCP_DEPLOYMENT_MODE: production
+      # IDENTICAL to member-a — a DIFFERENT key here is exactly the B3 failure this stack demonstrates.
+      SCP_SECRETS_MASTER_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      SCP_COOKIE_SECRET: "two-member-shared-cookie-secret"
+      SCP_CLUSTER_ID: member-b
+      SCP_APP_VERSION: two-member-dev
+    ports:
+      - "8082:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      member-a:
+        condition: service_started
+
+volumes:
+  scp-two-member-data:

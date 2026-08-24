@@ -21,12 +21,22 @@ export function createPool(
   connectionString: string,
   options?: Partial<pg.PoolConfig>
 ): pg.Pool {
-  return new pg.Pool({
+  const pool = new pg.Pool({
     connectionString,
     connectionTimeoutMillis: 5000,
     keepAlive: true,
     ...options
   });
+  // FAILOVER SURVIVAL (§7.5 failover drill found this): a Postgres failover terminates every IDLE
+  // pooled connection at once, and `pg.Pool` emits `'error'` for each. With NO listener attached,
+  // Node treats it as an unhandledError and CRASHES the process — so a failover, the exact event this
+  // milestone exists to survive, would take down every pod on the way back up. Log and swallow: the
+  // pool discards the dead connection and re-establishes a fresh one on the next checkout (the
+  // `connectionTimeoutMillis` above makes that checkout fast-fail onto the promoted primary, §4-A6).
+  pool.on("error", (err) => {
+    console.error("[db] idle pool connection error — discarded; pool reconnects on next use", err);
+  });
+  return pool;
 }
 
 export function createDb(pool: pg.Pool) {
