@@ -163,9 +163,16 @@ async function main(): Promise<void> {
   // Cheap either way: one more reconnecting LISTEN connection (events/listen-client.ts) per
   // process, idle until an outbox row commits.
   // ---------------------------------------------------------------------------------------------
-  const sseBridge = startSseBridge(pool, config.runtimeDatabaseUrl);
+  // A SMALL pool dedicated to the SSE bridge, NOT the request-serving `pool` (review finding
+  // SEC-1): the bridge's outbox fetches are driven by a Postgres NOTIFY channel any DB login can
+  // write to, so their load must be isolated from request handlers (and, on a worker, from the
+  // relay). `max: 2` caps the blast radius of a NOTIFY flood to this pool alone — starving it only
+  // degrades SSE freshness (recovered by resync), never coordination or request serving.
+  const sseBridgePool = createPool(config.runtimeDatabaseUrl, { max: 2 });
+  const sseBridge = startSseBridge(sseBridgePool, config.runtimeDatabaseUrl);
   app.addHook("onClose", async () => {
     await sseBridge.stop();
+    await sseBridgePool.end();
   });
 
   // Outbox relay + pg-boss worker skeleton (DESIGN.md §8) — only the roles that own background

@@ -170,4 +170,59 @@ describe("B9: provisionRuntimeRole / provisionPgBossRole password-clobber guard"
     await expect(canConnectAs(role, "boss-pw-a")).resolves.toBe(true);
     await expect(canConnectAs(role, "boss-pw-b")).resolves.toBe(false);
   });
+
+  it("(PV-1, §7.5 credential-clobber) two clusters CONCURRENTLY provisioning a NOLOGIN role with DIFFERENT passwords: exactly one wins, the other is forced onto verify-or-refuse — never a silent clobber", async () => {
+    // The exact bootstrap race B9 must survive: two member clusters' migration Jobs run against the
+    // same shared cluster while the role is still the migration-created NOLOGIN shell. Without the
+    // per-role advisory lock (review finding PV-1), both read `rolcanlogin = false`, both take the
+    // "first provisioning" branch, and both blindly ALTER — the later commit silently clobbers the
+    // earlier's credential with no error. The lock serializes read-decide-write, so the second
+    // caller re-reads AFTER the first committed LOGIN and hits the verify-or-refuse path instead.
+    //
+    // Iterated over fresh roles: the unlocked outcome is timing-dependent (sometimes the second
+    // SELECT happens to land after the first COMMIT and refuses anyway), so a single shot could pass
+    // even against the bug. Repeating makes the without-lock double-clobber reliably surface — every
+    // iteration must show the deterministic one-wins-one-refuses shape the lock guarantees.
+    const ITERATIONS = 8;
+    for (let i = 0; i < ITERATIONS; i++) {
+      const raceRole = `scp_provision_race_${randomUUID().replace(/-/g, "_")}`;
+      const client = await adminPool.connect();
+      try {
+        await client.query(
+          `CREATE ROLE ${client.escapeIdentifier(raceRole)} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`
+        );
+      } finally {
+        client.release();
+      }
+
+      try {
+        const results = await Promise.allSettled([
+          provisionRuntimeRole(adminPool, raceRole, "cluster-a-pw"),
+          provisionRuntimeRole(adminPool, raceRole, "cluster-b-pw")
+        ]);
+
+        const fulfilled = results.filter((r) => r.status === "fulfilled");
+        const rejected = results.filter(
+          (r): r is PromiseRejectedResult => r.status === "rejected"
+        );
+        // One blind winner; the loser MUST have been forced onto verify-or-refuse, not its own blind
+        // ALTER. (Without the lock, BOTH fulfill — the silent clobber — which fails here.)
+        expect(fulfilled, `iteration ${i}: exactly one provisioning should win`).toHaveLength(1);
+        expect(rejected, `iteration ${i}: the loser must refuse, not clobber`).toHaveLength(1);
+        expect(String(rejected[0]!.reason)).toMatch(/clobbered/i);
+
+        // Coherent outcome: EXACTLY one password is live (the winner's), never both/neither.
+        const aLive = await canConnectAs(raceRole, "cluster-a-pw");
+        const bLive = await canConnectAs(raceRole, "cluster-b-pw");
+        expect(aLive, `iteration ${i}: exactly one password must be live`).not.toBe(bLive);
+      } finally {
+        const cleanup = await adminPool.connect();
+        try {
+          await cleanup.query(`DROP ROLE IF EXISTS ${cleanup.escapeIdentifier(raceRole)}`);
+        } finally {
+          cleanup.release();
+        }
+      }
+    }
+  }, 60_000);
 });

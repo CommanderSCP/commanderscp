@@ -113,7 +113,7 @@ export function useEventStream(): void {
       try {
         for await (const event of client.events.stream({
           signal: controller.signal,
-          onOpen: () => undefined // MUTATION: dropped onOpen: resync
+          onOpen: resync
         })) {
           if (event.type === RESYNC_EVENT_TYPE) {
             resync();

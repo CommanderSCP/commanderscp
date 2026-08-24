@@ -88,61 +88,81 @@ async function passwordMatchesLiveRole(
  *     which case this falls back to the old unconditional ALTER for a deliberate,
  *     operator-initiated rotation.
  */
+/** Namespace classid for this module's per-role provisioning advisory lock, kept distinct from
+ *  every other `pg_advisory_*` key in the codebase (db-clone.ts's `0x5c70c10e`, the per-org audit/
+ *  journal `hashtext(orgId)` locks, coordination/advisory-lock.ts's change keys). Paired with
+ *  `hashtext(role)` as the second int, so the lock is per-role. */
+const PROVISION_ADVISORY_CLASSID = 0x5c_70_50_72; // "SCP Pr"(ovision)
+
 async function ensureManagedRolePassword(
   adminPool: pg.Pool,
   role: string,
   password: string,
   allowPasswordReset: boolean
 ): Promise<void> {
-  const existsResult = await adminPool.query<{ rolcanlogin: boolean }>(
-    "SELECT rolcanlogin FROM pg_roles WHERE rolname = $1",
-    [role]
-  );
-  const existingRow = existsResult.rows[0];
-
-  if (!existingRow) {
-    const client = await adminPool.connect();
-    try {
-      const roleIdent = client.escapeIdentifier(role);
-      const passwordLit = client.escapeLiteral(password);
-      await client.query(`CREATE ROLE ${roleIdent} WITH LOGIN PASSWORD ${passwordLit}`);
-    } finally {
-      client.release();
-    }
-    return;
-  }
-
-  if (!existingRow.rolcanlogin) {
-    const client = await adminPool.connect();
-    try {
-      const roleIdent = client.escapeIdentifier(role);
-      const passwordLit = client.escapeLiteral(password);
-      await client.query(`ALTER ROLE ${roleIdent} WITH LOGIN PASSWORD ${passwordLit}`);
-    } finally {
-      client.release();
-    }
-    return;
-  }
-
-  if (await passwordMatchesLiveRole(adminPool, role, password)) {
-    return; // Already correct — no ALTER, nothing to clobber.
-  }
-
-  if (!allowPasswordReset) {
-    throw new Error(
-      `[scpd] refusing to reset the password for role "${role}": a connection using the ` +
-        "configured password failed authentication, which means this role's LIVE password on the " +
-        "shared database differs from what THIS cluster is configured with — another member " +
-        "cluster's credentials would be clobbered. Set postgres.existingSecret identically across " +
-        "member clusters, or set SCP_PROVISION_ALLOW_PASSWORD_RESET=1 to rotate deliberately."
-    );
-  }
-
+  // Serialize the WHOLE read-decide-write per role (review finding PV-1). Without this, two member
+  // clusters' migration Jobs bootstrapping concurrently both read the role while it is still
+  // NOLOGIN (the migration-created shell), both take the "first provisioning" branch, and both
+  // blindly `ALTER ROLE ... PASSWORD` — the second silently clobbers the first's credentials, the
+  // exact failure B9 exists to prevent, just at first boot. A transaction-level advisory lock
+  // (auto-released on COMMIT/ROLLBACK) makes the second caller wait, then re-read AFTER the first
+  // committed LOGIN — so it sees `rolcanlogin = true` and falls into the verify-or-refuse branch
+  // instead of a blind ALTER. The whole sequence therefore runs on ONE held connection.
   const client = await adminPool.connect();
   try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [
+      PROVISION_ADVISORY_CLASSID,
+      role
+    ]);
+
+    const existsResult = await client.query<{ rolcanlogin: boolean }>(
+      "SELECT rolcanlogin FROM pg_roles WHERE rolname = $1",
+      [role]
+    );
+    const existingRow = existsResult.rows[0];
     const roleIdent = client.escapeIdentifier(role);
     const passwordLit = client.escapeLiteral(password);
+
+    if (!existingRow) {
+      await client.query(`CREATE ROLE ${roleIdent} WITH LOGIN PASSWORD ${passwordLit}`);
+      await client.query("COMMIT");
+      return;
+    }
+
+    if (!existingRow.rolcanlogin) {
+      // First provisioning of the migration-created NOLOGIN shell. Now serialized: a concurrent
+      // second caller blocks on the advisory lock above and, on re-read, sees `rolcanlogin = true`.
+      await client.query(`ALTER ROLE ${roleIdent} WITH LOGIN PASSWORD ${passwordLit}`);
+      await client.query("COMMIT");
+      return;
+    }
+
+    // Genuine re-provisioning: the role already has a LIVE password. Verify by actually connecting
+    // as it (never by comparing anything at rest). The probe uses its own separate connection; the
+    // advisory lock on THIS transaction's connection is held throughout, so a racing caller cannot
+    // slip a clobbering ALTER in between the verify and the decision below.
+    if (await passwordMatchesLiveRole(adminPool, role, password)) {
+      await client.query("COMMIT");
+      return; // Already correct — no ALTER, nothing to clobber.
+    }
+
+    if (!allowPasswordReset) {
+      await client.query("ROLLBACK");
+      throw new Error(
+        `[scpd] refusing to reset the password for role "${role}": a connection using the ` +
+          "configured password failed authentication, which means this role's LIVE password on the " +
+          "shared database differs from what THIS cluster is configured with — another member " +
+          "cluster's credentials would be clobbered. Set postgres.existingSecret identically across " +
+          "member clusters, or set SCP_PROVISION_ALLOW_PASSWORD_RESET=1 to rotate deliberately."
+      );
+    }
+
     await client.query(`ALTER ROLE ${roleIdent} WITH LOGIN PASSWORD ${passwordLit}`);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
   } finally {
     client.release();
   }

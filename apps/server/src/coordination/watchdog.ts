@@ -111,19 +111,34 @@ export async function runWatchdogSweep(
     );
 
     for (const candidate of stalled) {
-      const flag = await claimAndFlagStall(
-        db,
-        orgId,
-        state,
-        candidate.objectId,
-        candidate.stateEnteredAt,
-        now,
-        slaMs,
-        host,
-        masterKey,
-        opts.requestId
-      );
-      if (flag) flags.push(flag);
+      // Per-candidate isolation, exactly as every sibling loop in this diff does (reconcile's
+      // per-change try/catch, observe's per-instance, federation-sync's per-peer): a throw while
+      // claiming or writing ONE candidate's Decision/audit must not abort the remaining candidates
+      // or the outer per-state loop. Because a failed claim's `watchdog_flagged_at` was never
+      // committed (the whole claim tx rolled back), the row simply re-qualifies next tick — but
+      // WITHOUT this guard the exception escapes to the per-org catch and silently starves every
+      // later-ordered candidate and state for this org on every tick (review finding WD-1).
+      try {
+        const flag = await claimAndFlagStall(
+          db,
+          orgId,
+          state,
+          candidate.objectId,
+          candidate.stateEnteredAt,
+          now,
+          slaMs,
+          host,
+          masterKey,
+          opts.requestId
+        );
+        if (flag) flags.push(flag);
+      } catch (err) {
+        console.error(
+          `[watchdog] failed to claim/flag stalled change ${candidate.objectId} (state=${state}, ` +
+            `org=${orgId}) — skipping this candidate, it re-qualifies next tick`,
+          err
+        );
+      }
     }
   }
 

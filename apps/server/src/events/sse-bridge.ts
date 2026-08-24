@@ -13,6 +13,31 @@ const SSE_NOTIFY_CHANNEL = "scp_sse_events";
  *  the size of. `apps/web/src/lib/use-event-stream.ts` invalidates on this type. */
 export const SSE_RESYNC_EVENT_TYPE = "scp.sse.resync";
 
+/** RFC 4122 shape. Every legitimate pointer id is an `outbox.id` (a `uuid` column), so anything
+ *  that is not UUID-shaped cannot back a row and is rejected BEFORE it touches the pool — this
+ *  both denies a compromised DB login the cheapest amplification (a malformed id that would still
+ *  cost a full connect+BEGIN+SET ROLE+SELECT before failing on `22P02`, review finding SEC-1) and
+ *  removes the only untrusted string that ever reached a log line (CRLF log injection, SEC-3). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Ceiling on concurrently-in-flight outbox fetches (review finding SEC-1). NOTIFY is not
+ *  channel-access-controlled, so a compromised DB login can spam this channel; each frame would
+ *  otherwise start an unbounded `pool.connect()` fetch. Past this many in flight, further frames
+ *  are dropped — best-effort by ADR-0025's own contract, and a genuine miss is recovered by the
+ *  resync/cache-invalidation path, never by unbounded queueing. Comfortably above any legitimate
+ *  burst (only frames for a locally-subscribed org get this far). */
+const MAX_INFLIGHT_FETCHES = 512;
+
+/** Bounded set of ids already delivered by THIS process's bridge, newest-last (insertion order).
+ *  Blunts replay (review finding SEC-2): a compromised `scp_pgboss` login can read real event ids
+ *  out of `pgboss.job` and re-`NOTIFY` them to re-inject historical events into a live stream. The
+ *  relay emits each outbox row's id exactly once (it selects `WHERE processed_at IS NULL` and
+ *  stamps it in the same tx), so a legitimate event is never already in this set when it first
+ *  arrives — only a replay is. Coverage is bounded to the most recent `RECENT_DELIVERED_CAP` ids;
+ *  a replay of an id older than that window is not caught here (it is still bounded by the
+ *  activeOrgIds pre-filter, the UUID gate, and the isolated pool). */
+const RECENT_DELIVERED_CAP = 1024;
+
 interface OutboxRow {
   id: string;
   org_id: string;
@@ -23,15 +48,25 @@ interface OutboxRow {
   created_at: Date;
 }
 
-/** The NOTIFY payload is a POINTER (review finding F1, M26-BUILD-STATUS.md): only `id` is read,
- *  and only to look up the authoritative `outbox` row. Anything else in the payload — including
- *  the relay's `orgId` observability hint — is untrusted and never used for delivery, because
- *  NOTIFY is not channel-access-controlled: any DB login (even `scp_pgboss`, which has zero
- *  `outbox` grants by design) can inject arbitrary frames on this channel. */
-function extractPointerId(value: unknown): string | undefined {
+export interface NotifyPointer {
+  id: string;
+  /** Non-authoritative delivery-org HINT (review finding F1). Used ONLY to skip work for orgs with
+   *  no local subscriber; never used to route a published event — that comes from the fetched row. */
+  orgHint: string | undefined;
+}
+
+/** The NOTIFY payload is a POINTER (review finding F1, M26-BUILD-STATUS.md): only `id` is read as
+ *  authority, and only to look up the authoritative `outbox` row. `orgId` rides along as an
+ *  untrusted hint. Everything is validated here so nothing malformed reaches the pool or a log.
+ *  Exported for direct unit testing of the UUID gate (SEC-1 cheap-fetch leg / SEC-3 log injection). */
+export function parsePointer(value: unknown): NotifyPointer | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const id = (value as Record<string, unknown>).id;
-  return typeof id === "string" ? id : undefined;
+  const record = value as Record<string, unknown>;
+  const id = record.id;
+  if (typeof id !== "string" || !UUID_RE.test(id)) return undefined;
+  const orgId = record.orgId;
+  const orgHint = typeof orgId === "string" && UUID_RE.test(orgId) ? orgId : undefined;
+  return { id, orgHint };
 }
 
 /** A schema-valid `RelayedEvent` (ADR-0023's per-frame validation must pass unchanged) carrying no
@@ -98,6 +133,10 @@ export interface SseBridgeHandle {
  * every process that serves `GET /events/stream` — main.ts does, unconditionally, because
  * `app.listen()` is itself unconditional (every role serves the route; see main.ts's comment).
  *
+ * `pool` should be a SMALL pool dedicated to this bridge, not the request-serving pool (review
+ * finding SEC-1): NOTIFY is attacker-reachable, so the fetch load it drives must not be able to
+ * starve request handlers or the relay. main.ts wires a `max: 2` pool for exactly this.
+ *
  * Postgres NOTIFY is transactional (delivered on COMMIT, atomic with the relay's batch), so a
  * subscriber here sees exactly the events the relay actually committed, in commit order per
  * channel — but it is still best-effort with no replay (ADR-0025 D4): a NOTIFY delivered while
@@ -107,6 +146,20 @@ export interface SseBridgeHandle {
  * (apps/web/src/lib/use-event-stream.ts) is the actual catch-up mechanism, not this bridge.
  */
 export function startSseBridge(pool: pg.Pool, listenConnectionString: string): SseBridgeHandle {
+  // Tracks every in-flight handleNotification() so stop() can await them before the caller tears
+  // down the pool (review finding SSE-2 — mirrors outbox-relay.ts's `inFlight` discipline), and so
+  // a NOTIFY flood cannot start unbounded fetches (SEC-1). A frame arriving past the cap is dropped.
+  const inFlight = new Set<Promise<void>>();
+  const recentlyDelivered = new Set<string>();
+
+  function rememberDelivered(id: string): void {
+    recentlyDelivered.add(id);
+    if (recentlyDelivered.size > RECENT_DELIVERED_CAP) {
+      const oldest = recentlyDelivered.values().next().value;
+      if (oldest !== undefined) recentlyDelivered.delete(oldest);
+    }
+  }
+
   async function handleNotification(payload: string): Promise<void> {
     let parsed: unknown;
     try {
@@ -116,28 +169,55 @@ export function startSseBridge(pool: pg.Pool, listenConnectionString: string): S
       return;
     }
 
-    const id = extractPointerId(parsed);
-    if (id === undefined) {
-      console.error("[sse-bridge] NOTIFY payload carried no id — dropped");
+    const pointer = parsePointer(parsed);
+    if (!pointer) {
+      // No UUID id → cannot back an outbox row. Nothing attacker-controlled is logged (SEC-3).
+      console.error("[sse-bridge] NOTIFY payload carried no valid pointer id — dropped");
+      return;
+    }
+
+    // Replay gate (SEC-2): an id this process already delivered is dropped before any pool work.
+    if (recentlyDelivered.has(pointer.id)) return;
+
+    // Work gate (SEC-1): if the frame names an org with no locally-connected SSE client, there is
+    // nothing to deliver to on this process, so skip the fetch entirely. Safe against the no-replay
+    // contract: a client that connects to that org later resyncs via its own stream `onOpen`. The
+    // hint is untrusted, but using it ONLY to skip work cannot cause a wrong delivery — routing is
+    // still the fetched row's own org. A frame with no usable hint falls through to the fetch.
+    if (pointer.orgHint !== undefined && !sseHub.activeOrgIds().includes(pointer.orgHint)) {
       return;
     }
 
     try {
-      const event = await fetchOutboxEvent(pool, id);
+      const event = await fetchOutboxEvent(pool, pointer.id);
       if (!event) {
         // Either a forged pointer (no outbox row ever existed — the F1 attack, neutralized here by
         // simply having nothing to deliver) or, in principle, a row this process cannot see. No
-        // retry: ADR-0025's contract is "no replay" — the resync/cache-invalidation path is what
-        // recovers a genuine miss.
-        console.warn(`[sse-bridge] NOTIFY pointer ${id} resolves to no outbox row — dropped`);
+        // retry: ADR-0025's contract is "no replay" — the resync/cache-invalidation path recovers
+        // a genuine miss. `pointer.id` is UUID-validated, so this interpolation is injection-safe.
+        console.warn(`[sse-bridge] NOTIFY pointer ${pointer.id} resolves to no outbox row — dropped`);
         return;
       }
       // `event` is built exclusively from the fetched row: org routing, type, and body all come
       // from the authoritative outbox, never from the NOTIFY payload (F1).
+      rememberDelivered(pointer.id);
       sseHub.publish(event);
     } catch (err) {
-      console.error(`[sse-bridge] failed to fetch outbox row ${id}`, err);
+      console.error(`[sse-bridge] failed to fetch outbox row ${pointer.id}`, err);
     }
+  }
+
+  function dispatch(payload: string): void {
+    if (inFlight.size >= MAX_INFLIGHT_FETCHES) {
+      // Bounded backpressure under a NOTIFY flood (SEC-1). Dropping is contract-safe (no replay);
+      // a resync recovers any legitimate frame caught in the flood.
+      console.warn("[sse-bridge] in-flight fetch cap reached — dropping NOTIFY (best-effort)");
+      return;
+    }
+    const call = handleNotification(payload).finally(() => {
+      inFlight.delete(call);
+    });
+    inFlight.add(call);
   }
 
   const listenClient: ListenClientHandle = startReconnectingListenClient({
@@ -148,11 +228,13 @@ export function startSseBridge(pool: pg.Pool, listenConnectionString: string): S
       if (notification.channel !== SSE_NOTIFY_CHANNEL || notification.payload === undefined) {
         return;
       }
-      void handleNotification(notification.payload);
+      dispatch(notification.payload);
     },
     // Fires on the FIRST successful connection too. At boot `activeOrgIds()` is normally empty
     // (no client has connected yet), so this is a genuine no-op then; it starts doing real work
-    // only once a reconnection follows a gap that may have dropped a NOTIFY.
+    // only once a reconnection follows a gap that may have dropped a NOTIFY. The reconnect RATE is
+    // itself throttled by listen-client.ts's stability window (review finding SEC-5), so a flapping
+    // LISTEN connection cannot turn this into a high-frequency cache-invalidation storm.
     onReconnect: () => {
       for (const orgId of sseHub.activeOrgIds()) {
         sseHub.publish(makeResyncEvent(orgId));
@@ -163,6 +245,9 @@ export function startSseBridge(pool: pg.Pool, listenConnectionString: string): S
   return {
     async stop() {
       await listenClient.stop();
+      // Await any handleNotification() still mid-fetch so a caller that closes the pool right after
+      // stop() resolves cannot race a live query on it (SSE-2).
+      await Promise.allSettled([...inFlight]);
     }
   };
 }

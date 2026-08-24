@@ -30,6 +30,15 @@ export interface ReconnectingListenClientOptions {
   minBackoffMs?: number;
   /** Ceiling of the reconnect backoff. Default 5000ms. */
   maxBackoffMs?: number;
+  /**
+   * How long a connection must STAY up before the backoff is reset to its floor. Default 5000ms.
+   * Without this, a connection that dies immediately after every connect (an on-path attacker
+   * RST-ing the socket, review finding SEC-5) reset the backoff to the floor on each connect and
+   * reconnected every `minBackoffMs` — each reconnect firing `onReconnect`, which on the SSE bridge
+   * is a full unscoped cache-invalidation broadcast. Resetting only after the connection has proven
+   * stable makes a flapping connection back off toward `maxBackoffMs` instead.
+   */
+  stabilityWindowMs?: number;
   /** Injectable for tests. Production default constructs a real `pg.Client`. */
   createClient?: (connectionString: string) => pg.Client;
 }
@@ -67,6 +76,7 @@ export function startReconnectingListenClient(
     onError = (err) => console.error("[listen-client] error", err),
     minBackoffMs = 250,
     maxBackoffMs = 5_000,
+    stabilityWindowMs = 5_000,
     createClient = (cs) => new Client({ connectionString: cs })
   } = opts;
 
@@ -74,6 +84,10 @@ export function startReconnectingListenClient(
   let client: pg.Client | undefined;
   let backoffMs = minBackoffMs;
   let reconnectTimer: NodeJS.Timeout | undefined;
+  // Set on a successful connect; fires once the connection has stayed up `stabilityWindowMs` and
+  // resets the backoff to its floor. Cleared on disconnect BEFORE it fires, so a connection that
+  // dies inside the window never gets the reset — its backoff keeps growing (SEC-5).
+  let stabilityTimer: NodeJS.Timeout | undefined;
   // The in-flight connect() attempt, so `stop()` can await it — mirrors outbox-relay.ts's
   // `inFlight` discipline for the same reason: a caller that stops this and immediately tears
   // down something the connect attempt still touches (e.g. logging into a closed test harness)
@@ -97,6 +111,12 @@ export function startReconnectingListenClient(
   function onDisconnect(c: pg.Client): void {
     if (stopped || client !== c) return;
     client = undefined;
+    if (stabilityTimer) {
+      // Died before proving stable — do NOT reset the backoff; let it keep growing so a flapping
+      // connection backs off toward the ceiling instead of hot-reconnecting (SEC-5).
+      clearTimeout(stabilityTimer);
+      stabilityTimer = undefined;
+    }
     c.removeAllListeners();
     c.end().catch(() => undefined);
     scheduleReconnect();
@@ -120,7 +140,14 @@ export function startReconnectingListenClient(
       c.on("notification", (msg) => {
         onNotification({ channel: msg.channel, payload: msg.payload });
       });
-      backoffMs = minBackoffMs; // a successful (re)connection resets the backoff
+      // Reset the backoff only after the connection PROVES stable (SEC-5), not on connect itself —
+      // otherwise a kill-immediately-after-connect loop pins reconnects (and their onReconnect
+      // side effects) at the floor. A connection that dies inside the window clears this in
+      // onDisconnect, so its backoff keeps growing toward the ceiling.
+      stabilityTimer = setTimeout(() => {
+        stabilityTimer = undefined;
+        backoffMs = minBackoffMs;
+      }, stabilityWindowMs);
       onReconnect?.();
     } catch (err) {
       onError(err);
@@ -136,6 +163,10 @@ export function startReconnectingListenClient(
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = undefined;
+      }
+      if (stabilityTimer) {
+        clearTimeout(stabilityTimer);
+        stabilityTimer = undefined;
       }
       await connecting.catch(() => undefined);
       if (client) {
