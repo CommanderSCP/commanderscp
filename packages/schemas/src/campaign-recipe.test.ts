@@ -49,9 +49,9 @@ describe("CampaignRecipeSchema", () => {
       CampaignRecipeSchema.safeParse({ ...valid, adoption: { kind: "delivered" } }).success
     ).toBe(false);
     // ...and the same for a misspelling of a key that DOES exist, which is the likelier typo.
-    expect(
-      CampaignRecipeSchema.safeParse({ version: 1, triggers: { kind: "sync" } }).success
-    ).toBe(false);
+    expect(CampaignRecipeSchema.safeParse({ version: 1, triggers: { kind: "sync" } }).success).toBe(
+      false
+    );
   });
 
   it("REFUSES an unknown key inside `trigger`", () => {

@@ -1,5 +1,10 @@
 import type { ExecutorCapabilities, TriggerIntent } from "@scp/plugin-api";
-import { CAMPAIGN_RECIPE_PROPERTY_KEY, CampaignRecipeSchema, type CampaignRecipe } from "@scp/schemas";
+import { boundText } from "@scp/runner-launcher";
+import {
+  CAMPAIGN_RECIPE_PROPERTY_KEY,
+  CampaignRecipeSchema,
+  type CampaignRecipe
+} from "@scp/schemas";
 
 /**
  * M25.4 — THE READ SIDE of the campaign recipe (owner decision D3). One module, so the fan-out, the
@@ -122,7 +127,9 @@ export const RECIPE_FORBIDDEN_EXECUTOR_MODULES: readonly string[] = [
 
 /** Is `module` one of CommanderSCP's own actuators? See {@link RECIPE_FORBIDDEN_EXECUTOR_MODULES}. */
 export function isRecipeForbiddenExecutorModule(module: string | null | undefined): boolean {
-  return module !== null && module !== undefined && RECIPE_FORBIDDEN_EXECUTOR_MODULES.includes(module);
+  return (
+    module !== null && module !== undefined && RECIPE_FORBIDDEN_EXECUTOR_MODULES.includes(module)
+  );
 }
 
 export type RecipeResolution =
@@ -154,12 +161,77 @@ export function resolveChangeRecipe(
   if (raw === undefined || raw === null) return { outcome: "none" };
   const parsed = CampaignRecipeSchema.safeParse(raw);
   if (parsed.success) return { outcome: "recipe", recipe: parsed.data };
-  return {
-    outcome: "malformed",
-    detail: parsed.error.issues
-      .map((i) => `${i.path.length > 0 ? i.path.join(".") : "(root)"}: ${i.message}`)
-      .join("; ")
-  };
+  return { outcome: "malformed", detail: describeRecipeIssues(parsed.error.issues) };
+}
+
+/**
+ * How many issues the refusal names, and how long each one and the whole may be.
+ *
+ * THE CAP ON THE DETAIL IS NOT COSMETIC — it is the one path on which
+ * `CAMPAIGN_RECIPE_PARAMETERS_MAX_BYTES` structurally CANNOT protect anything. That cap is a
+ * `superRefine` on `CampaignRecipeSchema`, so it runs only when the document PARSES; a document
+ * that does not parse never reaches it, and the malformed branch is by definition the branch where
+ * it did not.
+ *
+ * What that left open, measured against this repo's own zod at HEAD: a recipe carrying 20,000
+ * unrecognised keys produces ONE issue whose message enumerates every one of them — **188,915
+ * bytes** from a single strict-object failure. `POST /api/v1/changes` accepts free-form
+ * `properties`, and a `change` is deliberately NOT covered by the campaign authoring guard (see
+ * `governance/campaign-recipe-guard.ts` for why the promotion path must fail HERE rather than at a
+ * write door), so that string is one authenticated call away — and it is then written FOUR times,
+ * all of them permanent: the Decision's `inputContext`, the Decision's `reasonTree.summary`, the
+ * hash-chained audit event's `reason`, and the `audit_segment` payload that rides signed federation
+ * bundles to peers. Half a megabyte of permanent record per call, scaling linearly with the junk.
+ *
+ * That is the unbounded-growth shape ADR-0024 was written for, arriving through the one door the
+ * byte cap does not cover.
+ *
+ * ISSUES ARE CAPPED **AND** EACH ONE IS CUT, because either alone is insufficient: capping the
+ * count does not help when a SINGLE issue is 188 KB, and cutting only the joined string lets one
+ * enormous first issue crowd out the four that follow it — so the reader loses exactly the
+ * information the refusal exists to give them.
+ */
+const RECIPE_ISSUE_LIMIT = 5;
+const RECIPE_ISSUE_MAX_CHARS = 300;
+const RECIPE_DETAIL_MAX_CHARS = 1_000;
+
+/**
+ * The operator-facing rendering of why a recipe did not parse, BOUNDED AT THE PRODUCER.
+ *
+ * Bounded here rather than at each of the four writers, and that placement is the point: a cap
+ * applied at the Decision would leave the audit event unbounded, and a reviewer checking any one
+ * writer would find it guarded. One producer, one bound, and every consumer inherits it.
+ *
+ * `boundText(…, 0)` is `@scp/runner-launcher`'s shared primitive with a HEAD-ONLY bound — its own
+ * docblock names that as "the right shape for a short diagnostic preview, where a reserved tail
+ * would leave almost no head", and offers itself precisely so this is not "another bare `.slice`".
+ * A bare slice cuts at UTF-16 CODE-UNIT offsets, which splits surrogate pairs, which `jsonb`
+ * refuses, which throws inside the enclosing transaction — this repository's own worked example
+ * (BUILD_AND_TEST §4.4a), where that exact sequence stopped a coordination loop for 13 days behind
+ * a green health check. The same primitive also sanitises NULs and already-ill-formed input, which
+ * an author-controlled string decoded from anywhere is entitled to contain.
+ *
+ * The remedy an operator needs is "fix the document", and the first few problems are what serves
+ * it. Twenty thousand key names do not.
+ */
+export function describeRecipeIssues(
+  issues: readonly { path: PropertyKey[]; message: string }[]
+): string {
+  const rendered = issues
+    .slice(0, RECIPE_ISSUE_LIMIT)
+    .map((i) =>
+      boundText(
+        `${i.path.length > 0 ? i.path.join(".") : "(root)"}: ${i.message}`,
+        RECIPE_ISSUE_MAX_CHARS,
+        0
+      )
+    )
+    .join("; ");
+  const suffix =
+    issues.length > RECIPE_ISSUE_LIMIT
+      ? ` (and ${issues.length - RECIPE_ISSUE_LIMIT} further issue(s))`
+      : "";
+  return boundText(`${rendered}${suffix}`, RECIPE_DETAIL_MAX_CHARS, 0);
 }
 
 /**
@@ -244,6 +316,8 @@ export function executorSupportsTriggerKind(
  * `pipeline-generic` passes the bag straight through to a tenant's HTTP endpoint, must not see a new
  * empty object appear on every trigger on the instance.
  */
-export function recipeTriggerParameters(recipe: CampaignRecipe): Record<string, unknown> | undefined {
+export function recipeTriggerParameters(
+  recipe: CampaignRecipe
+): Record<string, unknown> | undefined {
   return recipe.trigger.parameters;
 }

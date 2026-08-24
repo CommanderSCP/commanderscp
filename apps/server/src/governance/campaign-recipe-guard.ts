@@ -1,5 +1,6 @@
 import { CAMPAIGN_RECIPE_PROPERTY_KEY, CampaignRecipeSchema } from "@scp/schemas";
 import { badRequest } from "../errors.js";
+import { describeRecipeIssues } from "../coordination/campaign-recipe.js";
 
 /**
  * M25.4 (owner decision D3) — THE LOCAL AUTHOR'S DOOR for a campaign's coordination recipe.
@@ -72,9 +73,15 @@ export function assertValidCampaignRecipe(args: {
   if (raw === undefined || raw === null) return;
   const parsed = CampaignRecipeSchema.safeParse(raw);
   if (parsed.success) return;
-  const detail = parsed.error.issues
-    .map((i) => `${i.path.length > 0 ? i.path.join(".") : "(root)"}: ${i.message}`)
-    .join("; ");
+  // THE SAME BOUND AS THE TRIGGER-TIME REFUSAL, from the same function. Found by censusing the
+  // PROPERTY — "an unbounded string rendered from zod issues" — rather than the symptom, once the
+  // trigger-time copy was fixed; it was the second of two instances in one increment's own diff.
+  //
+  // The CONSEQUENCE differs at the two sites and the FIX does not. This one is a 400 echoed to the
+  // caller rather than four permanent hash-chained records, so it is not an unbounded-growth
+  // vector — but 188 KB of enumerated key names serves an author no better than it serves an
+  // operator, and two renderings of one idea is how the copies that DO diverge get started.
+  const detail = describeRecipeIssues(parsed.error.issues);
   throw badRequest(
     `campaign 'properties.${CAMPAIGN_RECIPE_PROPERTY_KEY}' is invalid — ${detail}. ` +
       `A recipe is exactly {"version": 1, "trigger": {"kind": "sync"|"workflow_dispatch"|"custom", ` +

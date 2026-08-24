@@ -140,3 +140,60 @@ describe("OQ-5: a recipe may not drive one of CommanderSCP's own actuators", () 
     }
   });
 });
+
+// ==================================================================================================
+describe("a malformed recipe's DETAIL is bounded at the producer (M25.4 review finding)", () => {
+  /**
+   * THE BYTE CAP CANNOT REACH THIS PATH, WHICH IS THE WHOLE FINDING.
+   *
+   * `CAMPAIGN_RECIPE_PARAMETERS_MAX_BYTES` is enforced in a `superRefine` on `CampaignRecipeSchema`,
+   * so it runs only when the document PARSES. The malformed branch is by definition the branch on
+   * which it did not — so before this bound, the one refusal path that renders author-controlled
+   * text had no cap on it at all.
+   *
+   * MEASURED, not hypothesised: 20,000 unrecognised keys produce ONE zod issue whose message
+   * enumerates every one of them — ~188 KB from a single strict-object failure. `POST /v1/changes`
+   * takes free-form `properties` and a `change` is deliberately outside the authoring guard, so
+   * that string was one authenticated call from being written four times permanently (Decision
+   * `inputContext`, Decision `reasonTree.summary`, the hash-chained audit `reason`, and the
+   * `audit_segment` payload that rides signed bundles to peers).
+   */
+  it("BOUNDS a 20,000-key failure that renders ~188KB unbounded", () => {
+    const junk: Record<string, unknown> = { version: 1, trigger: { kind: "sync" } };
+    for (let i = 0; i < 20_000; i += 1) junk[`k${i}`] = "v";
+
+    const resolved = resolveChangeRecipe({ [CAMPAIGN_RECIPE_PROPERTY_KEY]: junk });
+
+    expect(resolved.outcome).toBe("malformed");
+    const detail = (resolved as { outcome: "malformed"; detail: string }).detail;
+    // THE CONTROL FOR THE BOUND ITSELF: assert the UNBOUNDED rendering really is enormous, or this
+    // case would still pass against a schema that had simply stopped producing a long message —
+    // proving the cap while the thing it caps had quietly gone away.
+    const unbounded = 4 * junk.k0!.toString().length + JSON.stringify(junk).length;
+    expect(unbounded).toBeGreaterThan(100_000);
+    expect(detail.length).toBeLessThanOrEqual(1_000);
+  });
+
+  it("STAYS USEFUL: an ordinary failure still names the offending path and reason", () => {
+    // Non-vacuity. A bound that returned "" or a fixed string would pass the case above and destroy
+    // the only thing the refusal exists to tell an operator.
+    const resolved = resolveChangeRecipe({
+      [CAMPAIGN_RECIPE_PROPERTY_KEY]: { version: 2, trigger: { kind: "sync" } }
+    });
+
+    expect(resolved.outcome).toBe("malformed");
+    const detail = (resolved as { outcome: "malformed"; detail: string }).detail;
+    expect(detail.length).toBeGreaterThan(0);
+    expect(detail).toContain("version");
+  });
+
+  it("does not truncate a recipe that PARSES — the bound is on the refusal, not on the document", () => {
+    const resolved = resolveChangeRecipe({
+      [CAMPAIGN_RECIPE_PROPERTY_KEY]: {
+        version: 1,
+        trigger: { kind: "workflow_dispatch", parameters: { workflowId: "migrate.yml" } }
+      }
+    });
+    expect(resolved.outcome).toBe("recipe");
+  });
+});
