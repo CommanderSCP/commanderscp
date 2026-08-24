@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, ExternalLink } from "lucide-react";
+import { ArrowRight, ExternalLink, TriangleAlert } from "lucide-react";
 import type { ChangeStageDependencyTarget } from "@scp/sdk";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
@@ -44,6 +44,19 @@ export interface ObservedTruncationEntry {
   droppedFields?: number;
 }
 
+/** One covering freeze on a wave target's `hold.freezes` (`ChangeWaveTargetSchema.hold` —
+ *  packages/schemas/src/changes.ts, campaigns-rework.md's "wave-target hold projection"). Every
+ *  field is exactly as the server composed it — `summary` is a rendered-verbatim sentence
+ *  (charter principle 6: this module composes no copy from raw fields), `scope` is already
+ *  enriched to `{objectId, name}` (`null` for a platform-tier freeze), and `endsAt` is the
+ *  window's real boundary, never `now`. */
+export interface WaveTargetFreezeEntry {
+  freezeId: string;
+  scope: { objectId: string; name: string | null } | null;
+  summary: string;
+  endsAt: string;
+}
+
 /** A wave target, structurally — the intersection-with-options of ChangeWaveTarget and
  *  CampaignWaveTarget. */
 export interface PipelineWaveTargetLike {
@@ -51,6 +64,13 @@ export interface PipelineWaveTargetLike {
   targetObjectId: string;
   targetUrn?: string | undefined;
   targetName?: string | undefined;
+  /** The FREEZE-HOLD half of `ChangeWaveTargetSchema.hold` — present only while the target is
+   *  genuinely held by an active freeze, composed at read time (a lifted freeze is simply absent
+   *  on the next read). CampaignWaveTarget does not carry this yet, so it is optional and a
+   *  campaign wave simply renders no freeze line — never a fabricated one. The STAGE-DEPENDENCY
+   *  half of a hold rides a SEPARATE channel (`holdFor` below) for the reason that field's own
+   *  doc states: it is not part of this schema. */
+  hold?: { freezes: WaveTargetFreezeEntry[] } | undefined;
   status: string;
   /** Change targets (ADR-0007): WHICH pipeline this target rolls, and its derived Category. */
   type?: string;
@@ -88,6 +108,13 @@ export interface PipelineWaveLike {
   status: string;
   startedAt: string | null;
   completedAt: string | null;
+  /** SERVER-COMPUTED (`ChangeWaveSchema.heldTargetCount`) — freeze-held plus stage-dependency-held
+   *  targets of this wave. NEVER RECOMPUTED HERE: a client tally from `targets[].hold` alone would
+   *  undercount by exactly the stage-dependency half, which this component has no way to see
+   *  unless the page also threads `holdFor` — this field is the server's answer regardless of
+   *  which optional props a given page passes. CampaignWave does not carry it yet, so it is
+   *  optional and the chip simply does not render for a campaign wave. */
+  heldTargetCount?: number | undefined;
   targets: PipelineWaveTargetLike[];
 }
 
@@ -355,6 +382,30 @@ function HeldTargetLine({ held }: { held: ChangeStageDependencyTarget }): React.
   );
 }
 
+/**
+ * THE FREEZE HALF OF A TARGET'S HOLD (`ChangeWaveTargetSchema.hold`) — one line per covering
+ * freeze, mirroring `HeldTargetLine` above (ADR-0028's stage-dependency line) so a target held by
+ * BOTH kinds at once renders two lines under the one `held` badge rather than one kind winning.
+ * Amber, not blue: a freeze is a governance instrument (design spec §1.5 `warning` tone —
+ * "needs attention, degraded, frozen"), where the stage-dependency line's blue is informational
+ * ("this clears itself"). `summary` is rendered VERBATIM — server-composed, no client copy.
+ */
+function FreezeHoldLines({ freezes }: { freezes: WaveTargetFreezeEntry[] }): React.JSX.Element {
+  return (
+    <div
+      className="mt-1 border-l-2 border-amber-300 pl-2 text-[11px] leading-snug text-amber-800"
+      data-testid="pipeline-wave-target-freeze-hold"
+    >
+      {freezes.map((freeze) => (
+        <div key={freeze.freezeId} data-testid="pipeline-wave-target-freeze-hold-line">
+          <span className="font-medium">{freeze.scope?.name ?? "instance-wide"}</span>{" "}
+          <span>— {freeze.summary}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function PipelineWaveCard({
   wave,
   waveNumber,
@@ -388,9 +439,29 @@ export function PipelineWaveCard({
             Wave {waveNumber}
             {wave.name ? `: ${wave.name}` : ""}
           </CardTitle>
-          <Badge variant={waveStatusTone(wave.status)} data-testid={`${testIdPrefix}-status-badge`}>
-            {wave.status}
-          </Badge>
+          <div className="flex items-center gap-1.5">
+            {/* SERVER-COMPUTED (`ChangeWaveSchema.heldTargetCount`), never derived from `wave.
+                targets` here — a page without `holdFor` threaded would undercount the
+                stage-dependency half if this were a client tally. Amber `warning` tone (design
+                spec §1.5 — "needs attention, degraded, frozen"), never red: a hold is not a
+                failure, it is governance withholding a trigger that will still fire. */}
+            {typeof wave.heldTargetCount === "number" && wave.heldTargetCount > 0 && (
+              <Badge
+                variant="warning"
+                icon={TriangleAlert}
+                data-testid={`${testIdPrefix}-held-count-badge`}
+                title={`${wave.heldTargetCount} of this wave's targets ${wave.heldTargetCount === 1 ? "is" : "are"} withheld — by an active freeze, a stage dependency, or both. See each target's own hold line for which.`}
+              >
+                {wave.heldTargetCount} held
+              </Badge>
+            )}
+            <Badge
+              variant={waveStatusTone(wave.status)}
+              data-testid={`${testIdPrefix}-status-badge`}
+            >
+              {wave.status}
+            </Badge>
+          </div>
         </div>
         {kinds.length > 0 && (
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
@@ -414,6 +485,14 @@ export function PipelineWaveCard({
         {wave.targets.map((target) => {
           const links = linksFor?.(target) ?? {};
           const held = holdFor?.(target) ?? null;
+          // The FREEZE half of a hold, read straight off the target — no closure prop needed,
+          // because `ChangeWaveTargetSchema.hold` rides the target itself rather than a side
+          // channel (unlike the stage-dependency half above). A target can carry BOTH kinds at
+          // once; `anyHeld` is the union that drives the shared badge/border, and each kind gets
+          // its own line below rather than one silently winning.
+          const freezeHold =
+            target.hold && target.hold.freezes.length > 0 ? target.hold.freezes : null;
+          const anyHeld = held !== null || freezeHold !== null;
           // Computed ONCE per target and shared by both observed slots below, so "did the executor
           // report a rollout" and "did the whole state get elided" can never disagree between the
           // version slot and the rollout slot (proposal §3 rule 5: one pill covers both when the
@@ -437,14 +516,15 @@ export function PipelineWaveCard({
               key={target.id}
               className="rounded border border-slate-200 p-2 text-xs"
               data-testid={`${testIdPrefix}-target-row`}
-              data-held={held ? "true" : undefined}
+              data-held={anyHeld ? "true" : undefined}
             >
               <div className="flex min-w-0 items-center justify-between gap-2">
                 <TargetName target={target} nameOf={nameOf} />
-                {/* BOTH, not one instead of the other (ADR-0028 increment 4). `held` is the
-                    headline; the raw status stays beside it because `pending` is a real recorded
-                    value and substituting it would be a second kind of lie. */}
-                {held && (
+                {/* BOTH, not one instead of the other (ADR-0028 increment 4, extended to the
+                    freeze half). `held` is the headline; the raw status stays beside it because
+                    `pending` is a real recorded value and substituting it would be a second kind
+                    of lie. */}
+                {anyHeld && (
                   <Badge variant="info" data-testid="pipeline-wave-target-held-badge">
                     held
                   </Badge>
@@ -452,6 +532,7 @@ export function PipelineWaveCard({
                 <Badge variant={waveStatusTone(target.status)}>{target.status}</Badge>
               </div>
               {held && <HeldTargetLine held={held} />}
+              {freezeHold && <FreezeHoldLines freezes={freezeHold} />}
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500">
                 {target.category && target.type && (
                   <span>

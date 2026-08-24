@@ -23,7 +23,12 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 
 const { PipelineWaveCard } = await import("./PipelineWaveCard");
 
-import type { PipelineWaveLike, PipelineWaveTargetLike } from "./PipelineWaveCard";
+import type {
+  PipelineWaveLike,
+  PipelineWaveTargetLike,
+  WaveTargetFreezeEntry
+} from "./PipelineWaveCard";
+import type { ChangeStageDependencyTarget } from "@scp/sdk";
 
 const BASE_TARGET: PipelineWaveTargetLike = {
   id: "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f",
@@ -232,5 +237,153 @@ describe("PipelineWaveCard: observed.truncation honesty (proposal §3)", () => {
     expect(html).toContain('data-testid="pipeline-wave-observed-revision"');
     expect(html).toContain("abcdef0");
     expect(html).not.toContain("truncated");
+  });
+});
+
+/**
+ * `ChangeWaveTargetSchema.hold` / `ChangeWaveSchema.heldTargetCount` (M25.UI increment 2) — the
+ * freeze half of a target's hold, read straight off the target rather than a `holdFor` closure
+ * (unlike the stage-dependency half, which mirrors `change-pipeline-hold.test.tsx`'s own reasoning
+ * for testing at THIS altitude: the card is the thing that owns rendering it once handed the
+ * field, and `wave={wave}` on every real page already carries `targets[].hold` straight from the
+ * `explain` response — no page-level plumbing is needed for the freeze half at all).
+ */
+const FREEZE_ENTRY: WaveTargetFreezeEntry = {
+  freezeId: "8b9c0d1e-2f3a-4b5c-9d6e-7f8a9b0c1d2e",
+  scope: { objectId: "9c0d1e2f-3a4b-4c5d-8e9f-0a1b2c3d4e5f", name: "amer" },
+  // No `'` in the fixture summary itself (the real server-composed sentence uses them, but
+  // `renderToStaticMarkup` HTML-escapes them to `&#x27;` — asserting on a quote-free sentence
+  // keeps these cases about "is the summary rendered verbatim", not about React's escaping).
+  summary: "freeze amer-incident at amer until 2026-08-24T12:00:00.000Z",
+  endsAt: "2026-08-24T12:00:00.000Z"
+};
+
+const STAGE_DEP_HELD: ChangeStageDependencyTarget = {
+  targetObjectId: BASE_TARGET.targetObjectId,
+  targetName: BASE_TARGET.targetName ?? null,
+  componentObjectId: "3d4e5f6a-7b8c-4d9e-8f0a-1b2c3d4e5f6a",
+  componentName: "agentkit-bootstrap",
+  deploymentTargetObjectId: "4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b",
+  deploymentTargetName: "homelab-gamma",
+  held: true,
+  dependencies: [
+    {
+      dependsOn: "7a8b9c0d-1e2f-4a3b-9c4d-5e6f7a8b9c0d",
+      dependsOnName: "agentkit-api",
+      branch: "never_deployed",
+      satisfied: false,
+      summary: "'7a8b9c0d-1e2f-4a3b-9c4d-5e6f7a8b9c0d' is placed here but has never deployed here"
+    }
+  ]
+};
+
+describe("PipelineWaveCard: the freeze-hold field (ChangeWaveTargetSchema.hold, M25.UI)", () => {
+  it("a freeze-held target shows the held badge and the freeze line, rendered VERBATIM", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      status: "pending",
+      hold: { freezes: [FREEZE_ENTRY] }
+    });
+
+    expect(html).toContain('data-held="true"');
+    expect(html).toContain('data-testid="pipeline-wave-target-held-badge"');
+    expect(html).toContain('data-testid="pipeline-wave-target-freeze-hold"');
+    expect(html).toContain('data-testid="pipeline-wave-target-freeze-hold-line"');
+    // The scope name, then the server-composed summary verbatim — "{scope.name} — {summary}".
+    expect(html).toContain("amer");
+    expect(html).toContain(FREEZE_ENTRY.summary);
+    // The raw status stays beside the hold — it is not overwritten.
+    expect(html).toContain("pending");
+    // The stage-dependency line was not asked for and must not appear.
+    expect(html).not.toContain('data-testid="pipeline-wave-target-hold"');
+  });
+
+  it("an instance-wide (platform-tier) freeze's null scope renders the honest fallback label", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      status: "pending",
+      hold: { freezes: [{ ...FREEZE_ENTRY, scope: null }] }
+    });
+
+    expect(html).toContain("instance-wide");
+  });
+
+  it("a target held by BOTH kinds at once lists both lines under the one badge", () => {
+    const html = renderToStaticMarkup(
+      <PipelineWaveCard
+        wave={waveWith({ ...BASE_TARGET, status: "pending", hold: { freezes: [FREEZE_ENTRY] } })}
+        waveNumber={1}
+        holdFor={() => STAGE_DEP_HELD}
+      />
+    );
+
+    // ONE badge, not two — `anyHeld` is a union, never a second "held" pill.
+    expect((html.match(/pipeline-wave-target-held-badge/g) ?? []).length).toBe(1);
+    // BOTH lines present, neither one winning.
+    expect(html).toContain('data-testid="pipeline-wave-target-hold"');
+    expect(html).toContain("agentkit-api");
+    expect(html).toContain('data-testid="pipeline-wave-target-freeze-hold"');
+    expect(html).toContain(FREEZE_ENTRY.summary);
+  });
+
+  it("leaves an ordinary target untouched — `hold` absent is not an empty claim", () => {
+    // The boundary every response predating this field, and every unheld target, must clear:
+    // no `hold` key at all (as opposed to `{freezes: []}`) renders exactly as before.
+    const html = renderCard({ ...BASE_TARGET, status: "succeeded" });
+
+    expect(html).not.toContain('data-held="true"');
+    expect(html).not.toContain('data-testid="pipeline-wave-target-held-badge"');
+    expect(html).not.toContain('data-testid="pipeline-wave-target-freeze-hold"');
+  });
+
+  it("an EMPTY `hold.freezes` array (the shape the schema forbids in practice) still renders as unheld", () => {
+    // Defensive: `toWaveTargetHold` never emits an empty array server-side, but the card must not
+    // assume that — `target.hold` truthy with zero entries is not a hold either.
+    const html = renderCard({ ...BASE_TARGET, status: "pending", hold: { freezes: [] } });
+
+    expect(html).not.toContain('data-held="true"');
+    expect(html).not.toContain('data-testid="pipeline-wave-target-freeze-hold"');
+  });
+});
+
+describe("PipelineWaveCard: the wave-level 'N held' chip (ChangeWaveSchema.heldTargetCount)", () => {
+  function renderWave(wave: PipelineWaveLike): string {
+    return renderToStaticMarkup(<PipelineWaveCard wave={wave} waveNumber={1} />);
+  }
+
+  it("renders the chip in amber `warning` tone, never red, when heldTargetCount > 0", () => {
+    const html = renderWave({ ...waveWith(BASE_TARGET), heldTargetCount: 2 });
+
+    expect(html).toContain('data-testid="pipeline-wave-held-count-badge"');
+    expect(html).toContain("2 held");
+    expect(html).toContain("bg-amber-50");
+    expect(html).not.toContain("bg-red-50");
+  });
+
+  it("carries a title tooltip naming what 'held' means", () => {
+    const html = renderWave({ ...waveWith(BASE_TARGET), heldTargetCount: 1 });
+
+    expect(html).toContain('data-testid="pipeline-wave-held-count-badge"');
+    expect(html).toMatch(/title="[^"]*withheld[^"]*"/);
+  });
+
+  it("the chip is absent when heldTargetCount is 0", () => {
+    const html = renderWave({ ...waveWith(BASE_TARGET), heldTargetCount: 0 });
+    expect(html).not.toContain('data-testid="pipeline-wave-held-count-badge"');
+  });
+
+  it("the chip is absent when heldTargetCount is undefined — omission is not zero, but renders the same", () => {
+    const html = renderWave(waveWith(BASE_TARGET));
+    expect(html).not.toContain('data-testid="pipeline-wave-held-count-badge"');
+  });
+
+  it("wave-status.ts stays keyed on `status` alone — the chip does not change the status badge's tone", () => {
+    const withoutChip = renderWave(waveWith(BASE_TARGET));
+    const withChip = renderWave({ ...waveWith(BASE_TARGET), heldTargetCount: 3 });
+    const statusBadge = (html: string) =>
+      html.match(/data-testid="pipeline-wave-status-badge"[^>]*>[^<]*/)?.[0];
+    // Same wave `status` ("succeeded" per `waveWith`), so the status badge's own classes/text must
+    // be identical with or without the held chip beside it.
+    expect(statusBadge(withChip)).toBe(statusBadge(withoutChip));
   });
 });
