@@ -101,6 +101,13 @@ spec:
           env:
             {{- include "commanderscp.commonEnv" . | nindent 12 }}
             {{- include "commanderscp.adminDbEnv" . | nindent 12 }}
+            {{- /* §7.4 version-skew gate: set migrations.phase=contract on the deploy that ships the
+                   CONTRACT half of an expand/contract migration — the Job then refuses while an
+                   old-version member cluster is still live. Unset/expand never gates. */}}
+            {{- if .Values.migrations.phase }}
+            - name: SCP_MIGRATION_PHASE
+              value: {{ .Values.migrations.phase | quote }}
+            {{- end }}
             # CRITICAL: without these explicit refs, config.ts's loadConfig() falls back to
             # DERIVING scp_app/scp_pgboss's connection strings from the ADMIN one (same password,
             # username swapped) — migrate-bin.ts's provisionRuntimeRole/provisionPgBossRole would

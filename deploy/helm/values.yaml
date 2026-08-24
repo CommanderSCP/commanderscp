@@ -34,6 +34,16 @@ fullnameOverride: ""
 # `deploy/helm-bundled` already applies to its own value.
 federationRole: commander
 
+# D6 (§7.3): deployment posture. "production" (the default) is FAIL-CLOSED — it refuses to boot on
+# ephemeral generated secrets and runs the secrets decrypt canary before serving. Set "evaluation"
+# ONLY for a throwaway eval Helm install that boots with generated secrets.
+deploymentMode: production
+
+# §7.4 version-skew heartbeat: this member cluster's identity. Defaults to the Helm release name.
+# In a multi-cluster install give EACH member cluster's release a distinct clusterId (or distinct
+# release names) so their heartbeats don't collide on one row.
+clusterId: ""
+
 # -------------------------------------------------------------------------------------------
 # MULTI-CLUSTER SELF-CONSISTENCY GUARD (M26.3 — multi-region-instance-resilience.md §5-I2, §7.4,
 # B9, B3-B5). Set `enabled: true` on EVERY release that is one member cluster of a multi-cluster
@@ -180,6 +190,12 @@ migrations:
   # that provisions/resets the shared `scp_app`/`scp_pgboss` role passwords (B9's guard, below,
   # narrows but does not replace this rule). See deploy/helm/MULTI-CLUSTER.md.
   enabled: true
+  # §7.4 VERSION-SKEW GATE. Leave empty (or "expand") for the normal deploy — including the deploy
+  # that ships a migration's EXPAND half, which runs WHILE old-version pods are still up. Set
+  # "contract" ONLY on the deploy that ships a migration's CONTRACT half: the Job then REFUSES to run
+  # while any live member cluster still reports an older version (N and N+1 only). Roll every member
+  # cluster to the new version first, then deploy with phase: contract.
+  phase: ""
   backoffLimit: 3
   activeDeadlineSeconds: 600
   # B9 guard (multi-region-instance-resilience.md §4-B9, §7.4): the migrations Job's role
@@ -260,6 +276,12 @@ objectStorage:
     # out-of-band). When set, this chart does NOT create the storage PVC — the named claim must
     # already exist. Leave empty (default) for today's behavior: chart creates and owns it.
     existingClaim: ""
+  # C3 (M26.3, owner decision 2026-08-24): multi-cluster object storage does NOT get a bespoke S3
+  # BACKEND — it is served by the ALREADY-BUILT S3 delivery path (SCP_DELIVERY_S3_ENDPOINTS +
+  # `federation.relay.s3` above / `delivery-s3.ts`). For a multi-member install, either point the
+  # relay/blob drops at S3 delivery targets (allowlist the endpoints there) OR use a replicated RWX
+  # volume for the object-storage PVC. These `s3` values configure the S3 credentials/endpoint for
+  # that delivery path; there is no separate object-storage service to run. See MULTI-CLUSTER.md.
   s3:
     bucket: ""
     region: ""

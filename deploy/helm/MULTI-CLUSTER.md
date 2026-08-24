@@ -174,7 +174,13 @@ and content stay identical). Only `migrations.enabled` and each cluster's own ne
   default safe on a single-node cluster) apply **within** each member cluster's own release — they
   spread replicas across that cluster's nodes/zones, which is a different, narrower guarantee than
   spreading compute across member clusters. Both matter; neither substitutes for the other.
-- **What this recipe deliberately does not build**: the version-skew heartbeat across member
-  clusters (§7.4's "N and N+1 only" rule) and the S3 object-storage provider (`objectStorage.s3`,
-  C3/D7) are server-side work, tracked separately. This chart's `objectStorage.s3` values remain a
-  documented stub until that lands (see `deploy/helm/README.md`'s "Other known gaps").
+- **Version skew across member clusters (§7.4, now built)**: each release heartbeats its
+  `(SCP_CLUSTER_ID, SCP_APP_VERSION)`; the migrations Job refuses a **contract-phase** deploy
+  (`migrations.phase: contract`) while any live member cluster still reports an older version. Roll
+  every member cluster to the new version, *then* deploy with `migrations.phase: contract`. `N` and
+  `N+1` only. `GET /doctor/instance` surfaces skew as a `member-cluster-version-skew` check.
+- **Object storage across member clusters (C3, resolved 2026-08-24)**: there is **no bespoke S3
+  object-storage backend** — multi-cluster object storage is served by the already-built S3 delivery
+  path (`SCP_DELIVERY_S3_ENDPOINTS` / `federation.relay.s3` / `delivery-s3.ts`). Either point the
+  relay/blob drops at S3 delivery targets, **or** use a replicated RWX volume for the object-storage
+  PVC. `objectStorage.s3` configures the credentials/endpoint for that delivery path.

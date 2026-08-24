@@ -220,6 +220,15 @@ since those three differ between the migrations Job and the api/worker Deploymen
   value: {{ .Values.seedDemo | quote }}
 - name: SCP_FEDERATION_ROLE
   value: {{ include "commanderscp.federationRole" . | quote }}
+{{- /* D6 (§7.3): production is the fail-closed default; an eval Helm install sets deploymentMode: evaluation. */}}
+- name: SCP_DEPLOYMENT_MODE
+  value: {{ .Values.deploymentMode | default "production" | quote }}
+{{- /* §7.4 version-skew heartbeat: this member cluster's identity + running release. clusterId
+       defaults to the release name; appVersion to the chart's appVersion (== the image tag). */}}
+- name: SCP_CLUSTER_ID
+  value: {{ .Values.clusterId | default .Release.Name | quote }}
+- name: SCP_APP_VERSION
+  value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
 - name: SCP_EVENT_BUS_BACKEND
   value: {{ .Values.eventBus.backend | quote }}
 {{- if eq .Values.eventBus.backend "nats" }}
