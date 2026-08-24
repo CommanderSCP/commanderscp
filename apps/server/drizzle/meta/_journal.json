@@ -589,6 +589,13 @@
       "when": 1788141000000,
       "tag": "0083_governance_move_rungs",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1788142000000,
+      "tag": "0084_bundle_transfers_channel",
+      "breakpoints": true
     }
   ]
 }

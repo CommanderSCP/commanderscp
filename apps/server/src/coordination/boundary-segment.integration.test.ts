@@ -314,7 +314,10 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     expect(exported!.transfer.hops[0]).toMatchObject({
       direction: "export",
       status: "created",
-      checksum: bundle.checksum
+      checksum: bundle.checksum,
+      // drizzle/0084 — an ordinary `.scpbundle` promotion export, threaded from the ledger row
+      // through `boundary-segment.ts` — never the retrans byte-relay channel.
+      channel: "metadata"
     });
     expect(exported!.transfer.observedAt).toEqual(expect.any(String));
     // THE INSERT-ONLY LEDGER: `created` is the only status this side can ever hold, so the handoff
@@ -331,7 +334,9 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     expect(received!.transfer.hops[0]).toMatchObject({
       direction: "import",
       status: "confirmed",
-      checksum: bundle.checksum
+      checksum: bundle.checksum,
+      // drizzle/0084 — the metadata leg, same as the export side of this same bundle.
+      channel: "metadata"
     });
     // The receiving side observed the arrival itself, so nothing about the transfer is unknown here.
     expect(received!.unknownFields).not.toContain("transfer.handoff");

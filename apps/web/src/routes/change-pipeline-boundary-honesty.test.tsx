@@ -228,6 +228,113 @@ describe("boundary segment: the absent case is stated, not silently green", () =
   });
 });
 
+/**
+ * drizzle/0084 — THE HOP-COUNT SPLIT. `transfer.hops[].channel` distinguishes a retrans byte-relay
+ * leg from an ordinary metadata `.scpbundle` hop (`BoundaryTransferHopSchema`'s doc). This strip
+ * only ever COUNTS hops (it does not list them), so the honest rendering is a split count — "N
+ * bundle hop(s) observed here, of which M byte relay" — and ONLY when at least one hop actually
+ * carries `channel: 'bytes'`. A hop whose channel is null/absent must fold back into the plain
+ * count rather than read as "confirmed not a byte relay", which is a claim nobody made.
+ */
+describe("boundary segment: the transfer hop count splits out byte-relay hops, honestly", () => {
+  function segmentWithHops(hops: BoundarySegment["transfer"]["hops"]): BoundarySegment {
+    return {
+      ...commanderSegment,
+      transfer: { ...commanderSegment.transfer, hops }
+    };
+  }
+
+  it("splits the count when a hop carries channel:'bytes'", () => {
+    const html = render(
+      segmentWithHops([
+        {
+          direction: "export",
+          status: "created",
+          peerDomainId: PEER_DOMAIN_ID,
+          checksum: "a".repeat(64),
+          channel: "bytes",
+          observedAt: "2026-07-29T10:00:00.000Z"
+        }
+      ])
+    );
+    expect(html).toContain("1 bundle hop observed here, of which 1 byte relay");
+  });
+
+  it("THE HONESTY PIN: a hop with channel:null stays in the plain count — no split, no callout", () => {
+    const html = render(
+      segmentWithHops([
+        {
+          direction: "export",
+          status: "created",
+          peerDomainId: PEER_DOMAIN_ID,
+          checksum: "a".repeat(64),
+          channel: null,
+          observedAt: "2026-07-29T10:00:00.000Z"
+        }
+      ])
+    );
+    expect(html).toContain("1 bundle hop observed here");
+    expect(html).not.toContain("byte relay");
+    expect(html).not.toContain("of which");
+  });
+
+  it("mixed hops: only the byte-relay ones are counted in the split, the metadata/absent ones are not", () => {
+    const html = render(
+      segmentWithHops([
+        {
+          direction: "export",
+          status: "created",
+          peerDomainId: PEER_DOMAIN_ID,
+          checksum: "a".repeat(64),
+          channel: "metadata",
+          observedAt: "2026-07-29T10:00:00.000Z"
+        },
+        {
+          direction: "export",
+          status: "created",
+          peerDomainId: PEER_DOMAIN_ID,
+          checksum: "b".repeat(64),
+          channel: "bytes",
+          observedAt: "2026-07-29T10:01:00.000Z"
+        },
+        {
+          direction: "export",
+          status: "created",
+          peerDomainId: PEER_DOMAIN_ID,
+          checksum: "c".repeat(64),
+          channel: null,
+          observedAt: "2026-07-29T10:02:00.000Z"
+        }
+      ])
+    );
+    expect(html).toContain("3 bundle hops observed here, of which 1 byte relay");
+  });
+
+  it("pluralizes the byte-relay count — real pluralization, never '(s)' (§5 copy rule 6)", () => {
+    const html = render(
+      segmentWithHops([
+        {
+          direction: "export",
+          status: "created",
+          peerDomainId: PEER_DOMAIN_ID,
+          checksum: "a".repeat(64),
+          channel: "bytes",
+          observedAt: "2026-07-29T10:00:00.000Z"
+        },
+        {
+          direction: "import",
+          status: "confirmed",
+          peerDomainId: PEER_DOMAIN_ID,
+          checksum: "b".repeat(64),
+          channel: "bytes",
+          observedAt: "2026-07-29T10:01:00.000Z"
+        }
+      ])
+    );
+    expect(html).toContain("2 bundle hops observed here, of which 2 byte relays");
+  });
+});
+
 describe("boundary segment: the wiring, by exact field name", () => {
   // The unknown markers are only as honest as the predicate that derives them from the server's
   // `unknownFields`. That derivation is an `.includes(...)` a later edit could change with nothing

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { FederationPeerStatus } from "@scp/schemas";
+import type { BundleTransfer, FederationPeerStatus } from "@scp/schemas";
 
 /**
  * M16.2 phase B (B1) — THE RENDERING HALF of the Outposts overview's honesty contract, pinned by a
@@ -38,6 +38,7 @@ const {
   TrustTierCell,
   TransportCell,
   PendingExportCell,
+  RecentTransfersCell,
   attentionLevel,
   isPeerUnknown,
   isOutpostPeer,
@@ -268,6 +269,53 @@ describe("outposts overview: an unasserted trust tier is never a tier", () => {
     // …and a peer with NO tier says so on the row too, rather than carrying an enum member.
     expect(rowTag(renderRow(basePeer()))).toContain('data-trust-tier="unknown"');
     expect(rowTag(renderRow(basePeer()))).toContain('data-tier-provenance="none"');
+  });
+
+  /**
+   * A `retrans` peer is a STRONGER claim than "unobservable": this instance can SOURCE the
+   * inapplicability itself — `POST /federation/outposts` refuses (400) to bind an `outpost` config
+   * object to any peer whose role is not `outpost` (`outpost-binding.ts`, ADR-0004; measured
+   * `outpost-object.integration.test.ts`). So a retrans row must NOT wear the same amber
+   * unknown-pill a genuinely undecided outpost tier wears — that would understate what is known.
+   */
+  it("a retrans peer renders the §1.5 structural-absence dash, never the unknown pill", () => {
+    const retrans = basePeer({ peer: { ...basePeer().peer, role: "retrans" } });
+    const html = renderToStaticMarkup(<TrustTierCell status={retrans} />);
+
+    expect(html).toContain('data-testid="retrans-tier-na"');
+    expect(html).toContain('data-trust-tier="not-applicable"');
+    expect(html).toContain('data-tier-provenance="not-applicable"');
+    // The §1.5 dash idiom for STRUCTURALLY-EXPECTED absence: visible `—` in text-slate-400, with
+    // the honesty sentence riding the title — NOT a badge (pills stay reserved for signal; a
+    // column of "not applicable" badges on every retrans row is the wall-of-pills reborn).
+    expect(visibleText(html)).toContain("—");
+    expect(html).toContain("text-slate-400");
+    expect(html).toContain("Not applicable: this peer");
+    expect(visibleText(html)).not.toContain("not applicable");
+    // …and it must NOT reuse the outpost unknown marker's own testid — the two suites, and the two
+    // claims, must not be able to pass on each other's markup.
+    expect(html).not.toContain('data-testid="outpost-unknown"');
+
+    // PREMISE, so this cannot pass by the outpost case having regressed into the dash too: an
+    // outpost peer with no tier still wears the ordinary unknown pill, byte-identically to before.
+    const outpost = renderToStaticMarkup(<TrustTierCell status={basePeer()} />);
+    expect(outpost).toContain('data-testid="outpost-unknown"');
+    expect(outpost).not.toContain('data-testid="retrans-tier-na"');
+    expect(outpost).not.toContain("Not applicable");
+  });
+
+  it("trustTierMark agrees with the cell for a retrans peer — one derivation, not applicable", () => {
+    const retrans = basePeer({ peer: { ...basePeer().peer, role: "retrans" } });
+    expect(trustTierMark(retrans)).toEqual({
+      tier: "not-applicable",
+      provenance: "not-applicable"
+    });
+    // …and the ROW carries the same claim, not the bare "unknown" a role-blind derivation would give.
+    const rowHtml = renderRow(retrans);
+    const at = rowHtml.indexOf('data-testid="outpost-row"');
+    const rowTag = rowHtml.slice(rowHtml.lastIndexOf("<", at), rowHtml.indexOf(">", at) + 1);
+    expect(rowTag).toContain('data-trust-tier="not-applicable"');
+    expect(rowTag).toContain('data-tier-provenance="not-applicable"');
   });
 
   it("the row and the cell read ONE derivation — they cannot disagree", () => {
@@ -565,6 +613,20 @@ describe("outposts overview: no string claims the outpost has anything", () => {
   });
 });
 
+describe("outposts overview: the shared sourceless-column copy is role-neutral", () => {
+  // `APPLIED_AT_PEER_TITLE`/`HEALTH_ROLLUP_TITLE` back the SHARED table column of a table that mixes
+  // outpost AND retrans rows (`outposts.tsx`) — and are re-used verbatim by the per-peer detail page
+  // (`outpost-detail.tsx`'s `OutpostStatusCard`). Naming "the outpost" there is a claim about a
+  // specific row that a shared column cannot make honestly for a retrans one.
+  it("names 'the peer', never 'the outpost', in the shared unknown-column tooltips", async () => {
+    const { APPLIED_AT_PEER_TITLE, HEALTH_ROLLUP_TITLE } = await import("./outposts");
+    expect(APPLIED_AT_PEER_TITLE).toContain("what the peer applied");
+    expect(APPLIED_AT_PEER_TITLE).not.toContain("outpost");
+    expect(HEALTH_ROLLUP_TITLE).toContain("per-peer health signal");
+    expect(HEALTH_ROLLUP_TITLE).not.toContain("outpost");
+  });
+});
+
 describe("outposts overview: the declaration predicate and the peer filter", () => {
   // THE WIRING, not only the components it feeds — `isPeerUnknown` is the single place a server
   // declaration becomes a rendering decision, and an inline `.includes(...)` is exactly the line a
@@ -654,5 +716,70 @@ describe("the self-domain panel", () => {
     // `FederationStatusResponse.self` is nullable. A half-rendered panel with an empty name would
     // assert a domain identity the server did not give us.
     expect(renderToStaticMarkup(<SelfDomainPanel self={null} />)).toBe("");
+  });
+});
+
+/**
+ * drizzle/0084 — THE BYTE-RELAY TAG, and the honesty pin that keeps it a READ, never an INFERENCE.
+ *
+ * `channel` is the one place a retrans byte-relay hop is distinguished from an ordinary metadata
+ * `.scpbundle` handoff (`BundleTransferSchema`'s doc). The forbidden shortcut is deriving it from
+ * anything else already on the row — `checksum === null` or the peer's role both correlate with
+ * `channel: 'bytes'` in today's fixtures without being it, and a UI that keyed on either would keep
+ * "working" right up until a metadata row with a null checksum (a pre-M16.1 row) got mislabelled a
+ * byte relay. So three states, three renderings, and the ABSENT case is the one that actually pins
+ * the rule: it must render nothing, and it is the case a `checksum`- or role-based shortcut can't
+ * tell apart from `'bytes'` without also being told the channel.
+ */
+function transferFixture(overrides: Partial<BundleTransfer> = {}): BundleTransfer {
+  return {
+    id: "6b6c1a9e-2f3d-4a5b-8c9d-0e1f2a3b4c5d",
+    peerDomainId: PEER_ID,
+    direction: "export",
+    kind: "promotion",
+    status: "created",
+    sinceSequence: null,
+    throughSequence: null,
+    checksum: null,
+    channel: null,
+    createdAt: "2026-08-23T00:00:00.000Z",
+    confirmedAt: null,
+    ...overrides
+  };
+}
+
+describe("outposts overview: the byte-relay tag is READ off channel, never inferred", () => {
+  it("tags a transfer whose channel is 'bytes' as the byte-relay leg", () => {
+    const html = renderToStaticMarkup(
+      <RecentTransfersCell transfers={[transferFixture({ channel: "bytes" })]} />
+    );
+    expect(html).toContain('data-testid="outpost-transfer-byte-relay"');
+    expect(html).toContain("byte relay");
+  });
+
+  it("a 'metadata' channel renders NO byte-relay tag — the default reading needs no callout", () => {
+    const html = renderToStaticMarkup(
+      <RecentTransfersCell transfers={[transferFixture({ channel: "metadata" })]} />
+    );
+    expect(html).not.toContain('data-testid="outpost-transfer-byte-relay"');
+    expect(html).not.toContain("byte relay");
+  });
+
+  it("THE HONESTY PIN: an ABSENT channel (null) renders NO tag — provenance is read, not guessed", () => {
+    // This row has exactly the two properties a shortcut might key on instead of `channel`: no
+    // checksum, and (via the row it would sit in) a retrans peer role is equally plausible bait.
+    // Neither may stand in for the field itself.
+    const html = renderToStaticMarkup(
+      <RecentTransfersCell transfers={[transferFixture({ channel: null, checksum: null })]} />
+    );
+    expect(html).not.toContain('data-testid="outpost-transfer-byte-relay"');
+    expect(html).not.toContain("byte relay");
+  });
+
+  it("an OMITTED channel key (older SDK/server) also renders no tag, not a throw", () => {
+    const withoutChannel = transferFixture();
+    delete (withoutChannel as { channel?: unknown }).channel;
+    const html = renderToStaticMarkup(<RecentTransfersCell transfers={[withoutChannel]} />);
+    expect(html).not.toContain('data-testid="outpost-transfer-byte-relay"');
   });
 });

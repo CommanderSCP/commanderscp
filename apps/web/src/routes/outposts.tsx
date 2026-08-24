@@ -200,7 +200,9 @@ export function roleBadge(role: string): React.JSX.Element {
 }
 
 export type TierMark =
-  { tier: "unknown"; provenance: "none" } | { tier: string; provenance: "declared" | "unverified" };
+  | { tier: "unknown"; provenance: "none" }
+  | { tier: string; provenance: "declared" | "unverified" }
+  | { tier: "not-applicable"; provenance: "not-applicable" };
 
 /**
  * THE TIER CLAIM AND ITS QUALIFIER, DERIVED ONCE (round 3, the X4 census miss).
@@ -217,6 +219,13 @@ export type TierMark =
  * forgotten in the other.
  */
 export function trustTierMark(status: FederationPeerStatus): TierMark {
+  // A `retrans` peer is a STRONGER claim than "unobservable" — this instance can SOURCE its
+  // inapplicability: `POST /federation/outposts` refuses (400) to bind an `outpost` config object to
+  // any peer whose role is not `outpost` (`outpost-binding.ts`'s `REQUIRED_PEER_ROLE`, ADR-0004;
+  // measured `outpost-object.integration.test.ts`). So this is not "no tier was asserted" — it is
+  // "no tier can EVER be asserted for this peer" — and the two must not share a rendering.
+  if (status.peer.role === "retrans")
+    return { tier: "not-applicable", provenance: "not-applicable" };
   const tier = status.trustTier ?? null;
   if (tier === null) return { tier: "unknown", provenance: "none" };
   // TWO INDEPENDENT SIGNALS FOR ONE FACT — see `TrustTierCell` below for why they are OR'd.
@@ -241,6 +250,40 @@ export function trustTierMark(status: FederationPeerStatus): TierMark {
  *     fabrication phase A's review round 4 fixed on the server; this is the rendering half.
  */
 export function TrustTierCell({ status }: { status: FederationPeerStatus }): React.JSX.Element {
+  // THE RETRANS BRANCH, DERIVED ONCE. Read off `trustTierMark` — the SAME derivation `OutpostRow`
+  // puts on the row's own `data-trust-tier`/`data-tier-provenance`, so the two cannot disagree — never
+  // re-checked with a second bare `status.peer.role === "retrans"` here.
+  //
+  // Rendered as the §1.5 STRUCTURALLY-EXPECTED-ABSENCE dash, not a badge: "a retrans can never have
+  // a tier" is a permanent structural absence (the same class as the spec's own "Layer B unmodeled
+  // fields" example), and §1.5 reserves pills for signal — a column of "not applicable" badges on
+  // every retrans row is the wall-of-pills problem reborn one tone over. The honesty sentence rides
+  // the title, exactly as the dash idiom prescribes; the amber unknown pill below stays reserved
+  // for the genuinely-unobservable outpost case, so the two states cannot be confused.
+  const rowMark = trustTierMark(status);
+  if (rowMark.tier === "not-applicable") {
+    return (
+      <span
+        data-testid="outpost-tier"
+        data-trust-tier="not-applicable"
+        data-tier-provenance="not-applicable"
+      >
+        <span
+          className="text-slate-400"
+          data-testid="retrans-tier-na"
+          title={
+            "Not applicable: this peer's federation role is 'retrans'. A trust tier is commander-declared " +
+            "config bound through an 'outpost' graph object, and this instance refuses (400) to bind one " +
+            "to a peer that is not an outpost — a retrans validates and forwards signed bundles across a " +
+            "CDS boundary and holds no commander-declared configuration of its own (ADR-0004)."
+          }
+        >
+          —
+        </span>
+      </span>
+    );
+  }
+
   const tier = status.trustTier ?? null;
   const provenance = status.trustTierProvenance ?? null;
 
@@ -264,9 +307,10 @@ export function TrustTierCell({ status }: { status: FederationPeerStatus }): Rea
   // that carries the TIER and the DECLARATION but omits the provenance is well-formed — and keying on
   // provenance alone dropped such a row through to the declared badge below, rendering a hand-typed
   // claim BYTE-IDENTICAL to a commander assertion. That is the fabrication phase A round 4 existed to
-  // fix, with the honest signal already on the wire and unread. So: OR them.
-  const mark = trustTierMark(status);
-  if (mark.provenance === "unverified") {
+  // fix, with the honest signal already on the wire and unread. So: OR them. `rowMark` is the same
+  // derivation computed above — not re-run — so the not-applicable branch and this one can never
+  // drift into checking the role two different ways.
+  if (rowMark.provenance === "unverified") {
     return (
       <span data-testid="outpost-tier" data-trust-tier={tier} data-tier-provenance="unverified">
         <Badge
@@ -439,7 +483,7 @@ export function PendingExportCell({ status }: { status: FederationPeerStatus }):
  * dropped (the proposal promised both; a reader who remembers the promise and sees no column
  * assumes it is fine).
  *
- *   * `appliedAtPeer` — what the outpost applied. ABSENT from the schema by design; there will be no
+ *   * `appliedAtPeer` — what the peer applied. ABSENT from the schema by design; there will be no
  *     such field until M16.4 builds a return path that can observe it.
  *   * `healthRollup` — the observe-enrichment health rollup. ABSENT from the schema: no health signal
  *     is replicated per peer.
@@ -455,10 +499,10 @@ export function PendingExportCell({ status }: { status: FederationPeerStatus }):
  *  field that exists today. Shared with `outpost-detail.tsx`'s `OutpostStatusCard`, which renders
  *  the same two fields with the same honest reason. */
 export const APPLIED_AT_PEER_TITLE =
-  "This instance cannot observe what the outpost applied: it records only what it exported. A " +
+  "This instance cannot observe what the peer applied: it records only what it exported. A " +
   "return-path confirmation isn't implemented yet.";
 export const HEALTH_ROLLUP_TITLE =
-  "No per-outpost health signal is replicated to this instance, so there is no rollup to show.";
+  "No per-peer health signal is replicated to this instance, so there is no rollup to show.";
 
 export function SourcelessCell({
   status,
@@ -494,6 +538,29 @@ function transferStatusBadge(status: string): React.JSX.Element {
   );
 }
 
+/** drizzle/0084 — the byte-relay tag beside a transfer row, ONLY for `channel === 'bytes'`. A
+ *  `'metadata'` channel renders nothing extra (an ordinary `.scpbundle` handoff is today's default
+ *  reading and needs no callout), and an ABSENT channel (pre-0084 row, or a writer that could not
+ *  determine it) renders nothing either — provenance here is READ off the ledger row, never
+ *  inferred from `checksum === null` or the peer's role, both of which are true for plenty of
+ *  ordinary metadata rows too. */
+function TransferChannelTag({
+  channel
+}: {
+  channel: BundleTransfer["channel"];
+}): React.JSX.Element | null {
+  if (channel !== "bytes") return null;
+  return (
+    <Badge
+      variant="neutral"
+      data-testid="outpost-transfer-byte-relay"
+      title="The retrans byte-relay hop: a signed artifact tarball moved to/from CDS staging, distinct from an ordinary metadata .scpbundle handoff."
+    >
+      byte relay
+    </Badge>
+  );
+}
+
 /**
  * RECENT TRANSFERS — the last five rows of THIS instance's own per-hop ledger, labelled as such.
  *
@@ -523,6 +590,7 @@ export function RecentTransfersCell({
           </Badge>
           <span className="text-slate-500">{transfer.kind}</span>
           {transferStatusBadge(transfer.status)}
+          <TransferChannelTag channel={transfer.channel} />
           <span className="text-slate-400">{formatDateTime(transfer.createdAt)}</span>
         </div>
       ))}
@@ -825,7 +893,7 @@ export function OutpostsPage(): React.JSX.Element {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Outposts"
-        description="Every field outpost (an outpost in another trust domain) and retrans peer this domain syncs with."
+        description="Every field outpost (an outpost in another trust domain) this domain syncs with, plus every retrans peer relaying this domain's promotions across a CDS boundary."
         meta={<ObservationScopeNote />}
       />
 
@@ -878,7 +946,7 @@ export function OutpostsPage(): React.JSX.Element {
                   <TableHead>Transport</TableHead>
                   <TableHead>Last sync in (from it)</TableHead>
                   <TableHead>Exported by this side</TableHead>
-                  <TableHead>Applied at outpost</TableHead>
+                  <TableHead>Applied at peer</TableHead>
                   <TableHead>Health</TableHead>
                   <TableHead>Recent transfers (last 5)</TableHead>
                 </TableRow>

@@ -144,7 +144,8 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
         status: "confirmed",
         sinceSequence: 0,
         throughSequence: 4,
-        transport: "bundle"
+        transport: "bundle",
+        channel: "metadata"
       })
     );
     await setLastImportAge(5);
@@ -332,7 +333,8 @@ describe("service board staleness: an overdue peer is not masked by an older one
         status: "confirmed",
         sinceSequence: 0,
         throughSequence: 4,
-        transport: "bundle"
+        transport: "bundle",
+        channel: "metadata"
       })
     );
     const at = new Date(Date.now() - args.ageSeconds * 1000);

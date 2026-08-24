@@ -616,6 +616,16 @@ export const BundleTransferSchema = z.object({
    *  transfers carried THIS change?". Optional/additive — absent for a pre-M16.1 SDK's reads and
    *  null on a row recorded without one. Observational only; never authority. */
   checksum: z.string().nullable().optional(),
+  /** drizzle/0084 — WHICH LEG this hop was: `'metadata'` (an ordinary `.scpbundle` sync/promotion
+   *  export or import) or `'bytes'` (a retrans byte-relay hop — `buildRelayTarball`'s submit,
+   *  `validateAndForwardRelayTarball`'s confirm+submit, `importRelayTarball`'s confirm). Every
+   *  transfer of `kind:'promotion'` was, until this column, byte-identical on the wire regardless
+   *  of which of those it was — this field is the one place that provenance is READ (stated by the
+   *  writer, `bundle-transfers-repo.ts::recordBundleTransfer`'s required-at-callsite parameter),
+   *  never inferred from `direction`/`kind`/`status` downstream. Optional/additive (an old SDK is
+   *  unaffected) and nullable — `null` is a genuine "not recorded" (a pre-0084 row, or a writer
+   *  that could not determine it), never a stand-in for "not asked". */
+  channel: z.enum(["metadata", "bytes"]).nullable().optional(),
   createdAt: z.string().datetime(),
   confirmedAt: z.string().datetime().nullable()
 });

@@ -56,6 +56,10 @@ export function findPeerStatus(
 /** The read-only status panel — every field rendered by the SAME cells the overview uses, so the two
  *  surfaces cannot drift into disagreeing about what is observable. */
 export function OutpostStatusCard({ status }: { status: FederationPeerStatus }): React.JSX.Element {
+  // THE NOUN, ROLE-AWARE — the CONCEPTS below are real for a retrans peer (it imports this side's
+  // signed bundles; `sync_cursors`/export bookkeeping apply to it exactly as to an outpost), so only
+  // the word naming it was wrong. `outpost` stays verbatim for an outpost row; nothing else changes.
+  const peerNoun = status.peer.role === "retrans" ? "retrans peer" : "outpost";
   return (
     <Card>
       <CardHeader>
@@ -80,12 +84,12 @@ export function OutpostStatusCard({ status }: { status: FederationPeerStatus }):
               )
             },
             {
-              label: "Last sync in (from this outpost)",
+              label: `Last sync in (from this ${peerNoun})`,
               value: <InboundSyncCell status={status} />
             },
             { label: "Exported by this side", value: <PendingExportCell status={status} /> },
             {
-              label: "Applied at outpost",
+              label: `Applied at ${peerNoun}`,
               value: (
                 <SourcelessCell
                   status={status}
@@ -109,7 +113,7 @@ export function OutpostStatusCard({ status }: { status: FederationPeerStatus }):
               )
             },
             {
-              label: "Last applied sequence (from this outpost)",
+              label: `Last applied sequence (from this ${peerNoun})`,
               value: status.lastAppliedSequence ?? "none"
             }
           ]}

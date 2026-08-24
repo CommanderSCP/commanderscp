@@ -120,6 +120,8 @@ export async function buildBoundarySegment(
     status: t.status,
     peerDomainId: t.peerDomainId,
     checksum: t.checksum ?? null,
+    // drizzle/0084 — threaded straight from the ledger row; see BoundaryTransferHopSchema's doc.
+    channel: t.channel ?? null,
     observedAt: t.createdAt
   }));
   const importHops = hops.filter((h) => h.direction === "import");

@@ -106,7 +106,8 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
         direction: "import",
         kind: "promotion",
         status: "confirmed",
-        checksum: "promotion-checksum-that-must-not-leak-into-the-sync-label"
+        checksum: "promotion-checksum-that-must-not-leak-into-the-sync-label",
+        channel: "metadata"
       })
     );
 
@@ -126,7 +127,8 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
         direction: "import",
         kind: "promotion",
         status: "confirmed",
-        checksum: "promotion-noise"
+        checksum: "promotion-noise",
+        channel: "metadata"
       })
     );
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -136,7 +138,8 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
         direction: "import",
         kind: "sync",
         status: "confirmed",
-        checksum: "the-real-sync-bundle"
+        checksum: "the-real-sync-bundle",
+        channel: "metadata"
       })
     );
 
@@ -156,7 +159,8 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
         kind: "sync",
         status: "confirmed",
         checksum: "outbound-not-inbound",
-        throughSequence: 3
+        throughSequence: 3,
+        channel: "metadata"
       })
     );
     const entry = await statusFor(peer);
@@ -215,7 +219,8 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
         kind: "sync",
         status: "created",
         throughSequence: 12,
-        checksum: "real-export"
+        checksum: "real-export",
+        channel: "metadata"
       })
     );
     // The trap: a sync-export row with no `through_sequence`. Unreachable through `export-repo.ts`
@@ -228,7 +233,8 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
         kind: "sync",
         status: "created",
         throughSequence: null,
-        checksum: "null-sequence-row"
+        checksum: "null-sequence-row",
+        channel: "metadata"
       })
     );
 
@@ -260,7 +266,8 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
         kind: "sync",
         status: "confirmed",
         checksum: "the-real-sync-bundle",
-        transport: "bundle"
+        transport: "bundle",
+        channel: "metadata"
       })
     );
     // The trap: a row matching the SAME predicate whose `confirmed_at` is NULL. Postgres `DESC` is

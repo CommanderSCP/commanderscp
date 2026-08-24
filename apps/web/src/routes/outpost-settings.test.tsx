@@ -177,6 +177,19 @@ describe("peer settings: the rendered form", () => {
     );
   }
 
+  /** The text an operator actually reads — every tag stripped out (so a match cannot be satisfied by
+   *  an attribute or a `title` tooltip instead of the visible copy), the apostrophe entity
+   *  `renderToStaticMarkup` emits for a literal `'` decoded back (so an assertion can be written the
+   *  way the copy is actually read), and whitespace collapsed (tag stripping otherwise leaves doubled
+   *  spaces at every element boundary, e.g. around <strong>). */
+  function visibleText(html: string): string {
+    return html
+      .replace(/<[^>]*>/g, " ")
+      .replace(/&#x27;/g, "'")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   it("offers no editor for role or for key material", () => {
     const html = render(peerFixture());
 
@@ -224,6 +237,22 @@ describe("peer settings: the rendered form", () => {
     // The ACTIONABLE half — an operator who sees only "save failed" cannot know that their http base
     // URL was refused because poke-mode is on for this peer.
     expect(html).toContain("poke-mode requires an mTLS/https peer");
+  });
+
+  it("names the peer row's owner with the right noun — outpost verbatim, retrans distinctly", () => {
+    // The concepts (identity, transport, "local and never journaled") are real for a retrans peer
+    // too — only the noun naming it was wrong. Outpost copy must stay byte-identical; retrans must
+    // say so distinctly rather than call a retrans an "outpost".
+    const outpostHtml = render(peerFixture({ role: "outpost" }));
+    const retransHtml = render(peerFixture({ role: "retrans" }));
+
+    expect(visibleText(outpostHtml)).toContain("This outpost's peer row");
+    expect(visibleText(outpostHtml)).toContain("nothing here is sent to the outpost");
+
+    expect(visibleText(retransHtml)).not.toContain("This outpost's");
+    expect(visibleText(retransHtml)).toContain("This retrans peer's row");
+    expect(visibleText(retransHtml)).toContain("nothing here is sent to the peer");
+    expect(visibleText(retransHtml)).not.toContain("nothing here is sent to the outpost");
   });
 
   it("problemDetail prefers the problem detail and falls back honestly", () => {

@@ -49198,6 +49198,20 @@
                                           }
                                         ]
                                       },
+                                      "channel": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "enum": [
+                                              "metadata",
+                                              "bytes"
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
                                       "observedAt": {
                                         "type": "string",
                                         "format": "date-time",
@@ -74866,6 +74880,20 @@
                                   "anyOf": [
                                     {
                                       "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "channel": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "metadata",
+                                        "bytes"
+                                      ]
                                     },
                                     {
                                       "type": "null"

@@ -12134,6 +12134,7 @@ export type ExplainChangeResponses = {
                     status: 'created' | 'submitted' | 'confirmed';
                     peerDomainId: string;
                     checksum: string | null;
+                    channel?: 'metadata' | 'bytes' | null;
                     observedAt: string;
                 }>;
                 observedAt: string | null;
@@ -18497,6 +18498,7 @@ export type GetFederationStatusResponses = {
                 sinceSequence: number | null;
                 throughSequence: number | null;
                 checksum?: string | null;
+                channel?: 'metadata' | 'bytes' | null;
                 createdAt: string;
                 confirmedAt: string | null;
             }>;
