@@ -1,6 +1,6 @@
 # Proposal: the component journey view — source → build → deploy
 
-**Status:** v0.1 Draft — **proposed, pending review.**
+**Status:** v0.2, 2026-08-24 — v0.1's design was accepted and built out; see §7 "Reality as of 2026-08-24" for what shipped, what this revision adds, and what is still open.
 **Role:** Extends the component pipeline view (`coordination-ui-views.md` §2) from the deploy segment it renders today to the whole journey a change makes: the repo it comes from, the build that produces the artifact, and the stages it rolls through.
 **Relates to:** [ADR-0007](../adr/0007-executor-binding-type-taxonomy.md) (Type taxonomy — the routing key), [ADR-0017](../adr/0017-ownership-refinement.md) (build devolves to the originating outpost; the commander never runs build), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placements, derived stage names), [ADR-0006](../adr/0006-fail-closed-on-missing-executor-binding-for-purpose.md) (no-executor fail-closed), `promotion-and-execution-model.md` (the authoritative end-to-end flow this view is trying to draw), `coupled-pipelines.md` (`provides`/`requires`), `coordination-ui-views.md` §2.
 
@@ -20,10 +20,10 @@ What shipped is the **tail of one lane** — `Gamma → Prod` of App release. So
 
 | Owner's item | Accepted design | Buildable now? |
 |---|---|---|
-| 1. Infra pipeline | "Infra · correlated" parallel lane | **Partly.** The `infrastructure`-Type binding is Layer A and now renders per stage (see §0.1). The *correlated infra change as its own lane* needs the correlation rule settled — `correlationKey` exists; which infra changes count as "directly correlated to this component" does not. |
-| 2. Software pipeline | "App release" lane | **Partly.** The `image`-Type binding is Layer A and now renders. The `Build & test` → `Image registry` → `Config bump` CHAIN is `provides`/`requires` + `correlationKey`, which §"Layer A" calls buildable — but **0 changes on the estate carry either**, so the chain renders empty until something populates it (§1). |
+| 1. Infra pipeline | "Infra · correlated" parallel lane | **Partly, as of 2026-08-03.** The `infrastructure`-Type binding is Layer A and now renders per stage (see §0.1). The *correlated infra change as its own lane* needs the correlation rule settled — `correlationKey` exists; which infra changes count as "directly correlated to this component" does not. **SUPERSEDED, §7 (2026-08-24): the infra lane shipped as its OWN TAB instead of a parallel lane** (`ComponentInfrastructurePage` / `/components/$id/infrastructure`, `apps/web/src/routes/component-pipeline.tsx`) — Q2's correlation rule is still open, but the shape question this row asked is answered. |
+| 2. Software pipeline | "App release" lane | **Partly.** The `image`-Type binding is Layer A and now renders. The `Build & test` → `Image registry` → `Config bump` CHAIN is `provides`/`requires` + `correlationKey`, which §"Layer A" calls buildable — but **0 changes on the estate carry either**, so the chain renders empty until something populates it (§1). **UPDATED, §7: the Build tile now renders BOTH cases (§2's decision) — coordinated when a `build`-Type binding resolves, upstream with the observed CI run otherwise** — the chain populating itself is still open. |
 | 3. Code repos | "links to its source or executor (git source repo …)" | **Yes, fully.** `source_mappings` (durable rule) + `changes.source_ref` (the observed CI run). Layer A, and the data is rich. |
-| 4. Image/RPM/etc repo | `Image registry` stage, "shows the **scan result**" | **No, not honestly.** The registry *ref* is Layer A, but on this estate the two `image` bindings have EMPTY `external_ref`s, so there is nothing to link to. Contents, digest and scan verdict are explicitly **Layer B** — "per-stage version / image digest" and "gate verdicts with reasons (scan result)" are listed there as observe-enrichment SCP does not yet capture. Building this stage today paints a box labelled "unknown" on every component. |
+| 4. Image/RPM/etc repo | `Image registry` stage, "shows the **scan result**" | **No, not honestly — AS MEASURED 2026-08-03.** The registry *ref* is Layer A, but on this estate the two `image` bindings have EMPTY `external_ref`s, so there is nothing to link to. Contents, digest and scan verdict are explicitly **Layer B** — "per-stage version / image digest" and "gate verdicts with reasons (scan result)" are listed there as observe-enrichment SCP does not yet capture. Building this stage today paints a box labelled "unknown" on every component. **SUPERSEDED, §7 (2026-08-24): this row is no longer true.** `publishes_to` gave the registry stage a real place to link to (never the empty `image`-binding `external_ref` this row worried about — see §7's Q3), and observe-enrichment landed for digests, SBOM and scan verdicts. The registry AND Scan & sign tiles are both built and shipped; "paints a box labelled unknown" no longer describes them. |
 
 ### 0.1 A defect this review found, fixed 2026-08-03
 
@@ -132,6 +132,9 @@ Additive to `GET /components/{idOrUrn}/pipeline`, for the same reason the deploy
    `promotion-and-execution-model.md` §1, so the product does not have to choose one — but the VIEW
    must state which applies, or the two become indistinguishable. On this estate today every
    component is the upstream case (0 build-Type changes; all 148 source mappings `configuration`).
+   **BUILT, §7 (2026-08-24): the coordinated/upstream split shipped with the Build tile itself; the
+   "CI run observed in `changes.source_ref`" half of this decision — the part that was still just a
+   sentence — is what `observedRun` builds.**
 2. **What makes an infra change "directly correlated to the component"** (item 1's lane)? `correlationKey` is the mechanism; the rule is not written down anywhere. Without it the infra lane cannot be drawn from data.
 3. **DECIDED — the two `image` bindings are to be DELETED.** Provenance settled it: hand-created
    2026-07-17 at 15:37 and 15:41 with deliberate instance names, inline config, no execution-system —
@@ -140,7 +143,86 @@ Additive to `GET /components/{idOrUrn}/pipeline`, for the same reason the deploy
    `targetRef: claim.externalRef ?? targetObjectId` means the first such change would resolve (ADR-0006
    fail-closed never fires — there IS a binding) and dispatch the deployment-target's UUID where a repo
    belongs. Removal is via the audited route, not SQL: `DELETE /v1/executors/{target}/binding?type=image`.
+   **STILL OPEN, §7 (2026-08-24): decided, not yet done.** This is an ESTATE ACTION (a live homelab
+   DELETE call), not a code change — it is pending operator credentials/execution, not a design
+   question.
 
 4. **Superseded — does the empty `external_ref` mean anything** — a half-finished import, or a deliberate placeholder? It decides whether item 4's registry stage can ever link anywhere, and whether those bindings are live pipelines or dead rows.
 4. **Item 4 is Layer B and cannot be built honestly first.** The registry stage's whole value is the digest and the scan verdict, and SCP captures neither. Recommend it waits on observe-enrichment rather than shipping a permanently-"unknown" box.
+   **SUPERSEDED, §7 (2026-08-24): observe-enrichment landed — see §7's shipped list. This
+   recommendation was followed, not abandoned: registry/scan&sign were built AFTER this, once the
+   enrichment existed, not instead of it.**
 5. **Suggested build order**, each independently shippable: **(a)** source repos — Layer A, full data, answers the literal question; **(b)** the build/deploy chain via `provides`/`requires`, which also needs something to start populating it; **(c)** the infra lane once Q2 is settled; **(d)** the registry stage with observe-enrichment.
+   **FOLLOWED, §7: (a), (d) and the Build tile's coordinated/upstream split shipped, in roughly this
+   order. (b) and (c) are the two items still open — see §7.**
+
+---
+
+## 7. Reality as of 2026-08-24
+
+v0.1's design (§§1–6) was accepted and built out in the batches §6#5 suggested. This section is an
+annotation, not a rewrite: §§1–6 are left as measured 2026-08-03/08-10 and marked SUPERSEDED/BUILT
+inline where a since-shipped fact changed their answer; nothing above was deleted.
+
+### What shipped since v0.1
+
+- **Source tiles (§3 Segment 1), including the two honesty rules §3 calls out.** One card per
+  `source_mapping`, with the null-`path_pattern` ("whole repo") and null-ref ("any branch") cases
+  rendered as loud amber warnings rather than blank cells (`SourceNode`,
+  `apps/web/src/routes/component-pipeline.tsx` — the "matches the whole repo" / "any branch" copy),
+  and a component with zero mappings drawn as the loud "nothing arrives here" card §3 asked for.
+- **The coordinated-vs-upstream Build tile (§2's decision, §3 Segment 2).** `BuildNode`
+  (`apps/web/src/routes/component-pipeline.tsx`) draws a real stage per resolved `build`-Type binding
+  when one exists, and states "No build executor is bound — this component's artifact is built
+  upstream of CommanderSCP" when none does — the §2 distinction rendered as words, not styling, as
+  required. `laneNodes` gates the whole Build/Registry/Scan&sign chain on `buildsHere` (a resolved
+  binding OR a build-category source mapping).
+- **The registry tile (item 4's `Image registry` stage), off `publishes_to` rather than the empty
+  `image`-binding `external_ref` §1/§6#4 measured as dead.** `registryForComponent`
+  (`apps/server/src/coordination/component-pipeline.ts`) reads the component's outgoing
+  `publishes_to` edge to an `execution-system`, resolved per site; `RegistryNode`
+  (`apps/web/src/routes/component-pipeline.tsx`) renders `declared`/`ambiguous`/`none` as stated
+  facts, never a guess at where an artifact might have landed.
+- **Artifact facts and Scan & sign (item 4's "shows the scan result", §4's "per-stage version" scope
+  narrowed to what IS captured).** `artifactFactsForComponent`
+  (`apps/server/src/coordination/artifact-facts.ts`) picks the newest digest-carrying change and
+  projects its digests, SBOM reference, scan verdicts (reduced per §9.3's own rule — producer
+  identity, latest answer wins, instance floor) and the E6 export-gate re-evaluation; `RegistryNode`'s
+  digest line and `ScanSignNode` (`apps/web/src/routes/component-pipeline.tsx`) render it,
+  commander-only for the signing facts.
+
+None of the above needed a new graph concept — every one is a projection of `source_mappings`,
+`executor_bindings`, `publishes_to` edges, `changes.source_ref`, and `control_runs` that already
+existed, exactly as §3's "nothing below adds a graph concept" promised.
+
+### What this increment adds
+
+**`observedRun`** — the one piece of §3 Segment 2's upstream case that stayed a sentence until now:
+"it reads 'GitHub Actions · CI · run 30858160395 ↗', not 'build: unknown'." Composed from the most
+recent change of the component whose `sourceRef` carries a citable run id and at least one of
+`url`/`repo` (`apps/server/src/coordination/observed-run-facts.ts`, wired into
+`getComponentPipeline` in `apps/server/src/coordination/component-pipeline.ts`), traced across every
+writer shape (github/gitea observed-poll, github webhook, gitlab pipeline/webhook — see that module's
+doc comment) and typed as `ComponentPipelineObservedRunSchema`
+(`packages/schemas/src/components.ts`). The web Build tile renders it as one line beneath "built
+upstream of CommanderSCP", linked when the server named a `url`, plain text when not
+(`ObservedRunLine`, `apps/web/src/routes/component-pipeline.tsx`) — present only in the upstream
+case, absent leaves the tile unchanged.
+
+### What remains open, with owners
+
+- **Q2 — the infra-correlation rule (§6#2), still UNDECIDED.** `correlationKey` exists; which infra
+  changes count as "directly correlated to this component" is still not written down anywhere. The
+  shape question §1 row 1 raised is no longer blocking, though: the infra lane shipped as its own tab
+  (`ComponentInfrastructurePage`, `/components/$id/infrastructure`) rather than a parallel lane beside
+  App release, so this is now scoped to the infra TAB's own correlated-changes view, not the software
+  journey. Owner: unassigned — needs an explicit decision before that tab can draw anything
+  correlation-shaped.
+- **Q3 — the two stray `image` bindings (§6#3), DECIDED but not yet DONE.** Deletion via
+  `DELETE /v1/executors/{target}/binding?type=image` is an estate action against the live homelab, not
+  a code change, and it is pending operator credentials. Owner: the platform operator (homelab
+  access holder).
+- **The artifact object type and per-stage version (§4), future and UNCHANGED.** Still no `artifact`
+  graph object to hang a version staircase off, and per-stage version is still unbuilt observe
+  capture. `observedRun` does not touch this gap — it names the CI run that produced a release, not
+  the artifact's own identity or its version at a given stage.
