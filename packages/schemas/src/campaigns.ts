@@ -327,6 +327,121 @@ export const CampaignRecipeSchema = z
   });
 export type CampaignRecipe = z.infer<typeof CampaignRecipeSchema>;
 
+// ===========================================================================================
+// M25.6a — THE DEADLINE (owner decision D4: the radius is THE CAMPAIGN'S OWN TARGETS)
+// ===========================================================================================
+//
+// WHAT A DEADLINE IS. A date, on a campaign, past which that campaign stops fanning out to targets
+// it cannot observe as migrated. Nothing more.
+//
+// WHAT ITS RADIUS IS, because this is the thing most easily got wrong. An unmigrated component
+// stops receiving *THIS CAMPAIGN'S* changes. Unrelated releases — INCLUDING SECURITY FIXES — keep
+// flowing to it, untouched. It is **not** a freeze on the component and it must not be implemented
+// as one: not through `checkFreeze` (scope-based, campaign-blind and all-or-nothing across a wave —
+// routing a per-target deadline through it would re-lock the crux M25.2 just fixed), and not
+// through `evaluateWaveGate` (one verdict, no target dimension, fires exactly once).
+//
+// WHY IT LIVES ON `campaign.properties` AND NOT IN A TABLE — the same three reasons ADR-0041 gives
+// for the recipe, one of which is decisive here too: config that must cross a federation boundary
+// rides `object_upsert` as a graph OBJECT, and nothing table-shaped travels. `campaign.properties`
+// validates against an OPEN JSON Schema under `new Ajv({strict:false})` (drizzle/0011 §4), so this
+// key costs no migration at all.
+//
+// IT IS CONFIGURATION, NOT STATUS, and that is what keeps "campaign status is derived, never
+// stored" intact. The deadline is an INPUT. Nothing anywhere ever writes "locked": the lock is
+// re-derived from `(deadline.at, adoption)` on every tick, which is exactly what makes a late
+// adoption or a moved deadline clear it with NO unlock verb.
+
+/** The `campaign.properties` key a deadline lives under. ONE constant, for the reason
+ *  {@link CAMPAIGN_RECIPE_PROPERTY_KEY} states: three string literals is how one of them silently
+ *  stops being read. */
+export const CAMPAIGN_DEADLINE_PROPERTY_KEY = "deadline";
+
+/**
+ * WHICH adoption signal this deadline was authored against — DECLARATIVE ONLY.
+ *
+ * ================================================================================================
+ * IT IS NOT A SELECTOR, AND MUST NEVER BECOME ONE
+ * ================================================================================================
+ * The verdict "has this component migrated?" comes from `coordination/campaign-adoption.ts`'s
+ * `evaluateCampaignAdoption` reading the campaign's OWN `recipe.adoption` document — the ONE
+ * resolution core (§3.4 consumer 4: "reads this function and nothing else"). This field cannot
+ * select an evidence source even if someone wanted it to: a bare string carries no `ecosystem`,
+ * `coordinate`, `minVersion` or `controlObjectId`, so there is nothing here to resolve WITH. It is
+ * recorded so the durable record says which signal the author believed they were relying on, and so
+ * an operator reading the campaign can see at a glance whether the deadline is a real lock or the
+ * near-no-op §4.4 describes.
+ *
+ * THE VOCABULARY IS `AdoptionEvidenceSchema`'s DISCRIMINATOR, not the proposal's §4.1 sketch.
+ * That sketch predates M25.5 and writes the first value as `"campaign_target_succeeded"`; the
+ * shipped name for that fact is `delivered` (see `AdoptionEvidenceSchema`, which chose it precisely
+ * to stop anyone reading it as "migrated"). Two spellings of one concept is how the two drift, so
+ * there is one. `campaign-deadline-lock.test.ts` pins this enum against the evidence union's
+ * members so a fourth evidence kind cannot land on only one of them.
+ *
+ * `declared` IS ABSENT for the same reason it is absent from `AdoptionEvidenceSchema`: OQ-6 is
+ * unruled and §4.4's own recommendation is not to ship it until an above-component admission
+ * algebra exists. A self-attested deadline waiver produces a signed governance record asserting a
+ * migration nobody observed.
+ */
+export const CampaignDeadlineAdoptionSignalSchema = z.enum(["delivered", "dependency", "control"]);
+export type CampaignDeadlineAdoptionSignal = z.infer<typeof CampaignDeadlineAdoptionSignalSchema>;
+
+/**
+ * THE AUTHOR'S DOOR — `z.strictObject`, and OPEN in the property registry, the same 0043/0075 split
+ * `CampaignRecipeSchema` documents. Wire-side strictness is a LOCAL authoring refusal (one 400,
+ * nobody's bundle); a tightened REGISTRY schema is a fail-closed version-skew hazard that wedges a
+ * peer's whole signed bundle at an older receiver. Hence: no property-schema migration in this
+ * increment, and a document a newer commander writes that this schema refuses degrades to "no
+ * deadline" on the read surface and to a loud `warn` at the predicate — never to a silent lock.
+ *
+ * `overrides[]` — §4.1's fourth key — is **M25.6b and is deliberately not here**. Its authoring
+ * door needs a new `campaign:deadline-override` permission, which needs an `array_append` migration
+ * (drizzle/0010_governance.sql:180 is how every role grant in this repo works), and migration
+ * numbering is serialized across concurrent sessions behind a hard contiguity gate
+ * (`db/journal-ordering.test.ts`). Shipping the storage shape without its authority check would be
+ * an unauthenticated waiver channel sitting in the schema waiting for a writer.
+ *
+ * THE ESCAPE HATCH THIS INCREMENT SHIPS INSTEAD is `POST /campaigns/{id}/deadline`, which sets,
+ * MOVES and CLEARS at plain `object:write` with a mandatory reason. Clearing the deadline unlocks
+ * every target at once, so this is not an entrance with no exit.
+ */
+export const CampaignDeadlineSchema = z.strictObject({
+  /**
+   * The instant past which unmigrated targets stop receiving this campaign's fan-out.
+   *
+   * THE ONLY CLOCK-SHAPED VALUE ANY OF THIS FEATURE'S DECISIONS MAY CARRY. `at` is a stored
+   * BOUNDARY, byte-identical on every one of the 86,400 ticks in a day, which is what lets
+   * `insertDecisionIfChanged` collapse a standing lock to ONE row. Recording the clock instead —
+   * `now`, `evaluatedAt`, `overdueMs`, `daysLate`, `lockedSince`, any remaining-TTL — is the
+   * measured 1.44 GB/day production incident (ADR-0024) rebuilt from parts.
+   */
+  at: z.string().datetime(),
+  /** See {@link CampaignDeadlineAdoptionSignalSchema} — DECLARATIVE, never a selector. */
+  adoptionSignal: CampaignDeadlineAdoptionSignalSchema.optional()
+});
+export type CampaignDeadline = z.infer<typeof CampaignDeadlineSchema>;
+
+/**
+ * `POST /api/v1/campaigns/{id}/deadline` — set, move, or CLEAR.
+ *
+ * ONE VERB FOR ALL THREE, with `deadline: null` meaning clear. Campaigns have no PATCH and no
+ * DELETE today — the same entrance-with-no-exit gap M25.1 closed for freezes — and a deadline that
+ * cannot be moved is a deadline that gets worked around by deleting the campaign, which takes the
+ * whole governance record's SURFACE with it.
+ *
+ * `reason` IS MANDATORY on every one of the three, including the clear. `object:write` is a low bar
+ * for a governance act whose effect is immediate and fleet-wide within the campaign; the audit event
+ * this produces records the PREVIOUS value beside the new one, because "the deadline slipped four
+ * times" is otherwise unreconstructible from a chain of writes that each say only where it landed.
+ */
+export const SetCampaignDeadlineRequestSchema = z.object({
+  /** The new deadline, or `null` to clear it. */
+  deadline: CampaignDeadlineSchema.nullable(),
+  reason: z.string().min(1)
+});
+export type SetCampaignDeadlineRequest = z.infer<typeof SetCampaignDeadlineRequestSchema>;
+
 export const CampaignSchema = z.object({
   id: z.string().uuid(), // = the underlying graph object's id
   orgId: z.string().uuid(),
@@ -342,6 +457,24 @@ export const CampaignSchema = z.object({
    *  its targets' default pipelines) carries none, and making a response field required later is the
    *  oasdiff break this project has already paid for once. */
   recipe: CampaignRecipeSchema.optional(),
+  /**
+   * M25.6a — the campaign's deadline, or `null` when it declares none.
+   *
+   * REQUIRED AND NULLABLE, not optional, and the asymmetry with `recipe` directly above is
+   * deliberate rather than an inconsistency. `recipe` is a lever an operator either configured or
+   * did not; `deadline` is a governance fact whose ABSENCE is itself the answer to "is anything
+   * being withheld from this campaign's laggards?" — and an operator must not have to distinguish
+   * "no deadline" from "this response predates the field". Same reasoning, and the same oasdiff
+   * arithmetic, as `FreezeSchema.atomic`/`liftedAt`: adding a required response property is
+   * additive; making an EXISTING required one optional is the break this project has already paid
+   * for once.
+   *
+   * A document that does not parse reads as `null` HERE — a display surface, where absence is the
+   * honest rendering — while the ACTUATOR treats the same bytes as a loud, recorded `warn` and locks
+   * nothing (`coordination/campaign-deadline-lock.ts`). The two agree on the operator-visible
+   * outcome: nothing is being withheld.
+   */
+  deadline: CampaignDeadlineSchema.nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
@@ -370,6 +503,12 @@ export const CreateCampaignRequestSchema = z.object({
    *  Change, wave-ordered, governed, and triggered against their OWN already-bound executor with
    *  these parameters. SCP writes no patch (charter principle 1) — see `CampaignRecipeSchema`. */
   recipe: CampaignRecipeSchema.optional(),
+  /** M25.6a (owner decision D4) — the date past which this campaign stops fanning out to targets it
+   *  cannot observe as migrated. A REQUEST widening, so oasdiff-free. Authoring it here rather than
+   *  only through `POST /campaigns/{id}/deadline` is what keeps a deadlined campaign a single call;
+   *  the dedicated route exists to MOVE and CLEAR it afterwards, with a mandatory reason and an
+   *  audit event carrying the previous value. */
+  deadline: CampaignDeadlineSchema.optional(),
   targets: z.array(z.string().min(1)).min(1)
 });
 export type CreateCampaignRequest = z.infer<typeof CreateCampaignRequestSchema>;

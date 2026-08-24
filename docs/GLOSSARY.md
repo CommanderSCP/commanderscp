@@ -434,6 +434,24 @@ Today the same information is carried by **env-suffixed component pairs** — `a
 
 ---
 
+### campaign deadline lock
+
+**Definition.** A per-(campaign × target) admission gate. Past a date, a target this campaign cannot observe as migrated stops receiving **this campaign's** changes.
+
+**Its radius is the campaign, and that is the whole distinction.** Unrelated releases — **including security fixes** — keep flowing to that component. It is **not** a freeze on the component, and it is not a pipeline lock: a freeze at that component's scope would stop the laggard shipping *anything*, which turns a migration deadline into an outage of that team's ability to patch. Owner decision D4 excludes it explicitly.
+
+**Nothing is ever written to mean "locked".** The lock is a read-time predicate re-derived every tick from `(deadline.at, adoption)`, which is what lets a late adoption, a moved deadline or a cleared one release it **with no unlock verb**. The deadline itself is *configuration*, not status — campaign status stays derived.
+
+**`unknown` locks.** Only `adopted` releases a target. That is the mirror of **[adoption evidence](#adoption-evidence)**'s rule: if silence is never a pass, then a target whose migration cannot be observed is still one the deadline applies to — otherwise the deadline evaporates for exactly the components least visible to the platform.
+
+**Call it a tripwire, not a lock.** Under the `delivered` signal it is very nearly a no-op, because a target is only a candidate while `pending` — meaning the campaign never reached it. It acquires force with evidence observed *outside* the campaign's own fan-out, or as the durable signed record that "component X missed campaign Y's deadline on date Z".
+
+**Not to be confused with:** a **[freeze](#freeze)** (scope-based, time-windowed, blocks everything in scope); a **coordination lever** (the recipe that triggers, not a gate that refuses).
+
+**In the code.** `coordination/campaign-deadline-lock.ts` (the predicate), the `continue` before `proposeChange` in `coordination/campaign-reconcile.ts` (the actuator), `POST /api/v1/campaigns/{id}/deadline` and `scp campaign deadline` (set / move / clear — the exit). [ADR-0042](adr/0042-deadline-triggered-campaign-lock.md).
+
+---
+
 ### wave
 
 **Definition.** One ordered step of a **compiled plan**: **the set of one-or-more stages advanced at once**, and the targets within them. Wave order is computed from graph `depends_on` edges (topological sort with cycle rejection) plus explicit coordination rules such as "infrastructure before application". Waves sharing an index run in parallel (fan-out); a fan-in gate requires every target of the previous wave to have succeeded.
