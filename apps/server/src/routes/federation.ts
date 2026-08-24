@@ -157,6 +157,7 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           name: z.string(),
           role: FederationRoleSchema
         }),
+        400: ProblemSchema,
         401: ProblemSchema,
         403: ProblemSchema
       }
@@ -164,7 +165,8 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     config: {
       openapi: {
         operationId: "initFederation",
-        summary: "Designate this domain's federation role (commander|outpost|retrans)",
+        summary:
+          "Designate this domain's federation role (commander|outpost; retrans only on a deployment that declares SCP_FEDERATION_ROLE=retrans)",
         tags: ["federation"]
       }
     },
@@ -177,6 +179,25 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           permission: "federation:write",
           scopeObjectId: auth.orgId
         });
+        // THE RETRANS DOOR (owner decision 2026-08-24). An org declared `retrans` activates relay
+        // machinery (inbox loop, auto-relay obligations) and flips that org's dependencyManagement
+        // to `managedHere: false` — correct at a CDS boundary, a stray config anywhere else. The
+        // deployment is the arbiter: a real retrans box declares `SCP_FEDERATION_ROLE=retrans` at
+        // install time (which is also what withholds its SPA — retrans-no-spa.integration.test.ts),
+        // so an org-level retrans declaration on any OTHER deployment is refused here, at the sole
+        // write door for `federation_self.role` (initFederationSelf has exactly this one non-test
+        // caller). Sentence-only 400, no decision_id — a door-level refusal, not an engine verdict.
+        // The wire enum deliberately still carries "retrans" (narrowing it is an oasdiff break, and
+        // on a retrans-profile deployment this same route accepts it).
+        if (request.body.role === "retrans" && deps.config.federationRole !== "retrans") {
+          throw badRequest(
+            `an org may be declared 'retrans' only on a deployment that itself declares ` +
+              `SCP_FEDERATION_ROLE=retrans (this deployment: '${deps.config.federationRole}'). ` +
+              `A retrans is a CDS-boundary profile driven via CLI/API; declaring it here would ` +
+              `idle relay machinery on a non-boundary box and disable this org's dependency ` +
+              `management. Set the deployment profile first, or choose commander|outpost`
+          );
+        }
         return initFederationSelf(tx, {
           orgId: auth.orgId,
           name: request.body.name,

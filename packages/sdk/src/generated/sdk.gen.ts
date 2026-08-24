@@ -2532,7 +2532,7 @@ export const rollbackCampaign = <ThrowOnError extends boolean = false>(options: 
 });
 
 /**
- * Designate this domain's federation role (commander|outpost|retrans)
+ * Designate this domain's federation role (commander|outpost; retrans only on a deployment that declares SCP_FEDERATION_ROLE=retrans)
  */
 export const initFederation = <ThrowOnError extends boolean = false>(options: Options<InitFederationData, ThrowOnError>): RequestResult<InitFederationResponses, InitFederationErrors, ThrowOnError> => (options.client ?? client).post<InitFederationResponses, InitFederationErrors, ThrowOnError>({
     responseValidator: async (data) => await zInitFederationResponse.parseAsync(data),

@@ -18832,6 +18832,17 @@ export type InitFederationErrors = {
     /**
      * Error
      */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
     401: {
         type: string;
         title: string;
