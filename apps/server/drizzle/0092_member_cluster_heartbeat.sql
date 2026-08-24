@@ -1,5 +1,5 @@
 -- ===========================================================================================
--- 0093 — MEMBER-CLUSTER VERSION HEARTBEAT (§7.4 version-skew mechanism)
+-- 0092 — MEMBER-CLUSTER VERSION HEARTBEAT (§7.4 version-skew mechanism)
 --        (docs/proposals/multi-region-instance-resilience.md §7.4, M26.2/M26.3)
 --
 -- DESIGN §17's original "single image version (no skew)" row was written for ONE cluster. Once an

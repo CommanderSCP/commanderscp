@@ -1,5 +1,5 @@
 -- ===========================================================================================
--- 0091 — FEDERATION AUDIT WITNESS (rail §7.2.7 — turn every peer into a passive witness of an
+-- 0090 — FEDERATION AUDIT WITNESS (rail §7.2.7 — turn every peer into a passive witness of an
 --        exporter's audit-chain head, at near-zero cost)
 --        (docs/proposals/multi-region-instance-resilience.md §7.2.7, M26.2)
 --

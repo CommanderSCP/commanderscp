@@ -7,8 +7,10 @@ import { startSseBridge, type SseBridgeHandle } from "./sse-bridge.js";
 import {
   buildTestServer,
   createTestOrg,
+  testDatabaseUrl,
   testPgBossDatabaseUrl,
   testRuntimeDatabaseUrl,
+  waitUntil,
   type TestOrg,
   type TestServer
 } from "../test-support/harness.js";
@@ -34,6 +36,7 @@ describe("SSE bridge — NOTIFY payload authenticity", () => {
   let bridgePool: pg.Pool;
   let bridge: SseBridgeHandle;
   let attacker: pg.Client;
+  let admin: pg.Client;
 
   beforeAll(async () => {
     server = await buildTestServer();
@@ -47,10 +50,14 @@ describe("SSE bridge — NOTIFY payload authenticity", () => {
     // (db/provision.ts) — it cannot read one byte of `outbox`, yet it CAN issue NOTIFY.
     attacker = new pg.Client({ connectionString: testPgBossDatabaseUrl() });
     await attacker.connect();
+    // Writes the REAL outbox row whose delivery is this test's positive signal (see below).
+    admin = new pg.Client({ connectionString: testDatabaseUrl() });
+    await admin.connect();
   }, 90_000);
 
   afterAll(async () => {
     await attacker.end().catch(() => undefined);
+    await admin.end().catch(() => undefined);
     await bridge.stop();
     await bridgePool.end();
     await server.close();
@@ -79,9 +86,25 @@ describe("SSE bridge — NOTIFY payload authenticity", () => {
       };
       await attacker.query("SELECT pg_notify('scp_sse_events', $1)", [JSON.stringify(forged)]);
 
-      // Settle window: give the bridge ample time to (mis)deliver. Secure behavior = nothing
-      // arrives; the forged id must never reach org B's channel because no outbox row backs it.
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      // POSITIVE SIGNAL for a negative assertion (integration-sleep-census.test.ts's property — a
+      // fixed sleep here would be both flaky on a loaded box and vacuous on an idle one). Instead:
+      // send a GENUINE frame, backed by a real outbox row, immediately after the forgery. NOTIFY is
+      // ordered per channel and the bridge consumes one LISTEN connection in order, so the moment the
+      // genuine event arrives, the forged frame has DEFINITIVELY already been processed — and dropped.
+      const realId = randomUUID();
+      await admin.query(
+        `INSERT INTO outbox (id, org_id, type, source, subject, data, created_at)
+         VALUES ($1, $2, 'scp.change.transitioned', 'scp', 'authenticity-positive-signal', '{}'::jsonb, now())`,
+        [realId, orgB.orgId]
+      );
+      await admin.query("SELECT pg_notify('scp_sse_events', $1)", [
+        JSON.stringify({ id: realId, orgId: orgB.orgId })
+      ]);
+      await waitUntil(async () => received.find((e) => e.id === realId), {
+        describe:
+          "the genuine (outbox-backed) frame sent AFTER the forgery to arrive — the ordered barrier proving the forged frame was already processed",
+        timeoutMs: 15_000
+      });
 
       const leaked = received.find((e) => e.id === forgedId);
       expect(leaked).toBeUndefined();

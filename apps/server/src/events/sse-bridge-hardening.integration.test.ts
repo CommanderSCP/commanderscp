@@ -110,34 +110,57 @@ describe("SSE bridge — M26.1 hardening", () => {
     const bridge = startSseBridge(pool, server.deps.config.runtimeDatabaseUrl);
     const received: RelayedEvent[] = [];
     const onEvent = (e: RelayedEvent): void => void received.push(e);
+    // Subscribed from the START — this org is the BARRIER, and it must already have a listener when
+    // the unsubscribed org's frame is sent (see the race note below).
+    sseHub.on(orgWithClient.orgId, onEvent);
     try {
       await waitForBridgeListening();
-      const rowId = await insertOutboxRow(orgNoClient.orgId, "sec1-probe");
+      const quietId = await insertOutboxRow(orgNoClient.orgId, "sec1-quiet-probe");
+      const barrierId = await insertOutboxRow(orgWithClient.orgId, "sec1-barrier-probe");
 
-      // No subscriber for orgNoClient → the work-gate must skip the fetch entirely.
+      // FRAME 1 — no subscriber for orgNoClient: the work-gate must skip the fetch entirely.
       await admin.query("SELECT pg_notify('scp_sse_events', $1)", [
-        JSON.stringify({ id: rowId, orgId: orgNoClient.orgId })
+        JSON.stringify({ id: quietId, orgId: orgNoClient.orgId })
       ]);
-      await new Promise((r) => setTimeout(r, 1500));
+
+      // FRAME 2 IS THE POSITIVE SIGNAL (integration-sleep-census.test.ts's property — a fixed sleep
+      // would be flaky on a loaded box and vacuous on an idle one). It targets an org subscribed
+      // BEFORE frame 1 was sent, which is load-bearing: subscribing to the QUIET org here instead
+      // would race the bridge, since frame 1 is often still unprocessed at that moment and would
+      // then legitimately fetch (measured: connectCount 2). NOTIFY is ordered per channel and the
+      // bridge consumes one LISTEN connection in order, so frame 2's delivery proves frame 1 was
+      // already handled.
+      await admin.query("SELECT pg_notify('scp_sse_events', $1)", [
+        JSON.stringify({ id: barrierId, orgId: orgWithClient.orgId })
+      ]);
+      await waitUntil(async () => received.find((e) => e.id === barrierId), {
+        describe:
+          "the barrier event (an org subscribed from the start) to arrive — proving frame 1 was already handled",
+        timeoutMs: 15_000
+      });
+
+      // Both frames provably processed: the pool was touched EXACTLY once, by the barrier. The quiet
+      // org's frame never opened a connection and never delivered.
       expect(
         control.connectCount,
         "a frame for an org with no local subscriber must not open a pool connection"
-      ).toBe(0);
-      expect(received).toHaveLength(0);
+      ).toBe(1);
+      expect(received.find((e) => e.id === quietId)).toBeUndefined();
 
-      // Now connect a client for that org and re-notify: the fetch must happen and deliver.
+      // And the SAME pointer DOES fetch and deliver once that org has a client — the positive half.
       sseHub.on(orgNoClient.orgId, onEvent);
       await admin.query("SELECT pg_notify('scp_sse_events', $1)", [
-        JSON.stringify({ id: rowId, orgId: orgNoClient.orgId })
+        JSON.stringify({ id: quietId, orgId: orgNoClient.orgId })
       ]);
-      const evt = await waitUntil(async () => received.find((e) => e.id === rowId), {
+      const evt = await waitUntil(async () => received.find((e) => e.id === quietId), {
         describe: "the event to be delivered once a client for the org is connected",
         timeoutMs: 15_000
       });
       expect(evt.orgId).toBe(orgNoClient.orgId);
-      expect(control.connectCount).toBeGreaterThan(0);
+      expect(control.connectCount).toBe(2);
     } finally {
       sseHub.off(orgNoClient.orgId, onEvent);
+      sseHub.off(orgWithClient.orgId, onEvent);
       await bridge.stop();
       await pool.end();
     }
@@ -167,7 +190,21 @@ describe("SSE bridge — M26.1 hardening", () => {
       await admin.query("SELECT pg_notify('scp_sse_events', $1)", [
         JSON.stringify({ id: rowId, orgId: orgWithClient.orgId })
       ]);
-      await new Promise((r) => setTimeout(r, 2000));
+
+      // POSITIVE SIGNAL instead of a settle sleep (integration-sleep-census.test.ts's property): a
+      // DIFFERENT, genuine event sent right after the replay. NOTIFY is ordered per channel and the
+      // bridge consumes it in order, so this event's arrival proves the replay was already processed
+      // — and dropped.
+      const laterId = await insertOutboxRow(orgWithClient.orgId, "sec2-later-probe");
+      await admin.query("SELECT pg_notify('scp_sse_events', $1)", [
+        JSON.stringify({ id: laterId, orgId: orgWithClient.orgId })
+      ]);
+      await waitUntil(async () => received.find((e) => e.id === laterId), {
+        describe:
+          "a later genuine event to arrive — the ordered barrier proving the replayed frame was already handled",
+        timeoutMs: 15_000
+      });
+
       expect(
         received.filter((e) => e.id === rowId),
         "a replayed id must not re-inject the event into the live stream"

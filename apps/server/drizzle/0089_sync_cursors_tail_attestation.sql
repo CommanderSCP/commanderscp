@@ -1,5 +1,5 @@
 -- ===========================================================================================
--- 0090 — RAIL 4: EXPORTER TAIL ATTESTATION HIGH-WATER MARK
+-- 0089 — RAIL 4: EXPORTER TAIL ATTESTATION HIGH-WATER MARK
 --        (docs/proposals/multi-region-instance-resilience.md §7.2 rail 4, M26.2)
 --
 -- The EXPAND-phase substrate for divergence rail 4. Every export response will carry a signed

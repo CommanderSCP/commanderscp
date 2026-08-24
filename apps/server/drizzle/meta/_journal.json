@@ -626,31 +626,31 @@
       "breakpoints": true
     },
     {
-      "idx": 90,
+      "idx": 89,
       "version": "7",
       "when": 1788150000000,
-      "tag": "0090_sync_cursors_tail_attestation",
+      "tag": "0089_sync_cursors_tail_attestation",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1788151000000,
+      "tag": "0090_federation_audit_witness",
       "breakpoints": true
     },
     {
       "idx": 91,
       "version": "7",
-      "when": 1788151000000,
-      "tag": "0091_federation_audit_witness",
+      "when": 1788152000000,
+      "tag": "0091_federation_self_generation",
       "breakpoints": true
     },
     {
       "idx": 92,
       "version": "7",
-      "when": 1788152000000,
-      "tag": "0092_federation_self_generation",
-      "breakpoints": true
-    },
-    {
-      "idx": 93,
-      "version": "7",
       "when": 1788153000000,
-      "tag": "0093_member_cluster_heartbeat",
+      "tag": "0092_member_cluster_heartbeat",
       "breakpoints": true
     }
   ]

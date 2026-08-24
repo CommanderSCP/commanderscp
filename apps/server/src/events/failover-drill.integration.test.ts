@@ -20,14 +20,17 @@ import {
 } from "../test-support/harness.js";
 
 /**
- * §7.5 FAILOVER DRILL — the whole outbox→NOTIFY→bridge→sseHub delivery path must SURVIVE a Postgres
- * connection loss mid-flight and keep delivering, exactly once. A member cluster far from the primary
- * (or one whose primary just failed over) loses every backend at once; this drill reproduces that
- * with `pg_terminate_backend` of ALL the drill's own connections (deterministic, unlike a container
- * restart), then asserts a post-failover event still flows end to end and is delivered ONCE — proving
- * the M26.1 reconnecting relay wake-listener (§4-A5) + sse-bridge reconnect (§7.1.1) + fast-fail pool
- * timeouts (§4-A6) actually recover as designed. (Fork/duplicate under concurrency is separately
- * gated by divergence-rails, reconcile-startup-singleton and watchdog-race.)
+ * §7.5 FAILOVER DRILL — the outbox→NOTIFY→bridge→sseHub delivery path must SURVIVE losing its
+ * Postgres connections mid-flight and keep delivering, exactly once. A promoted primary evicts the
+ * long-lived LISTEN connections this path depends on; the drill reproduces that by
+ * `pg_terminate_backend`-ing BOTH of them by pid (deterministic, unlike a container restart — and
+ * scoped rather than a blanket kill, for the flakiness reason documented at the kill site), then
+ * asserts a post-failover event still flows end to end and is delivered ONCE — proving the M26.1
+ * reconnecting relay wake-listener (§4-A5) + sse-bridge reconnect (§7.1.1) + the pool error handler
+ * and fast-fail timeouts (§4-A6, db/client.ts) actually recover as designed. The kill itself is
+ * asserted (≥2 backends terminated), so the drill cannot pass vacuously by finding nothing to kill.
+ * (Fork/duplicate under concurrency is separately gated by divergence-rails,
+ * reconcile-startup-singleton and watchdog-race.)
  */
 describe("§7.5 failover drill: outbox→bridge delivery survives a mid-flight backend loss, once", () => {
   let server: TestServer;
@@ -90,12 +93,27 @@ describe("§7.5 failover drill: outbox→bridge delivery survives a mid-flight b
         timeoutMs: 15_000
       });
 
-      // THE FAILOVER: terminate every backend on this worker's database. The relay's wake listener,
-      // the bridge's LISTEN client, and both pools all lose their connections at once.
-      await adminClient.query(
-        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-         WHERE datname = current_database() AND pid <> pg_backend_pid()`
+      // THE FAILOVER: terminate BOTH long-lived LISTEN backends — the relay's wake listener
+      // (`scp_outbox_insert`) and the SSE bridge's (`scp_sse_events`). These are precisely the
+      // connections a promoted primary evicts and precisely what the M26.1 reconnecting LISTEN client
+      // (§4-A5, §7.1.1) exists to survive; killing them is what makes this a failover drill rather
+      // than a delivery test.
+      //
+      // DELIBERATELY NOT a blanket kill of every backend (or of every `scp_app` backend). Both wider
+      // forms also evict pg-boss and the harness's own runtime pool, which then reconnect-storm
+      // against a database the NEXT run is trying to re-create — measured as `Hook timed out in
+      // 60000ms` in `beforeAll` on 1-of-2 and then 1-of-5 consecutive runs. A test that reds CI a
+      // fifth of the time teaches people to ignore CI, so the blast radius is scoped to the
+      // connections whose recovery is the actual claim.
+      const killed = await adminClient.query<{ pid: number }>(
+        `SELECT pg_terminate_backend(pid) AS ok, pid FROM pg_stat_activity
+         WHERE datname = current_database() AND pid <> pg_backend_pid()
+           AND query ILIKE 'LISTEN scp_%'`
       );
+      expect(
+        killed.rowCount,
+        "both LISTEN backends (relay wake + SSE bridge) must have been found and terminated — if this is 0 the drill proves nothing"
+      ).toBeGreaterThanOrEqual(2);
 
       // RECOVERY: a fresh event published after the blip must still flow end to end (the relay poll
       // fallback + the reconnecting LISTEN clients bring everything back), delivered EXACTLY ONCE.
@@ -104,10 +122,20 @@ describe("§7.5 failover drill: outbox→bridge delivery survives a mid-flight b
         describe: "the post-failover probe to be delivered after every backend was terminated",
         timeoutMs: 20_000
       });
-      // Give any duplicate a generous window to (wrongly) arrive, then assert exactly one of each.
-      await new Promise((r) => setTimeout(r, 1500));
+      // POSITIVE SIGNAL rather than a settle sleep (integration-sleep-census.test.ts's property): a
+      // THIRD probe, published after the first two and awaited. The relay walks the outbox in commit
+      // order and NOTIFY is ordered per channel, so once probe three has been delivered, any
+      // duplicate of the earlier two would already have arrived — making "exactly one of each" a
+      // claim about work that provably finished, not about a wall-clock guess.
+      await publishProbe("post-failover-barrier");
+      await waitUntil(async () => received.find((e) => e.subject === "post-failover-barrier"), {
+        describe:
+          "a third probe to be delivered — the ordered barrier for the no-duplicate assertion",
+        timeoutMs: 20_000
+      });
       expect(received.filter((e) => e.subject === "pre-failover")).toHaveLength(1);
       expect(received.filter((e) => e.subject === "post-failover")).toHaveLength(1);
+      expect(received.filter((e) => e.subject === "post-failover-barrier")).toHaveLength(1);
     } finally {
       sseHub.off(org.orgId, onEvent);
     }
