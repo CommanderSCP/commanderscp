@@ -4,7 +4,7 @@
 
 ## ✅ M26 COMPLETE ON BRANCH (2026-08-24)
 
-All of M26.1–M26.4 is built, tested, and pushed on `multi-region-ha` (tip ~`3b035fa`). `pnpm -w typecheck` + eslint clean, gen has no drift, oasdiff additive-only, all M26 integration gates green. **Only remaining obligation:** M26.1's A2 **verify-only gate**, which is externally blocked on M25's campaign-reconcile advisory lock merging to `main` (re-checked 2026-08-24 — still not merged). It reverts to an M26.1 fix if M25 drops it. Delete this doc once M26 merges. Summary of what landed:
+All of M26.1–M26.4 is built, tested, and pushed on `multi-region-ha` (tip ~`aa0cfe9`). `pnpm -w typecheck` + eslint clean, gen has no drift, oasdiff additive-only, all M26 integration gates green. **No outstanding obligations** — M25's `m25-campaign-levers` branch is gone from the remote and A2 never landed on `main`, so per the "if it never lands, A2 reverts to an M26.1 fix" plan, A2 (the campaign-reconcile coordination lock, mutation-proven race gate) was built here in M26.1. Delete this doc once M26 merges. Summary of what landed:
 
 - **M26.1 (§7.1)** — review-clean; F1 fixed; 9 review findings cleared (each mutation-proven), incl. a critical B9 clobber race (PV-1) and a leaked mutation marker.
 - **M26.2 (§7.2/§7.3)** — divergence rails 1/2/4/5 (rail 3 already covered), signed tail attestation, audit witness (§7.2.7), the **signed cross-domain resync handshake** (§7.2.6), D6 + decrypt canary + operator-gated instance doctor (§7.3). Migrations 0090–0093.
