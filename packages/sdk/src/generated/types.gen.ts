@@ -18115,6 +18115,19 @@ export type PairPeerErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+        exporterTailSequence?: number;
+        exporterTailRowHash?: string;
+    };
 };
 
 export type PairPeerError = PairPeerErrors[keyof PairPeerErrors];
@@ -18331,6 +18344,19 @@ export type UpdateFederationPeerErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+        exporterTailSequence?: number;
+        exporterTailRowHash?: string;
+    };
 };
 
 export type UpdateFederationPeerError = UpdateFederationPeerErrors[keyof UpdateFederationPeerErrors];
@@ -18511,6 +18537,7 @@ export type ExportSyncBundleData = {
         peer: string;
         sinceSequence?: number;
         deliver?: boolean;
+        lastAppliedRowHash?: string;
     };
     path?: never;
     query?: never;
@@ -18562,6 +18589,19 @@ export type ExportSyncBundleErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+        exporterTailSequence?: number;
+        exporterTailRowHash?: string;
+    };
 };
 
 export type ExportSyncBundleError = ExportSyncBundleErrors[keyof ExportSyncBundleErrors];
@@ -18599,6 +18639,11 @@ export type ExportSyncBundleResponses = {
         }>;
         checksum: string;
         bundleSignature: string;
+        tailAttestation?: {
+            tailSequence: number;
+            tailRowHash: string;
+            signature: string;
+        };
     };
 };
 
@@ -18767,6 +18812,11 @@ export type ImportBundleData = {
         }>;
         checksum: string;
         bundleSignature: string;
+        tailAttestation?: {
+            tailSequence: number;
+            tailRowHash: string;
+            signature: string;
+        };
     } | {
         header: {
             formatVersion: 1;

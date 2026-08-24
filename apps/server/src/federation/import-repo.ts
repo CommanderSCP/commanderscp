@@ -1,6 +1,7 @@
 import {
   asContainmentDomainId,
   asTrustDomainId,
+  JOURNAL_DIVERGENCE_PROBLEM_TYPE,
   type ContainmentDomainId,
   type SyncBundle,
   type SyncJournalEntry,
@@ -18,7 +19,12 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { conflict, ProblemError } from "../errors.js";
 import { ensureFederationSelf } from "./self-repo.js";
 import { getPeerByIdOrName, listPeerKeyWindows, verificationKeyForSequence } from "./peers-repo.js";
-import { getCursor, advanceCursor, type SyncCursor } from "./cursors-repo.js";
+import {
+  getCursor,
+  advanceCursor,
+  verifyAndAdvanceTailAttestation,
+  type SyncCursor
+} from "./cursors-repo.js";
 import { recordBundleTransfer, type BundleTransport } from "./bundle-transfers-repo.js";
 import { entryMatchesScope } from "./scope-filter.js";
 import {
@@ -745,6 +751,34 @@ export async function importSyncBundle(
   const isFullScope = peer.syncScope.mode === "full";
   const cursor = await getCursor(tx, orgId, peer.id, exporterDomainId);
   const toApply = bundle.entries.filter((entry) => entry.sequence > cursor.sequence);
+
+  // DIVERGENCE RAIL 4 (§7.2) — the exporter's SIGNED tail attestation, verified and advanced against
+  // this side's monotonic high-water mark BEFORE any entry is applied, so a rolled-back/forked tail
+  // fails the whole import closed. Runs for BOTH full and sparse receivers and even for an
+  // entry-empty bundle — which is exactly what makes it catch a lost/rolled-back tail for a
+  // narrow-scope peer that rails 1–3 are structurally blind to. The attestation rides OUTSIDE the
+  // bundle checksum (a sibling field), so its signature is verified independently here against the
+  // same peer key; an un-upgraded exporter sends none and the rail no-ops (never blocks). `isReplay`
+  // (this bundle's tail is at or below what we already applied) keeps an idempotent re-import of an
+  // older bundle from being mistaken for a live regression.
+  if (bundle.tailAttestation) {
+    const att = bundle.tailAttestation;
+    const attestationChecksum = computeBundleChecksum({
+      exporterDomainId: bundle.header.exporterDomainId,
+      peerDomainId: bundle.header.peerDomainId,
+      tailSequence: att.tailSequence,
+      tailRowHash: att.tailRowHash
+    });
+    if (!verifyBundleSignature(attestationChecksum, att.signature, bundleKey)) {
+      throw new ProblemError(409, "Conflict", {
+        type: JOURNAL_DIVERGENCE_PROBLEM_TYPE,
+        detail: "tail attestation signature verification failed (rejected, fail-closed)"
+      });
+    }
+    await verifyAndAdvanceTailAttestation(tx, orgId, peer.id, exporterDomainId, att, {
+      isReplay: bundle.header.throughSequence <= cursor.sequence
+    });
+  }
 
   // Single-writer authority: every entry about to be applied must be authored by the verified
   // signer — reject the WHOLE bundle if any claims a foreign origin (CRITICAL review fix; see

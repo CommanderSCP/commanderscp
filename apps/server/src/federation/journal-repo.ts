@@ -141,6 +141,31 @@ export async function ownJournalTail(
   return { sequence: rows[0]?.sequence ?? 0, rowHash: rows[0]?.rowHash ?? JOURNAL_GENESIS_HASH };
 }
 
+/** The `rowHash` of THIS domain's own journal entry AT one exact sequence, or `null` if no such
+ *  entry exists. DIVERGENCE RAIL 2 (multi-region-instance-resilience.md §7.2): the exporter compares
+ *  this against the puller's supplied `lastAppliedRowHash` at its cursor — a mismatch is proof the
+ *  tail was rolled back and re-minted (a different entry now sits at the height the puller anchored
+ *  to). Scoped to the own-origin journal exactly like `ownJournalTail`. */
+export async function ownJournalEntryAtSequence(
+  tx: TenantTx,
+  orgId: string,
+  sequence: number
+): Promise<{ rowHash: string } | null> {
+  const self = await ensureFederationSelf(tx, orgId);
+  const rows = await tx
+    .select({ rowHash: syncJournal.rowHash })
+    .from(syncJournal)
+    .where(
+      and(
+        eq(syncJournal.orgId, orgId),
+        eq(syncJournal.originDomainId, self.domainId),
+        eq(syncJournal.sequence, sequence)
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 // NOTE: entries RECEIVED from a peer (as opposed to authored locally) are never inserted into
 // this domain's own `sync_journal` table — imports apply through the idempotent public write path
 // (graph/objects-repo.ts et al.), and provenance is tracked via `sync_cursors` (cursors-repo.ts)

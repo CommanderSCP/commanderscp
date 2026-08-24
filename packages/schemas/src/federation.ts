@@ -745,8 +745,34 @@ export const ExportJournalRequestSchema = z.object({
    *  resolved DeliveryTarget (per-peer config, else the `SCP_RELAY_OUT_DIR` instance fallback;
    *  BOTH absent refuses fail-closed). The response body stays the bundle document, unchanged —
    *  the drop is the server-side leg of the CDS walk the operator otherwise does by hand. */
-  deliver: z.boolean().optional()
+  deliver: z.boolean().optional(),
+  /** DIVERGENCE RAIL 2 (multi-region-instance-resilience.md §7.2) — the puller's cursor anchor:
+   *  the `rowHash` of the entry it has applied AT `sinceSequence`. The exporter compares it against
+   *  its OWN journal row at that sequence and refuses (`journal_divergence`) on mismatch — proof its
+   *  tail was rolled back and re-minted after an async-replication failover. Additive & OPTIONAL:
+   *  only FULL-scope receivers hold a real anchor (a sparse receiver's cursor `rowHash` is null and
+   *  it omits this), and an un-upgraded puller simply never sends it (rail 1 still covers the strict
+   *  `sinceSequence > tail` case with no new wire data). */
+  lastAppliedRowHash: z.string().optional()
 });
+
+/** RFC 9457 problem `type` for a detected journal fork/rollback (multi-region-instance-resilience.md
+ *  §7.2 rails 1–5). The FIRST custom problem type in this codebase (every other refusal uses the
+ *  `about:blank` default) — a URN so it is stable, self-describing, and never a dereferenceable
+ *  external URL (charter principle 5, air-gap). Exported so the server (throw site), the CLI, and
+ *  tests all match ONE literal rather than restating it. */
+export const JOURNAL_DIVERGENCE_PROBLEM_TYPE = "urn:scp:federation:journal_divergence";
+
+/** The `journal_divergence` 409 body. Extension members carry the exporter's OWN tail at the moment
+ *  of refusal so an operator (or `scp federation doctor`) can see how far the fork/rollback reaches
+ *  in one round trip. OPTIONAL, never required (the PR #156 lesson `OutpostReconcileStaleProblemSchema`
+ *  records: a REQUIRED extension a throw path fails to populate turns a valid 409 into a serializer
+ *  500). Rails 1, 2, and 4 all refuse with this shape. */
+export const JournalDivergenceProblemSchema = ProblemSchema.extend({
+  exporterTailSequence: z.number().int().nonnegative().optional(),
+  exporterTailRowHash: z.string().optional()
+});
+export type JournalDivergenceProblem = z.infer<typeof JournalDivergenceProblemSchema>;
 export type ExportJournalRequest = z.infer<typeof ExportJournalRequestSchema>;
 
 // -------------------------------------------------------------------------------------------
@@ -766,11 +792,30 @@ export const SyncBundleHeaderSchema = z.object({
 });
 export type SyncBundleHeader = z.infer<typeof SyncBundleHeaderSchema>;
 
+/** DIVERGENCE RAIL 4 (multi-region-instance-resilience.md §7.2) — the exporter's SIGNED attestation
+ *  of its OWN journal tail, carried on EVERY export (even an empty one). Signed over
+ *  `{exporterDomainId, peerDomainId, tailSequence, tailRowHash}` with the same instance key the
+ *  bundle uses — the domain ids are bound in so an attestation cannot be replayed onto another
+ *  bundle. The importer persists it as a MONOTONIC high-water mark per (peer, origin) and refuses
+ *  `journal_divergence` on any regression or same-height content change — which is what makes a
+ *  lost/rolled-back tail detectable for a NARROW-scope peer, where rails 1–3 are silent. */
+export const JournalTailAttestationSchema = z.object({
+  tailSequence: z.number().int().nonnegative(),
+  tailRowHash: z.string(),
+  signature: z.string()
+});
+export type JournalTailAttestation = z.infer<typeof JournalTailAttestationSchema>;
+
 export const SyncBundleSchema = z.object({
   header: SyncBundleHeaderSchema,
   entries: z.array(SyncJournalEntrySchema),
   checksum: z.string(),
-  bundleSignature: z.string()
+  bundleSignature: z.string(),
+  /** RAIL 4 — additive & OPTIONAL: an un-upgraded importer (or a pre-M26.2 bundle sitting in an
+   *  inbox) simply lacks it and the rail no-ops, never blocking. It rides OUTSIDE `checksum`
+   *  (which covers only `{header, entries}`) as a sibling field, so old strict readers drop it and
+   *  the existing bundle signature is unaffected. */
+  tailAttestation: JournalTailAttestationSchema.optional()
 });
 export type SyncBundle = z.infer<typeof SyncBundleSchema>;
 

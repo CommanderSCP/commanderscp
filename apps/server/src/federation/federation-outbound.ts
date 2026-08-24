@@ -111,6 +111,24 @@ export class FederationDialRefused extends Error {
   }
 }
 
+/**
+ * A non-2xx response from a federation export/pull, carrying the parsed problem `type` and `status`
+ * so the caller can distinguish a VERIFIED, STANDING refusal (a `journal_divergence` 409 — divergence
+ * rails 1/2, §7.2, which the puller records as a block on ITS side too) from a transient failure (a
+ * 401/500/timeout the sweep simply retries). Before this, every non-2xx collapsed to a bare `Error`
+ * the caller could only treat as transient.
+ */
+export class FederationExportRefused extends Error {
+  constructor(
+    readonly status: number,
+    readonly type: string,
+    readonly detail: string
+  ) {
+    super(`federation exports pull failed: ${detail} (status ${status})`);
+    this.name = "FederationExportRefused";
+  }
+}
+
 export interface FederationDialResult {
   status: number;
   body: unknown;
@@ -185,6 +203,10 @@ export async function pullSyncBundleFromCommander(opts: {
   baseUrl: string;
   selfDomainId: string;
   sinceSequence: number;
+  /** DIVERGENCE RAIL 2 (§7.2) — the puller's applied-row anchor at `sinceSequence`, sent ONLY by a
+   *  full-scope receiver that holds a real anchor. The exporter compares it against its own journal
+   *  at that height and refuses `journal_divergence` on mismatch. Omitted (undefined) → not sent. */
+  lastAppliedRowHash?: string;
   bearer?: string;
   mtls?: FederationClientMtls;
 }): Promise<SyncBundle> {
@@ -192,17 +214,25 @@ export async function pullSyncBundleFromCommander(opts: {
   const requireMtls = federationPeerRequiresMtls(opts.baseUrl);
   const result = await federationDialJson({
     url,
-    body: { peer: opts.selfDomainId, sinceSequence: opts.sinceSequence },
+    body: {
+      peer: opts.selfDomainId,
+      sinceSequence: opts.sinceSequence,
+      ...(opts.lastAppliedRowHash !== undefined
+        ? { lastAppliedRowHash: opts.lastAppliedRowHash }
+        : {})
+    },
     bearer: opts.bearer,
     mtls: opts.mtls,
     requireMtls
   });
   if (result.status < 200 || result.status >= 300) {
-    const detail =
-      result.body && typeof result.body === "object" && "detail" in result.body
-        ? String((result.body as { detail?: unknown }).detail)
-        : `HTTP ${result.status}`;
-    throw new Error(`federation exports pull failed: ${detail} (status ${result.status})`);
+    const body =
+      result.body && typeof result.body === "object"
+        ? (result.body as { detail?: unknown; type?: unknown })
+        : {};
+    const detail = "detail" in body ? String(body.detail) : `HTTP ${result.status}`;
+    const type = typeof body.type === "string" ? body.type : "about:blank";
+    throw new FederationExportRefused(result.status, type, detail);
   }
   return result.body as SyncBundle;
 }

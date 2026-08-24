@@ -1,7 +1,15 @@
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
-import type { TrustDomainId } from "@scp/schemas";
+import { JOURNAL_DIVERGENCE_PROBLEM_TYPE, type TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { syncCursors } from "../db/schema.js";
+import { ProblemError } from "../errors.js";
+import { latestDecisionForSubjectKind } from "../coordination/decisions-repo.js";
+
+/** Decision kind for a STANDING importer-side journal divergence with a peer (rails 1/2/4, §7.2).
+ *  Distinct from `federation-sync-pull` (which covers every sync block — mTLS, checksum, chain) so
+ *  RAIL 5 can ask precisely "is a divergence standing for this peer?" without reason-string matching.
+ *  Cleared when the resync operation (§7.2.6) writes a newer, non-block Decision of this kind. */
+export const FEDERATION_DIVERGENCE_DECISION_KIND = "federation-divergence";
 
 /**
  * Per-peer resumable sync cursors (DESIGN.md §13: "per-domain monotonic sequence cursors make
@@ -86,6 +94,48 @@ export async function permitCursorReanchor(
   orgId: string,
   peerDomainId: TrustDomainId
 ): Promise<number> {
+  // RAIL 5 pre-check (§7.2): would this call ACTUALLY issue a permit? Only an anchorless cursor
+  // (`last_applied_row_hash IS NULL AND last_applied_seq > 0`) is eligible. If none exists this is a
+  // no-op — an unrelated `pairPeer`/`updatePeerTransport` that merely left scope at `full` on an
+  // already-healthy peer — and it must fall straight through, NEVER refusing. Rail 5 fires only where
+  // a real permit would be issued, which is the whole false-positive story.
+  const eligible = await tx
+    .select({ one: sql<number>`1` })
+    .from(syncCursors)
+    .where(
+      and(
+        eq(syncCursors.orgId, orgId),
+        eq(syncCursors.peerDomainId, peerDomainId),
+        isNull(syncCursors.lastAppliedRowHash),
+        gt(syncCursors.lastAppliedSeq, 0)
+      )
+    )
+    .limit(1);
+  if (eligible.length === 0) return 0;
+
+  // RAIL 5 (§7.2 — review's sharpest finding: "the rails can be undone by following the printed
+  // remedy"). The current no-anchor error message PRESCRIBES a re-anchor; so while a
+  // `journal_divergence` is STANDING for this peer, this permit — the mechanism that message points
+  // at — must be refused. Re-anchoring here would silently adopt the forked/rolled-back tail as
+  // truth; `scp federation resync` is the sanctioned recovery, and it (not this) clears the standing
+  // verdict.
+  const standing = await latestDecisionForSubjectKind(
+    tx,
+    orgId,
+    peerDomainId,
+    FEDERATION_DIVERGENCE_DECISION_KIND
+  );
+  if (standing && standing.verdict === "block") {
+    throw new ProblemError(409, "Conflict", {
+      type: JOURNAL_DIVERGENCE_PROBLEM_TYPE,
+      detail:
+        "refusing to re-anchor this peer's sync cursor while a journal_divergence is standing — run " +
+        "`scp federation resync --peer <peer>` instead; re-anchoring here would adopt a forked or " +
+        "rolled-back tail as truth",
+      decisionId: standing.id
+    });
+  }
+
   const updated = await tx
     .update(syncCursors)
     .set({ reanchorFromSeq: sql`${syncCursors.lastAppliedSeq}`, updatedAt: new Date() })
@@ -175,5 +225,103 @@ export async function advanceCursor(
       lastAppliedSeq: sequence,
       lastAppliedRowHash: rowHash
     });
+  }
+}
+
+/**
+ * DIVERGENCE RAIL 4 (multi-region-instance-resilience.md §7.2) — verify the exporter's signed tail
+ * attestation against the MONOTONIC high-water mark this side holds for (peer, origin), then advance
+ * it. The attestation's SIGNATURE is verified by the caller (import-repo, which holds the peer key);
+ * this owns only the ordering contract:
+ *   - `tailSequence` EQUAL to the mark but a DIFFERENT `tailRowHash` → a fork at the same height →
+ *     `journal_divergence` (UNAMBIGUOUS — the exporter's tail at that exact height was re-minted);
+ *   - `tailSequence` BELOW the mark, on a FRESH bundle → the exporter's live tail went backwards →
+ *     `journal_divergence`;
+ *   - `tailSequence` ABOVE the mark → advance (the normal, healthy case);
+ *   - EQUAL and identical → idempotent no-op.
+ *
+ * `isReplay` is the load-bearing distinction (a real bug caught in test): a legitimately OLDER bundle
+ * re-delivered (the file/CDS path can, and idempotent re-import is a hard invariant) carries a
+ * genuinely lower attestation that was TRUE when it was exported — refusing it as a "regression"
+ * would break replay. A replay is exactly a bundle whose own `throughSequence` is at or below what we
+ * have already applied; for those, the below-the-mark case is a no-op, not a refusal. A same-height
+ * hash FORK is still refused even on a replay (a legitimate replay never changes the hash at a height
+ * it once reported). Runs for BOTH full and sparse receivers, independent of how many entries the
+ * bundle applied — which is why it catches a rolled-back tail for a narrow-scope peer rails 1–3 miss.
+ * It only ever WRITES the two attested columns; `advanceCursor` owns `last_applied_*` on the same
+ * row, so whichever runs first the other's select-then-update/insert leaves it intact.
+ */
+export async function verifyAndAdvanceTailAttestation(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: TrustDomainId,
+  originDomainId: TrustDomainId,
+  attestation: { tailSequence: number; tailRowHash: string },
+  opts: { isReplay: boolean }
+): Promise<void> {
+  const rows = await tx
+    .select({
+      orgId: syncCursors.orgId,
+      attestedTailSeq: syncCursors.attestedTailSeq,
+      attestedTailRowHash: syncCursors.attestedTailRowHash
+    })
+    .from(syncCursors)
+    .where(
+      and(
+        eq(syncCursors.orgId, orgId),
+        eq(syncCursors.peerDomainId, peerDomainId),
+        eq(syncCursors.originDomainId, originDomainId)
+      )
+    )
+    .limit(1);
+  const rowExists = rows.length > 0;
+  const prevSeq = rows[0]?.attestedTailSeq ?? null;
+  const prevHash = rows[0]?.attestedTailRowHash ?? null;
+
+  if (prevSeq !== null) {
+    if (attestation.tailSequence === prevSeq && attestation.tailRowHash !== prevHash) {
+      throw new ProblemError(409, "Conflict", {
+        type: JOURNAL_DIVERGENCE_PROBLEM_TYPE,
+        detail:
+          `exporter attested a DIFFERENT tail hash at the same height (sequence ${prevSeq}) than ` +
+          `previously recorded — a forked/re-minted tail`
+      });
+    }
+    if (!opts.isReplay && attestation.tailSequence < prevSeq) {
+      throw new ProblemError(409, "Conflict", {
+        type: JOURNAL_DIVERGENCE_PROBLEM_TYPE,
+        detail:
+          `exporter's live attested journal tail regressed: sequence ${attestation.tailSequence} is ` +
+          `below the highest previously attested (${prevSeq}) — a rolled-back tail after a lost-tail restore`
+      });
+    }
+  }
+
+  // Monotonic advance; EQUAL-and-identical falls through as an idempotent no-op.
+  if (prevSeq === null || attestation.tailSequence > prevSeq) {
+    if (rowExists) {
+      await tx
+        .update(syncCursors)
+        .set({
+          attestedTailSeq: attestation.tailSequence,
+          attestedTailRowHash: attestation.tailRowHash,
+          updatedAt: new Date()
+        })
+        .where(
+          and(
+            eq(syncCursors.orgId, orgId),
+            eq(syncCursors.peerDomainId, peerDomainId),
+            eq(syncCursors.originDomainId, originDomainId)
+          )
+        );
+    } else {
+      await tx.insert(syncCursors).values({
+        orgId,
+        peerDomainId,
+        originDomainId,
+        attestedTailSeq: attestation.tailSequence,
+        attestedTailRowHash: attestation.tailRowHash
+      });
+    }
   }
 }
