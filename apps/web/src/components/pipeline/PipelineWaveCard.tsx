@@ -29,6 +29,21 @@ import { formatDate, waveStatusBorder, waveStatusTone } from "./wave-status";
  *   - `linksFor` is optional — surfaces that don't fetch binding/source links simply omit it.
  */
 
+/**
+ * ONE FIELD'S ENTRY IN `observed.truncation` — mirrors `PersistedJsonFieldTruncation`
+ * (`packages/runner-launcher/src/index.ts`) as surfaced through `ChangeWaveTargetSchema`
+ * (`packages/schemas/src/changes.ts:346` on #264). `dropped: true` means the field is not in the
+ * stored value AT ALL, and that is the persistence bound's doing, not the executor's silence —
+ * the whole reason this module cannot keep treating "absent" and "cut" as the same pixels
+ * (docs/proposals/observed-truncation-ui.md, charter principle 6).
+ */
+export interface ObservedTruncationEntry {
+  dropped: boolean;
+  droppedCharacters?: number;
+  droppedEntries?: number;
+  droppedFields?: number;
+}
+
 /** A wave target, structurally — the intersection-with-options of ChangeWaveTarget and
  *  CampaignWaveTarget. */
 export interface PipelineWaveTargetLike {
@@ -54,6 +69,11 @@ export interface PipelineWaveTargetLike {
           message?: string | undefined;
         }
       | undefined;
+    /** WHAT THE PERSISTENCE BOUND REMOVED, KEYED BY ROOT FIELD (M23.1g, ChangeWaveTargetSchema —
+     *  packages/schemas/src/changes.ts:346 on #264). Additive-optional: absent means "nothing was
+     *  cut" — the only honest reading for a pre-M23.1g row, which cannot be backfilled because the
+     *  content itself is gone. See `truncationOf` below for the one place this is read. */
+    truncation?: Record<string, ObservedTruncationEntry> | undefined;
   } | null;
   /** Campaign targets: the per-target member Change the wave fanned out into (DESIGN §9.5). */
   memberChangeObjectId?: string | null;
@@ -106,6 +126,113 @@ function hostOf(url: string): string {
   } catch {
     return url;
   }
+}
+
+type ObservedLike = PipelineWaveTargetLike["observed"];
+
+/**
+ * THE ONE HELPER EVERY `observed.truncation` READ GOES THROUGH (proposal §3 rule 4,
+ * docs/proposals/observed-truncation-ui.md) — a future read site that calls this instead of
+ * indexing `target.observed?.truncation` directly inherits the honesty rule for free, rather than
+ * having a chance to re-introduce the "cut looks like absent" lie. Returns the RAW entry
+ * (`dropped` may be `false`, e.g. a tail-cut array whose field survived) — callers decide what a
+ * `dropped: true` versus a merely-shortened field means for their own slot; see `droppedEntry`
+ * below for the common "was this field's own presence removed" case.
+ */
+function truncationOf(observed: ObservedLike, field: string): ObservedTruncationEntry | undefined {
+  return observed?.truncation?.[field];
+}
+
+/** `truncationOf`, narrowed to "the field itself is not in the stored value at all" — the bit that
+ *  actually separates a platform cut from executor silence (see `ObservedTruncationEntry`). */
+function droppedEntry(observed: ObservedLike, field: string): ObservedTruncationEntry | undefined {
+  const entry = truncationOf(observed, field);
+  return entry?.dropped === true ? entry : undefined;
+}
+
+/**
+ * THE REAL, EXECUTOR-REPORTED PREFIX OF `images` — strips the store's marker slot when a cut
+ * happened, using the record's `droppedEntries` COUNT and the array's own length, never the
+ * marker's own text. The proposal is explicit that a consumer must not pattern-match the stored
+ * value (§1: "a cut array's last element is a literal elision-marker string that must never be
+ * pattern-matched OR rendered") — the marker is content-shaped and a plugin can legally put those
+ * exact characters in a real image ref. When a cut removed every real entry, the stored array is
+ * the marker ALONE (`entriesElisionMarker`, `@scp/runner-launcher`) with `dropped` still `false`
+ * (the field itself survived); this returns `[]` for that case too, so index 0 is only ever a real
+ * entry, structurally guaranteed rather than sniffed.
+ */
+function realImages(observed: ObservedLike): string[] {
+  const images = observed?.images;
+  if (!images) return [];
+  const entry = truncationOf(observed, "images");
+  if (typeof entry?.droppedEntries !== "number" || entry.droppedEntries <= 0) return images;
+  return images.slice(0, -1);
+}
+
+function droppedCountsSuffix(entry: ObservedTruncationEntry): string {
+  const parts: string[] = [];
+  if (typeof entry.droppedFields === "number") {
+    parts.push(`${entry.droppedFields} field${entry.droppedFields === 1 ? "" : "s"}`);
+  }
+  if (typeof entry.droppedCharacters === "number") {
+    parts.push(`${entry.droppedCharacters} char${entry.droppedCharacters === 1 ? "" : "s"}`);
+  }
+  if (typeof entry.droppedEntries === "number") {
+    parts.push(`${entry.droppedEntries} entr${entry.droppedEntries === 1 ? "y" : "ies"}`);
+  }
+  return parts.length > 0 ? ` (${parts.join(" / ")} removed)` : "";
+}
+
+/** The honesty-pill tooltip sentence (proposal §3 rules 1/2): what was cut, counted from the
+ *  record when it says, and the wrong cause it heads off — an operator must not read a
+ *  platform-side cut as "the executor never reported this". */
+function elisionSentence(report: string, notClaim: string, entry: ObservedTruncationEntry): string {
+  return `The executor's ${report} exceeded the stored bound and was elided${droppedCountsSuffix(entry)}. This is not "${notClaim}".`;
+}
+
+const WHOLE_STATE_FALLBACK_SENTENCE =
+  'The executor\'s status report exceeded the stored bound and could not be preserved. This is not "not observed yet".';
+
+/** Rung 1's diagnostic sentence (proposal §1, measured against #264: `boundPersistedJson`'s
+ *  fallback ladder is `{__scpElided: "<sentence>"}` -> `{__scpElided: true}` -> `null`, so this
+ *  value is `string | true`). NOT part of the declared SDK shape — `ChangeWaveTargetSchema.observed`
+ *  names only revision/images/rollout/truncation, so this reads the wire object loosely and on
+ *  purpose. COPY ONLY: never the guard for the pill (that is §3 rule 5's `truncation`-only key),
+ *  because `true` and "absent" both mean "no extra sentence available", not "not truncated". */
+function wholeStateDiagnostic(observed: ObservedLike): string | undefined {
+  const elided = (observed as Record<string, unknown> | null | undefined)?.__scpElided;
+  return typeof elided === "string" ? elided : undefined;
+}
+
+/** The observed rollout's renderable parts (phase / step N / weight%), shared by the version
+ *  slot's whole-state check and the rollout slot's own render so the two can never disagree about
+ *  whether "the executor reported a rollout" is true. */
+function rolloutParts(rollout: NonNullable<ObservedLike>["rollout"]): string[] {
+  if (!rollout) return [];
+  const parts: string[] = [];
+  if (rollout.phase) parts.push(rollout.phase);
+  if (typeof rollout.step === "number") parts.push(`step ${rollout.step}`);
+  if (typeof rollout.weight === "number") parts.push(`weight ${rollout.weight}%`);
+  return parts;
+}
+
+/** THE honesty pill (design spec: amber-dashed `Badge unknown`) — proposal §3's rule, restated:
+ *  it appears exactly where a rendered claim would otherwise be false. Never for a cut that left
+ *  the shown value still true (that goes in a tooltip line instead, rule 3). */
+function TruncatedBadge({
+  label,
+  title,
+  testId
+}: {
+  label: string;
+  title: string;
+  testId: string;
+}): React.JSX.Element {
+  return (
+    <Badge variant="unknown" title={title} data-testid={testId}>
+      {label}
+    </Badge>
+  );
 }
 
 /**
@@ -287,6 +414,24 @@ export function PipelineWaveCard({
         {wave.targets.map((target) => {
           const links = linksFor?.(target) ?? {};
           const held = holdFor?.(target) ?? null;
+          // Computed ONCE per target and shared by both observed slots below, so "did the executor
+          // report a rollout" and "did the whole state get elided" can never disagree between the
+          // version slot and the rollout slot (proposal §3 rule 5: one pill covers both when the
+          // whole reading is gone; two independently-derived answers could let that promise drift).
+          const realImage = realImages(target.observed)[0];
+          const imagesEntry = truncationOf(target.observed, "images");
+          // "Lost" is broader than `dropped === true`: a tail cut that removed every surviving
+          // entry leaves the field present as the store's marker alone (`realImages` above already
+          // strips it), which is the same operator-facing fact — no real image survived — even
+          // though the field itself was not removed.
+          const imagesFullyLost =
+            imagesEntry !== undefined && realImages(target.observed).length === 0;
+          const revision = target.observed?.revision;
+          const rolloutContentParts = rolloutParts(target.observed?.rollout);
+          const rolloutDropped = droppedEntry(target.observed, "rollout") !== undefined;
+          const versionEmpty = !realImage && !revision;
+          const wholeStateElided =
+            versionEmpty && rolloutContentParts.length === 0 && imagesFullyLost && rolloutDropped;
           return (
             <div
               key={target.id}
@@ -323,17 +468,55 @@ export function PipelineWaveCard({
                     campaign target shows no fabricated placeholder. */}
                 {(target.observed !== undefined || target.type !== undefined) &&
                   (() => {
-                    const image = target.observed?.images?.[0];
-                    const revision = target.observed?.revision;
-                    if (image) {
+                    // RULE 5 (whole-state elision) — nothing renderable survives in EITHER slot and
+                    // the record explains both absences at once; ONE pill, not the generic
+                    // placeholder and not a second "rollout truncated" pill (the rollout slot below
+                    // stays silent in exactly this case).
+                    if (wholeStateElided) {
                       return (
-                        <span title={revision ? `${image}\nrevision ${revision}` : image}>
+                        <TruncatedBadge
+                          label="observed state truncated"
+                          title={
+                            wholeStateDiagnostic(target.observed) ?? WHOLE_STATE_FALLBACK_SENTENCE
+                          }
+                          testId={`${testIdPrefix}-observed-elided`}
+                        />
+                      );
+                    }
+                    // RULE 2 — the version slot's own content is gone because the persistence
+                    // bound cut it, not because the executor never reported it; the generic
+                    // "not observed yet" placeholder would state a false cause.
+                    if (versionEmpty && imagesFullyLost) {
+                      return (
+                        <TruncatedBadge
+                          label="version truncated"
+                          title={elisionSentence("image list", "not observed yet", imagesEntry!)}
+                          testId={`${testIdPrefix}-observed-version-truncated`}
+                        />
+                      );
+                    }
+                    if (realImage) {
+                      // RULE 3 — the rendered value is a real PREFIX of what the executor sent, so
+                      // the claim shown stays true: no pill, only a tooltip line about the tail.
+                      const tailCutLine =
+                        typeof imagesEntry?.droppedEntries === "number"
+                          ? `\nimage list truncated — ${imagesEntry.droppedEntries} more entr${
+                              imagesEntry.droppedEntries === 1 ? "y" : "ies"
+                            } removed`
+                          : "";
+                      return (
+                        <span
+                          title={
+                            (revision ? `${realImage}\nrevision ${revision}` : realImage) +
+                            tailCutLine
+                          }
+                        >
                           version{" "}
                           <span
                             className="font-mono text-slate-700"
                             data-testid={`${testIdPrefix}-observed-image`}
                           >
-                            {imageVersionLabel(image)}
+                            {imageVersionLabel(realImage)}
                           </span>
                           {revision && (
                             <span
@@ -347,6 +530,9 @@ export function PipelineWaveCard({
                       );
                     }
                     if (revision) {
+                      // RULE 6 (deliberate asymmetry, proposal §1) — `revision` carries no
+                      // truncation signal by design (its reader is the plugin, not an operator);
+                      // it renders as-is even when it was itself bounded/shortened.
                       return (
                         <span title={`observed revision ${revision}`}>
                           version{" "}
@@ -359,6 +545,7 @@ export function PipelineWaveCard({
                         </span>
                       );
                     }
+                    // RULE 6 — absent with no truncation key at all: exactly today's rendering.
                     return (
                       <span title="per-wave version/digest not observed yet">
                         version <span className="text-slate-400">—</span>
@@ -371,26 +558,43 @@ export function PipelineWaveCard({
                     fields the executor actually provided are shown; omitted when no rollout is
                     observed (the version placeholder above already covers "nothing observed"). */}
                 {(() => {
-                  const rollout = target.observed?.rollout;
-                  if (!rollout) return null;
-                  const parts: string[] = [];
-                  if (rollout.phase) parts.push(rollout.phase);
-                  if (typeof rollout.step === "number") parts.push(`step ${rollout.step}`);
-                  if (typeof rollout.weight === "number") parts.push(`weight ${rollout.weight}%`);
-                  if (parts.length === 0) return null;
-                  return (
-                    <span
-                      className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600"
-                      data-testid={`${testIdPrefix}-observed-rollout`}
-                      title={
-                        rollout.message
-                          ? `rollout: ${rollout.message}`
-                          : "observed rollout state (read-only)"
-                      }
-                    >
-                      rollout {parts.join(" · ")}
-                    </span>
-                  );
+                  if (rolloutContentParts.length > 0) {
+                    const rollout = target.observed!.rollout!;
+                    return (
+                      <span
+                        className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600"
+                        data-testid={`${testIdPrefix}-observed-rollout`}
+                        title={
+                          rollout.message
+                            ? `rollout: ${rollout.message}`
+                            : "observed rollout state (read-only)"
+                        }
+                      >
+                        rollout {rolloutContentParts.join(" · ")}
+                      </span>
+                    );
+                  }
+                  // RULE 5's other half — the version slot already rendered the single whole-state
+                  // pill; a second one here would repeat the same fact under a different label.
+                  if (wholeStateElided) return null;
+                  // RULE 1 — the executor's rollout report is why this slot is empty, not silence:
+                  // `dropped: true` renders as nothing today, which is the exact truncated-as-absent
+                  // lie the version slot's placeholder used to tell (charter principle 6).
+                  if (rolloutDropped) {
+                    return (
+                      <TruncatedBadge
+                        label="rollout truncated"
+                        title={elisionSentence(
+                          "rollout report",
+                          "no rollout observed",
+                          truncationOf(target.observed, "rollout")!
+                        )}
+                        testId={`${testIdPrefix}-observed-rollout-truncated`}
+                      />
+                    );
+                  }
+                  // RULE 6 — no rollout and no truncation key: exactly today's rendering (omitted).
+                  return null;
                 })()}
                 {typeof target.attempt === "number" && (
                   <span>

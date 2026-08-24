@@ -22,7 +22,6 @@ import {
   refreshScanDbConnected
 } from "../governance/scan-db.js";
 
-
 function requireOperator(deps: AppDeps, request: FastifyRequest): void {
   if (!deps.config.operatorToken) {
     throw forbidden(
