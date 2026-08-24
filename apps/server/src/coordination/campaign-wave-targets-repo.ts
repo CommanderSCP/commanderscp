@@ -97,3 +97,40 @@ export async function terminalizeRefusedCampaignWaveTarget(
     .returning({ id: campaignWaveTargets.id });
   return result.length > 0;
 }
+
+/**
+ * M25.5 — terminalize a campaign wave target `succeeded` because the component was ALREADY MIGRATED
+ * when the campaign reached it (`campaign-adoption.ts`), with no member Change proposed for it.
+ *
+ * `succeeded` rather than a new status, deliberately. The wave-target statuses describe the FAN-OUT
+ * (`pending | change_proposed | succeeded | failed`), and the fan-out's goal for this target — the
+ * component being on the far side of the migration — is met. Inventing an `adopted` status would
+ * fall through `campaign-reconcile.ts`'s per-target `else` branch, which casts
+ * `memberChangeObjectId as string` on what is legitimately NULL here: the proposal's own data-model
+ * table records that a new `campaign_wave_targets.status` value is "a live bug, not a free
+ * extension". WHY it succeeded without a change is carried by the `campaign_adoption` Decision and
+ * its paired audit event, which is where a campaign already records this class of fact.
+ *
+ * GUARDED ON `pending` + RETURNING, exactly like {@link terminalizeRefusedCampaignWaveTarget} above,
+ * and the guard is what makes the caller's Decision and hash-chained audit event fire EXACTLY ONCE
+ * no matter how many 1 s ticks arrive at an adopted component. It is also the multi-replica
+ * interlock: two overlapping ticks race here and only the row-level winner writes the record.
+ */
+export async function terminalizeAdoptedCampaignWaveTarget(
+  tx: TenantTx,
+  orgId: string,
+  targetId: string
+): Promise<boolean> {
+  const result = await tx
+    .update(campaignWaveTargets)
+    .set({ status: "succeeded", updatedAt: new Date() })
+    .where(
+      and(
+        eq(campaignWaveTargets.orgId, orgId),
+        eq(campaignWaveTargets.id, targetId),
+        eq(campaignWaveTargets.status, "pending")
+      )
+    )
+    .returning({ id: campaignWaveTargets.id });
+  return result.length > 0;
+}
