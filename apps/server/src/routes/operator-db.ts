@@ -103,10 +103,7 @@ export async function withOperatorDb<T>(
  * an unset secret is refused rather than admitted — each caller checks `config.operatorToken`
  * first anyway and answers with the "surface is closed" 403, and this is the second barrier.
  */
-export function operatorTokenMatches(
-  presented: unknown,
-  configured: string | undefined
-): boolean {
+export function operatorTokenMatches(presented: unknown, configured: string | undefined): boolean {
   if (!configured || typeof presented !== "string" || presented.length === 0) return false;
   const a = Buffer.from(presented, "utf8");
   const b = Buffer.from(configured, "utf8");

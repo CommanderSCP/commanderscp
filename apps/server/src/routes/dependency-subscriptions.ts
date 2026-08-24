@@ -178,7 +178,6 @@ import { findIngestionStampByComponent } from "../dependencies/ingestion-stamp-r
  * disagree.
  */
 
-
 function requireOperator(deps: AppDeps, request: FastifyRequest): void {
   if (!deps.config.operatorToken) {
     throw forbidden(

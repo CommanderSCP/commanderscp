@@ -234,15 +234,14 @@ describe.runIf(await dockerAvailable())(
       const past = new Date(Date.now() - 60_000).toISOString();
       const future = new Date(Date.now() + 10 * 60_000).toISOString();
 
-      const removeMe = `scp-runner-${uniqueRunId("past-foreign")}`;
       const spareMeFuture = `scp-runner-${uniqueRunId("future-foreign")}`;
       const spareMeNoLabel = `scp-runner-${uniqueRunId("no-label")}`;
 
-      await craftLabelledContainer({
-        name: removeMe,
-        ownerLabel: foreignOwner,
-        deadlineLabel: past
-      });
+      // THE TWO NEGATIVE ARMS ARE RACE-FREE, so they are crafted ONCE, up front, and left standing
+      // across every attempt below: a FUTURE deadline is spared by every reaper that exists (this
+      // process's or any other's), and a container carrying no `scp.launcher.owner` label at all is
+      // excluded by `reap()`'s own `--filter` before a predicate runs. Only the POSITIVE arm is
+      // something another process is entitled to take, so only it is crafted inside the loop.
       await craftLabelledContainer({
         name: spareMeFuture,
         ownerLabel: foreignOwner,
@@ -255,20 +254,83 @@ describe.runIf(await dockerAvailable())(
         extraLabels: { "scp.test": "no-label" }
       });
 
-      // JOIN ANY PASS ALREADY IN FLIGHT BEFORE ASSERTING. `reap()` is single-flighted per binary
-      // (`reapInFlight`): a caller arriving while a pass is running gets THAT pass's result, not a
-      // fresh enumeration. `run()` schedules a reap with `void reap()`, so any earlier case in this
-      // file can leave one running — and its enumeration predates the three containers just
-      // crafted, which returns `[]` and fails this assertion for a reason that has nothing to do
-      // with the predicate under test. Measured on CI 2026-08-23: "expected [] to deeply equal
-      // ArrayContaining[Any<String>]" on a docs-only PR. `whenReapSettled` is exported for exactly
-      // this.
-      await whenReapSettled();
-      const removed = await createDockerRunnerLauncher().reap();
+      /**
+       * TWO RACES CAN HAND THIS CASE AN EMPTY `removed`, AND ONLY THE FIRST IS IN THIS PROCESS.
+       *
+       * (1) IN-PROCESS, closed by `whenReapSettled()` (PR #266). `reap()` is single-flighted per
+       *     binary (`reapInFlight`): a caller arriving while a pass is running is handed THAT pass's
+       *     promise, and that pass's `docker ps` can predate the fixture. Awaiting `whenReapSettled`
+       *     drains the slot (its `.finally` deletes the entry before the promise resolves), so the
+       *     `reap()` below always starts a FRESH enumeration.
+       *
+       * (2) CROSS-PROCESS, which nothing in this process can see — and this is what STILL red'd the
+       *     assertion with #266's fix in tree (`main` run 32668830570, and PR #267/#268 runs).
+       *     `reap()` is a shared-daemon janitor and ownership is per-PROCESS: the fixture below is
+       *     FOREIGN to everyone (its owner label is a fresh random UUID) and 60s past its deadline,
+       *     which is precisely what EVERY process running this package is entitled to collect. CI's
+       *     `pnpm test:integration` is `turbo run test:integration`, which runs
+       *     `@scp/plugin-managed-{iac,scan,dep}` in parallel with this package, in their own Node
+       *     processes, against the SAME daemon — and each `plugin.trigger()` there reaches
+       *     `RunnerLauncher.run()`, whose first act is `void reap()`. If one of those passes lands in
+       *     the window between the `docker create` below and this pass's `docker ps`, the fixture is
+       *     ALREADY GONE, this pass correctly reports `[]`, and the container-state assertions below
+       *     would all still have passed. (#266's own commit message records `scp-managed-scan-plugin-
+       *     it-*` containers leaking in the very CI run it was diagnosing — that suite was live on
+       *     that daemon at that moment.) MEASURED HERE, deterministically: a second Node process's
+       *     `reap()` returned `["e121f6511911"]` and this process's next pass then returned `[]`,
+       *     with the container gone — the reported failure, exactly.
+       *
+       * SO: SHRINK THE WINDOW, THEN RE-RUN THE EXPERIMENT WHEN IT IS STOLEN — AND ONLY THEN. Drain
+       * first and craft the stealable fixture LAST (window: one `create`+`start`, ~220ms measured,
+       * against ~660ms when all three were crafted before the drain). A pass that reports none of
+       * OUR ids has exactly two possible causes, and the container itself tells them apart: still
+       * running = the predicate under test failed, and that fails HERE, by name, on attempt 1;
+       * already gone = a peer's pass took it, which is the library working as designed and is worth
+       * another attempt rather than a red main.
+       */
+      const REAP_RACE_ATTEMPTS = 5;
+      let removeMe = "";
+      let removed: string[] = [];
+      let reportedByOurPass = false;
+      let stolen = 0;
 
-      expect(removed, "the past-deadline foreign container must be among the removed ids").toEqual(
-        expect.arrayContaining([expect.any(String)])
-      );
+      for (let attempt = 1; attempt <= REAP_RACE_ATTEMPTS; attempt++) {
+        await whenReapSettled(); // drain BEFORE crafting, so the window starts at `create`
+        removeMe = `scp-runner-${uniqueRunId("past-foreign")}`;
+        const removeMeId = await craftLabelledContainer({
+          name: removeMe,
+          ownerLabel: foreignOwner,
+          deadlineLabel: past
+        });
+        removed = await createDockerRunnerLauncher().reap();
+
+        // BY ID, NOT BY `expect.any(String)`. The old assertion was satisfied by removing ANY
+        // container — a peer's leaked orphan would have passed it while this fixture was untouched.
+        // `docker ps --format {{.ID}}` prints the 12-char short id and `docker create` printed the
+        // full 64, hence the prefix test rather than equality.
+        reportedByOurPass = removed.some((id) => id.length > 0 && removeMeId.startsWith(id));
+        if (reportedByOurPass) break;
+
+        expect(
+          await containerState(removeMe),
+          "reap() reported removing none of this fixture AND the past-deadline foreign container is " +
+            "STILL RUNNING — that is the predicate under test failing. The cross-process race this " +
+            "loop tolerates leaves the container GONE, never running, so it cannot be the cause here"
+        ).toBeUndefined();
+        ownedNames.delete(removeMe); // a peer's pass already removed it; nothing left to tear down
+        stolen++;
+      }
+
+      expect(
+        reportedByOurPass,
+        `the past-deadline foreign container must be among the ids THIS pass reports removing, and ` +
+          `it was not on any of ${REAP_RACE_ATTEMPTS} attempts (${stolen} of them removed by a reap ` +
+          `pass in ANOTHER process against this daemon before this one's \`docker ps\` ran; last ` +
+          `report: ${JSON.stringify(removed)}). The predicate itself held every time — the container ` +
+          `was gone on every attempt — but this daemon is too busy for this case to ever observe its ` +
+          `OWN pass's report`
+      ).toBe(true);
+
       expect(
         await containerState(removeMe),
         "past-deadline + foreign must be GONE"
@@ -281,8 +343,8 @@ describe.runIf(await dockerAvailable())(
         "no scp.launcher.* labels at all must be SPARED — reap() is not docker container prune"
       ).toBe("running");
 
-      // Only `removeMe` should have been swept out of THIS test's own three fixtures — the other
-      // two are still in `ownedNames` and `afterEach` tears them down.
+      // Only `removeMe` should have been swept out of THIS test's own fixtures — the other two are
+      // still in `ownedNames` and `afterEach` tears them down.
       ownedNames.delete(removeMe);
     }, 30_000);
 
@@ -361,6 +423,15 @@ describe.runIf(await dockerAvailable())(
         // it explicitly instead of racing it. THE GATE KEEPS ITS TEETH: with the scheduling deleted
         // there is no pass in flight, `whenReapSettled()` resolves immediately, and the orphan is
         // still there below.
+        //
+        // THE SAME CROSS-PROCESS PROPERTY THE PREDICATE CASE ABOVE LOOPS OVER APPLIES HERE, and it
+        // lands the other way round: this orphan is foreign and past its deadline, so a concurrent
+        // `@scp/plugin-managed-*` integration process reaping the same daemon can remove it too. That
+        // cannot RED this gate — it can only mask a genuinely deleted wiring, in the narrow window
+        // where a peer's pass happens to land inside this one run(). Left as an assertion on the
+        // container rather than on `whenReapSettled()`'s id list deliberately: keying the gate on
+        // THIS process's report would trade a rare vacuous pass for a rare flaky red on the one test
+        // whose whole job is to go red when the wiring is gone.
         await whenReapSettled();
 
         expect(
