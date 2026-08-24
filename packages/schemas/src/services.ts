@@ -63,11 +63,17 @@ export type ServiceBoardFreeze = z.infer<typeof ServiceBoardFreezeSchema>;
 
 /** WHICH DOMAIN DRIVES this row's latest change (federation honesty — see `unknownFields`).
  *
- *  A change's graph OBJECT replicates across a federation link; its plan/waves, block Decisions,
- *  approval requests and freezes do NOT (they are local projection tables that never ride the sync
- *  journal). So a domain holding a change as a read-only REPLICA can see that the change exists and
- *  what lifecycle state its origin last reported, but genuinely cannot see whether it is blocked,
+ *  A change's graph OBJECT replicates across a federation link; its plan/waves, block Decisions and
+ *  approval requests do NOT (they are local projection tables that never ride the sync journal). So
+ *  a domain holding a change as a read-only REPLICA can see that the change exists and what
+ *  lifecycle state its origin last reported, but genuinely cannot see whether it is blocked,
  *  awaiting approval, or how far its waves have rolled.
+ *
+ *  FREEZES USED TO BE ON THAT LIST AND ARE NOT ANY MORE (M25.7, owner decision D6). A freeze
+ *  authored `federate: true` rides `object_upsert` as a graph object and is rebuilt into the
+ *  receiving instance's own `freezes` table, so it is both visible and ENFORCED there. Freeze
+ *  visibility is reported BOARD-LEVEL rather than per-row for that reason — see the board's own
+ *  `unknownFields`.
  *
  *  `drivenHere` is false exactly when the change object's authoritative origin is another domain
  *  (`objects.origin_domain_id !== this instance's federation domain id`). `originDomainId` names
@@ -170,8 +176,12 @@ export const ServiceBoardRowSchema = z.object({
    *
    *  Empty for a change this domain drives (there, `waves: []` / `blocked: false` really do mean
    *  "no waves compiled" / "not blocked"). Non-empty on a read-only replica, where the underlying
-   *  plan/Decision/approval/freeze rows were never replicated. This is the same rule the graph
-   *  health surfaces already follow — absent health renders `unknown`, never `healthy`.
+   *  plan/Decision/approval rows were never replicated. This is the same rule the graph health
+   *  surfaces already follow — absent health renders `unknown`, never `healthy`.
+   *
+   *  A FREEZE ROW MAY NOW HAVE BEEN REPLICATED (M25.7, owner decision D6) — the list above used to
+   *  name it and no longer does. `activeFreeze` still appears in a replica row's `unknownFields`
+   *  when none was found locally, because a peer's un-federated freezes remain invisible.
    *
    *  Also non-empty — including `"latestChangeId"` itself — on a row with NO change found, when this
    *  deployment has a peer whose sync scope cannot carry change objects (`status_only` forwards
@@ -301,14 +311,20 @@ export const ServiceBoardResponseSchema = z.object({
    *  Two families ride here today.
    *
    *  FREEZE VISIBILITY (`"serviceFreeze"`, `"rows[].activeFreeze"`), whenever this org has a
-   *  federation peer. `freezes` is a local projection that never rides the sync journal in either
-   *  direction, so a
-   *  freeze declared in another domain is invisible here for EVERY row — including rows this domain
-   *  drives. A null `activeFreeze`/`serviceFreeze` therefore means "no freeze declared in THIS
-   *  domain", never "no freeze applies", and a client must not render it as an all-clear on a
+   *  federation peer. A freeze declared in another domain reaches this instance ONLY if that domain
+   *  declared it `federate: true` (M25.7, owner decision D6 — it then rides `object_upsert` as a
+   *  `freeze` graph object and is rebuilt into this instance's own `freezes` table, where it blocks
+   *  like any local one). Federation is opt-in and DEFAULTS OFF, and nothing in a bundle reports the
+   *  freezes a peer withheld. So a null `activeFreeze`/`serviceFreeze` means "no freeze VISIBLE
+   *  HERE", never "no freeze applies", and a client must not render it as an all-clear on a
    *  federated deployment. With no peer paired there is no other domain to be blind to, and the
    *  nulls are complete observations — the list is then empty rather than claiming an ignorance
    *  this instance does not have.
+   *
+   *  THE RETIRED REASON, kept because it is what a reader will otherwise re-derive: until M25.7 this
+   *  said `freezes` is a local projection that never rides the sync journal in either direction, and
+   *  that was ABSOLUTE — a freeze was not a graph object and no freeze-shaped `JournalEntryKind`
+   *  existed. The caveat's wording changed; its conclusion did not.
    *
    *  CHANGE-OBJECT BLINDNESS (`"summary.stable"`, `"rows[].latestChangeId"`), whenever a peer's
    *  sync scope cannot carry change objects. `summary.stable` then mixes genuinely-settled rows

@@ -54,7 +54,12 @@ function freeze(id: string, scopeObjectId: string, atomic = false): OrgTierFreez
     // can reach `filterFreezesByScopes`/`unionFreezes`.
     liftedAt: null,
     liftedByActorId: null,
-    liftReason: null
+    liftReason: null,
+    // M25.7 — a NON-federating freeze, which is the default and what this module's arithmetic is
+    // about. Resolution is deliberately blind to whether a freeze also has a graph object: an
+    // IMPORTED freeze is an ordinary org-tier row by the time it gets here (`import-repo.ts`
+    // rebuilt it into this same table), so it costs the same reads and takes the same path.
+    objectId: null
   };
 }
 

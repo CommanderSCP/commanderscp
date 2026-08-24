@@ -2,7 +2,8 @@ import { and, eq, gt, isNull, lte, type SQL } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { freezes } from "../db/schema.js";
+import { freezes, objects } from "../db/schema.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 
 /**
@@ -39,6 +40,11 @@ export interface FreezeRow {
   liftedAt: Date | null;
   liftedByActorId: string | null;
   liftReason: string | null;
+  /** M25.7 / owner decision D6 (drizzle/0089, ADR-0043) — the id of this freeze's `freeze` GRAPH
+   *  OBJECT, or `null` when this freeze does not federate (the default, and every freeze authored
+   *  before M25.7). See `governance/freeze-object.ts`; the guard that makes it load-bearing on the
+   *  WRITE side is in `lockFreezeRow` below. */
+  objectId: string | null;
 }
 
 export interface CreateFreezeInput {
@@ -128,6 +134,25 @@ export async function getFreeze(tx: TenantTx, orgId: string, id: string): Promis
  *
  * NOT exported: an unlocked `getFreeze` is right for the two READ routes (`GET /freezes/{id}` and
  * the list), and taking a write lock there would serialize readers behind an editor for nothing.
+ *
+ * ============================================================================================
+ * M25.7 — AND IT IS ALSO THE SINGLE-WRITER DOOR: AN OUTPOST CANNOT LIFT A COMMANDER FREEZE
+ * ============================================================================================
+ * The replica check lives HERE, in the read half both verbs already share, and not in `liftFreeze`
+ * and `updateFreezeWindow` separately. Two copies of one refusal is this repo's most-repeated
+ * defect (CLAUDE.md's census rule), and the asymmetric version is worse than either: a lift that is
+ * refused while a window edit is not lets an outpost push a commander's `ends_at` to a past instant
+ * and achieve the retraction it was refused, through a verb nobody thought to guard. Installed at
+ * the shared read, a third write verb inherits it without being asked to.
+ *
+ * The AUTHORITY is `graph/objects-repo.ts`'s, unchanged and not re-implemented: the object either
+ * is or is not this domain's, exactly as `federation/outpost-config-sync.integration.test.ts`
+ * case 2 already proves for `outpost` config. What this adds is that the PROJECTION row cannot be
+ * edited around it — the guard on `objects` would otherwise protect only the wire form while
+ * `freezes.lifted_at`, the column `activeFreezesInWindow` actually filters on, stayed locally
+ * writable. The remedy at a replica is `freeze:override` at that freeze's own scope: per-change,
+ * reasoned, audited (`gate-orchestrator.ts`'s CRITICAL #2 loop) — never deletion of a protection
+ * another domain declared.
  */
 async function lockFreezeRow(tx: TenantTx, orgId: string, id: string): Promise<FreezeRow> {
   const rows = await tx
@@ -137,7 +162,43 @@ async function lockFreezeRow(tx: TenantTx, orgId: string, id: string): Promise<F
     .limit(1)
     .for("update");
   if (!rows[0]) throw notFound(`freeze '${id}' not found`);
-  return rows[0] as FreezeRow;
+  const row = rows[0] as FreezeRow;
+  await assertFreezeLocallyOwned(tx, orgId, row);
+  return row;
+}
+
+/**
+ * Refuses a local write to a freeze whose graph object is authoritatively owned by another domain.
+ *
+ * A NO-OP FOR EVERY NON-FEDERATING FREEZE (`object_id IS NULL`), which is the default, the whole
+ * pre-M25.7 estate, and therefore every existing test: `ensureFederationSelf` is not even reached,
+ * so a single-domain instance pays nothing and behaves byte-identically.
+ *
+ * An `object_id` that resolves to no row returns rather than throwing. It is unreachable — `scp_app`
+ * is never granted DELETE on `objects` (DESIGN §4.1), so the referent is at worst soft-deleted and
+ * the row is still selected here — and turning an unreachable state into a hard refusal would make
+ * a freeze permanently un-liftable on the strength of a condition nobody can produce or clear.
+ */
+async function assertFreezeLocallyOwned(
+  tx: TenantTx,
+  orgId: string,
+  row: FreezeRow
+): Promise<void> {
+  if (!row.objectId) return;
+  const found = await tx
+    .select({ originDomainId: objects.originDomainId })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), eq(objects.id, row.objectId)))
+    .limit(1);
+  const object = found[0];
+  if (!object) return;
+  const self = await ensureFederationSelf(tx, orgId);
+  if (object.originDomainId === self.domainId) return;
+  throw conflict(
+    `freeze '${row.id}' is a read-only replica declared by domain '${object.originDomainId}' — ` +
+      `this instance cannot lift or shorten it. Retract it at the declaring instance, or use ` +
+      `'freeze:override' at this freeze's own scope to admit one change past it, with a reason.`
+  );
 }
 
 export async function listFreezes(tx: TenantTx, orgId: string): Promise<FreezeRow[]> {

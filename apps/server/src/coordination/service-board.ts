@@ -50,13 +50,22 @@ import { REFUSED_WAVE_TARGET_STATUSES } from "./wave-targets-repo.js";
  *
  * FEDERATION HONESTY (the reason this file names its unknowns explicitly). Every table this projection
  * reads for a row's DETAIL — `change_plans`/`change_waves`/`change_wave_targets`, `changes`,
- * `decisions`, `approval_requests`, `freezes` — is a LOCAL projection that never rides the sync
- * journal. Only the change's graph OBJECT replicates. A domain that holds a change as a read-only
- * replica therefore has no plan, no Decision, no approval and no freeze for it, and must say so:
+ * `decisions`, `approval_requests` — is a LOCAL projection that never rides the sync journal. Only
+ * the change's graph OBJECT replicates. A domain that holds a change as a read-only replica
+ * therefore has no plan, no Decision and no approval for it, and must say so:
  * such a row is reported as `driver.drivenHere === false` with the unobservable fields named in
  * `unknownFields`, and counted in its OWN `summary.notDrivenHere` bucket. It is NEVER counted as
  * `stable` — an outpost rendering green while the commander drives a release through its components
  * is a fabricated all-clear, not an empty view.
+ *
+ * M25.7 SPLIT `freezes` OUT OF THAT LIST, and the sentence it left is deliberately weaker rather
+ * than deleted. Owner decision D6: a freeze authored `federate: true` now DOES cross, as a `freeze`
+ * graph object rebuilt into the receiver's own `freezes` table (`governance/freeze-object.ts`), so a
+ * non-null `activeFreeze` on this board may be a freeze another domain declared. What has NOT
+ * changed is the honesty rule, because the DEFAULT is still `federate: false`: a null `activeFreeze`
+ * remains "no freeze VISIBLE HERE", never "no freeze applies", and this projection cannot tell which
+ * kind a peer declared. So the board-level caveat below stays, on a narrower and now-accurate
+ * reason. See `freezeVisibilityUnknowns`.
  *
  * CHANGE-OBJECT BLINDNESS (the second honesty rule, board-level). Everything above assumes that a
  * change replicated here AT ALL — that a component with no change object really has no change. That
@@ -742,9 +751,11 @@ export async function buildServiceBoard(
     }
 
     if (!latest.drivenHere) {
-      // FEDERATION HONESTY. The change object replicated here; its plan/waves, block Decisions,
-      // approval requests and freezes did not — none of those tables ever rides the sync journal.
-      // So this domain can state two real observations (the change exists; the origin domain last
+      // FEDERATION HONESTY. The change object replicated here; its plan/waves, block Decisions and
+      // approval requests did not — none of those tables ever rides the sync journal. (A FREEZE now
+      // may: M25.7/D6. That is why freeze visibility is stated board-level rather than in this
+      // per-row list — see `freezeVisibilityUnknowns`.) So this domain can state two real
+      // observations (the change exists; the origin domain last
       // reported `federationState`) and genuinely cannot state anything else. It therefore counts
       // as its OWN bucket, never `stable`: claiming an all-clear from data this domain never had is
       // exactly the fabrication the graph-health surfaces already refuse (absent ⇒ `unknown`).
@@ -777,12 +788,21 @@ export async function buildServiceBoard(
           "attention.decisionId",
           "attention.awaitingApproval",
           "attention.emergency",
-          // A freeze declared in the DRIVING domain never replicates either, so only a freeze we
-          // actually found locally is an observation; its absence tells us nothing about theirs.
-          // (The same is true of a freeze declared in ANOTHER domain for a row this domain DOES
-          // drive — freezes never ride the journal in either direction. That is a property of the
-          // whole board rather than of one row, so it is stated once, board-level, in the response's
-          // own `unknownFields`; see `freezeVisibilityUnknowns` below.)
+          // A freeze declared in the DRIVING domain reaches us only if that domain declared it
+          // `federate: true`, so only a freeze we actually found locally is an observation; its
+          // absence tells us nothing about theirs. (The same is true of a freeze declared in ANOTHER
+          // domain for a row this domain DOES drive. That is a property of the whole board rather
+          // than of one row, so it is stated once, board-level, in the response's own
+          // `unknownFields`; see `freezeVisibilityUnknowns` below.)
+          //
+          // M25.7 (owner decision D6) NARROWED THIS SENTENCE. It used to read "freezes never ride
+          // the journal in either direction" — true when written, and pinned by
+          // `service-board-precedence.integration.test.ts`, because a freeze was a projection row
+          // with no graph object and `JournalEntryKindSchema` has no freeze-shaped kind. A freeze
+          // that opts into federation now has an object and does cross. The CONCLUSION is unchanged
+          // — a null `activeFreeze` still cannot be read as "no freeze applies" — because the
+          // default is still `federate: false` and nothing in a bundle tells this domain which kind
+          // the peer declared.
           ...(componentFreeze ? [] : ["activeFreeze"])
         ]
       });
@@ -860,14 +880,27 @@ export async function buildServiceBoard(
     else stable += 1;
   }
 
-  // BOARD-LEVEL HONESTY: freeze visibility is domain-local, for EVERY row alike. `freezes` is a
-  // local projection that is never passed to `appendJournalEntry` (governance/freezes-repo.ts), so a
-  // freeze declared in another domain is invisible here whether or not this domain drives the row's
-  // change — a null `activeFreeze` on a DRIVEN-HERE row asserts "no freeze declared HERE", never
-  // "no freeze applies". Stated once at the response level rather than repeated into every row's
-  // `unknownFields`, because it is a property of the freeze TABLE's federation status, not of any
-  // row's driver: putting it per-row would make `row.unknownFields` mean two different things (what
-  // this row's driver withheld, and what this deployment structurally cannot see) and would fire on
+  // BOARD-LEVEL HONESTY: freeze visibility is PARTIAL, for EVERY row alike — a null `activeFreeze`
+  // on a DRIVEN-HERE row asserts "no freeze VISIBLE HERE", never "no freeze applies".
+  //
+  // M25.7 (owner decision D6) CHANGED THE REASON AND NOT THE RULE, and the retired reason is kept
+  // because it is what a reader will otherwise re-derive and get wrong. IT USED TO BE ABSOLUTE:
+  // `freezes` was a local projection never passed to `appendJournalEntry`, no freeze-shaped
+  // `JournalEntryKind` existed, and a freeze was not a graph object at all — so a freeze declared in
+  // another domain was structurally invisible here, always. A freeze authored `federate: true` now
+  // rides `object_upsert` as a `freeze` object and `federation/import-repo.ts` rebuilds it into THIS
+  // instance's `freezes` table, so some of them are visible and enforced here.
+  //
+  // The caveat survives intact because federation is OPT-IN AND DEFAULTS OFF: a peer's freeze may or
+  // may not have been declared federating, and nothing in a bundle reports the freezes that were
+  // withheld. So "no freeze here" is still not "no freeze applies", and this domain cannot even say
+  // how much it is missing. Weakening the caveat to fire only when the org has no federated freeze
+  // would be exactly backwards — the un-federated ones are the invisible ones.
+  //
+  // Stated once at the response level rather than repeated into every row's
+  // `unknownFields`, because it is a property of what this DEPLOYMENT can see, not of any row's
+  // driver: putting it per-row would make `row.unknownFields` mean two different things (what this
+  // row's driver withheld, and what this deployment structurally cannot see) and would fire on
   // every row of every board.
   //
   // Conditioned on this org actually having a federation peer: with no peer there IS no other domain

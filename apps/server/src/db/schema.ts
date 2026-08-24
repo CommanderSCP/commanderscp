@@ -927,6 +927,34 @@ export const changeWaveTargets = pgTable(
 // (bumped on every update) — the same pinning pattern `change_plans.topology_version` already
 // uses. What DOES need new projection tables is everything with real lifecycle/quorum state that
 // the graph's generic model has no place for: control run evidence, approval quorum, and freezes.
+//
+// ===========================================================================================
+// THAT LAST CLAUSE WAS NARROWED BY OWNER DECISION D6 (M25.7, ADR-0043) — READ BOTH HALVES
+// ===========================================================================================
+// It used to be flat: a freeze was not a graph object and never could be, and this line is the
+// PRIMARY SOURCE the rest of the codebase cited for that — `drizzle/0089` and
+// `governance/freeze-object.ts` both quote it by line number. Left as it stood it would keep
+// asserting, from the file the citations point at, exactly what the citations say was retracted.
+//
+// THE DISTINCTION THAT SURVIVES, and it is a real one rather than a hedge:
+//
+//   * A freeze's ENFORCEMENT STATE still has no place in the generic object model. The window
+//     predicate `starts_at <= at < ends_at AND lifted_at IS NULL` is evaluated on a hot gate path
+//     by `activeFreezesInWindow` — the single owner of that comparison — and re-expressing it as
+//     jsonb comparisons would put a second copy of it in the system. That is why `freezes` (below)
+//     STAYS, unchanged, and why every reader that BLOCKS still reads it.
+//   * A freeze's WIRE FORM is now a `freeze` graph object (drizzle/0089), for one reason: nothing
+//     table-shaped can cross a security boundary. `JournalEntryKindSchema` admits nine kinds and
+//     none is freeze-shaped, and widening it is both an oasdiff response break and a fail-closed
+//     cliff at an un-upgraded peer — so an object on the existing `object_upsert` is the only
+//     route a freeze has. `federation/import-repo.ts` rebuilds the projection row from it at the
+//     receiving instance, which is what makes an imported freeze actually block.
+//
+// So: object PLUS projection (the pattern `changes` and `campaigns` already use), opt-in per
+// freeze (`freezes.object_id IS NULL` is the default and the whole pre-M25.7 estate), and org tier
+// only — `instance_freezes` (drizzle/0086) has no `org_id` and does not federate under any
+// decision (ADR-0040). Control run evidence and approval quorum are untouched by D6: both clauses
+// above still hold for them flatly.
 // -------------------------------------------------------------------------------------------
 
 /**
@@ -1062,9 +1090,18 @@ export const approvalVotes = pgTable(
 
 /**
  * Freeze windows (DESIGN §10.3): "a built-in policy effect with time windows and scope
- * (org/domain/service/component)." A dedicated projection table (not a graph object) because a
- * freeze's only state is a time window + scope + reason — no benefit to the generic object model
- * here, and `/freezes` is its own top-level API resource per DESIGN §6.
+ * (org/domain/service/component)." A dedicated projection table because a freeze's whole
+ * enforcement state is a time window + scope + reason, queried on a hot gate path, and `/freezes`
+ * is its own top-level API resource per DESIGN §6.
+ *
+ * M25.7 / OWNER DECISION D6 (ADR-0043) — "NOT A GRAPH OBJECT" IS NO LONGER TRUE, AND THAT SENTENCE
+ * USED TO BE HERE. A freeze that opts into federation (`object_id` non-null) ALSO gets a `freeze`
+ * graph object, because the sync journal has nine entry kinds, none freeze-shaped, and widening
+ * that enum is both an oasdiff response break and a fail-closed cliff at an older peer — so the
+ * object is the only way a freeze can cross a boundary. This table STAYS: the object is the wire
+ * form, this row is the enforcement form every reader already composes over
+ * (`activeFreezesInWindow` and everything above it). Object-plus-projection, the pattern `changes`
+ * and `campaigns` already use.
  */
 export const freezes = pgTable(
   "freezes",
@@ -1103,11 +1140,33 @@ export const freezes = pgTable(
     /** Why. MANDATORY (non-empty) at the route whenever `liftedAt` is set — lifting a freeze is a
      *  governance LOOSENING affecting everyone at once, and `freeze:override` already refuses to
      *  bypass a freeze for ONE change without a reason. */
-    liftReason: text("lift_reason")
+    liftReason: text("lift_reason"),
+    /** M25.7 / owner decision D6 (drizzle/0089, ADR-0043) — THE ID OF THIS FREEZE'S `freeze` GRAPH
+     *  OBJECT, or NULL when this freeze does not federate.
+     *
+     *  NULL IS THE DEFAULT AND THE STATUS QUO. Every freeze authored before M25.7 has it, and a
+     *  `POST /api/v1/freezes` that omits `federate` still produces one — byte-identical behaviour
+     *  on every path. D6 adds a new REACH, and a new reach never defaults on.
+     *
+     *  Non-null means two things at once, and they are the two halves of the feature: the object
+     *  rides `object_upsert` to a peer (there is no freeze journal kind and there cannot be one —
+     *  see drizzle/0089's header), and THIS ROW BECOMES REPLICA-AWARE. `freezes-repo.ts`'s
+     *  `lockFreezeRow` — the read half of both write verbs — refuses a lift or a window edit when
+     *  the named object is authoritatively owned by another domain, so an outpost cannot lift a
+     *  commander freeze; its remedy is `freeze:override` at the replica's own scope.
+     *
+     *  No FK, matching `scope_object_id` and both `*_actor_id` columns. */
+    objectId: uuid("object_id")
   },
   (table) => [
     index("freezes_org_scope").on(table.orgId, table.scopeObjectId),
-    index("freezes_org_window").on(table.orgId, table.startsAt, table.endsAt)
+    index("freezes_org_window").on(table.orgId, table.startsAt, table.endsAt),
+    /** M25.7 — one projection row per freeze object, so a replayed bundle converges instead of
+     *  duplicating and the rebuild's `WHERE object_id = …` guard can never match two rows. Partial
+     *  (drizzle/0089): the non-federating majority is unconstrained and unindexed. */
+    uniqueIndex("freezes_org_object")
+      .on(table.orgId, table.objectId)
+      .where(sql`${table.objectId} IS NOT NULL`)
   ]
 );
 

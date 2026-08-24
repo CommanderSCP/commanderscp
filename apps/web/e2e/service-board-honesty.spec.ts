@@ -128,8 +128,11 @@ function boardPayload(
     // distinction, and a single-domain board legitimately has no upstream to label. The staleness
     // rendering has its own PR-gated coverage in `src/routes/service-board-honesty.test.tsx`.
     asOf: null,
-    // Board-level: freezes never ride the sync journal, so no row's "not frozen" is a statement
-    // about freezes declared in another domain.
+    // Board-level: a freeze crosses only if the domain that declared it federated it (M25.7, owner
+    // decision D6), and that defaults off — so no row's "not frozen" is a statement about freezes
+    // declared in another domain. This comment said "freezes never ride the sync journal" until D6
+    // retracted that; the fixture VALUE is unchanged, because the caveat still fires unconditionally
+    // on any peer, and the reason is corrected here rather than left stale in a green spec.
     unknownFields: ["serviceFreeze", "rows[].activeFreeze"]
   };
 }
@@ -222,7 +225,14 @@ test("service board: an unobservable field renders as an explicit unknown, never
   );
   expect(notDrivenBadgeClass).not.toContain("bg-emerald-50");
 
-  // 5. The board-level freeze-visibility caveat: freezes never replicate, so an unfrozen row on a
-  //    federated instance means "none declared here", not "none applies" — for EVERY row alike.
+  // 5. The board-level freeze-visibility caveat: a freeze crosses only if the domain that declared
+  //    it federated it, and that defaults off (M25.7 / owner decision D6) — so an unfrozen row on a
+  //    federated instance means "none VISIBLE here", not "none applies", for EVERY row alike.
+  //
+  //    THE SECOND COPY OF THE SAME CLAIM IN THIS FILE, and it survived the first pass of the M25.7
+  //    census: the fixture comment at the top was corrected and this one was not, so the file
+  //    asserted the retracted reasoning ("freezes never replicate") and its replacement at once. A
+  //    per-file census that stops at the first hit is the same defect the project instructions name
+  //    for a repo-wide one; the fix is to finish the file.
   await expect(page.getByTestId("board-freeze-visibility-unknown")).toBeVisible();
 });

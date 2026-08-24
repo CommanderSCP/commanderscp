@@ -24,8 +24,15 @@ import type {
  *     downstream must say so BEFORE it is taken.
  *
  * Also pinned: the "managed elsewhere" notes offer NO edit control at all (owner decision), because
- * an edit box that silently does nothing downstream is worse than no box — freezes are TESTED never
- * to ride the journal (`coordination/service-board-precedence.integration.test.ts`).
+ * an edit box that silently does nothing downstream is worse than no box.
+ *
+ * M25.7 RETIRED HALF OF THAT REASON. This header used to add "— freezes are TESTED never to ride the
+ * journal (`coordination/service-board-precedence.integration.test.ts`)", which was true and pinned
+ * until owner decision D6 gave an org-tier freeze a graph object so it CAN cross. The no-edit-control
+ * ruling survives on the reason that did NOT change: a freeze is scoped at an object in the org's
+ * containment graph and there is no "the outpost this freeze belongs to", so a per-outpost freeze
+ * form would be structurally wrong rather than merely absent. The case below pins the REWRITTEN copy,
+ * which is what makes this a rewrite rather than a silent deletion.
  */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -481,7 +488,18 @@ describe("managed elsewhere: shown, never editable", () => {
     expect(html).not.toContain("<input");
     expect(html).not.toContain("<select");
     // …and it says where each one really is configured, so "no control here" is not a dead end.
-    expect(visibleText(html)).toContain("does NOT ride the sync journal");
+    //
+    // DELIBERATE INVERSION (M25.7, owner decision D6). This line asserted `"does NOT ride the sync
+    // journal"` — the operator-facing correction of M16.2's "syncs down" aspiration, true and
+    // load-bearing until D6 gave an org-tier freeze a graph object. Asserting the old sentence now
+    // would pin a lie in place; asserting nothing would let the note go silent. So it pins the two
+    // claims the rewritten copy actually makes: freezes are declared PER OBJECT and never per
+    // outpost (the structural reason there is no form here, which D6 did not touch), and reaching
+    // this outpost is CONDITIONAL on the declaring domain federating it (the part D6 changed).
+    const text = visibleText(html);
+    expect(text).toContain("never per outpost");
+    expect(text).toContain("only if it was declared federating");
+    expect(text).not.toContain("does NOT ride the sync journal");
   });
 });
 

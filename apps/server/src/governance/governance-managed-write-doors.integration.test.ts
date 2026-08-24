@@ -13,7 +13,10 @@ import {
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { objects, roleBindings, roles } from "../db/schema.js";
-import { GOVERNANCE_MANAGED_OBJECT_TYPE_IDS } from "./governance-managed-types.js";
+import {
+  GOVERNANCE_MANAGED_OBJECT_TYPE_IDS,
+  PROJECTION_BOUND_OBJECT_TYPE_IDS
+} from "./governance-managed-types.js";
 
 /**
  * THE `policy:write` DOOR CENSUS — every write door that takes a CALLER-SUPPLIED `typeId`.
@@ -208,6 +211,64 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
         orgId: org.orgId,
         name: `federation-only-${randomUUID().slice(0, 8)}`,
         permissions: ["federation:write"]
+      });
+      await tx.insert(roleBindings).values({
+        id: randomUUID(),
+        orgId: org.orgId,
+        subjectId: user.objectId,
+        roleId,
+        scopeObjectId: org.orgId,
+        effect: "allow"
+      });
+    });
+    return user;
+  }
+
+  /**
+   * ============================================================================================
+   * M25.7 — THE THIRD ACTOR: EVERY PERMISSION THESE DOORS ASK FOR, EXCEPT `freeze:write`.
+   * ============================================================================================
+   * The two actors above make this file measure ONE bar for the WHOLE set — `object:write`-only
+   * and `federation:write`-only are both refused everywhere, so the loops stay green no matter
+   * what the doors do to an actor who clears the governance bar. That is exactly how M25.7's hole
+   * survived a green suite: `freeze` was added to `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS`, which at
+   * three of the five doors means "demand `policy:write` INSTEAD of `object:write`" — a permission
+   * UPGRADE, not a refusal — and `policy:write` is neither of the two permissions a freeze needs.
+   * A holder of it walked straight through `POST /plans`+apply, `/federation/overlays` and
+   * `/federation/hand-fill` and minted a freeze that federates, blocks at every peer, and can be
+   * lifted at neither end.
+   *
+   * WHY THIS ROLE IS BROADER THAN "`policy:write` AND NOTHING ELSE". An actor holding only
+   * `policy:write` is refused at three of these doors by their own FRONT gates — `/overlays` and
+   * `/objects/{type}` want `object:write`, `/hand-fill` wants `federation:write` — so a 403 would
+   * prove nothing about the governance question, which is the vacuous shape this file exists to
+   * avoid (see `handFillPeer`'s note). Permissions are monotone: an actor refused while holding
+   * MORE is refused while holding less, so the strongest reachable actor is the sharpest test.
+   * The one thing deliberately withheld is `freeze:write` — the permission the typed door demands
+   * — plus, for the same reason, this role is bound at the org root where `freeze:write` would
+   * have to sit to cover anything.
+   *
+   * Its non-vacuity control is the `(control)` case beside the property loop: this same actor is
+   * still ADMITTED for a type whose bar genuinely IS `policy:write`, so the refusal is measured to
+   * be about the TYPE and not about the actor.
+   */
+  async function createGovernanceNoFreezeUser(): Promise<TestUser> {
+    const user = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const roleId = randomUUID();
+      await tx.insert(roles).values({
+        id: roleId,
+        orgId: org.orgId,
+        name: `governance-no-freeze-${randomUUID().slice(0, 8)}`,
+        // Everything the five doors ask for at their own front gates, plus the governance bar the
+        // three permission-remedy doors apply. NOT `freeze:write`, and NOT `freeze:override`.
+        permissions: [
+          "object:read",
+          "object:write",
+          "relationship:write",
+          "policy:write",
+          "federation:write"
+        ]
       });
       await tx.insert(roleBindings).values({
         id: randomUUID(),
@@ -773,7 +834,16 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
         properties: ORG_WIDE_POLICY_PROPERTIES
       });
       expect(res.statusCode, `${typeId}: ${res.body}`).toBe(403);
-      expect(res.body).toMatch(/policy:write/);
+      // THE SPECIFIC VIOLATION, PER TYPE — and this assertion is where the one-bar-for-the-whole-set
+      // assumption first became visible. Most governance-managed types are refused here for a
+      // PERMISSION reason and the detail names `policy:write`. A PROJECTION-BOUND type (M25.7's
+      // `freeze`) is refused for a TYPE reason, ahead of that check, and its detail names the typed
+      // door instead — because `policy:write` was never the bar it should have had to clear. A
+      // blanket `/policy:write/` here would have had to be satisfied by weakening the freeze
+      // refusal back into a permission upgrade, which is the defect, so the expectation branches.
+      expect(res.body).toMatch(
+        PROJECTION_BOUND_OBJECT_TYPE_IDS.has(typeId) ? /projection-backed/ : /policy:write/
+      );
       expect(await governanceRowsByName(typeId, name)).toHaveLength(0);
     }
   });
@@ -814,30 +884,68 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
   // names we happen to have today — add a third governance type and this widens by itself.
   // -------------------------------------------------------------------------------------------
 
-  it("PROPERTY: no door with a caller-supplied typeId writes a governance object without policy:write", async () => {
-    const federationOnly = await createFederationOnlyUser();
+  interface Door {
+    door: string;
+    run: (typeId: string, name: string) => Promise<{ statusCode: number; body: string }>;
+  }
 
-    /** Every door whose `typeId` comes from the request, with the WEAKEST actor that reaches it. */
-    const doors: Array<{
-      door: string;
-      run: (typeId: string, name: string) => Promise<{ statusCode: number; body: string }>;
-    }> = [
+  /**
+   * EVERY door whose `typeId` comes from the request, driven by ONE caller's token.
+   *
+   * Parameterised on the actor (M25.7) rather than hardcoding `operator`/`federationOnly` inside
+   * each entry, because the bar is per TYPE, not per door table: the same five doors have to be
+   * driven by a second actor — one holding every permission they ask for except `freeze:write` —
+   * and a copy of this table for that actor is a copy that goes stale when a sixth door lands.
+   *
+   * `handFillActorToken` is separate because DOOR 5's front gate is `federation:write`: the
+   * `object:write`-only Operator cannot reach it at all, so the original property case handed it
+   * the federation-only actor. An actor holding both drives the whole table with one token.
+   */
+  function doorsFor(token: string, handFillActorToken: string = token): Door[] {
+    /**
+     * THE PAYLOAD HAS TO BE WELL-FORMED FOR THE TYPE, OR THE REFUSAL IS NOT WHAT STOPPED IT.
+     *
+     * `ORG_WIDE_POLICY_PROPERTIES` is a `policy` document. Sent as a `freeze` it fails
+     * `drizzle/0089`'s registered `required` list at Ajv, and every door answers 400 — which LOOKS
+     * like a refusal and is not one: a caller who sends a well-formed freeze walks straight past a
+     * schema that was never an authorization control. MEASURED: with the three
+     * `isProjectionBoundObjectType` refusals deleted, this table sending the policy bag returned
+     * 400 from `/overlays`, and sending the bag below returned 201 with a live `freeze` object.
+     * The second is the escalation; only the second proves the guard.
+     */
+    const propertiesFor = (typeId: string): Record<string, unknown> =>
+      typeId === "freeze"
+        ? {
+            // The five constitutive fields drizzle/0089 marks `required`, in the exact shapes
+            // `governance/freeze-object.ts` writes them — `freezeId` and `scopeObjectId` as real
+            // UUIDs (they become `uuid` columns at every receiving instance), the window as ISO
+            // instants, ordered.
+            freezeId: randomUUID(),
+            scopeObjectId: org.orgId,
+            name: "smuggled freeze",
+            startsAt: new Date(Date.now() - 60_000).toISOString(),
+            endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+            reason: "minted through a door that is not POST /api/v1/freezes",
+            atomic: true
+          }
+        : ORG_WIDE_POLICY_PROPERTIES;
+    return [
       {
         door: "POST /api/v1/federation/overlays",
         run: async (typeId, name) =>
-          post("/api/v1/federation/overlays", operator.token, {
+          post("/api/v1/federation/overlays", token, {
             base: await createBaseService(),
             typeId,
             name,
-            properties: ORG_WIDE_POLICY_PROPERTIES
+            properties: propertiesFor(typeId)
           })
       },
       {
         door: "POST /api/v1/discovery/accept",
         run: (typeId, name) =>
-          post("/api/v1/discovery/accept", operator.token, {
+          post("/api/v1/discovery/accept", token, {
             proposal: {
-              objects: [{ typeId, name, properties: ORG_WIDE_POLICY_PROPERTIES }],
+              objects: [{ typeId, name, properties: propertiesFor(typeId) }],
               relationships: []
             }
           })
@@ -845,16 +953,16 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
       {
         door: "POST /api/v1/objects/{type}",
         run: (typeId, name) =>
-          post(`/api/v1/objects/${typeId}`, operator.token, {
+          post(`/api/v1/objects/${typeId}`, token, {
             name,
-            properties: ORG_WIDE_POLICY_PROPERTIES
+            properties: propertiesFor(typeId)
           })
       },
       {
         door: "POST /api/v1/plans + /apply",
         run: async (typeId, name) => {
           const stackName = `gov-prop-${randomUUID().slice(0, 8)}`;
-          const plan = await post("/api/v1/plans", operator.token, {
+          const plan = await post("/api/v1/plans", token, {
             manifest: {
               stackName,
               objects: [
@@ -862,18 +970,14 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
                   urn: `urn:scp:${stackName}:${typeId}:smuggled`,
                   typeId,
                   name,
-                  properties: ORG_WIDE_POLICY_PROPERTIES
+                  properties: propertiesFor(typeId)
                 }
               ],
               relationships: []
             }
           });
           expect(plan.statusCode, plan.body).toBe(201);
-          return post(
-            `/api/v1/plans/${(plan.json() as { id: string }).id}/apply`,
-            operator.token,
-            {}
-          );
+          return post(`/api/v1/plans/${(plan.json() as { id: string }).id}/apply`, token, {});
         }
       },
       {
@@ -881,15 +985,20 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
         run: (typeId, name) =>
           // A REAL peer: with a nonexistent one this door's `stored it anyway` check below is
           // unfalsifiable, because the write is unreachable whatever the guard does.
-          post("/api/v1/federation/hand-fill", federationOnly.token, {
+          post("/api/v1/federation/hand-fill", handFillActorToken, {
             peer: handFillPeer,
             typeId,
             urn: `urn:scp:${org.orgId}:${typeId}:${name}`,
             name,
-            properties: ORG_WIDE_POLICY_PROPERTIES
+            properties: propertiesFor(typeId)
           })
       }
     ];
+  }
+
+  it("PROPERTY: no door with a caller-supplied typeId writes a governance object without policy:write", async () => {
+    const federationOnly = await createFederationOnlyUser();
+    const doors = doorsFor(operator.token, federationOnly.token);
 
     for (const { door, run } of doors) {
       for (const typeId of GOVERNANCE_MANAGED_OBJECT_TYPE_IDS) {
@@ -902,6 +1011,112 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
         ).toHaveLength(0);
       }
     }
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // THE SECOND PROPERTY (M25.7) — THE BAR IS PER TYPE, AND THE CASE ABOVE CANNOT SEE THAT.
+  //
+  // The loop above drives two actors who are refused everywhere, so it measures ONE bar for the
+  // WHOLE set and stays green whatever the doors do to an actor who clears the governance bar.
+  // That is precisely the gap M25.7 fell into: adding `freeze` to
+  // `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS` makes two doors refuse it and instructs the other three to
+  // demand `policy:write` — an UPGRADE, not a refusal — and `policy:write` is neither of the two
+  // permissions a freeze actually requires. Measured before the fix: a holder of `policy:write` and
+  // `federation:write`, with `freeze:write` NOWHERE, minted a federating freeze through
+  // `POST /plans`+apply, `/federation/overlays` and `/federation/hand-fill`, with its declared
+  // `scopeObjectId` bound to no authority at all and no `freezes` row at this instance — a block
+  // that federates and cannot be lifted at either end.
+  //
+  // So the second property is stated over `PROJECTION_BOUND_OBJECT_TYPE_IDS` and the SAME door
+  // table, with the strongest actor that still lacks the typed door's own permission.
+  //
+  // MUTATIONS RUN 2026-08-24, MEASURED not predicted. Baseline: 24 passed.
+  //
+  //   P-1  DELETE all three `isProjectionBoundObjectType` refusals (`iac/plans-repo.ts`,
+  //          `federation/overlay-repo.ts`, `federation/handfill-repo.ts`)
+  //          -> 1 failed, on the FIRST door in the table, with the object live in the response:
+  //             "POST /api/v1/federation/overlays accepted a 'freeze' from an actor with no
+  //              'freeze:write': {…"typeId":"freeze"…"originDomainId":"01a035ea-85f5-…"…}:
+  //              expected 201 to be 403"
+  //   P-2  DELETE only `iac/plans-repo.ts`'s
+  //          -> "POST /api/v1/plans + /apply accepted a 'freeze' … "status":"applied" …
+  //              expected 200 to be 403"
+  //   P-3  DELETE only `federation/handfill-repo.ts`'s
+  //          -> "POST /api/v1/federation/hand-fill accepted a 'freeze' … expected 201 to be 403"
+  //
+  // Each guard is therefore load-bearing on its own door, not covered by a sibling. Note what P-1
+  // FIRST produced: with the door table still sending `ORG_WIDE_POLICY_PROPERTIES`, the un-guarded
+  // overlay answered 400 from Ajv's `required` list, not 201 — a red test for a reason that is not
+  // an authorization control at all. `propertiesFor` exists because of that measurement.
+  // -------------------------------------------------------------------------------------------
+
+  it("PROPERTY (per type): a projection-bound type is REFUSED at every caller-supplied-typeId door, even for an actor holding every permission those doors ask for", async () => {
+    const governanceNoFreeze = await createGovernanceNoFreezeUser();
+    // A GUARD ON THIS GUARD, like LAYER 0 below: a loop over an empty set passes vacuously.
+    expect(
+      [...PROJECTION_BOUND_OBJECT_TYPE_IDS].length,
+      "PROJECTION_BOUND_OBJECT_TYPE_IDS is empty — this whole case would pass by looping zero times"
+    ).toBeGreaterThanOrEqual(1);
+    expect([...PROJECTION_BOUND_OBJECT_TYPE_IDS]).toContain("freeze");
+
+    for (const { door, run } of doorsFor(governanceNoFreeze.token)) {
+      for (const typeId of PROJECTION_BOUND_OBJECT_TYPE_IDS) {
+        const name = `projbound-${randomUUID().slice(0, 8)}`;
+        const res = await run(typeId, name);
+        expect(
+          res.statusCode,
+          `${door} accepted a '${typeId}' from an actor with no '${typeId}:write': ${res.body}`
+        ).toBe(403);
+        expect(
+          await governanceRowsByName(typeId, name),
+          `${door} refused a '${typeId}' and stored it anyway`
+        ).toHaveLength(0);
+      }
+    }
+  });
+
+  it("PROPERTY (per type, control): the SAME actor IS admitted for a type whose bar really is policy:write — so the refusal above is about the TYPE, not the actor", async () => {
+    // ============================================================================================
+    // WITHOUT THIS, THE CASE ABOVE IS SATISFIED BY AN ACTOR WHO CAN DO NOTHING.
+    //
+    // Every assertion up there is a 403, and a 403 is what a mis-provisioned role, a broken token
+    // or a route-level front gate produces too. This case drives the two doors whose remedy is a
+    // PERMISSION rather than a refusal (`/overlays` and `/hand-fill` — DESIGN §13 makes both
+    // canonical for `policy`) with the identical token and requires a 201. So the pair together
+    // says what the property actually claims: the doors distinguish `policy` from `freeze` by TYPE,
+    // and this actor clears the governance bar for the one and is refused the other.
+    //
+    // The three refusing doors (`/objects/{type}`, `/discovery/accept`) have no such control by
+    // construction — they refuse EVERY governance-managed type for every caller, which their own
+    // DOOR cases above already pin.
+    // ============================================================================================
+    const governanceNoFreeze = await createGovernanceNoFreezeUser();
+
+    const basePolicy = await post("/api/v1/policies", org.adminToken, {
+      name: `gov-doors-perbar-base-${randomUUID().slice(0, 8)}`,
+      properties: { enforcement: "advisory" }
+    });
+    expect(basePolicy.statusCode, basePolicy.body).toBe(201);
+    const overlayName = `perbar-overlay-${randomUUID().slice(0, 8)}`;
+    const overlay = await post("/api/v1/federation/overlays", governanceNoFreeze.token, {
+      base: (basePolicy.json() as { id: string }).id,
+      typeId: "policy",
+      name: overlayName,
+      properties: { enforcement: "required" }
+    });
+    expect(overlay.statusCode, `overlay: ${overlay.body}`).toBe(201);
+    expect(await policyRowsByName(overlayName)).toHaveLength(1);
+
+    const handFillName = `perbar-handfill-${randomUUID().slice(0, 8)}`;
+    const handFill = await post("/api/v1/federation/hand-fill", governanceNoFreeze.token, {
+      peer: handFillPeer,
+      typeId: "policy",
+      urn: `urn:scp:${org.orgId}:policy:${handFillName}`,
+      name: handFillName,
+      properties: ORG_WIDE_POLICY_PROPERTIES
+    });
+    expect(handFill.statusCode, `hand-fill: ${handFill.body}`).toBe(201);
+    expect(await policyRowsByName(handFillName)).toHaveLength(1);
   });
 });
 
@@ -1000,10 +1215,17 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
    * against every door above automatically, which is the point of the loop — but a reader still
    * sees it arrive here rather than inferring it from a passing suite.
    */
-  it("LAYER 0: the governance-managed set is non-empty and still holds the three known types", () => {
+  it("LAYER 0: the governance-managed set is non-empty and still holds the four known types", () => {
     const typeIds = [...GOVERNANCE_MANAGED_OBJECT_TYPE_IDS];
-    expect(typeIds.length).toBeGreaterThanOrEqual(3);
-    expect(typeIds).toEqual(expect.arrayContaining(["policy", "control", "scan_override_grant"]));
+    expect(typeIds.length).toBeGreaterThanOrEqual(4);
+    // `freeze` is M25.7's (owner decision D6): its graph object is the WIRE FORM of a freeze
+    // window, rebuilt into a peer's `freezes` table on import, where it BLOCKS — so minting one
+    // through a door that takes a caller-supplied `typeId` would stop releases in another security
+    // domain on plain `object:write`. The count moved 3 -> 4 and this line is where the addition is
+    // visible in review, which is what the docblock above says this case is for.
+    expect(typeIds).toEqual(
+      expect.arrayContaining(["policy", "control", "scan_override_grant", "freeze"])
+    );
   });
 
   /**
@@ -1121,7 +1343,36 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
     // `decidedByActorId`, `decidedAt` and `decisionReason` at every other local door. A future edit
     // that let the raise site write those, or that let the decide site skip the tier check, would
     // leave this entry looking unchanged, which is why DOORS 4b/4c above assert the behaviour.
-    "routes/scan-override-grants.ts": ["SCAN_OVERRIDE_GRANT_TYPE_ID ×2"]
+    "routes/scan-override-grants.ts": ["SCAN_OVERRIDE_GRANT_TYPE_ID ×2"],
+    // M25.7's freeze wire form — ADDED BY THIS CENSUS RATHER THAN BY THE AUTHOR, the second time
+    // the mechanism has worked: `governance/freeze-object.ts` landed and this layer went red on the
+    // next run. The entry below is the review that redness demanded.
+    //
+    // NOT A DOOR, for the same reason `OUTPOST_OBJECT_TYPE_ID` and `SCAN_OVERRIDE_GRANT_TYPE_ID` are
+    // not: `FREEZE_OBJECT_TYPE_ID` is a module constant — a literal behind a name — so no caller
+    // chooses this type. The ×2 are `attachFreezeObject`'s `createObject` (minting the wire form of
+    // a freeze the caller has ALREADY inserted into `freezes`) and `syncFreezeObject`'s
+    // `updateObject` (re-snapshotting it after a lift or a window edit).
+    //
+    // THE GOVERNANCE QUESTION, ASKED AND ANSWERED, because that is what this table is for: a
+    // `freeze` object federates and is rebuilt into a peer's `freezes` table where it BLOCKS, so
+    // minting one through a weak door would stop releases in ANOTHER SECURITY DOMAIN on plain
+    // `object:write`. `freeze` is therefore IN `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS`, which is why
+    // every behavioural case above now loops over it too.
+    //
+    // AND THAT WAS NOT ENOUGH, which is the correction this entry carries. The first version of
+    // this note said membership "closes all five doors at once". It closes TWO. At the other three
+    // (`POST /plans`+apply, `/federation/overlays`, `/federation/hand-fill`) membership means
+    // "demand `policy:write` instead of `object:write`" — an UPGRADE, not a refusal — and
+    // `policy:write` is neither of the permissions a freeze needs. `freeze` is therefore ALSO in
+    // `PROJECTION_BOUND_OBJECT_TYPE_IDS`, which those three refuse outright; `PROPERTY (per type)`
+    // above measures it with an actor holding every permission those doors ask for except
+    // `freeze:write`, and its `(control)` sibling proves that actor is still admitted for `policy`.
+    //
+    // This module is reachable only from `POST /api/v1/freezes`, which authorizes `freeze:write` at
+    // the freeze's own scope plus `federation:write` for the federating form — the latter on the
+    // lift and window-edit verbs too, since both re-publish the object.
+    "governance/freeze-object.ts": ["FREEZE_OBJECT_TYPE_ID ×2"]
   };
 
   /** `graph/objects-repo.ts` relative to the scan root — the anchor all three layers share. */

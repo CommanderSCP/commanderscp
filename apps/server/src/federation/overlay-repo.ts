@@ -4,7 +4,11 @@ import { badRequest, forbidden } from "../errors.js";
 import { hasPermission } from "../authz/resolve.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { createRelationship, listRelationships } from "../graph/relationships-repo.js";
-import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
+import {
+  isGovernanceManagedObjectType,
+  isProjectionBoundObjectType,
+  projectionBoundRefusalDetail
+} from "../governance/governance-managed-types.js";
 import { isServiceMemberObjectType } from "../graph/service-member-types.js";
 import { isPeerBoundObjectType } from "./outpost-binding.js";
 import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
@@ -112,6 +116,26 @@ export async function createOverlay(
         `via an overlay — use /api/v1/${input.overlayTypeId}s, which requires both endpoints and ` +
         `writes the derived edges atomically`
     );
+  }
+
+  // M25.7 — THE FIFTH SIBLING, AND IT HAD TO BE A REFUSAL RATHER THAN THE PERMISSION CHECK BELOW.
+  //
+  // A `freeze` object is the wire half of a record whose other half is a `freezes` row, and this
+  // door cannot write that row. The governance-managed check further down would have admitted one
+  // to any holder of org-root `policy:write` — an actor who may hold `freeze:write` and
+  // `federation:write` NOWHERE — and the overlay it produced would have federated to every peer at
+  // a carrying scope, rebuilt itself into their enforcement tables, and been liftable at neither
+  // end (this instance has no `freezes` row for `DELETE /v1/freezes/{id}` to find; the peers refuse
+  // because the origin domain is foreign).
+  //
+  // WHY THIS IS NOT THE `policy` ARGUMENT ONE TYPE OVER. That argument is DESIGN §13's canonical
+  // overlay case — locally annotating a commander-distributed global policy, which
+  // `assertPolicyOverlayOnlyAddsStrictness` exists to validate. A freeze has no strictness lattice
+  // to add to and no annotation semantics at all; its content is a window, a scope and a reason. So
+  // refusing the type here deletes no feature and leaves no validator dead, which is the test the
+  // three refusals above applied.
+  if (isProjectionBoundObjectType(input.overlayTypeId)) {
+    throw forbidden(projectionBoundRefusalDetail(input.overlayTypeId, "an overlay"));
   }
 
   // M21.7 — THE FOURTH SIBLING, AND THE ONE THE OTHER THREE CENSUSES NEVER LOOKED FOR.
