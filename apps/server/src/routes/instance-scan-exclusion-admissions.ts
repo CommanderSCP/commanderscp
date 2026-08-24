@@ -92,7 +92,6 @@ function toApi(row: AdmissionRow): InstanceScanExclusionAdmission {
   };
 }
 
-
 function requireOperator(deps: AppDeps, request: FastifyRequest): void {
   if (!deps.config.operatorToken) {
     throw forbidden(

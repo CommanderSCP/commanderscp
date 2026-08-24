@@ -76,7 +76,6 @@ const ObjectEnforcementParamSchema = z.object({
  *  the surface they read about. */
 export { GOVERNANCE_MOVE_DECISION_KIND } from "../governance/move-rung-write.js";
 
-
 function requireOperator(deps: AppDeps, request: FastifyRequest): void {
   if (!deps.config.operatorToken) {
     throw forbidden(
