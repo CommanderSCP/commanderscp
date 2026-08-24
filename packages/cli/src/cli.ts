@@ -299,6 +299,12 @@ export function campaignDetailRow(c: Campaign): Record<string, string> {
     targets: c.targets.join(", "),
     topologyObjectId: c.topologyObjectId ?? "",
     topologyVersion: isAbsent(c.topologyVersion) ? "" : String(c.topologyVersion),
+    // M25.6a — the deadline is a REQUIRED, nullable response property, so the guard here is defence
+    // in depth (the SDK rejects a body missing it) rather than the only bar. Blank for "none", never
+    // the word `undefined`: an operator reading "deadline: undefined" cannot tell whether this
+    // campaign withholds nothing or whether their client is older than the field.
+    deadline: isAbsent(c.deadline) ? "" : c.deadline.at,
+    adoptionSignal: isAbsent(c.deadline) ? "" : (c.deadline.adoptionSignal ?? ""),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
   };
@@ -3813,6 +3819,68 @@ export function buildProgram(): Command {
       const result = await client.campaigns.explain(id);
       printCampaignExplainResult(result, opts.output);
     });
+
+  /**
+   * M25.6a (owner decision D4) — SET, MOVE or CLEAR the deadline. `--clear` is THE EXIT: it releases
+   * every target the deadline was withholding this campaign's fan-out from, on the next tick, with
+   * no unlock verb. §4.5's per-target override is M25.6b (its new permission needs a migration), so
+   * this is the whole of the escape hatch, and it ships in the same increment as the lock rather
+   * than the one after it.
+   *
+   * `--reason` is required on ALL THREE acts, clear included: it is the operator's own words on the
+   * hash chain, beside a Decision carrying the previous instant.
+   */
+  campaignCmd
+    .command("deadline <id>")
+    .description(
+      "Set, move or clear a Campaign's deadline — past it, targets this campaign cannot observe as migrated stop receiving ITS changes (unrelated releases are unaffected)"
+    )
+    .option("--at <iso>", "the deadline instant (ISO 8601, e.g. 2026-12-31T23:59:59Z)")
+    .option(
+      "--adoption-signal <kind>",
+      "which adoption evidence this deadline was authored against: delivered|dependency|control (declarative — the verdict always comes from the campaign's own recipe)"
+    )
+    .option("--clear", "CLEAR the deadline — releases every locked target on the next tick")
+    .requiredOption("--reason <text>", "why (required on set, move AND clear)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        id: string,
+        opts: BaseCliOpts & {
+          at?: string;
+          adoptionSignal?: string;
+          clear?: boolean;
+          reason: string;
+        }
+      ) => {
+        // REFUSED HERE RATHER THAN GUESSED. `--clear --at ...` is two contradictory intents, and
+        // silently picking one is how an operator comes to believe they cleared a deadline that is
+        // still standing and still withholding their campaign's changes.
+        if (opts.clear === true && opts.at !== undefined) {
+          throw new Error("--clear and --at are mutually exclusive");
+        }
+        if (opts.clear !== true && opts.at === undefined) {
+          throw new Error("pass --at <iso> to set or move the deadline, or --clear to remove it");
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const updated = await client.campaigns.setDeadline(
+          id,
+          opts.clear === true
+            ? null
+            : {
+                at: opts.at!,
+                ...(opts.adoptionSignal !== undefined
+                  ? {
+                      adoptionSignal: opts.adoptionSignal as "delivered" | "dependency" | "control"
+                    }
+                  : {})
+              },
+          opts.reason
+        );
+        printResult(updated, opts.output, (item) => campaignDetailRow(item as Campaign));
+      }
+    );
 
   campaignCmd
     .command("rollback <id>")

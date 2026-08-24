@@ -1,13 +1,14 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type {
   Campaign,
+  CampaignDeadline,
   CampaignRecipe,
   CampaignStatus,
   ContainmentDomainId,
   ExecutorType,
   TrustDomainId
 } from "@scp/schemas";
-import { CAMPAIGN_RECIPE_PROPERTY_KEY } from "@scp/schemas";
+import { CAMPAIGN_DEADLINE_PROPERTY_KEY, CAMPAIGN_RECIPE_PROPERTY_KEY } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import {
   campaignPlans,
@@ -18,13 +19,14 @@ import {
 } from "../db/schema.js";
 import { badRequest, notFound } from "../errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
-import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { createObject, getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import { authorize } from "../authz/resolve.js";
 import { insertDecision } from "./decisions-repo.js";
 import { computeCampaignStatus, type CampaignWaveStatusInput } from "./campaign-status.js";
 import { evaluateFreezeHolds } from "./freeze-hold.js";
 import { getLatestCampaignPlan } from "./campaign-plan-service.js";
 import { resolveChangeRecipe } from "./campaign-recipe.js";
+import { evaluateCampaignDeadlineLock, resolveCampaignDeadline } from "./campaign-deadline-lock.js";
 
 export type ObjectRow = typeof objects.$inferSelect;
 /** The minimal object shape `toCampaignShape` actually reads — satisfied by both a raw
@@ -51,6 +53,17 @@ function recipeOf(properties: Record<string, unknown>): CampaignRecipe | undefin
   return resolved.outcome === "recipe" ? resolved.recipe : undefined;
 }
 
+/** M25.6a — the campaign's deadline as the READ surface sees it, through the SAME parse the actuator
+ *  uses. `null` covers BOTH "none declared" and "declared but unreadable", and that collapse is
+ *  correct HERE and only here: this is a display surface, and both states have the identical
+ *  operator-visible consequence — nothing is being withheld from anybody. At the ACTUATOR the two
+ *  are emphatically not the same, and `campaign-reconcile.ts` records the unreadable one as a `warn`
+ *  Decision naming what failed to parse. */
+function deadlineOf(properties: Record<string, unknown>): CampaignDeadline | null {
+  const resolved = resolveCampaignDeadline(properties);
+  return resolved.outcome === "deadline" ? resolved.deadline : null;
+}
+
 export function toCampaignShape(object: ObjectLike, status: CampaignStatus): Campaign {
   const properties = object.properties as Record<string, unknown>;
   const targets = Array.isArray(properties.targets)
@@ -72,6 +85,10 @@ export function toCampaignShape(object: ObjectLike, status: CampaignStatus): Cam
     // absence is honest); at the ACTUATOR the same document is a loud refusal, never an absence —
     // see `campaign-recipe.ts`.
     ...(recipeOf(properties) !== undefined ? { recipe: recipeOf(properties) } : {}),
+    // M25.6a — ALWAYS PRESENT, `null` when this campaign declares no deadline. A required nullable
+    // response property, not an optional one: "is anything being withheld from this campaign's
+    // laggards?" must not be answered by an absence a reader has to interpret.
+    deadline: deadlineOf(properties),
     createdAt: isoOf(object.createdAt),
     updatedAt: isoOf(object.updatedAt)
   };
@@ -97,6 +114,11 @@ export interface ProposeCampaignInput {
    *  (`governance/campaign-recipe-guard.ts`), not here, because two other doors reach that property
    *  without passing through this function. */
   recipe?: CampaignRecipe;
+  /** M25.6a (D4) — the date past which this campaign stops fanning out to targets it cannot observe
+   *  as migrated. Authored here so a deadlined campaign is one call; MOVED and CLEARED afterwards
+   *  through `POST /campaigns/{id}/deadline`, which demands a reason and records the previous
+   *  value. */
+  deadline?: CampaignDeadline;
   /** Object ids or URNs this campaign fans out to — one member Change per target, per wave. */
   targets: string[];
 }
@@ -165,6 +187,10 @@ export async function proposeCampaign(
       // byte-identical to a pre-M25.4 campaign and every reader's fast path stays a pure absence
       // check (`resolveChangeRecipe` returns before parsing anything).
       ...(input.recipe !== undefined ? { [CAMPAIGN_RECIPE_PROPERTY_KEY]: input.recipe } : {}),
+      // M25.6a — ONLY written when the author declared one, so a campaign without a deadline is
+      // byte-identical to a pre-M25.6a campaign and `resolveCampaignDeadline` returns on a pure
+      // key-absence check without parsing anything.
+      ...(input.deadline !== undefined ? { [CAMPAIGN_DEADLINE_PROPERTY_KEY]: input.deadline } : {}),
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(topologyObjectId !== undefined ? { topologyObjectId, topologyVersion } : {})
     },
@@ -198,6 +224,116 @@ async function fetchCampaignObject(tx: TenantTx, orgId: string, id: string): Pro
 }
 
 /**
+ * M25.6a — SET, MOVE OR CLEAR a campaign's deadline. THE ESCAPE HATCH, and the reason this
+ * increment is not an entrance with no exit.
+ *
+ * §4.5 specifies a second, narrower waiver — `POST /campaigns/{id}/deadline-override`, per-target,
+ * behind a new Owner-only `campaign:deadline-override` permission. **That is M25.6b and is
+ * deliberately not built here**: the permission needs an additive `array_append` migration (which is
+ * how every role grant in this repo works — drizzle/0010_governance.sql:180), and migration
+ * numbering is currently serialized across concurrent sessions behind a hard contiguity gate
+ * (`db/journal-ordering.test.ts` asserts `idx` is contiguous from 0, so an out-of-order number reds
+ * the unit suite). Shipping the lock without ANY exit would have been the entrance-with-no-exit
+ * failure M25.1 exists to close, so this verb ships in its place: CLEARING the deadline unlocks
+ * every target of the campaign at once, on the next tick, with no unlock verb and no backfill.
+ *
+ * `object:write` AT THE CAMPAIGN, not at the targets — checked by the route. The thing being
+ * configured is this campaign's own policy about its own fan-out, and a target-scoped check would
+ * hand the laggard their own waiver, which is exactly the inversion §4.5 warns about for the
+ * override. `hasPermission` expands the checked scope UPWARD, so an Administrator bound at the
+ * campaign's containment domain can move its deadline and an actor bound at one unrelated service
+ * cannot.
+ *
+ * **THE ROW IS READ `FOR UPDATE`**, and that is not defensive habit — it is M25.1's measured lesson
+ * applied to the identical shape. This is a read-modify-write whose READ decides what goes into a
+ * permanent record: `before` becomes the Decision's `deadline.from` and the audit event's account of
+ * what the deadline used to be. Unlocked under READ COMMITTED, two concurrent moves let the second
+ * compute its `from` against a snapshot that was never live — so the chain would record a slip from
+ * a date nobody ever set. `updateObject` re-locks the same row a moment later (`lockObjectRow`), so
+ * this takes the lock at the START of the sequence rather than in the middle of it.
+ *
+ * RETURNS BOTH VALUES so the route can put the previous one in the record. "The deadline slipped
+ * four times" is otherwise unreconstructible from a chain of writes that each say only where it
+ * landed.
+ */
+export interface SetCampaignDeadlineResult {
+  /** What the campaign's deadline was, immediately before this write — `null` when it had none, and
+   *  ALSO `null` when what it had did not parse. The two are distinguished by `beforeUnreadable`
+   *  rather than collapsed, because "you replaced a broken document" and "you set the first one" are
+   *  different facts and the audit trail should not have to guess. */
+  before: CampaignDeadline | null;
+  /** True when the value being replaced was present but unreadable. */
+  beforeUnreadable: boolean;
+  after: CampaignDeadline | null;
+  campaign: Campaign;
+}
+
+export async function setCampaignDeadline(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    campaignObjectId: string;
+    actorObjectId: string;
+    requestId: string;
+    /** `null` CLEARS it — the exit. */
+    deadline: CampaignDeadline | null;
+  }
+): Promise<SetCampaignDeadlineResult> {
+  const locked = await tx
+    .select()
+    .from(objects)
+    .where(
+      and(
+        eq(objects.orgId, input.orgId),
+        eq(objects.id, input.campaignObjectId),
+        eq(objects.typeId, "campaign"),
+        sql`${objects.deletedAt} IS NULL`
+      )
+    )
+    .for("update")
+    .limit(1);
+  const row = locked[0];
+  if (!row) throw notFound(`campaign '${input.campaignObjectId}' not found`);
+
+  const properties = (row.properties ?? {}) as Record<string, unknown>;
+  const existing = resolveCampaignDeadline(properties);
+
+  // `updateObject` replaces `properties` WHOLESALE, so the spread is what preserves `targets`,
+  // `type`, `recipe`, `topologyObjectId` and everything else. Clearing DELETES the key rather than
+  // writing `null`: `resolveCampaignDeadline` treats both as "none", but a stored `null` would make
+  // a cleared campaign textually different from one that never had a deadline, for no gain — and it
+  // is one more shape every future reader of this bag has to know about.
+  const { [CAMPAIGN_DEADLINE_PROPERTY_KEY]: _dropped, ...withoutDeadline } = properties;
+  const nextProperties =
+    input.deadline === null
+      ? withoutDeadline
+      : { ...withoutDeadline, [CAMPAIGN_DEADLINE_PROPERTY_KEY]: input.deadline };
+
+  const updated = await updateObject(tx, {
+    orgId: input.orgId,
+    typeId: "campaign",
+    actorObjectId: input.actorObjectId,
+    requestId: input.requestId,
+    idOrUrn: input.campaignObjectId,
+    properties: nextProperties
+  });
+
+  const status = await getCampaignStatus(
+    tx,
+    input.orgId,
+    input.campaignObjectId,
+    nextProperties as Record<string, unknown>
+  );
+
+  return {
+    before: existing.outcome === "deadline" ? existing.deadline : null,
+    beforeUnreadable: existing.outcome === "malformed",
+    after: input.deadline,
+    campaign: toCampaignShape(updated, status)
+  };
+}
+
+/**
  * The status-derivation DB helper (campaign-status.ts's module doc: campaign status is ALWAYS
  * re-derived, never stored). Loads the campaign's latest compiled plan (if any) and every wave
  * target's member Change's CURRENT state in one batched query, then hands off to the pure
@@ -207,8 +343,26 @@ async function fetchCampaignObject(tx: TenantTx, orgId: string, id: string): Pro
 export async function getCampaignStatus(
   tx: TenantTx,
   orgId: string,
-  campaignObjectId: string
+  campaignObjectId: string,
+  /**
+   * The campaign object's OWN `properties` — where its deadline and recipe live.
+   *
+   * REQUIRED, not optional, and both call sites already hold the row. Making it optional would let a
+   * future caller silently get the no-deadline answer for a deadlined campaign, which is this
+   * project's recurring "fixed some call sites of a concept" failure with a status field attached.
+   */
+  properties: Record<string, unknown> | null
 ): Promise<CampaignStatus> {
+  // ============================================================================================
+  // THE COST GUARD (§4.6) — RESOLVED BEFORE ANY QUERY IN THIS FUNCTION.
+  // ============================================================================================
+  // `getCampaignStatus` runs once per campaign inside `listCampaigns`'s already-N+1 loop, so a
+  // per-target read added here is multiplied by the page size. A campaign with no deadline — every
+  // campaign authored before M25.6a, and every one that simply does not want the feature — must pay
+  // exactly what it paid before, and it does: this is a pure key-absence check on an object already
+  // in hand, decided before `getLatestCampaignPlan` is even called.
+  const deadline = resolveCampaignDeadline(properties);
+
   const plan = await getLatestCampaignPlan(tx, orgId, campaignObjectId);
   if (!plan) return computeCampaignStatus({ hasPlan: false, waves: [] });
 
@@ -246,10 +400,45 @@ export async function getCampaignStatus(
           (await evaluateFreezeHolds(tx, { orgId, targetObjectIds: runningWaveTargetIds })).keys()
         );
 
+  // M25.6a — WHICH TARGETS THIS CAMPAIGN'S OWN DEADLINE IS LOCKING OUT RIGHT NOW, re-evaluated here
+  // rather than read off the standing `campaign_deadline` Decision, for the identical reason the
+  // freeze holds directly above are: a Decision is a historical record, and a status derived from
+  // one keeps saying `blocked` after the component migrated or the deadline moved.
+  //
+  // SCOPED TO THE SAME CANDIDATE SET AS THE FREEZE HOLD — the running wave's not-yet-fanned-out
+  // targets — and for the same two reasons. A deadline over a target of a wave that has not started
+  // is withholding nothing yet, and a target that already minted its member change is past this
+  // seam entirely.
+  //
+  // NOT DUE COSTS NOTHING: `evaluateCampaignDeadlineLock` compares two instants and returns before
+  // touching `tx`. Past the deadline it costs one adoption read per candidate, which is exactly what
+  // the reconciler pays for the same answer — one resolution core, one price.
+  const deadlineLockedTargetIds =
+    deadline.outcome !== "deadline" || runningWaveTargetIds.length === 0
+      ? new Set<string>()
+      : new Set(
+          (
+            await evaluateCampaignDeadlineLock(tx, {
+              orgId,
+              campaignObjectId,
+              targetObjectIds: runningWaveTargetIds,
+              deadline: deadline.deadline,
+              at: deadline.at,
+              recipe: recipeOf((properties ?? {}) as Record<string, unknown>),
+              // A READ, so the clock is read HERE: there is no batch to keep internally consistent
+              // (one request, one campaign) and nothing durable is written from this path.
+              now: new Date()
+            })
+          ).locked.map((entry) => entry.targetObjectId)
+        );
+
   const waves: CampaignWaveStatusInput[] = plan.waves.map((w) => ({
     waveIndex: w.waveIndex,
     waveStatus: w.status as CampaignWaveStatusInput["waveStatus"],
     frozenTargetCount: w.targets.filter((t) => frozenTargetIds.has(t.targetObjectId)).length,
+    deadlineLockedTargetCount: w.targets.filter((t) =>
+      deadlineLockedTargetIds.has(t.targetObjectId)
+    ).length,
     targets: w.targets.map((t) => ({
       targetObjectId: t.targetObjectId,
       memberChangeState:
@@ -266,7 +455,12 @@ export async function getCampaignStatus(
 
 export async function getCampaign(tx: TenantTx, orgId: string, id: string): Promise<Campaign> {
   const object = await fetchCampaignObject(tx, orgId, id);
-  const status = await getCampaignStatus(tx, orgId, id);
+  const status = await getCampaignStatus(
+    tx,
+    orgId,
+    id,
+    object.properties as Record<string, unknown> | null
+  );
   return toCampaignShape(object, status);
 }
 
@@ -304,7 +498,12 @@ export async function listCampaigns(
 
   const items: Campaign[] = [];
   for (const row of page) {
-    const status = await getCampaignStatus(tx, orgId, row.id);
+    const status = await getCampaignStatus(
+      tx,
+      orgId,
+      row.id,
+      row.properties as Record<string, unknown> | null
+    );
     if (query.status && query.status !== status) continue;
     items.push(toCampaignShape(row, status));
   }

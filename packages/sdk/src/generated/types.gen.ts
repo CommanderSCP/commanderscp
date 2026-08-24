@@ -17977,6 +17977,10 @@ export type ListCampaignsResponses = {
                     docsUrl?: string;
                 };
             };
+            deadline: {
+                at: string;
+                adoptionSignal?: 'delivered' | 'dependency' | 'control';
+            } | null;
             createdAt: string;
             updatedAt: string;
         }>;
@@ -18022,6 +18026,10 @@ export type ProposeCampaignData = {
                 summary?: string;
                 docsUrl?: string;
             };
+        };
+        deadline?: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
         };
         targets: Array<string>;
     };
@@ -18107,6 +18115,10 @@ export type ProposeCampaignResponses = {
                 docsUrl?: string;
             };
         };
+        deadline: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+        } | null;
         createdAt: string;
         updatedAt: string;
     };
@@ -18200,6 +18212,10 @@ export type GetCampaignResponses = {
                 docsUrl?: string;
             };
         };
+        deadline: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+        } | null;
         createdAt: string;
         updatedAt: string;
     };
@@ -18294,6 +18310,10 @@ export type ExplainCampaignResponses = {
                     docsUrl?: string;
                 };
             };
+            deadline: {
+                at: string;
+                adoptionSignal?: 'delivered' | 'dependency' | 'control';
+            } | null;
             createdAt: string;
             updatedAt: string;
         };
@@ -18423,6 +18443,120 @@ export type CampaignAdoptionResponses = {
 };
 
 export type CampaignAdoptionResponse = CampaignAdoptionResponses[keyof CampaignAdoptionResponses];
+
+export type SetCampaignDeadlineData = {
+    body: {
+        deadline: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+        } | null;
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/campaigns/{id}/deadline';
+};
+
+export type SetCampaignDeadlineErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type SetCampaignDeadlineError = SetCampaignDeadlineErrors[keyof SetCampaignDeadlineErrors];
+
+export type SetCampaignDeadlineResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        description: string | null;
+        targets: Array<string>;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        recipe?: {
+            version: 1;
+            trigger: {
+                kind: 'sync' | 'workflow_dispatch' | 'custom';
+                parameters?: {
+                    [key: string]: unknown;
+                };
+            };
+            adoption?: {
+                kind: 'delivered';
+            } | {
+                kind: 'dependency';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                minVersion: string;
+            } | {
+                kind: 'control';
+                controlObjectId: string;
+            };
+            guidance?: {
+                title: string;
+                summary?: string;
+                docsUrl?: string;
+            };
+        };
+        deadline: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+        } | null;
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type SetCampaignDeadlineResponse = SetCampaignDeadlineResponses[keyof SetCampaignDeadlineResponses];
 
 export type RollbackCampaignData = {
     body: {

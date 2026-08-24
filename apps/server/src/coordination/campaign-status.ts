@@ -37,6 +37,24 @@ export interface CampaignWaveStatusInput {
    *  pre-existing gap, so it is closed in the same increment (proposal §1.8). Optional and defaulted
    *  to 0 so every existing caller and table-driven case is unchanged. */
   frozenTargetCount?: number;
+  /** M25.6a — how many of this wave's targets THIS CAMPAIGN'S OWN DEADLINE is currently withholding
+   *  from fan-out (`coordination/campaign-deadline-lock.ts`, re-evaluated at read time by
+   *  `campaign-repo.ts`).
+   *
+   *  A SEPARATE INPUT for the same reason `frozenTargetCount` is, and the defect it closes is named
+   *  in the proposal (§4.6): `computeCampaignStatus` derives `blocked` only from
+   *  `waveStatus === "blocked"`, which the deadline lock deliberately NEVER writes — the wave stays
+   *  `running` so unlocked siblings keep shipping. Without this input a campaign whose deadline has
+   *  locked out half its estate reads as ordinarily `active`, and the lever works while the signal
+   *  is missing — the exact inverse of the postmortem that cost a previous proposal its approval.
+   *
+   *  It is a COUNT, re-derived at read time, and NEVER read off the standing Decision: a status
+   *  derived from the Decision would keep saying `blocked` after the deadline was moved or the
+   *  component migrated, which is the stale-hold defect `routes/changes.ts` documents against
+   *  ADR-0028's `stage_dependency` row.
+   *
+   *  Optional and defaulted to 0, so every existing caller and table-driven case is unchanged. */
+  deadlineLockedTargetCount?: number;
 }
 
 export interface ComputeCampaignStatusInput {
@@ -70,7 +88,21 @@ export function computeCampaignStatus(input: ComputeCampaignStatusInput): Campai
   // `block` verdict (a policy or control did not pass), and M25.2's per-target freeze hold, which
   // deliberately leaves the wave `running` so its unfrozen siblings can proceed. Same tier, because
   // the operator-facing fact is the same one — something needs a human before this finishes.
-  if (input.waves.some((w) => w.waveStatus === "blocked" || (w.frozenTargetCount ?? 0) > 0)) {
+  //
+  // M25.6a adds a THIRD way into the same tier, and it reports the EXISTING `blocked` value rather
+  // than a new enum member deliberately: `CampaignStatusSchema` is a RESPONSE enum, so widening it
+  // is an oasdiff break with no upside — every consumer already renders `blocked`, and the detail an
+  // operator needs ("which targets, and why") is on the campaign's `deadline` field and its
+  // `campaign_deadline` Decision, not in a status string. The operator-facing fact is the same one
+  // all three share: something needs a human before this campaign finishes.
+  if (
+    input.waves.some(
+      (w) =>
+        w.waveStatus === "blocked" ||
+        (w.frozenTargetCount ?? 0) > 0 ||
+        (w.deadlineLockedTargetCount ?? 0) > 0
+    )
+  ) {
     return "blocked";
   }
   if (input.waves.every((w) => w.waveStatus === "succeeded" || w.waveStatus === "skipped")) {

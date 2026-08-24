@@ -9,7 +9,7 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { decisions } from "../db/schema.js";
+import { auditEvents, decisions } from "../db/schema.js";
 import {
   CountingCelSandbox,
   distinctDecisionStatements,
@@ -33,6 +33,10 @@ import {
   upsertDependencyLine
 } from "../dependencies/dependency-inventory-repo.js";
 import { CAMPAIGN_ADOPTION_DECISION_KIND } from "./campaign-adoption.js";
+import {
+  CAMPAIGN_DEADLINE_DECISION_KIND,
+  CAMPAIGN_DEADLINE_LOCK_AUDIT_ACTION
+} from "./campaign-deadline-lock.js";
 
 /**
  * The CAMPAIGN-side half of the same unbounded-Decision-write class (see
@@ -109,7 +113,7 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     return partitionConditionErrors(rows);
   }
 
-  async function tick(org: TestOrg, times: number): Promise<void> {
+  async function tick(org: TestOrg, times: number, now?: Date): Promise<void> {
     // S10: the reconciler drives only campaigns THIS domain is authoritative for, so the tick needs
     // this org's own `federation_self.domain_id` — which is exactly what every locally-created
     // campaign in this suite is stamped with. See `campaign-repo.ts`'s `listActiveCampaignObjectIds`.
@@ -117,7 +121,16 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
       await withTenantTx(server.deps.db, org.orgId, (tx) => ensureFederationSelf(tx, org.orgId))
     ).domainId;
     for (let i = 0; i < times; i++) {
-      await reconcileCampaignsOrgTick(server.deps.db, org.orgId, host, sandbox, selfDomainId);
+      // M25.6a — `now` is the tick's INJECTED clock (resolved once per tick for the whole batch).
+      // Every case but U7 passes nothing, which is byte-identical to the production path.
+      await reconcileCampaignsOrgTick(
+        server.deps.db,
+        org.orgId,
+        host,
+        sandbox,
+        selfDomainId,
+        now ? { now } : {}
+      );
     }
   }
 
@@ -553,5 +566,116 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
     // The evidence is actually IN there — a context that recorded nothing would also pass a key
     // census and a dedupe test while explaining nothing (charter principle 6).
     expect(observations.join("\n")).toContain("3.12-slim");
+  });
+
+  /**
+   * U7 — THE FOURTH CAMPAIGN-SIDE WRITER: M25.6a's deadline lock (`campaign-deadline-lock.ts`).
+   *
+   * IT IS THE WORST-SHAPED OF THE FOUR BY CONSTRUCTION, which is why it gets its own case rather
+   * than a mention. U2's gate clears when an operator approves; U3's `plan_diff` clears when someone
+   * fixes the plan; U6's adoption row is additionally bounded by a `status = 'pending'` guard that
+   * makes the write unreachable after the first tick. **A deadline lock clears when a component
+   * migrates**, which is measured in weeks — and NOTHING guards the write. Its entire bound is
+   * `insertDecisionIfChanged` comparing content. One row per tick per locked target is ~43,200 rows
+   * a day per component, and the motivating campaign has 47 of them: 2 million rows a day, from one
+   * campaign, for as long as the migration takes.
+   *
+   * THREE INDEPENDENT BOUNDS ARE ASSERTED, because any one alone would pass for the wrong reason:
+   *
+   *   (a) THE COUNT over N ticks.
+   *   (b) THE CONTENT, as an EXACT KEY CENSUS — a census fails when a NEW clock-shaped key is added,
+   *       which is how this defect actually arrives; a denylist only fails for the names somebody
+   *       already thought of. `deadlineAt` is the ONE clock-shaped value allowed, and it is a stored
+   *       BOUNDARY rather than a reading of the clock.
+   *   (c) THE AUDIT EVENT COUNT, which is the bound the Decision dedupe does NOT provide. The audit
+   *       chain asserts that something HAPPENED; appending on a tick that wrote no Decision would
+   *       make it assert an occurrence that did not occur, once a second, forever — and unlike a
+   *       duplicated Decision, a hash-chained lie cannot be pruned.
+   */
+  it("U7: a standing deadline lock writes ONE campaign_deadline Decision and ONE audit event over 15 ticks", async () => {
+    const org = await createTestOrg(server, "campaign-flood-deadline");
+    const owner = await createTestUser(server, org, [{ role: "Owner", scope: org.orgId }]);
+
+    const service = await inject(org, "/api/v1/services", { name: "svc-camp-deadline" });
+    const component = await inject(org, "/api/v1/components", {
+      name: "comp-camp-deadline",
+      service: service.id
+    });
+
+    // The component is still on python 2.7 — observably a laggard, so `not_adopted`, so locked.
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const line = await upsertDependencyLine(tx, org.orgId, {
+        ecosystem: "oci",
+        coordinate: "docker.io/library/python",
+        major: "2"
+      });
+      await upsertComponentDependency(tx, org.orgId, {
+        componentObjectId: component.id as string,
+        lineId: line.id,
+        manifestPath: "Dockerfile",
+        declaredVersion: "2.7-slim",
+        resolvedVersion: "2.7-slim"
+      });
+    });
+
+    // A YEAR OUT, and the tick's clock is pushed past it — so the case tests the deadline a real
+    // migration campaign carries rather than one a test could reach by waiting.
+    const at = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+    const past = new Date(Date.parse(at) + 1_000);
+
+    const campaignObjectId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const { campaign } = await proposeCampaign(tx, {
+        orgId: org.orgId,
+        actorObjectId: owner.objectId,
+        requestId: "campaign-flood-test",
+        name: "campaign-past-its-deadline",
+        recipe: {
+          version: 1,
+          trigger: { kind: "sync" },
+          adoption: {
+            kind: "dependency",
+            ecosystem: "oci",
+            coordinate: "docker.io/library/python",
+            minVersion: "3.0"
+          }
+        },
+        deadline: { at },
+        targets: [component.id as string]
+      });
+      return campaign.id;
+    });
+
+    await tick(org, 15, past);
+
+    const lock = await decisionsOfKind(org, campaignObjectId, CAMPAIGN_DEADLINE_DECISION_KIND);
+    // No CEL is reached on this path (the lock predicate is pure SQL through the adoption core), so
+    // — as with U3 and U6 — the load-dependent condition-error allowance U2 must tolerate cannot
+    // arise, and the count is exact.
+    expect(lock.conditionErrors).toHaveLength(0);
+    expect(lock.ordinary).toHaveLength(1);
+    expect(distinctDecisionStatements(lock.ordinary)).toBe(1);
+    expect(lock.ordinary[0]!.verdict).toBe("block");
+
+    const context = lock.ordinary[0]!.inputContext as Record<string, unknown>;
+    expect(Object.keys(context).sort()).toEqual(["deadlineAt", "locked", "waveId", "waveIndex"]);
+    expect(context.deadlineAt).toBe(at);
+    expect(context.locked).toEqual([
+      { targetObjectId: component.id as string, adoptionVerdict: "not_adopted" }
+    ]);
+
+    // (c) ONE hash-chained audit event, paired on the Decision actually having been CREATED.
+    const audits = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.orgId, org.orgId),
+            eq(auditEvents.action, CAMPAIGN_DEADLINE_LOCK_AUDIT_ACTION)
+          )
+        )
+    );
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.decisionId).toBe(lock.ordinary[0]!.id);
   });
 });

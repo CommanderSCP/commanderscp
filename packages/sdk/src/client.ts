@@ -193,6 +193,8 @@ import {
   getCampaign as getCampaignRequest,
   explainCampaign as explainCampaignRequest,
   rollbackCampaign as rollbackCampaignRequest,
+  // M25.6a (owner decision D4) — the deadline's set/move/CLEAR verb.
+  setCampaignDeadline as setCampaignDeadlineRequest,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
   initFederation as initFederationRequest,
   getFederationSelf as getFederationSelfRequest,
@@ -369,6 +371,7 @@ import type {
   CampaignListQuery,
   CampaignListResponse,
   CampaignExplainResponse,
+  CampaignDeadline,
   CreateCampaignRequest,
   RollbackCampaignResponse,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
@@ -1807,6 +1810,28 @@ export class ScpClient {
     },
     explain: async (id: string): Promise<CampaignExplainResponse> => {
       const result = await explainCampaignRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    /**
+     * M25.6a (owner decision D4) — SET, MOVE or CLEAR this campaign's deadline. `deadline: null`
+     * CLEARS it, which releases every target the deadline was withholding fan-out from on the next
+     * tick. That is the escape hatch this increment ships in place of §4.5's per-target override
+     * (M25.6b, whose new permission needs a migration).
+     *
+     * `reason` is MANDATORY on all three acts including the clear: the audit event records the
+     * operator's own words and the Decision it cites carries the PREVIOUS value, without which "the
+     * deadline slipped four times" is unreconstructible.
+     */
+    setDeadline: async (
+      id: string,
+      deadline: CampaignDeadline | null,
+      reason: string
+    ): Promise<Campaign> => {
+      const result = await setCampaignDeadlineRequest({
+        client: this.client,
+        path: { id },
+        body: { deadline, reason }
+      });
       return unwrap(result);
     },
     /** Rolls back every currently-eligible member Change (DESIGN §9.4/§9.5) — each becomes its

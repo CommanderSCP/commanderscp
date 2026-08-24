@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChangeState } from "@scp/schemas";
+import { CampaignStatusSchema } from "@scp/schemas";
 import { computeCampaignStatus, type CampaignWaveStatusInput } from "./campaign-status.js";
 
 /** Shorthand: one wave with N targets, each carrying the given member-change state. */
@@ -69,6 +70,41 @@ describe("computeCampaignStatus (pure, table-driven — BUILD_AND_TEST.md §4.1/
       waves: [{ ...wave(0, "running", ["executing", null]), frozenTargetCount: 0 }]
     });
     expect(status).toBe("active");
+  });
+
+  it("a RUNNING wave with a DEADLINE-LOCKED target -> blocked (M25.6a §4.6)", () => {
+    // The deadline lock deliberately NEVER writes `waveStatus: "blocked"` — the wave stays `running`
+    // so unlocked siblings keep shipping — so without this tier a campaign whose deadline has locked
+    // out half its estate reads as ordinarily `active` forever. That is the lever working while the
+    // signal is missing, which is the defect §4.6 requires be closed in the SAME increment.
+    const status = computeCampaignStatus({
+      hasPlan: true,
+      waves: [{ ...wave(0, "running", ["executing", null]), deadlineLockedTargetCount: 1 }]
+    });
+    expect(status).toBe("blocked");
+  });
+
+  it("the SAME running wave with nothing deadline-locked -> active", () => {
+    // The paired direction: `blocked` must come from the LOCK, not from the wave being running or
+    // from a deadline merely existing.
+    const status = computeCampaignStatus({
+      hasPlan: true,
+      waves: [{ ...wave(0, "running", ["executing", null]), deadlineLockedTargetCount: 0 }]
+    });
+    expect(status).toBe("active");
+  });
+
+  it("reports the EXISTING `blocked` value for a deadline lock — CampaignStatusSchema is not widened", () => {
+    // A response-enum widening is an oasdiff break with no upside: every consumer already renders
+    // `blocked`, and the detail an operator needs is on the campaign's own `deadline` field and its
+    // `campaign_deadline` Decision. Asserted as a membership test rather than as prose, so a future
+    // `deadline_locked` enum member fails here as well as at the gate.
+    const status = computeCampaignStatus({
+      hasPlan: true,
+      waves: [{ ...wave(0, "running", [null]), deadlineLockedTargetCount: 3 }]
+    });
+    expect(CampaignStatusSchema.options).toContain(status);
+    expect(status).toBe("blocked");
   });
 
   it("a wave's member changes failed/cancelled without recovering -> failed", () => {

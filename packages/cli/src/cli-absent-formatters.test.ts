@@ -67,6 +67,7 @@ function baseCampaign(overrides: Partial<Campaign> = {}): Campaign {
     topologyObjectId: null,
     topologyVersion: 3,
     status: "proposed",
+    deadline: null,
     createdAt: "2026-07-01T00:00:00.000Z",
     updatedAt: "2026-07-01T00:00:00.000Z",
     ...overrides
@@ -167,6 +168,31 @@ describe("campaignDetailRow: an absent topologyVersion is blank, never the word 
     expect(campaignDetailRow(baseCampaign({ topologyVersion: null })).topologyVersion).toBe("");
     // 0 is a VERSION, not an absence — the guard must not be a falsiness check
     expect(campaignDetailRow(baseCampaign({ topologyVersion: 0 })).topologyVersion).toBe("0");
+  });
+});
+
+// -------------------------------------------------------------------------------------
+// M25.6a — campaignDetailRow.deadline / .adoptionSignal
+// -------------------------------------------------------------------------------------
+describe("campaignDetailRow: an absent deadline is blank, never the word `undefined`", () => {
+  it("prints empty cells when the key is OMITTED (an older server, or a client ahead of one)", () => {
+    const row = campaignDetailRow(without(baseCampaign(), "deadline"));
+    expect(row.deadline).toBe("");
+    expect(row.adoptionSignal).toBe("");
+    // THE MUTANT: `=== null` lets `undefined` through to `.at`, which throws — so the operator's
+    // whole `scp campaign status` call dies rather than printing a campaign with no deadline.
+    expect(row.deadline).not.toContain("undefined");
+  });
+
+  it("prints a real deadline, and blanks the optional signal without blanking the instant", () => {
+    const at = "2026-12-31T23:59:59.000Z";
+    expect(campaignDetailRow(baseCampaign({ deadline: { at } })).deadline).toBe(at);
+    expect(campaignDetailRow(baseCampaign({ deadline: { at } })).adoptionSignal).toBe("");
+    expect(
+      campaignDetailRow(baseCampaign({ deadline: { at, adoptionSignal: "dependency" } }))
+        .adoptionSignal
+    ).toBe("dependency");
+    expect(campaignDetailRow(baseCampaign({ deadline: null })).deadline).toBe("");
   });
 });
 
