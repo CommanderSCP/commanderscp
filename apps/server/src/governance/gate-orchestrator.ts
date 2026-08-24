@@ -13,13 +13,10 @@ import {
 import { ensureControlRuns, readExistingControlOutcomes } from "./control-runner.js";
 import { scanExclusionSetChangedForGate } from "./scan-exclusion-actuator.js";
 import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
-import { activeFreezesForScopes, type FreezeRow } from "./freezes-repo.js";
+import type { FreezeRow } from "./freezes-repo.js";
+import { freezesByTarget, unionFreezes, type TargetFreezes } from "./freeze-scope.js";
 import { hasPermission } from "../authz/resolve.js";
-import {
-  containmentChain,
-  containmentScopeIds,
-  nearestAncestorOfKind
-} from "../graph/containment.js";
+import { containmentChain, nearestAncestorOfKind } from "../graph/containment.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { getChangeRow } from "../coordination/changes-repo.js";
 import { ociDigestsOfSourceRef } from "../coordination/artifact-facts.js";
@@ -60,6 +57,16 @@ export interface GateContext {
    *  "block" verdict so `coordination/transition.ts` writes the Decision + audit with a resolvable
    *  `decision_id`, exactly like every other block path (MAJOR #6). */
   overrideFreeze?: { reason: string } | undefined;
+  /** M25.2 / owner decision D7 — this Change IS a rollback, so an active freeze does not block it.
+   *  NARROW BY CONSTRUCTION: it lifts the FREEZE check and nothing else. Policies, controls and
+   *  approvals are evaluated for a rollback's wave exactly as before, because a rollback can still
+   *  be the wrong thing to ship and those mechanisms have humans behind them; a freeze is a calendar
+   *  window, and holding a rollback behind one pins a broken release in place until it closes.
+   *
+   *  Only ever set on the `wave_boundary` path. The `lifecycle_edge` path never sees a rollback at
+   *  all — `coordination/gates.ts` returns an unconditional allow for one BEFORE calling this
+   *  orchestrator (DESIGN §9.4). */
+  isRollback?: boolean | undefined;
 }
 
 /** One active freeze successfully overridden — `coordination/transition.ts` writes one
@@ -78,6 +85,18 @@ export interface GateOutcome {
    *  one mandatory high-severity audit event each (DESIGN §10.3). Empty/undefined when nothing was
    *  overridden. */
   freezeOverrides?: FreezeOverride[] | undefined;
+  /** M25.2 — per-target freeze coverage, POPULATED ONLY AT `wave_boundary`.
+   *
+   *  Present (and possibly all-empty) when the gate ran the per-target resolution; absent on the
+   *  `lifecycle_edge` path, which deliberately keeps any-target-frozen => block. A non-empty
+   *  `freezes` on an entry means that target is covered; the wave gate may still ALLOW, because
+   *  M25.2 moved ENFORCEMENT to `coordination/reconcile.ts`'s per-target trigger loop and left only
+   *  the all-frozen case as a whole-wave block.
+   *
+   *  AN INTERNAL TS TYPE, never a wire schema: no codegen, no OpenAPI surface, no oasdiff exposure.
+   *  If this ever needs to reach an operator it goes through a derived read-model field computed
+   *  from the standing `freeze_admission` Decision, not through this. */
+  frozenTargets?: TargetFreezes[] | undefined;
 }
 
 /**
@@ -93,17 +112,28 @@ export interface GateOutcome {
 async function checkFreeze(
   tx: TenantTx,
   ctx: GateContext,
-  now: Date
+  byTarget: TargetFreezes[]
 ): Promise<
   | { blocked: null; overrides: FreezeOverride[] }
   | { blocked: { freeze: FreezeRow; reason: string }; overrides: null }
 > {
-  // `containmentScopeIds` walks BOTH containment routes (domain_id AND the `contains` edge), which
-  // is what makes a freeze declared at a SERVICE block a change targeting that service's component.
-  // A domain_id-only walk here failed OPEN: `activeFreezesForScopes` matches by exact set
-  // membership, so a service id absent from this set = a service-scoped freeze silently not found.
-  const scopeIds = await containmentScopeIds(tx, ctx.orgId, ctx.targetObjectIds);
-  const active = await activeFreezesForScopes(tx, ctx.orgId, scopeIds, now);
+  // M25.2: `unionFreezes(byTarget)` REPLACES `activeFreezesForScopes(containmentScopeIds(...))`,
+  // and the two are set-equal by construction — `containmentScopeIds` IS the union of the
+  // per-target `containmentChain` walks `freezesByTarget` performs, and exact-set membership
+  // distributes over that union (`freeze-scope.ts`, pinned by a test). Both walks reach BOTH
+  // containment routes (domain_id AND the `contains` edge, plus a placement's component and
+  // deployment-target), which is what makes a freeze declared at a SERVICE block a change targeting
+  // that service's component. A domain_id-only walk here failed OPEN: membership is EXACT, so a
+  // service id absent from the set is a service-scoped freeze silently not found.
+  //
+  // WHY THIS FUNCTION TAKES THE FLAT LIST AND NEVER THE MAP. Everything below is CRITICAL #2 —
+  // EVERY active freeze individually overridden by an actor holding `freeze:override` at THAT
+  // freeze's own scope. Checking only `active[0]` was a shipped bug. Handing this function a flat,
+  // deduped list means a per-target early return, or a `byTarget[0]` degradation, is not
+  // EXPRESSIBLE here: the per-target dimension does not exist at this call site. That is the
+  // structural preservation of the invariant, chosen deliberately over extracting the quantifier
+  // into something a caller could accidentally narrow. The loop's text below is unchanged.
+  const active = unionFreezes(byTarget);
   if (active.length === 0) return { blocked: null, overrides: [] };
 
   const overrides: FreezeOverride[] = [];
@@ -822,14 +852,66 @@ export async function evaluateGovernanceGate(
 ): Promise<GateOutcome> {
   const now = new Date();
 
-  const freezeCheck = await checkFreeze(tx, ctx, now);
-  if (freezeCheck.blocked) {
+  // ============================================================================================
+  // M25.2 — PER-TARGET FREEZE ADMISSION (docs/proposals/campaigns-rework.md §1.1(c))
+  // ============================================================================================
+  // Resolved ONCE, per target, and consumed two ways: `checkFreeze` gets the flat union (CRITICAL
+  // #2's quantifier, structurally unable to see the per-target dimension) and `partiallyFrozen`
+  // gets the map. One resolution, so the two can never disagree about what is frozen.
+  const byTarget = await freezesByTarget(tx, ctx.orgId, ctx.targetObjectIds, now);
+  const frozenIds = byTarget.filter((e) => e.freezes.length > 0).map((e) => e.targetObjectId);
+
+  // PARTIAL ADMISSION — some targets covered, some not, and no covering freeze declared itself
+  // `atomic`. In that case the wave gate stands aside and `coordination/reconcile.ts`'s per-target
+  // trigger loop withholds exactly the covered targets while their siblings ship. Four conjuncts,
+  // each doing work:
+  //
+  //  * `gateKind === "wave_boundary"`. `lifecycle_edge` KEEPS any-target-frozen => block,
+  //    deliberately: accepting a change is ONE atomic state change of ONE `changes` row, and there
+  //    is no such thing as accepting three quarters of a change. Partial admission is meaningful at
+  //    a wave boundary and only there. This conjunct also covers `POST /policy-evaluate`
+  //    (routes/governance.ts, `lifecycle_edge`) for free.
+  //  * `frozenIds.length > 0`. Nothing frozen is not a partial freeze; `checkFreeze` allows anyway.
+  //  * `frozenIds.length < targetObjectIds.length`. ALL-FROZEN STAYS A WHOLE-WAVE BLOCK — today's
+  //    `gate`/`block` Decision written exactly as now, the wave stays `pending`, `started_at` stays
+  //    null, and today's tick-by-tick re-evaluation lifts it when the window closes. Dropping this
+  //    guard would transition a totally-frozen wave to `running` with nothing running and delete
+  //    the surface an operator resolves with `scp change explain`.
+  //  * no covering freeze is `atomic` (owner decision D5, drizzle/0084). One `atomic` freeze
+  //    anywhere in the coverage restores the union — the incident freeze, where half-applied is
+  //    worse than not-applied. The predicate is DATA-DRIVEN rather than call-site-driven, so the
+  //    person with the context decides, not this file.
+  const partiallyFrozen =
+    ctx.gateKind === "wave_boundary" &&
+    frozenIds.length > 0 &&
+    frozenIds.length < ctx.targetObjectIds.length &&
+    byTarget.every((e) => e.freezes.every((f) => !f.atomic));
+
+  // THE ROLLBACK EXEMPTION (owner decision D7) — the ALL-frozen half of it. `partiallyFrozen` above
+  // only stands the gate aside when some sibling is still admissible; a rollback whose every target
+  // is frozen has no admissible sibling and would be refused here, which is precisely the case D7 is
+  // about. `evaluateLifecycleGate` has exempted rollbacks since M4 and the wave boundary never
+  // learned the same fact — an oversight, not a decision, and the one that left `scp change
+  // rollback` as the documented exit from a stuck release while a freeze closed that exit.
+  //
+  // NARROW: it lifts the FREEZE block and nothing else. Execution continues into policy matching,
+  // controls and approvals below, all of which still apply to a rollback's wave.
+  // QUALIFIED ON `wave_boundary`, exactly like `partiallyFrozen` above, and not merely on
+  // `isRollback`. Today `isRollback` is set only by `evaluateWaveGate`, so the conjunct is inert —
+  // but `isRollback` lives on the SHARED `GateContext`, and one future caller setting it on the
+  // lifecycle path would silently lift the freeze at `validating -> accepted` AND on
+  // `POST /policy-evaluate`. `lifecycle_edge` keeps any-target-frozen => block by design (there is
+  // no such thing as accepting three quarters of a change), and D7 is a WAVE-boundary decision.
+  const freezeExemptRollback = ctx.gateKind === "wave_boundary" && ctx.isRollback === true;
+  const freezeCheck = await checkFreeze(tx, ctx, byTarget);
+  if (freezeCheck.blocked && !partiallyFrozen && !freezeExemptRollback) {
     // Both a plain freeze block and a REJECTED override (missing reason / unauthorized for some
     // active freeze) land here as a "block" verdict — the caller (transition.ts) writes the
     // Decision + audit with `decision_id`, never a rolled-back raw 403 (MAJOR #6).
     const { freeze, reason } = freezeCheck.blocked;
     return {
       verdict: "block",
+      ...(ctx.gateKind === "wave_boundary" ? { frozenTargets: byTarget } : {}),
       inputContext: {
         freeze: {
           id: freeze.id,
@@ -864,6 +946,14 @@ export async function evaluateGovernanceGate(
   // document, an emergency change proceeds ungated (verdict allow) but this is fully visible in
   // the reason tree/Decision either way — "everything still audited, retrospective Decision
   // trail produced" doesn't depend on something having blocked.
+  // VISIBLE, not silent (charter principle 6). A freeze that DID cover this wave and was stood
+  // aside is exactly the kind of thing an operator reading `scp change explain` must find, and a
+  // permit that leaves no trace is indistinguishable from a freeze that never matched.
+  const freezeNote =
+    freezeExemptRollback && freezeCheck.blocked
+      ? `rollback exempt from ${frozenIds.length} frozen target(s): ${freezeCheck.blocked.reason} (DESIGN §9.4 / owner decision D7 — holding a rollback pins a broken release in place for the whole window)`
+      : undefined;
+
   let emergencyNote: string | undefined;
   if (ctx.emergency) {
     const emergencyPolicies = effectivePolicies.filter((p) => p.emergencyPolicy);
@@ -1043,19 +1133,35 @@ export async function evaluateGovernanceGate(
   // firing set (no second CEL eval — no race where a re-eval fires differently).
   const result = evaluateFiredPolicies(fired, { controlOutcomes, approvals });
 
-  const freezeOverrides = freezeCheck.overrides;
+  // `?? []` IS THE PARTIAL-ADMISSION PATH, not defensiveness. `checkFreeze` returns
+  // `overrides: null` exactly when it BLOCKED, and M25.2 lets one blocked outcome through: the
+  // partially-frozen wave boundary, which falls past the block return above and evaluates policy
+  // normally. Nothing was overridden there and nothing should be audited as overridden — the wave
+  // path carries no `overrideFreeze` at all (`EvaluateWaveGateContext` has no such field and
+  // `gates.ts` passes none), so an override on this path is not merely absent, it is unreachable.
+  const freezeOverrides = freezeCheck.overrides ?? [];
   return {
     verdict: result.verdict === "block" ? "block" : "allow",
+    // Populated only at `wave_boundary` — see `GateOutcome.frozenTargets`. `reconcile.ts` does not
+    // read it (it resolves holds itself, per target, every tick, which is the only thing that can
+    // notice a freeze DECLARED MID-WAVE); it is here so the verdict can explain itself and so a
+    // caller that already has the gate's answer never re-derives coverage a second way.
+    ...(ctx.gateKind === "wave_boundary" ? { frozenTargets: byTarget } : {}),
     inputContext: {
       matchedPolicyCount: matches.length,
       effectivePolicyCount: effectivePolicies.length,
       firedPolicyCount: fired.filter((fp) => fp.fired).length,
       ...(emergencyNote ? { emergency: emergencyNote } : {}),
+      ...(freezeNote ? { freezeExemptRollback: freezeNote } : {}),
       ...(freezeOverrides.length > 0 ? { freezeOverrides } : {}),
       ...(scanThresholdForDecision(effectiveScanThreshold) ?? {}),
       ...(scanExclusionsForDecision(effectiveScanExclusions) ?? {})
     },
-    reasonTree: { ...result.reasonTree, ...(emergencyNote ? { emergencyNote } : {}) },
+    reasonTree: {
+      ...result.reasonTree,
+      ...(emergencyNote ? { emergencyNote } : {}),
+      ...(freezeNote ? { freezeExemptRollback: freezeNote } : {})
+    },
     freezeOverrides: freezeOverrides.length > 0 ? freezeOverrides : undefined
   };
 }

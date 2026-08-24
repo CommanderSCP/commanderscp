@@ -50,6 +50,27 @@ describe("computeCampaignStatus (pure, table-driven — BUILD_AND_TEST.md §4.1/
     expect(status).toBe("blocked");
   });
 
+  it("a RUNNING wave with a freeze-held target -> blocked (M25.2 §1.8)", () => {
+    // Per-target admission leaves a partially frozen campaign wave `running` so its unfrozen
+    // siblings fan out. Before M25.2 the same freeze produced a whole-wave `block` verdict and this
+    // function reported `blocked` for free; without this tier a 40-component campaign with one held
+    // target reads as ordinarily `active` for the length of the window.
+    const status = computeCampaignStatus({
+      hasPlan: true,
+      waves: [{ ...wave(0, "running", ["executing", null]), frozenTargetCount: 1 }]
+    });
+    expect(status).toBe("blocked");
+  });
+
+  it("the SAME running wave with nothing frozen -> active", () => {
+    // The paired direction: `blocked` must come from the freeze, not from the wave being running.
+    const status = computeCampaignStatus({
+      hasPlan: true,
+      waves: [{ ...wave(0, "running", ["executing", null]), frozenTargetCount: 0 }]
+    });
+    expect(status).toBe("active");
+  });
+
   it("a wave's member changes failed/cancelled without recovering -> failed", () => {
     const status = computeCampaignStatus({
       hasPlan: true,

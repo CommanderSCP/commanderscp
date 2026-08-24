@@ -18,6 +18,8 @@ import {
   FreezeIdParamSchema,
   FreezeListResponseSchema,
   FreezeSchema,
+  LiftFreezeRequestSchema,
+  UpdateFreezeWindowRequestSchema,
   PolicyEvaluateRequestSchema,
   PolicyEvaluateResponseSchema,
   ProblemSchema,
@@ -29,6 +31,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { badRequest, notFound } from "../errors.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { targetObjectIdsOf } from "../coordination/changes-repo.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
@@ -42,7 +45,42 @@ import {
   listVotesForRequest,
   quorumStatus
 } from "../governance/approvals-repo.js";
-import { createFreeze, getFreeze, listFreezes } from "../governance/freezes-repo.js";
+import {
+  createFreeze,
+  getFreeze,
+  liftFreeze,
+  listFreezes,
+  updateFreezeWindow,
+  type FreezeRow
+} from "../governance/freezes-repo.js";
+
+/**
+ * ONE wire projection of a freeze row, shared by all five freeze routes.
+ *
+ * It was written out four times before M25.1 (create/list/get, and `atomic` had to be added to
+ * each), and this increment adds three more fields and two more routes — seven copies of one
+ * mapping, where forgetting the new field in ONE of them makes a lifted freeze look live on
+ * exactly one endpoint. That is the "census by property" shape the project instructions name:
+ * the property is "a place that turns a FreezeRow into wire JSON", so there is now one.
+ */
+function freezeResponse(f: FreezeRow) {
+  return {
+    id: f.id,
+    scopeObjectId: f.scopeObjectId,
+    name: f.name,
+    startsAt: f.startsAt.toISOString(),
+    endsAt: f.endsAt.toISOString(),
+    reason: f.reason,
+    createdByActorId: f.createdByActorId,
+    createdAt: f.createdAt.toISOString(),
+    atomic: f.atomic,
+    // M25.1 — LIFTED IS A FIELD, NOT AN ABSENCE. A lifted freeze is still listed and still
+    // gettable by id, because a `gate`/`freeze_admission` Decision cites `freeze.id` forever.
+    liftedAt: f.liftedAt?.toISOString() ?? null,
+    liftedByActorId: f.liftedByActorId,
+    liftReason: f.liftReason
+  };
+}
 
 /**
  * M4 governance sub-resources that aren't plain typed-registry objects (BUILD_AND_TEST.md §8 M4):
@@ -475,19 +513,16 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           startsAt,
           endsAt,
           reason: request.body.reason,
-          createdByActorId: auth.subjectObjectId
+          createdByActorId: auth.subjectObjectId,
+          // M25.2 / owner decision D5 — THE AUTHORING DOOR for `freezes.atomic`. Without this line
+          // the column exists, the engine reads it, and no operator can ever set it: every freeze
+          // on the estate would be per-target with no way to say otherwise, which is the
+          // "component built, never installed" shape applied to the one mitigation D5's loosening
+          // was approved on. Absent => `false` in `createFreeze`, so an old client is unchanged.
+          atomic: request.body.atomic
         });
       });
-      reply.status(201).send({
-        id: freeze.id,
-        scopeObjectId: freeze.scopeObjectId,
-        name: freeze.name,
-        startsAt: freeze.startsAt.toISOString(),
-        endsAt: freeze.endsAt.toISOString(),
-        reason: freeze.reason,
-        createdByActorId: freeze.createdByActorId,
-        createdAt: freeze.createdAt.toISOString()
-      });
+      reply.status(201).send(freezeResponse(freeze));
     }
   });
 
@@ -511,19 +546,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         });
         return listFreezes(tx, auth.orgId);
       });
-      reply.status(200).send({
-        items: items.map((f) => ({
-          id: f.id,
-          scopeObjectId: f.scopeObjectId,
-          name: f.name,
-          startsAt: f.startsAt.toISOString(),
-          endsAt: f.endsAt.toISOString(),
-          reason: f.reason,
-          createdByActorId: f.createdByActorId,
-          createdAt: f.createdAt.toISOString()
-        })),
-        nextCursor: null
-      });
+      reply.status(200).send({ items: items.map(freezeResponse), nextCursor: null });
     }
   });
 
@@ -548,16 +571,257 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         });
         return getFreeze(tx, auth.orgId, request.params.id);
       });
-      reply.status(200).send({
-        id: freeze.id,
-        scopeObjectId: freeze.scopeObjectId,
-        name: freeze.name,
-        startsAt: freeze.startsAt.toISOString(),
-        endsAt: freeze.endsAt.toISOString(),
-        reason: freeze.reason,
-        createdByActorId: freeze.createdByActorId,
-        createdAt: freeze.createdAt.toISOString()
+      reply.status(200).send(freezeResponse(freeze));
+    }
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M25.1 — LIFT AND SHORTEN. The exits `/freezes` shipped without.
+  //
+  // WHY THIS EXISTS. `/api/v1/freezes` was CREATE / LIST / GET, so a freeze could be declared and
+  // never retracted or shortened. That was survivable while a freeze parked a WHOLE wave — the
+  // operator waited for `endsAt` and the release resumed on its own. M25.2's per-target admission
+  // made it unsurvivable: a far-future `endsAt` now holds a SUBSET of a wave's targets while the
+  // siblings have already shipped, so a mistyped year leaves a fleet split across two versions with
+  // no API exit at all. The only escapes were `scp change cancel` / `scp change rollback`, both of
+  // which throw the RELEASE away rather than lifting the FREEZE.
+  //
+  // ===========================================================================================
+  // AUTHORIZATION: `freeze:write` AT THE FREEZE'S OWN `scopeObjectId`
+  // ===========================================================================================
+  // SCOPE FIRST, because it is the part that is easy to get silently wrong. `hasPermission`
+  // expands the checked scope UPWARD to its containment ancestors (`authz/resolve.ts`'s
+  // `scopeExpandCte`), so a binding at the org root satisfies a check at a service, and a binding
+  // at a service does NOT satisfy a check at the org root. Checking at the FREEZE'S OWN scope
+  // therefore gives exactly the property that matters: an Administrator scoped to one service can
+  // lift that service's freeze and CANNOT lift the org-root freeze that covers everyone. This
+  // mirrors `checkFreeze`, which authorizes `freeze:override` per freeze at that freeze's own scope
+  // — checking only `active[0]`, at one scope, was a shipped bug (CRITICAL #2). Checking at
+  // `auth.orgId` here would have been the same bug wearing different clothes.
+  //
+  // WHY `freeze:write` AND NOT `freeze:override`. The asymmetry is real and worth naming: an
+  // override is per-change (it lets ONE change past and leaves the freeze standing for everyone
+  // else) and is Owner-only; a lift is per-freeze (it retracts the protection for EVERYONE covered)
+  // and this route asks only for Administrator-tier `freeze:write`. So the wider-reaching verb
+  // takes the narrower permission. That is deliberate, on two grounds:
+  //
+  //   * A SURFACE WITH AN ENTRANCE AND NO EXIT IS THE DEFECT M25.1 EXISTS TO REMOVE. `freeze:write`
+  //     is what declares a freeze. Requiring `freeze:override` to lift one would mean an
+  //     Administrator can create a governance object they cannot retract, and would put every
+  //     mistyped `endsAt` on the estate in front of the Owner — reproducing, one level up, exactly
+  //     the "no way out" this increment is closing.
+  //   * REACH AND AUTHORITY ALREADY MATCH, VIA SCOPE. "Everyone covered by the freeze" is bounded
+  //     by the freeze's scope, and the permission is demanded at that same scope. Lifting an
+  //     org-root freeze needs `freeze:write` AT THE ORG ROOT — Administrator or Owner of the whole
+  //     org. There is no scope at which this route grants power over a broader freeze than the
+  //     authority being checked, which is the property `freeze:override`'s per-freeze loop
+  //     establishes for overrides and the one that actually constrains blast radius here.
+  //
+  // OPEN, PENDING AN OWNER RULING — DO NOT READ THE TWO BULLETS ABOVE AS A SETTLED DECISION.
+  // `drizzle/0010_governance.sql`'s own comment already states the opposite conclusion: it calls
+  // `freeze:override` and `change:emergency` "the two highest-blast-radius bypass permissions
+  // (DESIGN §10.3), deliberately NOT granted to Administrator by default", and DESIGN §10.3 says
+  // getting past a freeze "requires an explicit `freeze:override` permission". After this route an
+  // Administrator at service S retracts an Owner's S-scoped freeze FOR EVERYONE with a permission
+  // they already hold, where the Owner-only override would have admitted exactly ONE change. The
+  // widening is bounded (scope, above) and not escalatable (`role_binding:write` has no write API,
+  // so an Administrator cannot mint themselves Owner), but it is a widening of a gate a migration
+  // calls deliberate, and that is a governance call rather than an implementation one.
+  // `docs/proposals/campaigns-rework.md` §1.7 carries it as an OPEN DECISION with the three exits;
+  // whichever way it lands, 0010's comment and DESIGN §10.3 must end up agreeing with this file.
+  //
+  // An `authorize` failure throws a raw 403 rather than returning a `blocked` verdict, and that
+  // differs from `checkFreeze` deliberately: `checkFreeze` runs inside a change's gate evaluation,
+  // where a rejected override must become a Decision so the change carries a resolvable
+  // `decision_id`. This is a direct authoring call with no change in hand and nothing to explain
+  // later — a 403 with no side effects is the honest answer, and matches `POST /freezes`.
+  //
+  // ===========================================================================================
+  // AUDIT + DECISION ON BOTH VERBS
+  // ===========================================================================================
+  // Each route writes ONE Decision (`kind: "freeze_window"`, `subjectId` = the freeze id) and ONE
+  // high-severity audit event carrying that Decision's id — the shape `freeze.override` already
+  // sets in `coordination/transition.ts`, and the same authoring-Decision precedent
+  // `graph/components-repo.ts` and `coordination/campaign-repo.ts` use for non-change subjects.
+  // The audit event's `reason` is the operator's own words, and the Decision's `inputContext`
+  // carries the machine-readable before/after — the audit table has no payload column, so the
+  // Decision is where "from what, to what, which direction" survives.
+  //
+  // NO `insertDecisionIfChanged` HERE, and no dedup concern: these are one-per-API-call authoring
+  // records, not a predicate re-evaluated every tick. ADR-0024's write amplification came from the
+  // reconcile loop restating an unchanged verdict; a human pressing a button is not that.
+  // -----------------------------------------------------------------------------------------
+
+  typed.route({
+    method: "DELETE",
+    url: "/api/v1/freezes/:id",
+    schema: {
+      params: FreezeIdParamSchema,
+      // A BODY ON A DELETE — the shipped precedent is `DELETE /change-sources/:sourceKind/mappings`
+      // (`DeleteSourceMappingRequestSchema`). The reason is mandatory and a free-text governance
+      // justification does not belong in a query string.
+      body: LiftFreezeRequestSchema,
+      response: {
+        200: FreezeSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "liftFreeze",
+        summary:
+          "Lift (retract) a freeze — it stops being in force immediately, whatever endsAt says",
+        tags: ["freezes"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const lifted = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // Loaded BEFORE the authorization check because the freeze's own scope IS the scope being
+        // checked — an unknown id 404s here, before any write and before any 403 that would
+        // otherwise have to be decided against the org root.
+        const before = await getFreeze(tx, auth.orgId, request.params.id);
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "freeze:write",
+          scopeObjectId: before.scopeObjectId
+        });
+        const row = await liftFreeze(tx, {
+          orgId: auth.orgId,
+          id: request.params.id,
+          reason: request.body.reason,
+          actorObjectId: auth.subjectObjectId
+        });
+        const decision = await insertDecision(tx, {
+          kind: "freeze_window",
+          orgId: auth.orgId,
+          subjectId: row.id,
+          verdict: "allow",
+          inputContext: {
+            action: "lift",
+            freeze: {
+              id: row.id,
+              scopeObjectId: row.scopeObjectId,
+              name: row.name,
+              startsAt: row.startsAt.toISOString(),
+              endsAt: row.endsAt.toISOString(),
+              atomic: row.atomic
+            },
+            actorId: auth.subjectObjectId,
+            reason: request.body.reason
+          },
+          reasonTree: {
+            summary: `freeze '${row.name ?? row.id}' at ${row.scopeObjectId} lifted — it no longer holds anything, and its declared endsAt of ${row.endsAt.toISOString()} is now moot`,
+            loosening: true
+          }
+        });
+        // Same shape as `freeze.override` (transition.ts): high-severity, mandatory reason,
+        // pointing at the Decision that carries the structured before/after.
+        await appendAuditEvent(tx, {
+          orgId: auth.orgId,
+          actorId: auth.subjectObjectId,
+          action: "freeze.lift",
+          subjectId: row.id,
+          beforeHash: null,
+          afterHash: null,
+          reason: request.body.reason,
+          decisionId: decision.id,
+          requestId: request.id
+        });
+        return row;
       });
+      reply.status(200).send(freezeResponse(lifted));
+    }
+  });
+
+  typed.route({
+    method: "PATCH",
+    url: "/api/v1/freezes/:id",
+    schema: {
+      params: FreezeIdParamSchema,
+      body: UpdateFreezeWindowRequestSchema,
+      response: {
+        200: FreezeSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "updateFreezeWindow",
+        summary: "Move a freeze's endsAt — shortening is a loosening, extending is a tightening",
+        tags: ["freezes"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const updated = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const existing = await getFreeze(tx, auth.orgId, request.params.id);
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "freeze:write",
+          scopeObjectId: existing.scopeObjectId
+        });
+        const { before, after, direction } = await updateFreezeWindow(tx, {
+          orgId: auth.orgId,
+          id: request.params.id,
+          endsAt: new Date(request.body.endsAt),
+          reason: request.body.reason,
+          actorObjectId: auth.subjectObjectId
+        });
+        const decision = await insertDecision(tx, {
+          kind: "freeze_window",
+          orgId: auth.orgId,
+          subjectId: after.id,
+          verdict: "allow",
+          inputContext: {
+            action: direction,
+            freeze: {
+              id: after.id,
+              scopeObjectId: after.scopeObjectId,
+              name: after.name,
+              startsAt: after.startsAt.toISOString(),
+              atomic: after.atomic
+            },
+            // THE OLD AND THE NEW VALUE, both, and the direction above. `audit_events` has no
+            // payload column, so this is the only place the previous `endsAt` survives — without
+            // it "the freeze ends at T" is unfalsifiable after the fact and nobody can tell a
+            // three-week window that was cut to a day from one that was always a day.
+            endsAt: { from: before.endsAt.toISOString(), to: after.endsAt.toISOString() },
+            actorId: auth.subjectObjectId,
+            reason: request.body.reason
+          },
+          reasonTree: {
+            summary: `freeze '${after.name ?? after.id}' at ${after.scopeObjectId} ${direction}: endsAt ${before.endsAt.toISOString()} -> ${after.endsAt.toISOString()}`,
+            // Recorded as a FLAG rather than left for a reader to infer from two timestamps: a
+            // shortening is a governance LOOSENING and an extension is a TIGHTENING, and which one
+            // happened is the question this record is read with.
+            loosening: direction === "shortened"
+          }
+        });
+        await appendAuditEvent(tx, {
+          orgId: auth.orgId,
+          actorId: auth.subjectObjectId,
+          action: `freeze.window.${direction}`,
+          subjectId: after.id,
+          beforeHash: null,
+          afterHash: null,
+          reason: request.body.reason,
+          decisionId: decision.id,
+          requestId: request.id
+        });
+        return after;
+      });
+      reply.status(200).send(freezeResponse(updated));
     }
   });
 

@@ -184,6 +184,8 @@ import {
   createFreeze as createFreezeRequest,
   listFreezes as listFreezesRequest,
   getFreeze as getFreezeRequest,
+  liftFreeze as liftFreezeRequest,
+  updateFreezeWindow as updateFreezeWindowRequest,
   policyEvaluate as policyEvaluateRequest,
   // M5: Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
   proposeCampaign as proposeCampaignRequest,
@@ -352,6 +354,8 @@ import type {
   CastApprovalVoteRequest,
   Freeze,
   CreateFreezeRequest,
+  LiftFreezeRequest,
+  UpdateFreezeWindowRequest,
   FreezeListResponse,
   PolicyEvaluateResponse,
   // M5: Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
@@ -1727,6 +1731,30 @@ export class ScpClient {
     },
     get: async (id: string): Promise<Freeze> => {
       const result = await getFreezeRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    /** M25.1 — LIFT (retract) a freeze: it stops being in force immediately, whatever `endsAt`
+     *  says. `freeze:write` AT THE FREEZE'S OWN SCOPE (`routes/governance.ts` states why that, and
+     *  not `freeze:override`), and the `reason` is mandatory — lifting is a governance LOOSENING
+     *  that applies to everyone the freeze covered.
+     *
+     *  A SOFT lift: the returned row is the freeze, still readable by `get(id)` forever with
+     *  `liftedAt` set, because a `gate`/`freeze_admission` Decision cites `freeze.id` in its
+     *  `inputContext` and that citation must keep resolving (charter principle 6). */
+    lift: async (id: string, req: LiftFreezeRequest): Promise<Freeze> => {
+      const result = await liftFreezeRequest({ client: this.client, path: { id }, body: req });
+      return unwrap(result);
+    },
+    /** M25.1 — move a freeze's `endsAt`, in EITHER direction. Shortening it is a loosening and
+     *  extending it is a tightening; both take `freeze:write` at the freeze's own scope, both
+     *  require a reason, and the server records which direction it was along with the old and new
+     *  instants. Shortening to a past instant is allowed and is NOT re-labelled a lift. */
+    updateWindow: async (id: string, req: UpdateFreezeWindowRequest): Promise<Freeze> => {
+      const result = await updateFreezeWindowRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
       return unwrap(result);
     }
   };

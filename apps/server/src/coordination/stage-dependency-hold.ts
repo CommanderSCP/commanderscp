@@ -519,8 +519,15 @@ function weightUnreadableCause(
 
 /** The wave target's object row, reduced to the pair a stage-scoped hold needs. `null` for anything
  *  that is not a live placement — a legacy-shaped wave target naming a component, or a placement
- *  whose stored pair is unusable (which `plan-service.ts` skips for the same reason). */
-async function resolvePlacementPair(
+ *  whose stored pair is unusable (which `plan-service.ts` skips for the same reason).
+ *
+ *  EXPORTED for `coordination/freeze-hold.ts` (M25.2), which needs the identical projection for the
+ *  identical purpose: naming the (component, place) a held target sits at, in the hold's Decision.
+ *  Shared rather than copied, because two readings of "which pair is this wave target?" that could
+ *  disagree is the same class of drift `graph/containment.ts` was written to end — and the ONE
+ *  reading here already encodes two non-obvious decisions (a non-placement is `null` rather than an
+ *  error, and a placement with an unusable stored pair is `null` too, matching `plan-service.ts`). */
+export async function resolvePlacementPair(
   tx: TenantTx,
   orgId: string,
   waveTargetObjectId: string

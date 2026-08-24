@@ -1077,7 +1077,33 @@ export const freezes = pgTable(
     endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
     reason: text("reason").notNull(),
     createdByActorId: uuid("created_by_actor_id").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** M25.2 / owner decision D5 (drizzle/0084) — WHETHER THIS FREEZE STILL PARKS A WHOLE WAVE.
+     *  `false` (the default, and retroactively true of every freeze authored before M25.2): the
+     *  covered wave targets are held one by one in `coordination/reconcile.ts`'s trigger loop and
+     *  their uncovered siblings ship. `true`: any coverage parks every target of the wave — the
+     *  pre-M25.2 behaviour, for coupled targets where half-applied is worse than not-applied.
+     *  Read in exactly one place: `gate-orchestrator.ts`'s `partiallyFrozen` predicate. */
+    atomic: boolean("atomic").notNull().default(false),
+    /** M25.1 (drizzle/0085) — THIS FREEZE WAS RETRACTED, and is no longer in force regardless of
+     *  `endsAt`. A SOFT lift, following `personal_access_tokens.revoked_at`: the row stays readable
+     *  by id forever, because two Decision writers put `freeze.id` in their `inputContext` and a
+     *  hard DELETE would dangle every one of them (charter principle 6 — a blocked response stays
+     *  reconstructible).
+     *
+     *  FILTERED IN EXACTLY ONE PLACE: `governance/freezes-repo.ts`'s `activeFreezesInWindow`, the
+     *  single function that knows the window predicate. Every "is this freeze in force" consumer
+     *  composes over it, so one `IS NULL` retires a freeze on every path at once; a second liveness
+     *  filter elsewhere is the drift hazard that once made a service-scoped freeze fail OPEN.
+     *  `listFreezes`/`getFreeze` deliberately do NOT filter — lifted is a FIELD, not an absence. */
+    liftedAt: timestamp("lifted_at", { withTimezone: true }),
+    /** Who lifted it. No FK, matching `createdByActorId`: an actor is a graph object that can be
+     *  tombstoned and the lift record must outlive them. */
+    liftedByActorId: uuid("lifted_by_actor_id"),
+    /** Why. MANDATORY (non-empty) at the route whenever `liftedAt` is set — lifting a freeze is a
+     *  governance LOOSENING affecting everyone at once, and `freeze:override` already refuses to
+     *  bypass a freeze for ONE change without a reason. */
+    liftReason: text("lift_reason")
   },
   (table) => [
     index("freezes_org_scope").on(table.orgId, table.scopeObjectId),
