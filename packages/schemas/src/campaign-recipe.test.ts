@@ -45,13 +45,39 @@ describe("CampaignRecipeSchema", () => {
   });
 
   it("REFUSES an unknown top-level key — a misspelling would be stored and read as no recipe", () => {
-    expect(
-      CampaignRecipeSchema.safeParse({ ...valid, adoption: { kind: "delivered" } }).success
-    ).toBe(false);
+    // M25.5 MOVED A KEY FROM UNKNOWN TO KNOWN, AND THIS CASE CAUGHT IT.
+    //
+    // Until M25.5 this assertion used `adoption` as its unknown-key example — a deliberate choice
+    // at the time, because the proposal DESCRIBED that key while M25.4 shipped without it, so it
+    // was the most likely thing an author would write and the most valuable thing to refuse.
+    // Shipping `adoption` flipped it from refused to accepted, and this case went red on exactly
+    // the change that made it wrong, which is the whole reason to pick a live example over an
+    // invented one. Replaced with a key nothing in the design names, so it cannot go stale the
+    // same way.
+    expect(CampaignRecipeSchema.safeParse({ ...valid, notAKeyAnyDesignNames: true }).success).toBe(
+      false
+    );
     // ...and the same for a misspelling of a key that DOES exist, which is the likelier typo.
     expect(CampaignRecipeSchema.safeParse({ version: 1, triggers: { kind: "sync" } }).success).toBe(
       false
     );
+  });
+
+  it("ACCEPTS `adoption` — the key this file used to prove strictness with, now that M25.5 ships it", () => {
+    // The other half of the transition above, pinned rather than left implicit. Without this, the
+    // edit that made the case above pass could equally have been "delete the assertion", and the
+    // fact that `adoption` is now a REAL key would rest on nothing.
+    expect(
+      CampaignRecipeSchema.safeParse({ ...valid, adoption: { kind: "delivered" } }).success
+    ).toBe(true);
+    // And it is still strict INSIDE the new key — gaining a member must not have opened a hole.
+    expect(
+      CampaignRecipeSchema.safeParse({ ...valid, adoption: { kind: "delivered", extra: 1 } })
+        .success
+    ).toBe(false);
+    expect(
+      CampaignRecipeSchema.safeParse({ ...valid, adoption: { kind: "no-such-evidence" } }).success
+    ).toBe(false);
   });
 
   it("REFUSES an unknown key inside `trigger`", () => {
