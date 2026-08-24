@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
+  CampaignAdoptionResponseSchema,
   CampaignExplainResponseSchema,
   CampaignIdParamSchema,
   CampaignListQuerySchema,
@@ -18,6 +19,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { getCampaign, listCampaigns, proposeCampaign } from "../coordination/campaign-repo.js";
+import { buildCampaignAdoptionReport } from "../coordination/campaign-adoption.js";
 import { getLatestCampaignPlan } from "../coordination/campaign-plan-service.js";
 import { listDecisionsForSubject } from "../coordination/decisions-repo.js";
 import { triggerCampaignRollback } from "../coordination/campaign-rollback.js";
@@ -183,6 +185,54 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
           listDecisionsForSubject(tx, auth.orgId, request.params.id)
         ]);
         return { campaign, plan, decisions };
+      });
+      reply.status(200).send(result);
+    }
+  });
+
+  /**
+   * M25.5 — "has each of this campaign's components migrated yet?", derived live.
+   *
+   * A PURELY ADDITIVE NEW PATH. No existing schema changes shape: `CampaignRecipeSchema` gains one
+   * OPTIONAL property (additive on both the request and the response — making an existing REQUIRED
+   * response field optional is the oasdiff break this project has already paid for once, and nothing
+   * here does that), and every schema this route names is new.
+   *
+   * `object:read` at the org, the same scope `:explain` uses, and for the same reason: the answer is
+   * assembled from the campaign, its plan and its targets' own inventory/control rows, all of which
+   * are already readable at that scope. This route reads and writes nothing — the Decision that
+   * accompanies an `adopted` verdict is written by the reconciler's actuator, never by a GET.
+   */
+  typed.route({
+    method: "GET",
+    url: "/api/v1/campaigns/:id/adoption",
+    schema: {
+      params: CampaignIdParamSchema,
+      response: {
+        200: CampaignAdoptionResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "campaignAdoption",
+        summary:
+          "Per-target adoption evidence for a campaign — whether each component has migrated, derived live from the evidence source the recipe names (absent evidence is 'unknown', never 'adopted')",
+        tags: ["campaigns"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: auth.orgId
+        });
+        return buildCampaignAdoptionReport(tx, auth.orgId, request.params.id);
       });
       reply.status(200).send(result);
     }

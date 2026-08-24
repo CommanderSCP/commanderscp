@@ -17959,6 +17959,17 @@ export type ListCampaignsResponses = {
                         [key: string]: unknown;
                     };
                 };
+                adoption?: {
+                    kind: 'delivered';
+                } | {
+                    kind: 'dependency';
+                    ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate: string;
+                    minVersion: string;
+                } | {
+                    kind: 'control';
+                    controlObjectId: string;
+                };
                 guidance?: {
                     title: string;
                     summary?: string;
@@ -17993,6 +18004,17 @@ export type ProposeCampaignData = {
                 parameters?: {
                     [key: string]: unknown;
                 };
+            };
+            adoption?: {
+                kind: 'delivered';
+            } | {
+                kind: 'dependency';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                minVersion: string;
+            } | {
+                kind: 'control';
+                controlObjectId: string;
             };
             guidance?: {
                 title: string;
@@ -18066,6 +18088,17 @@ export type ProposeCampaignResponses = {
                 parameters?: {
                     [key: string]: unknown;
                 };
+            };
+            adoption?: {
+                kind: 'delivered';
+            } | {
+                kind: 'dependency';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                minVersion: string;
+            } | {
+                kind: 'control';
+                controlObjectId: string;
             };
             guidance?: {
                 title: string;
@@ -18148,6 +18181,17 @@ export type GetCampaignResponses = {
                 parameters?: {
                     [key: string]: unknown;
                 };
+            };
+            adoption?: {
+                kind: 'delivered';
+            } | {
+                kind: 'dependency';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                minVersion: string;
+            } | {
+                kind: 'control';
+                controlObjectId: string;
             };
             guidance?: {
                 title: string;
@@ -18232,6 +18276,17 @@ export type ExplainCampaignResponses = {
                         [key: string]: unknown;
                     };
                 };
+                adoption?: {
+                    kind: 'delivered';
+                } | {
+                    kind: 'dependency';
+                    ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate: string;
+                    minVersion: string;
+                } | {
+                    kind: 'control';
+                    controlObjectId: string;
+                };
                 guidance?: {
                     title: string;
                     summary?: string;
@@ -18289,6 +18344,84 @@ export type ExplainCampaignResponses = {
 };
 
 export type ExplainCampaignResponse = ExplainCampaignResponses[keyof ExplainCampaignResponses];
+
+export type CampaignAdoptionData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/campaigns/{id}/adoption';
+};
+
+export type CampaignAdoptionErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CampaignAdoptionError = CampaignAdoptionErrors[keyof CampaignAdoptionErrors];
+
+export type CampaignAdoptionResponses = {
+    /**
+     * Success
+     */
+    200: {
+        campaignObjectId: string;
+        evidence: {
+            kind: 'delivered';
+        } | {
+            kind: 'dependency';
+            ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+            coordinate: string;
+            minVersion: string;
+        } | {
+            kind: 'control';
+            controlObjectId: string;
+        } | null;
+        targets: Array<{
+            targetObjectId: string;
+            targetUrn?: string;
+            targetName?: string;
+            verdict: 'adopted' | 'not_adopted' | 'unknown';
+            summary: string;
+            observations: Array<string>;
+        }>;
+        unresolvedTargets: Array<string>;
+    };
+};
+
+export type CampaignAdoptionResponse = CampaignAdoptionResponses[keyof CampaignAdoptionResponses];
 
 export type RollbackCampaignData = {
     body: {

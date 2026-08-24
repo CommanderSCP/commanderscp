@@ -28,6 +28,11 @@ import { triggerCampaignRollback } from "./campaign-rollback.js";
 import type { GateDeps } from "./gates.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import {
+  upsertComponentDependency,
+  upsertDependencyLine
+} from "../dependencies/dependency-inventory-repo.js";
+import { CAMPAIGN_ADOPTION_DECISION_KIND } from "./campaign-adoption.js";
 
 /**
  * The CAMPAIGN-side half of the same unbounded-Decision-write class (see
@@ -450,5 +455,103 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
       .skipped;
     expect(persisted).toHaveLength(1);
     expect(persisted[0]!.reason).toContain(memberChangeObjectId!);
+  });
+
+  /**
+   * U6 — THE THIRD CAMPAIGN-SIDE WRITER: M25.5's adoption actuator (`campaign-adoption.ts`).
+   *
+   * It joins U2 and U3's class rather than merely resembling it. `reconcileOneCampaign`'s per-target
+   * `pending` branch runs on EVERY 1 s tick, and this writer fires from inside it, so the same
+   * arithmetic applies: one row per tick per adopted target is ~43,200 rows a day per component, and
+   * the motivating campaign has 47 of them.
+   *
+   * TWO INDEPENDENT BOUNDS ARE ASSERTED HERE, and the reason both exist is that either alone would
+   * make this test pass for the wrong reason:
+   *
+   *   (a) THE COUNT. `terminalizeAdoptedCampaignWaveTarget` is guarded on `status = 'pending'` with
+   *       RETURNING, so the write is unreachable after the first tick. That guard alone would make a
+   *       row count of 1 true even if the `inputContext` were full of timestamps.
+   *   (b) THE CONTENT. So the context is asserted as an EXACT KEY CENSUS — not "does not contain
+   *       `now`". A census fails when a NEW clock-shaped key is added, which is how this defect
+   *       actually arrives; a denylist only fails for the names somebody already thought of. Plus
+   *       the SORTEDNESS of `observations`, because `restatesDecision` canonicalizes object KEYS but
+   *       deliberately preserves array ORDER, and Postgres returns rows in no guaranteed order — an
+   *       unsorted array makes an unchanged situation look new on whichever ticks the planner felt
+   *       differently, which defeats `insertDecisionIfChanged` completely.
+   */
+  it("U6: an already-adopted campaign target writes ONE campaign_adoption Decision over 15 ticks, carrying EVIDENCE and nothing clock-shaped", async () => {
+    const org = await createTestOrg(server, "campaign-flood-adoption");
+    const owner = await createTestUser(server, org, [{ role: "Owner", scope: org.orgId }]);
+
+    const service = await inject(org, "/api/v1/services", { name: "svc-camp-adopt" });
+    const component = await inject(org, "/api/v1/components", {
+      name: "comp-camp-adopt",
+      service: service.id
+    });
+
+    // The component is ALREADY on python 3.12 when the campaign reaches it — the inventory row the
+    // real `inventory-ingestion-loop.ts` would have written after re-reading the repository.
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const line = await upsertDependencyLine(tx, org.orgId, {
+        ecosystem: "oci",
+        coordinate: "docker.io/library/python",
+        major: "3"
+      });
+      await upsertComponentDependency(tx, org.orgId, {
+        componentObjectId: component.id as string,
+        lineId: line.id,
+        manifestPath: "Dockerfile",
+        declaredVersion: "3.12-slim",
+        resolvedVersion: "3.12-slim"
+      });
+    });
+
+    const campaignObjectId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const { campaign } = await proposeCampaign(tx, {
+        orgId: org.orgId,
+        actorObjectId: owner.objectId,
+        requestId: "campaign-flood-test",
+        name: "campaign-over-an-already-migrated-component",
+        recipe: {
+          version: 1,
+          trigger: { kind: "sync" },
+          adoption: {
+            kind: "dependency",
+            ecosystem: "oci",
+            coordinate: "docker.io/library/python",
+            minVersion: "3.0"
+          }
+        },
+        targets: [component.id as string]
+      });
+      return campaign.id;
+    });
+
+    await tick(org, 15);
+
+    const adoption = await decisionsOfKind(org, campaignObjectId, CAMPAIGN_ADOPTION_DECISION_KIND);
+    // No CEL is reached on this path (the adoption predicate is pure SQL), so — as with U3 — the
+    // load-dependent condition-error allowance U2 must tolerate cannot arise, and the count is exact.
+    expect(adoption.conditionErrors).toHaveLength(0);
+    expect(adoption.ordinary).toHaveLength(1);
+    expect(distinctDecisionStatements(adoption.ordinary)).toBe(1);
+    expect(adoption.ordinary[0]!.verdict).toBe("allow");
+
+    const context = adoption.ordinary[0]!.inputContext as Record<string, unknown>;
+    expect(Object.keys(context).sort()).toEqual([
+      "coordinate",
+      "ecosystem",
+      "evidenceKind",
+      "minVersion",
+      "observations",
+      "targetObjectId",
+      "waveId",
+      "waveIndex"
+    ]);
+    const observations = context.observations as string[];
+    expect(observations).toEqual([...observations].sort((a, b) => a.localeCompare(b)));
+    // The evidence is actually IN there — a context that recorded nothing would also pass a key
+    // census and a dedupe test while explaining nothing (charter principle 6).
+    expect(observations.join("\n")).toContain("3.12-slim");
   });
 });

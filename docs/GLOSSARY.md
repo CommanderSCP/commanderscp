@@ -416,6 +416,24 @@ Today the same information is carried by **env-suffixed component pairs** — `a
 
 ---
 
+### adoption evidence
+
+**Definition.** The source a campaign recipe **names** for the question *"has this component migrated yet?"*. Three kinds ship: `delivered` (this campaign's own wave target succeeded), `dependency` (the component's ingested manifests place it at or above a version floor), `control` (a governed control run passed).
+
+**Absent evidence is `unknown`, never `adopted`.** This is the whole point of the term, and it is `boundary-segment.ts`'s honesty rule R3 — *silence is never a pass* — applied to migration. CommanderSCP cannot know in general whether a component has been migrated; a recipe that names no evidence gets `unknown`, and so does one whose evidence cannot be read.
+
+**The distinction that carries the rule.** A component with **no dependency inventory rows at all** is `unknown` — never ingested is a fact about *CommanderSCP*, not about the component. A component whose manifests **have** been ingested and simply do not declare the coordinate is `adopted`. Collapsing those two is precisely the silence-as-pass failure, and they are the two cases most easily conflated.
+
+**`delivered` is not `migrated`.** It means SCP triggered the tenant's pipeline and the change was accepted — not that the code changed. The verdict string says `delivered` for that reason.
+
+**Positive evidence of non-adoption outranks an indeterminate sibling.** One manifest pinning below the floor and another declaring an open range reads `not_adopted`: the range tells us nothing, the pin tells us something, and *"we cannot tell"* must not dilute a fact we can.
+
+**`declared` is deliberately not shipped.** A fourth, self-attested kind is designed and withheld pending an owner ruling (OQ-6): the beneficiary of *"I have migrated"* is exactly the party a deadline exists to coerce, writing at plain `object:write` on their own component. Its absence is a decision, not an omission.
+
+**In the code.** `coordination/campaign-adoption.ts` — read-time, no stored status column, no scheduler. `GET /api/v1/campaigns/{id}/adoption`. [ADR-0041](adr/0041-campaign-recipes.md).
+
+---
+
 ### wave
 
 **Definition.** One ordered step of a **compiled plan**: **the set of one-or-more stages advanced at once**, and the targets within them. Wave order is computed from graph `depends_on` edges (topological sort with cycle rejection) plus explicit coordination rules such as "infrastructure before application". Waves sharing an index run in parallel (fan-out); a fan-in gate requires every target of the previous wave to have succeeded.

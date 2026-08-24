@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CursorPageQuerySchema, cursorPageResponseSchema } from "./common.js";
 import { ChangeSchema, DecisionSchema } from "./changes.js";
+import { DependencyEcosystemSchema } from "./dependencies.js";
 import { ExecutorTypeSchema } from "./executors.js";
 
 /**
@@ -150,6 +151,110 @@ function inspectRecipeParameters(value: unknown, depth: number, path: string): s
   return `${path}: ${typeof value} is not a JSON value`;
 }
 
+// ===========================================================================================
+// M25.5 — ADOPTION EVIDENCE ("has component X migrated yet?")
+// ===========================================================================================
+//
+// THE HONEST ANSWER FIRST, because everything below is shaped by it: **SCP cannot know in general
+// whether a component has been migrated.** There is no per-component standing state store —
+// `observed_state` is per-wave-target and `control_runs` is per-change — so the platform has no
+// place to look unless the recipe TELLS it where. A recipe therefore NAMES its own evidence source,
+// and where it names none, or where the named source is silent, the verdict is `unknown`, **never
+// `adopted`**. That is `coordination/boundary-segment.ts`'s honesty rule R3 ("silence is never a
+// pass") applied unchanged, and it is the entire safety property of this feature: M25.6's deadline
+// lock fires on this predicate, so an `adopted` conjured out of an absent fact is a governance
+// record asserting compliance that nobody verified.
+//
+// WHY A DISCRIMINATED UNION AND NOT A BAG OF OPTIONAL FIELDS. Each kind reads a DIFFERENT table
+// with different key columns, and a bag would let an author write `{ecosystem, controlObjectId}`
+// — two sources, no rule for which wins. The union makes "which fact answers this question" a
+// single authored choice that the reader cannot silently reinterpret.
+//
+// -------------------------------------------------------------------------------------------
+// `declared` IS DELIBERATELY ABSENT. OQ-6 IS UNRULED AND THIS SHIPS WITHOUT IT.
+// -------------------------------------------------------------------------------------------
+// The proposal's §3.4 sketch lists a FOURTH kind — `{kind:"declared", key, value}`, read from a
+// `component.properties.adoption.declarations` bag. It is not here, and its absence is a decision
+// rather than an omission. §4.4 states the reason and its own recommendation ("do not ship
+// `declared` until an above-component admission exists"): the beneficiary of the assertion "I have
+// migrated" is exactly the party the deadline exists to coerce, writing at plain `object:write` on
+// their OWN component, with none of M22's admission algebra above it. A self-attested deadline
+// waiver produces a signed, hash-chained governance record asserting a migration nobody observed —
+// strictly worse than having no lock at all.
+//
+// ADDING IT LATER IS ADDITIVE AND BREAKS NOTHING. A new member of a `z.discriminatedUnion` is a new
+// `oneOf` branch in the emitted OpenAPI: an old client never sends it and never has to parse one it
+// did not author, and no existing branch changes shape. The same is true of a fifth kind. What is
+// NOT additive — and must never be done to this union — is adding a required field to an EXISTING
+// branch, or making one of the fields below optional on a response.
+export const AdoptionEvidenceSchema = z.discriminatedUnion("kind", [
+  /**
+   * THIS CAMPAIGN'S OWN wave target for the component is `succeeded`. Zero new machinery: the fact
+   * is already in `campaign_wave_targets`.
+   *
+   * THE VERDICT STRING IS `"delivered"` AND NEVER `"migrated"`, and the distinction is the whole
+   * reason this kind is named the way it is. What `succeeded` means is: SCP triggered the tenant's
+   * OWN pipeline for that component and the resulting member Change reached `accepted`. It does not
+   * mean the code changed — the recipe's `workflow_dispatch` may have run a workflow that did
+   * nothing, and `github`/`gitea` resolve `intent.parameters?.workflowId ?? config.defaultWorkflowId`
+   * so a target whose binding names a different default runs THAT one and still succeeds.
+   *
+   * IT IS ALSO NEARLY INERT IN THE CAMPAIGN RECONCILER, by construction rather than by accident, and
+   * the proposal (§4.4) says so plainly rather than selling it: the reconciler evaluates adoption
+   * only for a `pending` target, and a `pending` target has by definition not succeeded. So this
+   * kind can never make the reconciler skip a fan-out. Its value is on the READ surface (and, from
+   * M25.6, as the deadline lock's default signal) — which is exactly the "the campaign hasn't
+   * reached you yet, and now it never will" degeneracy §4.4 names, and the reason a real migration
+   * campaign should choose `dependency` or `control` instead.
+   */
+  z.strictObject({ kind: z.literal("delivered") }),
+  /**
+   * THE ONE THAT ACTUALLY WORKS FOR python2 -> python3, and the only kind backed by a standing,
+   * component-scoped, INDEPENDENTLY REFRESHED fact table: `component_dependencies`, re-read out of
+   * the repository itself by `dependencies/inventory-ingestion-loop.ts` whenever a change is
+   * accepted. After the migration workflow's push lands, the inventory reads `FROM python:3.12-slim`
+   * from the actual file — evidence SCP observed, not evidence anybody asserted.
+   *
+   * `adopted` iff no live row for this `(ecosystem, coordinate)` resolves BELOW `minVersion`;
+   * `unknown` iff the component has ZERO inventory rows at all. That second clause is the load-
+   * bearing one: "never ingested" and "declares nothing on this coordinate" are different facts, and
+   * conflating them is precisely the silence-as-a-pass failure this whole file exists to refuse.
+   * See `coordination/campaign-adoption.ts` for the full verdict matrix, including how a NULL
+   * `resolved_version` (an open range — "the manifest pins no concrete version", never "we did not
+   * look") and a version pair the shared comparator declines to order are treated. Neither can ever
+   * produce `adopted`.
+   */
+  z.strictObject({
+    kind: z.literal("dependency"),
+    /** Matches `dependency_lines.ecosystem`. The closed set lives here and nowhere else — the column
+     *  is plain `text` with no CHECK, exactly like `dependencyLines.ecosystem` documents. */
+    ecosystem: DependencyEcosystemSchema,
+    /** The ecosystem-native coordinate, VERBATIM and case-preserved — `docker.io/library/python`,
+     *  `@acme/lib`, `com.acme:lib`. Never a URN and never slugified: the join to `dependency_lines`
+     *  is byte equality, and `graph/urn.ts`'s `slugify` collapses `@acme/lib`, `acme/lib` and
+     *  `acme-lib` into one string. */
+    coordinate: z.string().min(1).max(512),
+    /** The floor. A row resolving at or above it satisfies the evidence; a row resolving below it is
+     *  positive evidence of NON-adoption. Parsed by `@scp/dependency-manifests`'s
+     *  `parseComparableVersion` — the repo's single version parser — so a `minVersion` that parser
+     *  refuses makes every row incomparable and the verdict `unknown`, never `adopted`. */
+    minVersion: z.string().min(1).max(128)
+  }),
+  /**
+   * The latest `control_runs` row for `(this campaign's member change for the target,
+   * controlObjectId)` is `pass`. The STRONGEST kind: a control run is a governed, evidence-carrying
+   * observation the platform itself orchestrated.
+   *
+   * `plugin_module` is read off the RUN ROW, never re-resolved from the binding. That column is
+   * stamped at insert (drizzle/0063) precisely so that re-pointing a control's binding cannot
+   * retroactively relabel a historical pass as having come from a different checker — the
+   * provenance-labels-are-read-not-inferred rule, applied to the one fact that decides whether a
+   * component escapes a deadline.
+   */
+  z.strictObject({ kind: z.literal("control"), controlObjectId: z.string().uuid() })
+]);
+export type AdoptionEvidence = z.infer<typeof AdoptionEvidenceSchema>;
+
 /**
  * THE AUTHOR'S DOOR — `z.strictObject` throughout, and open in the property registry (the 0043/0075
  * rule: `import-repo.ts`'s `object_upsert` branch Ajv-validates against the REGISTERED schema with
@@ -178,6 +283,20 @@ export const CampaignRecipeSchema = z
        */
       parameters: z.record(z.string(), z.unknown()).optional()
     }),
+    /**
+     * M25.5 — WHERE TO LOOK to answer "has this component migrated yet?" (see
+     * {@link AdoptionEvidenceSchema}).
+     *
+     * OPTIONAL, and the inertness that buys is a stated property rather than a nicety: a recipe that
+     * declares none makes `coordination/campaign-adoption.ts` return `unknown` before it issues a
+     * single query, and makes the campaign reconciler skip the predicate entirely. A campaign
+     * authored before M25.5 therefore costs exactly what it cost before M25.5.
+     *
+     * ABSENT IS `unknown`, NOT `adopted`. There is no default evidence source and there must never
+     * be one — inferring `delivered` from a recipe that named nothing would be the platform
+     * answering a question it was not given the means to answer.
+     */
+    adoption: AdoptionEvidenceSchema.optional(),
     /** DISPLAY ONLY — a link an operator opens themselves. NEVER fetched by the server or by a
      *  plugin: charter principle 5 (no runtime network calls to the outside world) does not bend
      *  for a documentation link, and a server-side fetch of an author-supplied URL is an SSRF. */
@@ -333,3 +452,79 @@ export const CampaignExplainResponseSchema = z.object({
   decisions: z.array(DecisionSchema)
 });
 export type CampaignExplainResponse = z.infer<typeof CampaignExplainResponseSchema>;
+
+// ===========================================================================================
+// M25.5 — `GET /campaigns/{id}/adoption`, the READ surface over the same one predicate
+// ===========================================================================================
+
+/**
+ * THREE VALUES, AND THE THIRD IS NOT A DEGRADED SECOND. `unknown` means "the named evidence source
+ * had nothing to say about this component" — never ingested, no control run, no wave target — and it
+ * is a DIFFERENT fact from `not_adopted` ("we looked and this component is below the floor / the
+ * control did not pass"). Collapsing them would make an un-ingested component indistinguishable
+ * from an observed laggard, and would put the platform one refactor away from reading a missing
+ * fact as a satisfied one.
+ *
+ * BOTH `unknown` AND `not_adopted` KEEP A TARGET IN THE CAMPAIGN. Only `adopted` is an exit — from
+ * the fan-out here, and from M25.6's deadline lock. That asymmetry is the R3 rule in its operational
+ * form, and it is why the enum can never grow a fourth "probably" value.
+ */
+export const CampaignAdoptionVerdictSchema = z.enum(["adopted", "not_adopted", "unknown"]);
+export type CampaignAdoptionVerdict = z.infer<typeof CampaignAdoptionVerdictSchema>;
+
+/** One campaign target's adoption verdict, with the observations that produced it. */
+export const CampaignAdoptionTargetSchema = z.object({
+  targetObjectId: z.string().uuid(),
+  targetUrn: z.string().optional(),
+  targetName: z.string().optional(),
+  verdict: CampaignAdoptionVerdictSchema,
+  /** One sentence naming what was observed and why it produced this verdict — the same text the
+   *  `campaign_adoption` Decision's `reasonTree.summary` carries. */
+  summary: z.string(),
+  /**
+   * The EVIDENCE ITSELF, one line per observed fact — a declared/resolved version pair and its
+   * position relative to the floor, a control run id with its status and stamped `plugin_module`, a
+   * wave target status.
+   *
+   * **SORTED, and that is a correctness requirement rather than a presentation choice.** This exact
+   * array is what the reconciler puts in the `campaign_adoption` Decision's `inputContext`, and
+   * `decisions-repo.ts`'s `restatesDecision` canonicalizes object KEYS but deliberately preserves
+   * array ORDER ("a reordered array is a genuinely different input set and MUST write a new row").
+   * An unsorted array — Postgres returns rows in no guaranteed order — would therefore make an
+   * unchanged situation look new on some ticks and write a fresh Decision row for it. That is the
+   * shape of the measured 1.44 GB/day incident (ADR-0024), reached through a different door.
+   *
+   * NOTHING CLOCK-SHAPED APPEARS HERE. No evaluation timestamp, no attempt counter, no "checked
+   * N seconds ago" — those are the values that make every tick's observation differ from the last.
+   */
+  observations: z.array(z.string())
+});
+export type CampaignAdoptionTarget = z.infer<typeof CampaignAdoptionTargetSchema>;
+
+/**
+ * `GET /campaigns/{id}/adoption` — the per-target answer to "has this component migrated yet?",
+ * derived live at read time. There is NO stored adoption column and no scheduler: the verdict is
+ * re-derived from the named evidence source on every read, which is what makes a late migration, a
+ * re-ingested manifest or a re-run control clear it with no "mark adopted" verb anywhere.
+ */
+export const CampaignAdoptionResponseSchema = z.object({
+  campaignObjectId: z.string().uuid(),
+  /** The campaign recipe's declared evidence source, echoed back — `null` when the recipe declares
+   *  none (or carries no recipe at all), in which case every target below is `unknown`. Echoed
+   *  rather than described so an operator can see the exact document the verdicts were derived from
+   *  without a second call. */
+  evidence: AdoptionEvidenceSchema.nullable(),
+  targets: z.array(CampaignAdoptionTargetSchema),
+  /**
+   * Declared targets that could not be resolved to a live object, named rather than dropped.
+   *
+   * Only reachable BEFORE a plan is compiled (afterwards the targets come from the plan, which by
+   * construction holds resolved ids). An IaC-authored campaign declares URN-shaped targets until the
+   * reconciler's first pass normalises them, and a target deleted after authoring never resolves at
+   * all — the same fault `campaign-reconcile.ts` records as a `plan_diff` block. Returning an empty
+   * `targets` array with no explanation would be this feature's own failure mode in miniature: an
+   * absence rendered as a clean result.
+   */
+  unresolvedTargets: z.array(z.string())
+});
+export type CampaignAdoptionResponse = z.infer<typeof CampaignAdoptionResponseSchema>;

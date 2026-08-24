@@ -50,8 +50,14 @@ import {
   markCampaignWaveTargetProposed,
   markCampaignWaveTargetTerminal,
   markCampaignWaveTerminal,
+  terminalizeAdoptedCampaignWaveTarget,
   terminalizeRefusedCampaignWaveTarget
 } from "./campaign-wave-targets-repo.js";
+import {
+  CAMPAIGN_ADOPTION_AUDIT_ACTION,
+  CAMPAIGN_ADOPTION_DECISION_KIND,
+  evaluateCampaignAdoption
+} from "./campaign-adoption.js";
 
 /**
  * The campaign reconciler (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5) — a THIN extension of M3's
@@ -423,6 +429,18 @@ async function reconcileOneCampaign(
     campaignRecipe.outcome === "recipe"
       ? { [CAMPAIGN_RECIPE_PROPERTY_KEY]: campaignRecipe.recipe }
       : {};
+  /**
+   * M25.5 — the SAME parsed recipe, hoisted here so the adoption seam in the per-target loop below
+   * reads one document rather than re-deciding per target what `resolveChangeRecipe` already
+   * decided once for the campaign.
+   *
+   * `undefined` covers BOTH "no recipe" and "malformed", and that second half is deliberate: a
+   * document the schema refuses is not evidence of anything, so the adoption predicate is not asked
+   * about it and every target of such a campaign fans out normally. The refusal is already loud —
+   * the warning above is logged once per campaign per tick — and turning an unparseable document
+   * into a silent `adopted` would be exactly the failure this milestone exists to refuse.
+   */
+  const adoptionRecipe = campaignRecipe.outcome === "recipe" ? campaignRecipe.recipe : undefined;
 
   /** Every target this tick an active freeze covered — one Decision for the campaign, never one per
    *  target (`insertDecisionIfChanged` dedupes on the LATEST row of a `(subject_id, kind)`, so
@@ -539,6 +557,114 @@ async function reconcileOneCampaign(
         frozenTargets.push(frozen);
         continue;
       }
+
+      // ==========================================================================================
+      // THE ADOPTION SEAM — M25.5's ACTUATOR. This `continue` is the refusal to do work.
+      // ==========================================================================================
+      // WHAT IT BUYS: a campaign is IDEMPOTENT against a component that migrated on its own. Half a
+      // 47-component estate is usually already on python3 when the campaign is authored, and without
+      // this seam each of those gets a real member Change, a plan, an `executing` state and a
+      // triggered pipeline run to re-do work that is done. Worse, the campaign then reports having
+      // migrated them — which is true of the trigger and false of the component.
+      //
+      // ORDERING, WHICH IS INHERITED FROM THE TWO SEAMS ABOVE RATHER THAN INVENTED:
+      //
+      //  * AFTER THE LIVENESS GATE. A tombstoned target is dead regardless of what its inventory
+      //    says, and terminalizing it `failed` is PROGRESS. Asking about adoption first would read a
+      //    deleted component's stale inventory and terminalize it `succeeded` — a campaign reporting
+      //    a migration for an object that no longer exists.
+      //  * AFTER THE M25.2 FREEZE HOLD. A freeze is a HOLD, not a terminal state: the campaign is
+      //    meant to resume when the window closes. Terminalizing a frozen target `succeeded` here
+      //    would make the hold irreversible and would write a permanent Decision during a window in
+      //    which the campaign was explicitly told to do nothing. Held first, asked later.
+      //  * BEFORE `proposeChange`. That is the whole point — no member Change, no `coordinates`
+      //    edge, no `member_change_object_id` for a fan-out we are declining to perform.
+      //
+      // `allTerminal` IS ALREADY FALSE (set at the top of this `pending` branch), so nothing here
+      // depends on getting a count right; the terminalizing write below is what lets the wave finish.
+      //
+      // INERT BY DEFAULT: the recipe was parsed ONCE for this campaign above, so a campaign that
+      // declares no `adoption` costs exactly one property read and not a single query. The predicate
+      // early-returns on the same condition — the guard is stated twice on purpose, because a guard
+      // that lives only at the call site is a guard that survives until the second call site.
+      //
+      // NO MEMOISATION, and that is the M22.0a lesson rather than an oversight: each `(campaign,
+      // target)` is evaluated exactly once per tick by this loop, so a cache would buy nothing and
+      // would introduce the one thing that failure was made of — a key coarser than the question.
+      //
+      // FAIL DIRECTION: a thrown predicate is caught and the target is fanned out NORMALLY. An
+      // unreadable inventory must never be mistaken for "already migrated" — that is the same
+      // silence-as-a-pass this feature exists to refuse, arriving as an exception instead of a NULL.
+      if (adoptionRecipe?.adoption !== undefined) {
+        const adopted = await withTenantTx(db, orgId, async (tx) => {
+          const adoption = await evaluateCampaignAdoption(
+            tx,
+            orgId,
+            campaignObjectId,
+            target.targetObjectId,
+            adoptionRecipe
+          );
+          // ONLY `adopted` acts. `not_adopted` and `unknown` both fan out — an unknown verdict is an
+          // absence of evidence and must never be treated as adoption (R3). This asymmetry is the
+          // feature's safety property in one line.
+          if (adoption.verdict !== "adopted") return false;
+
+          // The guard makes the Decision + audit pair fire exactly once per target, ever, however
+          // many ticks arrive — the same shape as the liveness gate's refusal directly above.
+          const terminalized = await terminalizeAdoptedCampaignWaveTarget(tx, orgId, target.id);
+          if (!terminalized) return true;
+
+          // `insertDecisionIfChanged` as well as the guard, belt AND braces. The guard is what
+          // bounds this today; the persist-on-change wrapper is what keeps it bounded if a future
+          // edit ever moves this write out from behind it. `inputContext` carries the EVIDENCE and
+          // nothing clock-shaped — see `CampaignAdoptionResult.inputContext` for the named ban list
+          // and the 1.44 GB/day measurement behind it.
+          const recorded = await insertDecisionIfChanged(tx, {
+            orgId,
+            kind: CAMPAIGN_ADOPTION_DECISION_KIND,
+            subjectId: campaignObjectId,
+            // `allow` rather than `block`/`hold`: nothing is being withheld from anyone. The campaign
+            // is recording that this target needed no work. `latestBlockDecisionForSubject` filters
+            // on the verdict alone, so a `block` here would leave a campaign looking permanently
+            // blocked by its own good news.
+            verdict: "allow",
+            inputContext: {
+              ...adoption.inputContext,
+              waveId: activeWave.id,
+              waveIndex: activeWave.waveIndex
+            },
+            reasonTree: {
+              summary: `no member change proposed for this campaign target: ${adoption.summary}`,
+              // Echoed under its own key as well as inside `inputContext` so `scp campaign explain`
+              // shows the evidence beside the sentence it justifies. Already sorted and bounded by
+              // the predicate; re-sorting here would be a second ordering rule to keep in step.
+              observations: adoption.observations
+            }
+          });
+          if (recorded.created) {
+            await appendAuditEvent(tx, {
+              orgId,
+              actorId: SYSTEM_ACTOR_ID,
+              action: CAMPAIGN_ADOPTION_AUDIT_ACTION,
+              subjectId: campaignObjectId,
+              reason: `campaign target ${target.targetObjectId} was already migrated: ${adoption.summary}`,
+              decisionId: recorded.decision.id,
+              requestId: "campaign-reconcile"
+            });
+          }
+          return true;
+        }).catch((err) => {
+          logCampaignError(
+            orgId,
+            campaignObjectId,
+            `wave ${activeWave.waveIndex} target ${target.targetObjectId} adoption`,
+            err
+          );
+          return false; // unreadable — NOT "adopted". Fanned out normally, retried next tick.
+        });
+        if (adopted) continue;
+      }
+
       // Set BEFORE `proposeChange` for the same reason the change side sets its flag before
       // `triggerWaveTarget`: this target was NOT held on this tick, which is the observation the
       // release row records. A `proposeChange` that then throws is retried next tick and the
