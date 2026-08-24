@@ -8,6 +8,7 @@ import {
   CampaignListResponseSchema,
   CampaignSchema,
   CreateCampaignRequestSchema,
+  OverrideCampaignDeadlineRequestSchema,
   ProblemSchema,
   RollbackCampaignRequestSchema,
   RollbackCampaignResponseSchema,
@@ -21,7 +22,9 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import {
   getCampaign,
+  listCampaignTargetObjectIds,
   listCampaigns,
+  overrideCampaignDeadline,
   proposeCampaign,
   setCampaignDeadline
 } from "../coordination/campaign-repo.js";
@@ -30,10 +33,14 @@ import { getLatestCampaignPlan } from "../coordination/campaign-plan-service.js"
 import { insertDecision, listDecisionsForSubject } from "../coordination/decisions-repo.js";
 import { triggerCampaignRollback } from "../coordination/campaign-rollback.js";
 import {
+  CAMPAIGN_DEADLINE_OVERRIDE_AUDIT_ACTION,
+  CAMPAIGN_DEADLINE_OVERRIDE_DECISION_KIND,
   CAMPAIGN_DEADLINE_SET_AUDIT_ACTION,
   CAMPAIGN_DEADLINE_SET_DECISION_KIND
 } from "../coordination/campaign-deadline-lock.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
+import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { badRequest } from "../errors.js";
 
 /**
  * `/campaigns` (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5) — the campaign-scoped sibling of
@@ -259,13 +266,22 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
    * ===========================================================================================
    * THIS IS THE EXIT, AND THAT IS WHY IT SHIPS IN THE SAME INCREMENT AS THE LOCK
    * ===========================================================================================
-   * §4.5's per-target waiver (`POST /campaigns/{id}/deadline-override`, behind a new Owner-only
-   * `campaign:deadline-override` permission) is **M25.6b**: the permission needs an additive
-   * `array_append` migration, and migration numbering is serialized across concurrent sessions
-   * behind a hard contiguity gate. A lock with no exit at all would be the entrance-with-no-exit
-   * failure M25.1 exists to close — a governance mechanism an operator can enter and cannot leave —
-   * so this verb ships in its place. **Clearing the deadline unlocks every target at once**, on the
-   * next 1 s tick, with no unlock verb and no backfill, because the lock is a read-time predicate.
+   * **Clearing the deadline unlocks every target at once**, on the next 1 s tick, with no unlock
+   * verb and no backfill, because the lock is a read-time predicate. It shipped in the same
+   * increment as the lock so the lock was never an entrance with no exit — the failure M25.1 exists
+   * to close.
+   *
+   * M25.6b has since added the FINER exit beside it: `POST /campaigns/{id}/deadline-override`
+   * excuses NAMED targets, behind the Owner-only `campaign:deadline-override` at the campaign plus
+   * `object:write` at each target. This verb is still the blunt one — `object:write` alone, all
+   * targets at once — and the two are deliberately different prices for different radii.
+   *
+   * THAT IS WHY THIS VERB TAKES `CampaignDeadlineInputSchema` AND NOT `CampaignDeadlineSchema`: the
+   * stored document carries `overrides[]`, and accepting them here would let an `object:write`
+   * holder mint the waivers the Owner-only permission exists to gate. The waivers already in force
+   * are PRESERVED across a set or a move (`setCampaignDeadline`) — dropping them would be a silent
+   * tightening nobody expressed — and a clear takes them with it, because there is then nothing left
+   * to be excused from.
    *
    * `object:write` AT THE CAMPAIGN OBJECT, not at the org root and not at the targets. Not the org
    * root, because `hasPermission` expands the checked scope upward anyway, so checking at the
@@ -379,6 +395,208 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
           decisionId: decision.id,
           requestId: request.id
         });
+        return result.campaign;
+      });
+      reply.status(200).send(campaign);
+    }
+  });
+
+  /**
+   * M25.6b — WAIVE THIS CAMPAIGN'S DEADLINE FOR NAMED TARGETS (§4.5).
+   *
+   * ===========================================================================================
+   * THE AUTHORIZATION IS THE SUBSTANCE OF THIS ROUTE. TWO CHECKS, AT TWO DIFFERENT OBJECTS
+   * ===========================================================================================
+   *
+   * 1. `campaign:deadline-override` **AT THE CAMPAIGN OBJECT** — and this is the load-bearing
+   *    decision of the whole milestone, so it is written down where the check is rather than only
+   *    in a document.
+   *
+   *    THE THING BEING WAIVED IS *THIS CAMPAIGN'S* DEADLINE. Authority over it is therefore
+   *    authority over the campaign. Checking at the TARGET instead would hand the laggard their own
+   *    waiver: the component's own operator — who holds `object:write` on it by definition, which is
+   *    how they ship — could excuse that component from the very migration the campaign exists to
+   *    force. The mechanism would then coerce exactly the teams that did not think to opt out, which
+   *    is worse than not having it. `hasPermission` expands the checked scope UPWARD, so this admits
+   *    an Owner at the org root AND an Owner bound at the campaign's own containment domain, and
+   *    nobody bound only under a target.
+   *
+   *    IT IS A NEW PERMISSION (drizzle/0088, Owner-only) AND NOT `freeze:override`, which was
+   *    available and is the wrong shape: sharing it would let a freeze-override holder waive
+   *    migration deadlines and a deadline-waiver holder bypass release freezes — two unrelated blast
+   *    radii on one grant, neither afterwards narrowable without taking the other with it.
+   *
+   * 2. `object:write` **AT EACH NAMED TARGET** — the second, NARROWER bar. A waiver is a permanent,
+   *    hash-chained governance record naming a specific component; minting one over a component the
+   *    actor has no standing on at all should not follow from authority over the campaign. Checked
+   *    per target rather than once at the campaign's domain for `proposeCampaign`'s stated reason:
+   *    a campaign's targets can span domains a coarse single check would miss.
+   *
+   * Both must pass. Neither substitutes for the other, and the order matters only in what an actor
+   * learns: campaign authority is checked first, so someone with none of it learns nothing about
+   * which objects the campaign targets.
+   *
+   * ===========================================================================================
+   * OMITTING `targets` MEANS EVERY TARGET — AND IT IS NOT A SYNONYM FOR CLEARING THE DEADLINE
+   * ===========================================================================================
+   * The deadline stands; each waiver is recorded per target with its own audit event; `until` still
+   * expires them individually; and the clear verb one route up needs only `object:write` while this
+   * needs the Owner-only permission at the campaign PLUS `object:write` at every single target. The
+   * broad form therefore demands broad standing, which is the property that makes offering it safe.
+   *
+   * ===========================================================================================
+   * ONE TRANSACTION: THE GRAPH WRITE, ONE DECISION, ONE AUDIT EVENT **PER TARGET**
+   * ===========================================================================================
+   * The `overrides[]` entry lands through `updateObject` — versioned, content-hashed and audited on
+   * the ordinary graph path — so there is no side door into `objects.properties`. On top of it:
+   *
+   *  * ONE `campaign_deadline_override` Decision (`verdict: "allow"`). Its OWN kind, distinct from
+   *    the tick-driven `campaign_deadline` block rows: `insertDecisionIfChanged` compares against
+   *    the latest row of a `(subject_id, kind)` pair, so a human `allow` sharing that kind would
+   *    interleave with the loop's rows and suppression would never fire — ADR-0024's measured
+   *    1.44 GB/day rebuilt from parts.
+   *  * `inputContext` is EXACTLY `{ targets (sorted), until }`. `until` is a stored BOUNDARY, the
+   *    only clock-shaped value allowed anywhere in this feature's Decisions. `at` and `actorId` are
+   *    clock- and identity-shaped and are DELIBERATELY absent — they live on the audit event, which
+   *    is the record built for exactly that, and in the stored waiver itself. The sort is
+   *    `describeLockedTargets`'s reason: `restatesDecision` canonicalizes object KEYS but preserves
+   *    array ORDER.
+   *  * ONE HIGH-SEVERITY AUDIT EVENT PER TARGET, mandatory reason, `decisionId` linked — the
+   *    `freeze.override` shape, where CRITICAL #2's rule is that a per-scope act writes a per-scope
+   *    event. One event listing N targets would turn "was component X ever excused from campaign Y?"
+   *    into a substring search over a blob instead of a subject-keyed query.
+   *
+   * No `insertDecisionIfChanged` and no dedup concern: this is one row per human API call, not a
+   * predicate restated on a timer.
+   *
+   * EFFECT IS IMMEDIATE ON THE NEXT TICK, and there is NO un-waive verb — that is the payoff of a
+   * read-time predicate, the same one that makes a moved deadline release its targets with no
+   * unlock verb. An `until` in the past is stored, audited and simply not effective.
+   */
+  typed.route({
+    method: "POST",
+    url: "/api/v1/campaigns/:id/deadline-override",
+    schema: {
+      params: CampaignIdParamSchema,
+      body: OverrideCampaignDeadlineRequestSchema,
+      response: {
+        200: CampaignSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "overrideCampaignDeadline",
+        summary:
+          "Waive a campaign's deadline for named targets — excuses one laggard without clearing the deadline for everyone",
+        tags: ["campaigns"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const campaign = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // CHECK 1 — AT THE CAMPAIGN. See this route's doc: a target-scoped check here would hand the
+        // laggard their own waiver.
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "campaign:deadline-override",
+          scopeObjectId: request.params.id
+        });
+
+        const declaredTargets = await listCampaignTargetObjectIds(
+          tx,
+          auth.orgId,
+          request.params.id
+        );
+        const targetObjectIds: string[] = [];
+        for (const idOrUrn of request.body.targets ?? declaredTargets) {
+          // Resolved through the same helper `proposeCampaign` uses, so a URN works here exactly as
+          // it does when the campaign was authored (404 if it names nothing).
+          const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, idOrUrn);
+          // A WAIVER OVER A NON-TARGET IS DEAD DATA in a permanent record, and an operator who
+          // believes they excused a component that was never in the campaign is worse off than one
+          // who got an error. Refused BEFORE the per-target authorization: the actor already holds
+          // the Owner-only permission at this campaign, so "that object is not one of its targets"
+          // tells them nothing they could not read off `GET /campaigns/{id}`.
+          if (!declaredTargets.includes(target.id)) {
+            throw badRequest(
+              `'${idOrUrn}' is not a target of campaign '${request.params.id}' — waiving its ` +
+                `deadline for that object would record a waiver that can never apply`
+            );
+          }
+          // CHECK 2 — `object:write` AT EACH NAMED TARGET. The narrower bar: authority over the
+          // campaign does not by itself license minting a governance record about a component the
+          // actor has no standing on.
+          await authorize(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            permission: "object:write",
+            scopeObjectId: target.id
+          });
+          targetObjectIds.push(target.id);
+        }
+        if (targetObjectIds.length === 0) {
+          throw badRequest(
+            `campaign '${request.params.id}' declares no targets — there is nothing to waive`
+          );
+        }
+
+        const result = await overrideCampaignDeadline(tx, {
+          orgId: auth.orgId,
+          campaignObjectId: request.params.id,
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id,
+          targetObjectIds,
+          reason: request.body.reason,
+          until: request.body.until,
+          now: new Date()
+        });
+
+        const decision = await insertDecision(tx, {
+          orgId: auth.orgId,
+          kind: CAMPAIGN_DEADLINE_OVERRIDE_DECISION_KIND,
+          subjectId: request.params.id,
+          verdict: "allow",
+          inputContext: {
+            // SORTED by `overrideCampaignDeadline`. NOTHING ELSE GOES IN HERE: `at` and `actorId`
+            // are clock- and identity-shaped (ADR-0024's rule, applied uniformly across M25.6),
+            // `reason` is operator prose whose home is the audit event's own column, and `until` is
+            // a stored BOUNDARY rather than a reading of the clock.
+            targets: result.targetObjectIds,
+            until: request.body.until ?? null
+          },
+          reasonTree: {
+            summary:
+              `${result.targetObjectIds.length} target(s) WAIVED from this campaign's deadline of ` +
+              `${result.campaign.deadline?.at ?? "unknown"}` +
+              (request.body.until === undefined
+                ? " — no expiry: in force until the deadline is cleared or the target adopts"
+                : ` — effective until ${request.body.until}, after which the deadline applies again with no job to run`),
+            // A waiver is unambiguously a LOOSENING: strictly fewer targets are withheld from
+            // afterwards. Labelled from what the act IS rather than from which branch matched.
+            loosening: true
+          }
+        });
+
+        // ONE PER TARGET — the `freeze.override` shape (`coordination/transition.ts`), and the
+        // `subjectId` is THE TARGET, not the campaign, which is what makes "was this component ever
+        // excused?" a subject-keyed query. The Decision above is the campaign-subject half.
+        for (const targetObjectId of result.targetObjectIds) {
+          await appendAuditEvent(tx, {
+            orgId: auth.orgId,
+            actorId: auth.subjectObjectId,
+            action: CAMPAIGN_DEADLINE_OVERRIDE_AUDIT_ACTION,
+            subjectId: targetObjectId,
+            reason: request.body.reason,
+            decisionId: decision.id,
+            requestId: request.id
+          });
+        }
+
         return result.campaign;
       });
       reply.status(200).send(campaign);

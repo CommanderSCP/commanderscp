@@ -305,6 +305,14 @@ export function campaignDetailRow(c: Campaign): Record<string, string> {
     // campaign withholds nothing or whether their client is older than the field.
     deadline: isAbsent(c.deadline) ? "" : c.deadline.at,
     adoptionSignal: isAbsent(c.deadline) ? "" : (c.deadline.adoptionSignal ?? ""),
+    // M25.6b — WHICH targets are excused, so `scp campaign deadline-override` has a signal beside
+    // its lever. Ids only: the stored waiver's `reason`, `actorId` and `at` are on the hash chain
+    // (`campaign.deadline.override`), and a table cell is the wrong place to render prose an
+    // operator would then be tempted to treat as the record. BLANK when there are none, never the
+    // word `undefined` — the same rule the two rows above it follow.
+    deadlineOverrides: isAbsent(c.deadline)
+      ? ""
+      : (c.deadline.overrides ?? []).map((o) => o.targetObjectId).join(", "),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
   };
@@ -3821,11 +3829,10 @@ export function buildProgram(): Command {
     });
 
   /**
-   * M25.6a (owner decision D4) — SET, MOVE or CLEAR the deadline. `--clear` is THE EXIT: it releases
-   * every target the deadline was withholding this campaign's fan-out from, on the next tick, with
-   * no unlock verb. §4.5's per-target override is M25.6b (its new permission needs a migration), so
-   * this is the whole of the escape hatch, and it ships in the same increment as the lock rather
-   * than the one after it.
+   * M25.6a (owner decision D4) — SET, MOVE or CLEAR the deadline. `--clear` is THE BLUNT EXIT: it
+   * releases every target the deadline was withholding this campaign's fan-out from, on the next
+   * tick, with no unlock verb. `scp campaign deadline-override` (M25.6b) is the per-target one, and
+   * costs the Owner-only `campaign:deadline-override` where this costs plain `object:write`.
    *
    * `--reason` is required on ALL THREE acts, clear included: it is the operator's own words on the
    * hash chain, beside a Decision carrying the previous instant.
@@ -3878,6 +3885,51 @@ export function buildProgram(): Command {
               },
           opts.reason
         );
+        printResult(updated, opts.output, (item) => campaignDetailRow(item as Campaign));
+      }
+    );
+
+  /**
+   * M25.6b (§4.5) — WAIVE the deadline for NAMED targets: excuse one laggard without clearing the
+   * deadline for everybody, which is all `deadline --clear` can do.
+   *
+   * Takes `campaign:deadline-override` (Owner-only) AT THE CAMPAIGN plus `object:write` at each
+   * named target. `--target` is REPEATABLE; omitting it waives every target the campaign declares,
+   * which is still not the same act as clearing — the deadline stands, each waiver is audited
+   * separately, and `--until` expires them one by one.
+   *
+   * `--until` is a BOUNDARY with READ-TIME expiry: past it the deadline applies again on the next
+   * tick with no job to run. An instant already in the past is accepted, stored and audited, and is
+   * simply not effective — which is the honest outcome rather than a special case.
+   */
+  campaignCmd
+    .command("deadline-override <id>")
+    .description(
+      "Waive a Campaign's deadline for named targets — excuses a laggard without clearing the deadline for everyone"
+    )
+    .option(
+      "--target <idOrUrn>",
+      "a target to excuse; repeatable. Omit to waive every target this campaign declares",
+      (value: string, previous: string[] = []) => [...previous, value]
+    )
+    .requiredOption("--reason <text>", "why this target is excused (required — it is on the chain)")
+    .option(
+      "--until <iso>",
+      "expiry boundary (ISO 8601). Omitted means in force until the deadline is cleared or the target adopts"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        id: string,
+        opts: BaseCliOpts & { target?: string[]; reason: string; until?: string }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const updated = await client.campaigns.overrideDeadline(id, {
+          ...(opts.target !== undefined && opts.target.length > 0 ? { targets: opts.target } : {}),
+          reason: opts.reason,
+          ...(opts.until !== undefined ? { until: opts.until } : {})
+        });
         printResult(updated, opts.output, (item) => campaignDetailRow(item as Campaign));
       }
     );

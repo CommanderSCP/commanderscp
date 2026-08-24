@@ -523,9 +523,9 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
 
   /**
    * CLEARING THE DEADLINE UNLOCKS EVERY TARGET, on the next tick, with no unlock verb. This is what
-   * makes M25.6a not an entrance with no exit — §4.5's per-target `deadline-override` is M25.6b,
-   * because its permission needs an `array_append` migration this increment deliberately does not
-   * spend.
+   * made M25.6a not an entrance with no exit before §4.5's per-target `deadline-override` existed;
+   * M25.6b has since added that finer exit beside it (`campaign-deadline-override.integration.test.ts`),
+   * and this blunt one remains — `object:write` at the campaign, all targets at once.
    */
   /**
    * THE DEADLINE HERE IS IN THE REAL PAST, deliberately, and the reason is worth recording because

@@ -3,6 +3,7 @@ import {
   CampaignDeadlineSchema,
   type CampaignAdoptionVerdict,
   type CampaignDeadline,
+  type CampaignDeadlineOverride,
   type CampaignRecipe
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -74,6 +75,19 @@ import { evaluateCampaignAdoption } from "./campaign-adoption.js";
  * runs inside a per-target loop on a 1 s tick AND inside `getCampaignStatus`, which itself runs
  * per-campaign inside `listCampaigns`'s already-N+1 loop. A campaign with NO deadline never reaches
  * this module: `resolveCampaignDeadline` answers `none` on a pure key-absence check.
+ *
+ * ------------------------------------------------------------------------------------------------
+ * M25.6b — THE PER-TARGET WAIVER (§4.5), ADDED TO THIS SAME PREDICATE
+ * ------------------------------------------------------------------------------------------------
+ * `deadline.overrides[]` excuses ONE laggard without clearing the deadline for everybody, which was
+ * M25.6a's only exit. It is read here, FIRST — before the adoption resolution, so an excused target
+ * costs no evidence query — and its expiry is READ-TIME (`findEffectiveDeadlineOverride`): an
+ * `until` in the past is not effective, with no job to un-flip anything.
+ *
+ * The AUTHORING half lives at `POST /api/v1/campaigns/{id}/deadline-override`, behind the Owner-only
+ * `campaign:deadline-override` (drizzle/0088) CHECKED AT THE CAMPAIGN plus `object:write` at each
+ * named target. This module holds no authority check of its own and must never grow one: by the time
+ * a waiver is in `properties`, the authority question has already been answered, once, at the door.
  */
 
 /**
@@ -105,6 +119,23 @@ export const CAMPAIGN_DEADLINE_DECISION_KIND = "campaign_deadline";
  */
 export const CAMPAIGN_DEADLINE_SET_DECISION_KIND = "campaign_deadline_set";
 
+/**
+ * M25.6b — `decisions.kind` for MINTING A PER-TARGET WAIVER of the deadline.
+ *
+ * A SIXTH KIND, and NOT `campaign_deadline` for the reason ADR-0042 §7 states about the fifth:
+ * `insertDecisionIfChanged` dedupes against the LATEST row of a `(subject_id, kind)` pair, so a
+ * human's one-per-API-call `allow` row sharing the lock's kind would interleave with the tick-driven
+ * `block` rows and suppression would never fire once — ADR-0024's measured 1.44 GB/day rebuilt from
+ * parts, and the trap ADR-0039 §7 avoided for `freeze_admission`.
+ *
+ * NOT `campaign_deadline_set` either, though both are authoring acts by a human at this campaign.
+ * They are different acts with different authority (`object:write` vs the Owner-only
+ * `campaign:deadline-override`) and different radii (the whole campaign vs named targets), and
+ * `scp campaign explain` must be able to answer "who was excused, and by whom" without first
+ * filtering "and when did the date move".
+ */
+export const CAMPAIGN_DEADLINE_OVERRIDE_DECISION_KIND = "campaign_deadline_override";
+
 /** The hash-chained audit action for "this campaign's deadline withheld its fan-out from targets".
  *  HIGH-SEVERITY and appended ONLY when `insertDecisionIfChanged` reports `created` — appending on
  *  a no-op tick would make the hash chain assert an occurrence that did not occur. */
@@ -115,6 +146,13 @@ export const CAMPAIGN_DEADLINE_LOCK_AUDIT_ACTION = "campaign.deadline.lock";
  *  slipped four times" is unreconstructible from a chain of writes that each say only where it
  *  landed. */
 export const CAMPAIGN_DEADLINE_SET_AUDIT_ACTION = "campaign.deadline.set";
+
+/** M25.6b — the hash-chained audit action for a per-target waiver. HIGH-SEVERITY, mandatory reason,
+ *  `decisionId` linked, and **one event per target** — the `freeze.override` shape
+ *  (`coordination/transition.ts`), where CRITICAL #2's rule is that a per-scope act writes a
+ *  per-scope event. One event listing N targets would make "was component X ever excused from
+ *  campaign Y?" a substring search over a JSON blob instead of a subject-keyed query. */
+export const CAMPAIGN_DEADLINE_OVERRIDE_AUDIT_ACTION = "campaign.deadline.override";
 
 export type CampaignDeadlineResolution =
   | { outcome: "none" }
@@ -169,6 +207,48 @@ export function resolveCampaignDeadline(
     };
   }
   return { outcome: "deadline", deadline: parsed.data, at };
+}
+
+/**
+ * M25.6b — THE PER-TARGET WAIVER IN FORCE FOR `targetObjectId` RIGHT NOW, or `undefined`.
+ *
+ * ================================================================================================
+ * READ-TIME EXPIRY. THERE IS NO JOB, AND THAT IS THE WHOLE DESIGN
+ * ================================================================================================
+ * `until` is a stored BOUNDARY compared against the caller's `now` on every single evaluation — the
+ * same shape as `deadline.at` one level up, and the same M22.6 ruling M25.6a already applied twice
+ * in this file: a materialized copy of a time-window predicate needs a job to un-flip it, and the
+ * job is the part that breaks. An `until` in the past is simply not effective, on the next tick,
+ * with nothing to run and nothing to un-write.
+ *
+ * `now <= until`, INCLUSIVE, matching `now <= deadline.at` directly above it. The boundary instant
+ * belongs to the party the boundary was granted to; two comparisons in one predicate disagreeing
+ * about that is how an off-by-one becomes invisible.
+ *
+ * ABSENT `until` NEVER EXPIRES. That is the common case and it is deliberate: an Owner excusing a
+ * laggard usually cannot say when it will be done, and forcing them to invent a date produces either
+ * a lie or a waiver that lapses unnoticed. The exits are the ordinary ones — clear the deadline, or
+ * the target adopts.
+ *
+ * AN UNPARSEABLE `until` IS NOT A WAIVER. `CampaignDeadlineOverrideSchema` refuses one at the
+ * authoring door and `resolveCampaignDeadline` refuses the whole document at the reading door, so
+ * this guard is a third bar that nothing reaches today — but it is written as `>= now` rather than
+ * `!(< now)` precisely so that `NaN` falls out as NOT EFFECTIVE. A waiver nobody can read must not
+ * waive anything; that is the one direction in this fail-open module where fail-closed is right,
+ * because the failure withholds a WAIVER rather than a change.
+ */
+export function findEffectiveDeadlineOverride(
+  deadline: CampaignDeadline,
+  targetObjectId: string,
+  now: Date
+): CampaignDeadlineOverride | undefined {
+  const overrides = deadline.overrides;
+  if (overrides === undefined || overrides.length === 0) return undefined;
+  return overrides.find(
+    (override) =>
+      override.targetObjectId === targetObjectId &&
+      (override.until === undefined || Date.parse(override.until) >= now.getTime())
+  );
 }
 
 /** One locked campaign wave target and why. Every field is an id or a small closed-vocabulary
@@ -241,6 +321,31 @@ export async function evaluateCampaignDeadlineLock(
 
   const locked: CampaignDeadlineLockVerdict[] = [];
   for (const targetObjectId of input.targetObjectIds) {
+    // ==========================================================================================
+    // M25.6b — THE PER-TARGET WAIVER, CHECKED FIRST (§4.2's "cheapest first"). THE MUTATION TARGET.
+    // ==========================================================================================
+    // ORDER IS THE POINT, not an accident of where the lines were pasted. This is a scan of an
+    // array already in hand on a document already parsed: ZERO queries, zero awaits. The adoption
+    // call below reads three tables. So an excused target costs no evidence query at all — which
+    // matters because this loop runs per target, per campaign, on a 1 s tick, and because the
+    // targets most likely to be excused are exactly the ones whose evidence is most expensive to
+    // resolve (an `unknown` verdict is reached by looking and finding nothing).
+    //
+    // IT IS ALSO THE HONEST ORDER. An override says "this target is excused from this deadline",
+    // full stop — it does not say "excused if we also cannot observe adoption". Asking about
+    // adoption first would leave an excused-and-adopted target taking the `adopted` exit, which is
+    // the same answer by luck, and an excused-and-unobservable one taking a query it did not need.
+    //
+    // NOTHING IS RECORDED HERE. A waived target is simply not locked, so no `campaign_deadline`
+    // block Decision names it and no `campaign.deadline.lock` audit event asserts it missed
+    // anything. The waiver's own record was written once, at authoring time, by
+    // `POST /campaigns/{id}/deadline-override`: a `campaign_deadline_override` Decision plus one
+    // high-severity audit event per target. Restating it every tick would be ADR-0024's flood with
+    // a governance act's name on it.
+    if (findEffectiveDeadlineOverride(input.deadline, targetObjectId, input.now) !== undefined) {
+      continue; // <- THE WAIVER
+    }
+
     // ==========================================================================================
     // THE ONE RESOLUTION CORE. `evaluateCampaignAdoption` AND NOTHING ELSE (§3.4 consumer 4).
     // ==========================================================================================

@@ -194,6 +194,50 @@ describe("campaignDetailRow: an absent deadline is blank, never the word `undefi
     ).toBe("dependency");
     expect(campaignDetailRow(baseCampaign({ deadline: null })).deadline).toBe("");
   });
+
+  // -----------------------------------------------------------------------------------
+  // M25.6b — campaignDetailRow.deadlineOverrides
+  // -----------------------------------------------------------------------------------
+  it("blanks the waiver cell for an absent, null or waiver-less deadline — never `undefined`", () => {
+    const at = "2026-12-31T23:59:59.000Z";
+    expect(campaignDetailRow(without(baseCampaign(), "deadline")).deadlineOverrides).toBe("");
+    expect(campaignDetailRow(baseCampaign({ deadline: null })).deadlineOverrides).toBe("");
+    // A deadline from a server that predates M25.6b carries no `overrides` key at all — the exact
+    // shape `?? []` exists for, and the one a naive `.map()` would die on mid-table.
+    expect(campaignDetailRow(baseCampaign({ deadline: { at } })).deadlineOverrides).toBe("");
+  });
+
+  it("lists the waived target ids and nothing else — the prose is on the hash chain", () => {
+    const at = "2026-12-31T23:59:59.000Z";
+    const row = campaignDetailRow(
+      baseCampaign({
+        deadline: {
+          at,
+          overrides: [
+            {
+              targetObjectId: "11111111-1111-4111-8111-111111111111",
+              reason: "the vendor image is not out yet",
+              actorId: "22222222-2222-4222-8222-222222222222",
+              at: "2026-06-01T00:00:00.000Z"
+            },
+            {
+              targetObjectId: "33333333-3333-4333-8333-333333333333",
+              reason: "same",
+              actorId: "22222222-2222-4222-8222-222222222222",
+              at: "2026-06-01T00:00:00.000Z",
+              until: "2026-09-01T00:00:00.000Z"
+            }
+          ]
+        }
+      })
+    );
+    expect(row.deadlineOverrides).toBe(
+      "11111111-1111-4111-8111-111111111111, 33333333-3333-4333-8333-333333333333"
+    );
+    // IDS ONLY. `reason`, `actorId` and `at` belong to the `campaign.deadline.override` audit event;
+    // a table cell that reprinted them would invite an operator to treat the terminal as the record.
+    expect(row.deadlineOverrides).not.toContain("vendor");
+  });
 });
 
 // -------------------------------------------------------------------------------------

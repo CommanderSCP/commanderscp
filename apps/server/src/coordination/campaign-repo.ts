@@ -2,6 +2,8 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type {
   Campaign,
   CampaignDeadline,
+  CampaignDeadlineInput,
+  CampaignDeadlineOverride,
   CampaignRecipe,
   CampaignStatus,
   ContainmentDomainId,
@@ -117,8 +119,12 @@ export interface ProposeCampaignInput {
   /** M25.6a (D4) — the date past which this campaign stops fanning out to targets it cannot observe
    *  as migrated. Authored here so a deadlined campaign is one call; MOVED and CLEARED afterwards
    *  through `POST /campaigns/{id}/deadline`, which demands a reason and records the previous
-   *  value. */
-  deadline?: CampaignDeadline;
+   *  value.
+   *
+   *  `CampaignDeadlineInput`, NOT `CampaignDeadline` — the type, like the wire schema, omits
+   *  `overrides`, so a campaign cannot be BORN carrying waivers this route's `object:write` never
+   *  authorized (M25.6b: minting one takes the Owner-only `campaign:deadline-override`). */
+  deadline?: CampaignDeadlineInput;
   /** Object ids or URNs this campaign fans out to — one member Change per target, per wave. */
   targets: string[];
 }
@@ -224,18 +230,35 @@ async function fetchCampaignObject(tx: TenantTx, orgId: string, id: string): Pro
 }
 
 /**
+ * The object ids a campaign declares as its targets, read off `properties.targets` — the same
+ * filtered read `toCampaignShape` does, WITHOUT deriving status.
+ *
+ * A separate helper because its one caller (`POST /campaigns/{id}/deadline-override`) needs the
+ * target set to make an AUTHORIZATION decision per target, and `getCampaign` would drag
+ * `getCampaignStatus` — the campaign's whole plan, every member change's state, a freeze evaluation
+ * and the deadline predicate — into a path that has not yet decided the actor may act at all.
+ */
+export async function listCampaignTargetObjectIds(
+  tx: TenantTx,
+  orgId: string,
+  campaignObjectId: string
+): Promise<string[]> {
+  const row = await fetchCampaignObject(tx, orgId, campaignObjectId);
+  const properties = (row.properties ?? {}) as Record<string, unknown>;
+  return Array.isArray(properties.targets)
+    ? (properties.targets as unknown[]).filter((t): t is string => typeof t === "string")
+    : [];
+}
+
+/**
  * M25.6a — SET, MOVE OR CLEAR a campaign's deadline. THE ESCAPE HATCH, and the reason this
  * increment is not an entrance with no exit.
  *
- * §4.5 specifies a second, narrower waiver — `POST /campaigns/{id}/deadline-override`, per-target,
- * behind a new Owner-only `campaign:deadline-override` permission. **That is M25.6b and is
- * deliberately not built here**: the permission needs an additive `array_append` migration (which is
- * how every role grant in this repo works — drizzle/0010_governance.sql:180), and migration
- * numbering is currently serialized across concurrent sessions behind a hard contiguity gate
- * (`db/journal-ordering.test.ts` asserts `idx` is contiguous from 0, so an out-of-order number reds
- * the unit suite). Shipping the lock without ANY exit would have been the entrance-with-no-exit
- * failure M25.1 exists to close, so this verb ships in its place: CLEARING the deadline unlocks
- * every target of the campaign at once, on the next tick, with no unlock verb and no backfill.
+ * CLEARING the deadline unlocks every target of the campaign at once, on the next tick, with no
+ * unlock verb and no backfill. §4.5's second, narrower waiver — `POST
+ * /campaigns/{id}/deadline-override`, per-target, behind the Owner-only
+ * `campaign:deadline-override` (drizzle/0088) — is `overrideCampaignDeadline` below, added in
+ * M25.6b. The two are different prices for different radii and both remain.
  *
  * `object:write` AT THE CAMPAIGN, not at the targets — checked by the route. The thing being
  * configured is this campaign's own policy about its own fan-out, and a target-scoped check would
@@ -268,24 +291,28 @@ export interface SetCampaignDeadlineResult {
   campaign: Campaign;
 }
 
-export async function setCampaignDeadline(
+/**
+ * THE CAMPAIGN ROW, LOCKED `FOR UPDATE` — shared by both deadline writers.
+ *
+ * Extracted rather than copied because both are read-modify-writes over the SAME JSON document
+ * (`properties.deadline`) and a second copy of the lock is a second chance to omit it. Two
+ * concurrent writers without it would each compute their edit against a snapshot the other is about
+ * to replace: a move would record a `from` nobody ever set, and — worse for M25.6b — two overrides
+ * minted in the same instant would produce a document containing only one of them, with two audit
+ * events on the chain asserting both.
+ */
+async function lockCampaignRowForUpdate(
   tx: TenantTx,
-  input: {
-    orgId: string;
-    campaignObjectId: string;
-    actorObjectId: string;
-    requestId: string;
-    /** `null` CLEARS it — the exit. */
-    deadline: CampaignDeadline | null;
-  }
-): Promise<SetCampaignDeadlineResult> {
+  orgId: string,
+  campaignObjectId: string
+): Promise<ObjectRow> {
   const locked = await tx
     .select()
     .from(objects)
     .where(
       and(
-        eq(objects.orgId, input.orgId),
-        eq(objects.id, input.campaignObjectId),
+        eq(objects.orgId, orgId),
+        eq(objects.id, campaignObjectId),
         eq(objects.typeId, "campaign"),
         sql`${objects.deletedAt} IS NULL`
       )
@@ -293,10 +320,56 @@ export async function setCampaignDeadline(
     .for("update")
     .limit(1);
   const row = locked[0];
-  if (!row) throw notFound(`campaign '${input.campaignObjectId}' not found`);
+  if (!row) throw notFound(`campaign '${campaignObjectId}' not found`);
+  return row;
+}
+
+export async function setCampaignDeadline(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    campaignObjectId: string;
+    actorObjectId: string;
+    requestId: string;
+    /** `null` CLEARS it — the exit. Carries NO `overrides`: the wire schema for this verb is
+     *  `CampaignDeadlineInputSchema`, which omits the key, because this door runs at plain
+     *  `object:write` and minting a waiver takes `campaign:deadline-override`. */
+    deadline: CampaignDeadlineInput | null;
+  }
+): Promise<SetCampaignDeadlineResult> {
+  const row = await lockCampaignRowForUpdate(tx, input.orgId, input.campaignObjectId);
 
   const properties = (row.properties ?? {}) as Record<string, unknown>;
   const existing = resolveCampaignDeadline(properties);
+
+  // ==============================================================================================
+  // M25.6b — THE WAIVERS ALREADY IN FORCE SURVIVE A SET OR A MOVE.
+  // ==============================================================================================
+  // This verb's request body CANNOT express `overrides` (that is the whole point of
+  // `CampaignDeadlineInputSchema`), so an author moving the date has said NOTHING about the waivers.
+  // Dropping them would be an unexpressed act — a silent TIGHTENING, re-locking targets an Owner
+  // deliberately excused, performed by someone holding only `object:write`. Carrying them forward is
+  // the reading that matches what a waiver MEANS: "this target is excused from this campaign's
+  // deadline", not "excused from the particular instant it happened to carry that day".
+  //
+  // A CLEAR takes them with it, and that is not an inconsistency: clearing removes the deadline
+  // itself, so there is nothing left to be excused from. Re-setting one afterwards starts clean,
+  // which is the honest default — the old waivers were granted against a deadline that no longer
+  // exists.
+  //
+  // An UNREADABLE previous document loses them, necessarily: `resolveCampaignDeadline` could not
+  // parse it, so there is nothing to carry. The route records that as `beforeUnreadable`.
+  const carriedOverrides =
+    existing.outcome === "deadline" ? existing.deadline.overrides : undefined;
+  const after: CampaignDeadline | null =
+    input.deadline === null
+      ? null
+      : {
+          ...input.deadline,
+          ...(carriedOverrides !== undefined && carriedOverrides.length > 0
+            ? { overrides: carriedOverrides }
+            : {})
+        };
 
   // `updateObject` replaces `properties` WHOLESALE, so the spread is what preserves `targets`,
   // `type`, `recipe`, `topologyObjectId` and everything else. Clearing DELETES the key rather than
@@ -305,9 +378,9 @@ export async function setCampaignDeadline(
   // is one more shape every future reader of this bag has to know about.
   const { [CAMPAIGN_DEADLINE_PROPERTY_KEY]: _dropped, ...withoutDeadline } = properties;
   const nextProperties =
-    input.deadline === null
+    after === null
       ? withoutDeadline
-      : { ...withoutDeadline, [CAMPAIGN_DEADLINE_PROPERTY_KEY]: input.deadline };
+      : { ...withoutDeadline, [CAMPAIGN_DEADLINE_PROPERTY_KEY]: after };
 
   const updated = await updateObject(tx, {
     orgId: input.orgId,
@@ -328,7 +401,137 @@ export async function setCampaignDeadline(
   return {
     before: existing.outcome === "deadline" ? existing.deadline : null,
     beforeUnreadable: existing.outcome === "malformed",
-    after: input.deadline,
+    // WHAT WAS STORED, not what was asked for — the two differ by exactly the carried waivers, and
+    // the Decision this feeds must record the document that now exists rather than the request that
+    // produced it.
+    after,
+    campaign: toCampaignShape(updated, status)
+  };
+}
+
+export interface OverrideCampaignDeadlineResult {
+  /** The waivers as stored after this write — at most one per target, sorted by `targetObjectId`. */
+  overrides: CampaignDeadlineOverride[];
+  /** The targets this call excused, resolved to object ids and SORTED. Feeds the Decision's
+   *  `inputContext` verbatim and drives one audit event each. */
+  targetObjectIds: string[];
+  campaign: Campaign;
+}
+
+/**
+ * M25.6b (§4.5) — MINT A PER-TARGET WAIVER of this campaign's deadline.
+ *
+ * ================================================================================================
+ * THE AUTHORITY CHECKS ARE THE ROUTE'S, AND THEY ARE TWO, AT TWO DIFFERENT OBJECTS
+ * ================================================================================================
+ * `routes/campaigns.ts` demands `campaign:deadline-override` AT THE CAMPAIGN (Owner-only,
+ * drizzle/0088) and plain `object:write` AT EACH NAMED TARGET, in that order, before calling this.
+ * They are not duplicated here for the reason `proposeCampaign`'s own doc gives about the inverse
+ * case: one authority decision, made once, against the real requesting actor, at the door — not
+ * scattered so that a future second caller can silently acquire a different one.
+ *
+ * WHY THE CAMPAIGN AND NOT THE TARGET, restated where the write happens because it is the load-
+ * bearing decision of this milestone: the thing being waived is *this campaign's* deadline. A
+ * target-scoped check would hand the laggard their own waiver — the component's own operator
+ * excusing the component from the migration the campaign exists to force, which inverts the entire
+ * mechanism. `object:write` at the target is a second, NARROWER bar (an actor with no standing on a
+ * component cannot mint a governance record about it), never a substitute for the first.
+ *
+ * ================================================================================================
+ * AT MOST ONE WAIVER PER TARGET, AND THE ARRAY IS STORED SORTED
+ * ================================================================================================
+ * Re-overriding a target REPLACES its entry rather than appending: the newest reason and the newest
+ * `until` are the ones in force, and the superseded one survives on the hash chain, which is where
+ * history belongs. Append-only would grow `campaign.properties` without bound — this document rides
+ * `object_upsert` to every federated replica and is content-hashed on every write — and would make
+ * "which waiver applies?" a question about array order.
+ *
+ * The sort is the same discipline `describeLockedTargets` documents one module over: a re-issued
+ * waiver over an unchanged set must produce a byte-identical document, or every restatement
+ * re-hashes the object and re-federates it.
+ *
+ * REFUSES A CAMPAIGN WITH NO DEADLINE (400). A waiver of nothing is dead data in a permanent record,
+ * and an operator who believes they have excused a target that was never locked is worse off than
+ * one who got an error.
+ */
+export async function overrideCampaignDeadline(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    campaignObjectId: string;
+    actorObjectId: string;
+    requestId: string;
+    /** Already resolved to object ids and verified to be targets of this campaign — the ROUTE does
+     *  both, because both need the same `getObjectByIdOrUrnAnyType` lookup the per-target
+     *  `object:write` check is made against. */
+    targetObjectIds: string[];
+    reason: string;
+    until?: string | undefined;
+    /** The write's own clock, stamped into every entry's `at`. Injected for the same reason
+     *  `evaluateCampaignDeadlineLock`'s `now` is: a test must be able to mint a waiver whose `until`
+     *  is in the past without waiting for it to become so. */
+    now: Date;
+  }
+): Promise<OverrideCampaignDeadlineResult> {
+  const row = await lockCampaignRowForUpdate(tx, input.orgId, input.campaignObjectId);
+
+  const properties = (row.properties ?? {}) as Record<string, unknown>;
+  const existing = resolveCampaignDeadline(properties);
+  if (existing.outcome !== "deadline") {
+    throw badRequest(
+      existing.outcome === "malformed"
+        ? `campaign '${input.campaignObjectId}' has an unreadable deadline (${existing.detail}) — ` +
+            `it is withholding nothing from anybody, so there is nothing to waive. Fix or clear it ` +
+            `with POST /campaigns/{id}/deadline first`
+        : `campaign '${input.campaignObjectId}' declares no deadline — there is nothing to waive`
+    );
+  }
+
+  const at = input.now.toISOString();
+  const minted = new Map<string, CampaignDeadlineOverride>();
+  for (const override of existing.deadline.overrides ?? []) {
+    minted.set(override.targetObjectId, override);
+  }
+  for (const targetObjectId of input.targetObjectIds) {
+    minted.set(targetObjectId, {
+      targetObjectId,
+      reason: input.reason,
+      actorId: input.actorObjectId,
+      at,
+      ...(input.until !== undefined ? { until: input.until } : {})
+    });
+  }
+  const overrides = [...minted.values()].sort((a, b) =>
+    a.targetObjectId.localeCompare(b.targetObjectId)
+  );
+
+  const nextProperties = {
+    ...properties,
+    [CAMPAIGN_DEADLINE_PROPERTY_KEY]: { ...existing.deadline, overrides }
+  };
+
+  // THROUGH `updateObject`, so this is a versioned, content-hashed, ordinarily-audited graph write
+  // underneath the governance record the route writes on top of it. No side door into
+  // `objects.properties` — the same rule `setCampaignDeadline` follows.
+  const updated = await updateObject(tx, {
+    orgId: input.orgId,
+    typeId: "campaign",
+    actorObjectId: input.actorObjectId,
+    requestId: input.requestId,
+    idOrUrn: input.campaignObjectId,
+    properties: nextProperties
+  });
+
+  const status = await getCampaignStatus(
+    tx,
+    input.orgId,
+    input.campaignObjectId,
+    nextProperties as Record<string, unknown>
+  );
+
+  return {
+    overrides,
+    targetObjectIds: [...input.targetObjectIds].sort((a, b) => a.localeCompare(b)),
     campaign: toCampaignShape(updated, status)
   };
 }
