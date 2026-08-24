@@ -29,6 +29,7 @@ import {
   evaluateFreezeHolds,
   type FreezeHoldVerdict
 } from "./freeze-hold.js";
+import { rollbackExemptible } from "../governance/freeze-scope.js";
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
 import {
@@ -1119,8 +1120,26 @@ async function reconcileExecutingChange(
       //      the RETRY, not the original call. That is the honest boundary of what a freeze buys,
       //      and for a `pending` target — every first trigger, the case this is about — `backoffMs`
       //      is 0 and the two orders are identical anyway.
+      //
+      //      AND ITS SECOND QUALIFIER, `rollbackExemptible` (M25.3 review finding 1). D7 is an
+      //      ORG-TIER decision: a PLATFORM freeze is never stood aside for a rollback. Shipped
+      //      tier-blind, this line was the CHEAPEST of the two routes past a freeze that `checkFreeze`
+      //      tells the caller "no tenant role can override, however privileged" — `POST
+      //      /v1/changes/{id}/rollback` requires `object:write` at the org and nothing else, so it
+      //      needed neither `freeze:override`, nor a reason, nor the operator token. It is the same
+      //      one predicate `gate-orchestrator.ts`'s `freezeExemptRollback` consults, deliberately: two
+      //      seams enforcing one rule must not be two copies of it. Reading `frozen.freezes` (which
+      //      already carries every freeze HOLDING this target, including one that only reaches it
+      //      because a SIBLING is covered by an `atomic` freeze) is what makes the atomic case fall
+      //      out with no extra branch.
       const frozen = (await loadFreezeHolds()).get(target.targetObjectId);
-      if (frozen && !(await rollbackHasSomethingToUndoAt(target.targetObjectId))) {
+      if (
+        frozen &&
+        !(
+          rollbackExemptible(frozen.freezes) &&
+          (await rollbackHasSomethingToUndoAt(target.targetObjectId))
+        )
+      ) {
         frozenTargets.push(frozen);
         continue;
       }

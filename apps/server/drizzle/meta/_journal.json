@@ -605,6 +605,13 @@
       "breakpoints": true
     },
     {
+      "idx": 86,
+      "version": "7",
+      "when": 1788144000000,
+      "tag": "0086_instance_freezes",
+      "breakpoints": true
+    },
+    {
       "idx": 87,
       "version": "7",
       "when": 1788145000000,

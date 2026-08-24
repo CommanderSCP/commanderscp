@@ -75,6 +75,8 @@ import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake
 
 /** Mutable — the in-memory fake executor re-reads `ctx.config` on every call, so a case can make a
  *  specific target succeed between ticks without touching a database column by hand. */
+const OPERATOR_TOKEN = "m25-3-freeze-admission-operator-token";
+
 const executorConfig: {
   autoSucceedAfterMs: number;
   forcePhase: Record<string, string>;
@@ -130,7 +132,10 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     const wrapped = withRefusingTrigger(createInMemoryFakeHost(executorConfig), (ref) =>
       refuseTargets.has(ref)
     );
-    server = await listenTestServer();
+    // The operator token is configured so the PLATFORM-tier D7 case below can author its freeze
+    // through the SHIPPED operator door rather than by poking `instance_freezes` directly — a
+    // fixture that wrote the row by hand would leave the door untested while the case looked healthy.
+    server = await listenTestServer({ operatorToken: OPERATOR_TOKEN });
     host = wrapped.host;
     triggered = wrapped.calls;
   });
@@ -649,6 +654,180 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     const [ordinaryWave] = await waves(ordinary.id);
     expect(ordinaryWave!.status).toBe("pending");
     expect(ordinaryWave!.startedAt).toBeNull();
+  });
+
+  // ============================================================================================
+  // D7 AT THE TIER BOUNDARY (M25.3) — the exemption stops above org, measured at the EXECUTOR.
+  // ============================================================================================
+  it("D7 does not carry above org: a rollback is NOT triggered into an active PLATFORM freeze, and ships the moment it is lifted", async () => {
+    const app = await componentAt("platform-rollback", [amer]);
+    const soloTopology = await admin.object("release-topology").create({
+      name: `amer-only-platform-${randomUUID().slice(0, 8)}`,
+      properties: { waves: [{ name: "amer", mode: "parallel", targets: [amer.id] }] }
+    });
+    const original = await admin.changes.propose({
+      name: `platform-rollback-original-${randomUUID().slice(0, 8)}`,
+      targets: [app.id],
+      topology: soloTopology.id
+    });
+
+    // Drive the original to `accepted` and let it ship — all of it BEFORE any freeze exists.
+    executorConfig.forcePhase[app.at(amer)] = "succeeded";
+    await tick(8);
+    await admin.changes.accept(original.id);
+
+    // DEPLOYMENT-WIDE, because the deployment-targets in this file declare no
+    // `properties.environment` — `allEnvironments` is the form that reaches a target with no stage
+    // coordinate (`instanceFreezeCovers`). This table has no `org_id`, so the row is live for every
+    // later case in this file until it is lifted; it is lifted below, on both paths.
+    const key = `platform-vs-rollback-${randomUUID().slice(0, 8)}`;
+    await admin.instanceFreezes.put(
+      key,
+      {
+        startsAt: new Date(Date.now() - 60_000).toISOString(),
+        endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+        reason: "integration: the deployment operator froze the instance",
+        match: { allEnvironments: true }
+      },
+      OPERATOR_TOKEN
+    );
+    // AN ORG FREEZE OVER THE SAME PLACEMENT, DECLARED NOW AND NEVER LIFTED. It is what makes the
+    // release arm at the bottom a CONTROL rather than a tautology: when the platform freeze goes,
+    // the target is still covered by a freeze — an ORG one, which D7 does stand aside. Same
+    // rollback, same target, same tick loop; the only variable is the tier.
+    await freezeAt(amer.id, "amer-org-freeze-beside-the-platform-one");
+
+    let firedBefore = firedFor(app.at(amer));
+    const rollback = await admin.changes.rollback(original.id, "integration: the release is bad");
+    try {
+      await tick(8);
+
+      // THE ASSERTION IS AGAINST THE EXECUTOR, not a status column: the defect this pins DID write
+      // right-looking rows and then handed the target to its executor anyway. Before the fix
+      // `firedFor` went UP by one here — `POST /v1/changes/{id}/rollback` needs only `object:write`
+      // at the org, so this was a cheaper route past the platform freeze than the `freeze:override`
+      // the block sentence contrasts it with, and needed no reason and no operator token.
+      expect(
+        firedFor(app.at(amer)),
+        "a platform freeze is never stood aside for a rollback — the operator's remedy is PUT/DELETE /v1/instance/freezes/{key}"
+      ).toBe(firedBefore);
+      expect((await waveTarget(rollback.id, app.at(amer))).executorRef).toBeNull();
+      const [rollbackWave] = await waves(rollback.id);
+      expect(rollbackWave!.status, "the wave never started").toBe("pending");
+
+      // AND THE REFUSAL IS EXPLAINED, not silent (charter principle 6). This wave's only target is
+      // covered, so it is the ALL-frozen shape and the WAVE GATE owns the refusal — a `gate` block
+      // Decision naming the tier, which is what `scp change explain` resolves. (A wave with an
+      // admissible sibling would instead be held per-target and recorded as `freeze_admission`;
+      // both projections carry `tier`, which is the point of resolving both tiers in one place.)
+      const gated = await decisionsOfKind(rollback.id, "gate");
+      expect(gated.length).toBeGreaterThan(0);
+      expect(JSON.stringify(gated.map((d) => d.inputContext))).toContain('"tier":"platform"');
+    } finally {
+      await admin.instanceFreezes.lift(key, { reason: "cleanup" }, OPERATOR_TOKEN);
+    }
+
+    // THE RELEASE ARM. The platform freeze is gone; the ORG freeze over this very placement is
+    // still standing. The same rollback now ships — so the refusal above was the TIER and not the
+    // rollback, and D7 is BOUNDED rather than deleted.
+    firedBefore = firedFor(app.at(amer));
+    await tick(8);
+    expect(
+      firedFor(app.at(amer)),
+      "D7 is unchanged at the org tier — holding a rollback there pins a broken release for the window"
+    ).toBeGreaterThan(firedBefore);
+    expect((await waveTarget(rollback.id, app.at(amer))).executorRef).not.toBeNull();
+  });
+
+  // ============================================================================================
+  // D7 AT THE TIER BOUNDARY, PER-TARGET (M25.3) — the seam the case above cannot reach.
+  // ============================================================================================
+  // The all-frozen case above is refused by the WAVE GATE, which returns before the per-target loop
+  // runs at all. So it pins `gate-orchestrator.ts`'s conjunct and NOT `reconcile.ts`'s, and a fix
+  // applied to only one of the two seams would leave it green. This case makes the gate stand aside
+  // (D5 partial admission) so the per-target `continue` is the only thing left holding anything —
+  // revert `rollbackExemptible(frozen.freezes)` in `reconcile.ts` alone and this is the case that
+  // goes red.
+  it("D7 per-target: a partially-covering PLATFORM freeze withholds its target from a rollback while the sibling ships", async () => {
+    const env = `d7pt-env-${randomUUID().slice(0, 8)}`;
+    const stage = (properties: Record<string, unknown>) =>
+      admin.deploymentTargets.create({
+        name: `d7pt-${randomUUID().slice(0, 8)}`,
+        properties
+      });
+    // Two stages that DECLARE where they run (M15.6 / ADR-0017 §3) — the addressing a platform
+    // freeze uses. Only the first is in `env`, which is what makes the coverage partial.
+    //
+    // `region` IS DELIBERATELY OMITTED. Declaring BOTH halves makes a deployment-target a REGION
+    // target, and M15.6's no-silent-deploy gate then fail-closed refuses every trigger at it until
+    // it has its own Argo CD binding — so nothing would ever fire here and the case would "pass"
+    // its withheld-target assertion for entirely the wrong reason. An `environment`-only stage is
+    // both a real shape and the one an `environment`-addressed freeze is chiefly about.
+    const covered = await stage({ environment: env });
+    const uncovered = await stage({ environment: `d7pt-other-${randomUUID().slice(0, 8)}` });
+
+    const app = await componentAt("d7-partial", [covered, uncovered]);
+    const pairTopology = await admin.object("release-topology").create({
+      name: `d7pt-pair-${randomUUID().slice(0, 8)}`,
+      properties: {
+        waves: [{ name: "both", mode: "parallel", targets: [covered.id, uncovered.id] }]
+      }
+    });
+    const original = await admin.changes.propose({
+      name: `d7pt-original-${randomUUID().slice(0, 8)}`,
+      targets: [app.id],
+      topology: pairTopology.id
+    });
+
+    // BOTH targets must actually have been dispatched by the original, or D7's own qualifier
+    // (`rollbackHasSomethingToUndoAt`) would withhold them for a different reason and this case
+    // would pass without measuring the tier at all.
+    executorConfig.forcePhase[app.at(covered)] = "succeeded";
+    executorConfig.forcePhase[app.at(uncovered)] = "succeeded";
+    await tick(12);
+    // NO EXPLICIT `accept` HERE, unlike the case above: with two targets this org's change reaches
+    // `executing` on its own, and `executing` is one of the three states `triggerRollback` accepts.
+    // What the rollback actually needs is asserted directly instead of inferred from a state name —
+    // both targets were DISPATCHED, so D7's own qualifier (`rollbackHasSomethingToUndoAt`) is
+    // satisfied at both and cannot be what withholds one of them below.
+    expect(firedFor(app.at(covered))).toBeGreaterThan(0);
+    expect(firedFor(app.at(uncovered))).toBeGreaterThan(0);
+
+    const key = `d7pt-platform-${randomUUID().slice(0, 8)}`;
+    await admin.instanceFreezes.put(
+      key,
+      {
+        startsAt: new Date(Date.now() - 60_000).toISOString(),
+        endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+        reason: "integration: one environment frozen at the platform tier",
+        match: { environment: env }
+      },
+      OPERATOR_TOKEN
+    );
+    try {
+      const coveredBefore = firedFor(app.at(covered));
+      const uncoveredBefore = firedFor(app.at(uncovered));
+      const rollback = await admin.changes.rollback(original.id, "integration: undo it");
+      await tick(8);
+
+      // THE SIBLING SHIPS — so the gate really did stand aside (D5), and the per-target loop really
+      // did run. Without this the assertion below would pass against a whole-wave block.
+      expect(
+        firedFor(app.at(uncovered)),
+        "nothing covers this stage: partial admission is not tier-specific"
+      ).toBeGreaterThan(uncoveredBefore);
+      // AND THE COVERED ONE IS WITHHELD BY THE PER-TARGET SEAM, the only thing left that could.
+      expect(
+        firedFor(app.at(covered)),
+        "the per-target `continue` is tier-aware too: a rollback does not walk past a platform freeze here either"
+      ).toBe(coveredBefore);
+
+      const held = await decisionsOfKind(rollback.id, "freeze_admission");
+      expect(held.length).toBeGreaterThan(0);
+      expect(JSON.stringify(held.map((d) => d.inputContext))).toContain('"tier":"platform"');
+    } finally {
+      await admin.instanceFreezes.lift(key, { reason: "cleanup" }, OPERATOR_TOKEN);
+    }
   });
 
   // ============================================================================================

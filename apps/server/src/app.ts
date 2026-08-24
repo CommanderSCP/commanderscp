@@ -46,6 +46,7 @@ import { registerExecutorRoutes } from "./routes/executors.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerDoctorRoutes } from "./routes/doctor.js";
 import { registerInstanceScanFloorRoutes } from "./routes/instance-scan-floors.js";
+import { registerInstanceFreezeRoutes } from "./routes/instance-freezes.js";
 import { registerInstanceScanExclusionAdmissionRoutes } from "./routes/instance-scan-exclusion-admissions.js";
 import { registerScannerAssignmentRoutes } from "./routes/scanner-assignments.js";
 import { registerScanOverrideGrantRoutes } from "./routes/scan-override-grants.js";
@@ -310,6 +311,11 @@ export async function buildApp(
   // explain read 404s, which is what "built, never installed" looks like from the outside.
   registerGovernanceMoveRoutes(app, deps);
   registerInstanceScanFloorRoutes(app, deps); // M17.5 instance-scoped scan floors (ADR-0016)
+  // M25.3 instance-scoped (platform) freezes (drizzle/0086, campaigns-rework §2, owner decision
+  // D1) — the freeze tier ABOVE org. Pinned by `governance/instance-freeze-admission
+  // .integration.test.ts`'s WIRING case: delete this line and the list read 404s, which is what
+  // "built, never installed" looks like from the outside.
+  registerInstanceFreezeRoutes(app, deps);
   // M22.9 instance-scoped exclusion admissions (ADR-0033 §1/§7a) — the `platform` and
   // `trust_domain` rungs of the monotone AND, which no policy can ever contribute.
   registerInstanceScanExclusionAdmissionRoutes(app, deps);

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import pg from "pg";
 import type { ServerConfig } from "../config.js";
 import { ProblemError } from "../errors.js";
@@ -80,4 +81,32 @@ export async function withOperatorDb<T>(
   } finally {
     await pool.end();
   }
+}
+
+/**
+ * CONSTANT-TIME COMPARISON OF A PRESENTED OPERATOR TOKEN AGAINST THE CONFIGURED ONE.
+ *
+ * Extracted in M25.3 because it had been copied VERBATIM into SIX route modules
+ * (`instance-scan-floors`, `instance-scan-exclusion-admissions`, `scanner-assignments`,
+ * `scan-db`, `governance-move`, `dependency-subscriptions`) and M25.3's operator door would have
+ * made seven. That is the shape `graph/containment.ts`'s header is about, on a shared secret: six
+ * copies of one comparison, each free to drift, and the drift that matters here is silent in the
+ * worst direction — a `===` restored in one copy leaks length and timing on a deployment-level
+ * credential with no test able to see it.
+ *
+ * Each route keeps its OWN `requireOperator` wrapper, deliberately: the 403 sentences differ per
+ * surface ("these floors bind every org on the deployment", "an admission opens a loosening for
+ * every org on the deployment", ...) and each of those sentences is the operator-facing
+ * explanation for that specific door. Only the comparison is shared.
+ *
+ * FALSE when the deployment configured no token at all, so a caller who presents nothing against
+ * an unset secret is refused rather than admitted — each caller checks `config.operatorToken`
+ * first anyway and answers with the "surface is closed" 403, and this is the second barrier.
+ */
+export function operatorTokenMatches(presented: unknown, configured: string | undefined): boolean {
+  if (!configured || typeof presented !== "string" || presented.length === 0) return false;
+  const a = Buffer.from(presented, "utf8");
+  const b = Buffer.from(configured, "utf8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }

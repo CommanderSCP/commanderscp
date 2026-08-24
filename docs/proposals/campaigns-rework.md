@@ -508,6 +508,25 @@ for (const f of instanceActive) {
 
 **Honest limit:** because `evaluateWaveGate` passes no `overrideFreeze`, an admitted-overridable platform freeze is exercisable only on the lifecycle `accept` edge. Pre-existing, not created here, but it means `overridable: true` does not unblock a change already `executing`.
 
+#### 2.2a SHIPPED — M25.3, 2026-08-23 (`drizzle/0086`, [ADR-0040](../adr/0040-platform-tier-freezes.md))
+
+§2.1 and §2.2 are built. What landed matches D1's substance; **three things are expressed differently from the sketch above, each argued in ADR-0040 §7 and flagged for owner confirmation**:
+
+1. **An unset `environment` is NOT deployment-wide.** Shipped as an explicit `match_all_environments` boolean, mutually exclusive with `match_environment` under a DB CHECK and a request-schema refinement; a body carrying neither form is a 400. The deployment-wide freeze stops every release for every tenant, and reaching it by *omitting* a field means a dropped empty string or a typo'd key authors maximum blast radius with no error. The widest tightening gets the same "never by default" treatment a loosening gets.
+2. **No `origin` column.** §2.3's own finding is that a platform freeze cannot ride the journal *at all*, so `origin: 'federated'` here would be a value no writer can ever produce — a field that lies, which is worse than an absent one.
+3. **No `tier` column, so no `trust_domain` literal.** 0029 needs `tier` because two above-org rungs contribute separate per-severity MINs; a freeze merges by OR and a `trust_domain` freeze would behave identically to a `platform` one in every code path. **Consequence for the §10.3 replacement drafted below: as shipped the ladder is SIX tiers, not seven** — platform → org → containment domain → service → component → deployment target. That draft is therefore *not applied*; correcting it is an owner call.
+
+Other shipped facts worth carrying forward:
+
+* **`§2.4`'s single reader is `freezesByTarget`, not a new `activeFreezesFor`.** Folding the instance tier into the existing per-target resolver gave `checkFreeze`, `freeze-hold.ts`, the `atomic` union and the service board the platform tier with no per-tier plumbing — so **D5 per-target admission is not tier-specific**, which is asserted rather than assumed. `activeFreezesForScopes` was therefore *kept*, not deleted: it is no longer on the resolution path (`freezesByTarget` is), and it is still the subject of the set-equality test M25.2 pinned. Deleting it is a separate cleanup with its own test consequence.
+* **The tier is a discriminated union (`EffectiveFreeze`), and that is the enforcement mechanism.** TypeScript refuses to compile a consumer that reads `scopeObjectId` without asking which tier it holds — which is exactly the field §2.2's three fakes are about.
+* **`checkFreeze`'s tier branch is INSIDE the universal quantifier**, not a pass ahead of it as sketched. A separate platform pass would have re-created the `active[0]` shape that loop exists to make inexpressible.
+* **The window predicate is still known in one place** (`freezeWindowCovers`, factored out of `activeFreezesInWindow` and consumed by both tiers).
+* **`instance_freezes.id` is a real uuid**, because it travels into `ServiceBoardFreezeSchema.id` (published as `z.string().uuid()`). A synthetic `platform:<key>` would have forced an oasdiff response change; with a uuid the service board shows a platform freeze with no schema change at all.
+* **Soft lift, and a retraction is final.** `DELETE /v1/instance/freezes/{key}` sets `lifted_at`/`lift_reason` (0085's ruling one tier up — a block Decision cites the id forever); a re-`PUT` of a lifted key is refused 409.
+* **`pnpm gen` was purely additive**: two new paths, zero changed paths, zero changed or removed schemas.
+* **Owed and not done here** (ADR-0040's closing section): the DESIGN.md §10.3/§10.1 replacements below, the charter "Freeze Scope" amendment (needs owner sign-off), and the BUILD_AND_TEST M16.2 correction (depends on D6/M25.7).
+
 #### 2.3 Federation — **THIS HALF IS AN ASSUMPTION, NOT AN OWNER DECISION**
 
 D1's option was presented as a ladder ("above-org **too**"), so sync-down was treated as in scope. Two findings change the shape of the answer and must be surfaced before anything here is built.

@@ -200,6 +200,10 @@ import {
   // M17.5 (ADR-0016) — instance-scoped scan-requirement floors.
   listInstanceScanFloors as listInstanceScanFloorsRequest,
   putInstanceScanFloor as putInstanceScanFloorRequest,
+  // M25.3 (campaigns-rework §2, owner decision D1) — instance-scoped (platform) freezes.
+  listInstanceFreezes as listInstanceFreezesRequest,
+  putInstanceFreeze as putInstanceFreezeRequest,
+  liftInstanceFreeze as liftInstanceFreezeRequest,
   // M22.9 (ADR-0033 §1/§7a) — instance-scoped exclusion admissions.
   listInstanceScanExclusionAdmissions as listInstanceScanExclusionAdmissionsRequest,
   putInstanceScanExclusionAdmissions as putInstanceScanExclusionAdmissionsRequest,
@@ -372,6 +376,9 @@ import type {
   InitFederationRequest,
   FederationPeer,
   InstanceScanFloor,
+  InstanceFreeze,
+  PutInstanceFreezeRequest,
+  LiftInstanceFreezeRequest,
   InstanceScanExclusionAdmission,
   PutInstanceScanExclusionAdmissionsRequest,
   ScanOverrideGrant,
@@ -1867,6 +1874,53 @@ export class ScpClient {
         client: this.client,
         path: { id },
         body: req
+      });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // M25.3: instance-scoped (PLATFORM) freezes — the freeze tier ABOVE org (drizzle/0086,
+  // campaigns-rework §2, owner decision D1). One row binds EVERY org on the deployment, so the
+  // two write verbs take the deployment-level operator token and NO tenant role can grant them —
+  // the twin of `instanceScanFloors`, on purpose. `list` is tenant-readable, deliberately: a
+  // platform freeze is the one freeze a tenant can neither author nor (by default) override, so a
+  // tenant that cannot read it cannot be told why its release stopped.
+  // -----------------------------------------------------------------------------------------
+  readonly instanceFreezes = {
+    /** Every instance freeze, including RETRACTED ones — a block Decision cites the id forever. */
+    list: async (): Promise<InstanceFreeze[]> => {
+      const result = await listInstanceFreezesRequest({ client: this.client });
+      return unwrap(result).items;
+    },
+    /** Declare or edit the freeze at `key` (a full replace of that row, never a partial merge).
+     *  `operatorToken` is the deployment-level `SCP_OPERATOR_TOKEN`. */
+    put: async (
+      key: string,
+      req: PutInstanceFreezeRequest,
+      operatorToken: string
+    ): Promise<InstanceFreeze> => {
+      const result = await putInstanceFreezeRequest({
+        client: this.client,
+        path: { key },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    /** RETRACT the freeze at `key` — it stops being in force immediately, whatever `endsAt` says.
+     *  A SOFT lift: the row stays readable through `list` forever. The reason is mandatory and a
+     *  retraction is final (a second lift is a 409; re-PUTting the key is refused). */
+    lift: async (
+      key: string,
+      req: LiftInstanceFreezeRequest,
+      operatorToken: string
+    ): Promise<InstanceFreeze> => {
+      const result = await liftInstanceFreezeRequest({
+        client: this.client,
+        path: { key },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
       });
       return unwrap(result);
     }

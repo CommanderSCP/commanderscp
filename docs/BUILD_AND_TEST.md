@@ -1566,6 +1566,36 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
 
 ---
 
+### M25 — Campaigns & Freezes Rework (a wave stops being all-or-nothing, and a freeze can be taken back)
+
+*Context doc: [docs/proposals/campaigns-rework.md](proposals/campaigns-rework.md). Owner decisions D1–D8, taken 2026-08-23. ADRs [0039](adr/0039-per-target-freeze-admission.md) (per-target admission), [0040](adr/0040-platform-tier-freezes.md) (platform tier); 0041–0042 to follow with M25.4–M25.6.*
+
+- **Goal:** the owner asked for four things — migration levers on campaigns, a deadline-triggered pipeline lock, production change freezes, and region/domain scoping such that a wave may deploy to 3 of 4 targets when only one is frozen.
+- **The grounding that made the rest honest.** Freezes were **already built and mature**: time-windowed, resolved over the containment chain, every active freeze individually overridable at its own scope, Decision-backed. A region-scoped freeze already resolved correctly, because containment route 4 puts a placement's deployment target on the chain (owner decision 2026-08-02). What was missing was not *scope* but **admission granularity** — `evaluateWaveGate` unioned every target's containment chain into one verdict, so one frozen region parked all four, and it fires once on `pending → running`, so a freeze declared mid-wave was never seen at all. Three of the four asks therefore reduced to one engine change plus one missing verb; only the levers and the deadline lock were net-new.
+- **Contents:**
+  - **M25.1 — a freeze can be taken back.** `DELETE` (lift) and `PATCH endsAt` (either direction), API → SDK → CLI, both requiring `freeze:write` **at the freeze's own scope** and a mandatory reason. Soft lift: the row stays readable forever because gate and admission Decisions cite `freeze.id` (principle 6). *This was a prerequisite, not a nicety* — per-target admission makes a far-future `endsAt` hold a **subset** of a wave while its siblings have already shipped, leaving a fleet split across two versions with no API exit. Review added `FOR UPDATE` on both write verbs: two concurrent `PATCH`es could otherwise stamp an audit record `freeze.window.extended` for an edit that **shortened** the live window.
+  - **M25.2 — per-target wave admission (ADR-0039).** Freeze enforcement relocates to a refusal-to-trigger in the reconciler's per-target loop, following ADR-0028's stage-dependency hold; the whole-wave block survives for the all-frozen case. `freezes.atomic` (D5) restores whole-wave behaviour per freeze and **defaults to false**, so shipping it *loosened* every freeze already authored on an estate. Rollbacks are exempt at the wave boundary (D7).
+  - **M25.3 — the platform tier (ADR-0040, D1).** `instance_freezes`, no `org_id`, operator-write / tenant-read, addressed by **stage coordinate** rather than object id. Merges by UNION, not MIN. Not overridable by any tenant role unless the operator marks it so. Does not federate, and cannot.
+  - **M25.4–M25.6 — campaign recipes, adoption evidence, the deadline lock** (D3, D4). A campaign gains an authored trigger intent fanned across N targets — a **coordination** lever: SCP triggers the tenant's own pipeline and never authors the patch.
+  - **M25.7 — org-tier freeze federation** (D6). A freeze becomes a graph object so it can ride `object_upsert`, with the projection rebuilt on import. **Overturns a deliberate, tested absence.**
+  - **M25.8 — the dependency actuator's freeze gap** (D8). A declared freeze blocks bump **auto-merge** while still permitting PR authoring.
+  - **A2 — the campaign advisory lock.** Ported from `change-coordination-lock.ts`, which never reached `campaign-reconcile.ts`: with `worker replicaCount=2`, two workers could both persist a campaign plan. Found by the multi-region session; taken here because M25 adds a read-time predicate to that loop in three separate increments.
+- **The invariant this milestone must not break:** **every** active freeze covering a target must be individually overridden by an actor holding `freeze:override` at *that freeze's own* scope. Checking only the first match was a shipped bug; the refactor preserves it *structurally* — `checkFreeze` never sees the per-target map's keys, so a per-target early return is not expressible at that call site.
+- **Definition of done (machine-checked):**
+  - **A wave deploys to 3 of 4 when 1 is frozen** — `coordination/freeze-admission.integration.test.ts`. Mutation: delete the `continue` before `triggerWaveTarget` and the case goes red.
+  - **A partially-frozen wave never terminalizes green** — drop the `heldCount > 0 && !anyFailed` line and a wave whose only remaining target is frozen marks `succeeded` with a target never deployed (the ADR-0006 silent-success class).
+  - **The override quantifier is universal** — two freezes at two scopes; overriding one is still a block. Replace `unionFreezes(byTarget)` with `byTarget[0].freezes` and it goes red.
+  - **`atomic` reaches the wire** — settable through `POST /freezes` and the CLI, not just the repo. *Added after review found D5's escape hatch had no authoring door at all.*
+  - **A rollback cannot bypass a platform freeze** — `POST /changes/{id}/rollback` authorizes on `object:write`, far below `freeze:override`. Both directions asserted. *Added after review reproduced the bypass by firing an executor into an open window.*
+  - **Two DB barriers on `instance_freezes`, by execution** — `RawScpAppClient` (a real least-privileged `scp_app` login, not the Testcontainers superuser) SELECTs, and each of INSERT/UPDATE/DELETE is refused. Negative control: the SELECT must succeed, or the refusals prove nothing. *Non-negotiable: migrations 0029/0035/0036/0074 all shipped with no writable principal while the suite stayed green.*
+  - **Decision dedup** — a standing hold writes exactly one row across N ticks. `inputContext` carries `endsAt` and never `now`; adding `now` fails it. This is the 1.44 GB/day guard.
+  - **Inertness** — an org with no active freeze performs zero containment walks per change per tick, asserted by query count with a paired control that must walk.
+- **Known, NOT fixed here, and deliberately so:**
+  - **A freeze cannot pause an in-flight rollout.** `ExecutorPlugin` has no pause verb and ADR-0008 forbids adding one; a freeze declared while a target is executing withholds the *retry*, not the original call.
+  - **No timezone support.** No tz library and no vendored IANA data, and air-gap forecloses fetching any. Windows and deadlines are UTC instants; "freeze prod Dec 20 – Jan 2, local time" is not expressible.
+  - **`overridable: true` is reachable only for deployment-wide platform freezes** (ADR-0040 §9) — an open owner question, because closing it means either giving the wave boundary an override path or expanding component targets to placements at the accept edge, and the second is a real tightening.
+
+
 ## 9. Verification Mapping
 
 Every MVP Scope item from the charter, the milestone that delivers it, and the test layer that proves it (deepest layer listed; lower layers also cover it).

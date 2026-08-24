@@ -191,6 +191,34 @@ export async function readDeclaredRegionMembership(
   orgId: string,
   targetObjectId: string
 ): Promise<RegionMembership | null> {
+  // Composes over `readStageProperties` — the ONE reader of the convention. Region membership is
+  // the STRICTER of the two questions asked of those properties (both halves required); the
+  // freeze matcher's `readStageCoordinate` is the looser one (environment required, region
+  // optional). Two hand-rolled `properties ->> 'environment'` reads that drifted would be the
+  // `graph/containment.ts` incident one column over.
+  const declared = await readStageProperties(tx, orgId, targetObjectId);
+  if (!declared) return null;
+  const { environment, region } = declared;
+  if (environment.length === 0 || region.length === 0) return null;
+  return { environment, region };
+}
+
+/**
+ * THE ONE PLACE THAT READS THE M15.6 / ADR-0017 §3 STAGE CONVENTION off a graph row.
+ *
+ * A LIVE `deployment-target`'s `properties.environment` and `properties.region`, trimmed, with
+ * `""` for a property that is absent, null, or blank. Returns `null` when `id` is not a live
+ * `deployment-target` at all — a different answer from "a deployment-target that declares
+ * nothing", and the callers depend on the distinction.
+ *
+ * Not exported: every consumer goes through one of the two typed questions above/below it, so a
+ * third question cannot be asked with a fourth spelling of the property names.
+ */
+async function readStageProperties(
+  tx: TenantTx,
+  orgId: string,
+  id: string
+): Promise<{ environment: string; region: string } | null> {
   const rows = await tx
     .select({
       environment: sql<string | null>`${objects.properties} ->> 'environment'`,
@@ -200,7 +228,7 @@ export async function readDeclaredRegionMembership(
     .where(
       and(
         eq(objects.orgId, orgId),
-        eq(objects.id, targetObjectId),
+        eq(objects.id, id),
         eq(objects.typeId, "deployment-target"),
         isNull(objects.deletedAt)
       )
@@ -208,10 +236,50 @@ export async function readDeclaredRegionMembership(
     .limit(1);
   const row = rows[0];
   if (!row) return null;
-  const environment = (row.environment ?? "").trim();
-  const region = (row.region ?? "").trim();
-  if (environment.length === 0 || region.length === 0) return null;
-  return { environment, region };
+  return { environment: (row.environment ?? "").trim(), region: (row.region ?? "").trim() };
+}
+
+/** WHERE a wave target runs, as an instance-scoped freeze addresses it (drizzle/0086). `region` is
+ *  null for a stage that declares an environment and no region — a real and common shape, and the
+ *  reason this is not `RegionMembership` (which requires both halves). */
+export interface StageCoordinate {
+  environment: string;
+  region: string | null;
+}
+
+/**
+ * The stage coordinate a WAVE TARGET sits at, or `null` when it declares none.
+ *
+ * THE PLACEMENT HOP IS THE WHOLE REASON THIS IS NOT `readStageProperties` DIRECTLY. Under
+ * ADR-0026 stage-shaped compilation a wave target is a PLACEMENT, which carries no
+ * `environment`/`region` of its own — those live on the `deployment-target` it names. Without the
+ * hop every stage-shaped target reads as coordinate-less and an environment-addressed platform
+ * freeze SILENTLY MATCHES NOTHING, which is indistinguishable, from the verdict, from a freeze
+ * that was never declared. `evaluateRegionalDeployGate` performs the same hop, for the same
+ * reason, immediately below `deploymentTargetOfPlacement`.
+ *
+ * `null` IN THREE CASES, all meaning the same thing to the matcher — this target does not declare
+ * where it runs, so no environment-addressed freeze can reach it:
+ *   * a legacy component-shaped wave target (a component is not a deployment-target),
+ *   * a placement whose `deploymentTargetId` is missing, malformed or tombstoned,
+ *   * a deployment-target that declares no `environment`.
+ * Only `matchAllEnvironments` covers such a target, and that asymmetry is deliberate: an operator
+ * who addresses "prod" is addressing the stages that SAY they are prod (ADR-0031's rule that
+ * locality is declared, never inferred), while an operator freezing the whole deployment has said
+ * so explicitly and means everything.
+ */
+export async function readStageCoordinate(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string
+): Promise<StageCoordinate | null> {
+  const placeId = await deploymentTargetOfPlacement(tx, orgId, targetObjectId);
+  const declared = await readStageProperties(tx, orgId, placeId ?? targetObjectId);
+  if (!declared || declared.environment.length === 0) return null;
+  return {
+    environment: declared.environment,
+    region: declared.region.length > 0 ? declared.region : null
+  };
 }
 
 /** The deploy-time verdict for one declared region target. See `evaluateRegionalDeployGate`. */
@@ -265,7 +333,29 @@ export async function evaluateRegionalDeployGate(
   return { ...membership, ...signal, deployAllowed: signal.bound };
 }
 
-/** The deployment-target a placement names, or null when `id` is not a live placement. */
+/** Mirrors `graph/containment.ts`'s `UUID_TEXT_PATTERN` and `gate-orchestrator.ts`'s
+ *  `UUID_PATTERN` — the same shape check on the same field, on this side of the DB boundary. */
+const UUID_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * The deployment-target a placement names, or null when `id` is not a live placement.
+ *
+ * THE UUID SHAPE CHECK IS THE SAME GUARD, FOR THE SAME REASON, as `containment.ts` route 3/4's
+ * `CASE ... ~ UUID_TEXT_PATTERN` and `gate-orchestrator.ts`'s `governanceSubjectOf`. Journal
+ * replay calls `createObject` directly and never passes the typed `/placements` route, so a
+ * corrupt or hostile peer can ship a placement whose `deploymentTargetId` is not a UUID. Returning
+ * it hands a non-UUID straight to the next query's parameterised `objects.id` comparison and
+ * Postgres throws `invalid input syntax for type uuid` — one bad row becomes an ERRORING read for
+ * every caller that touches it.
+ *
+ * ADDED IN M25.3, and it fixes a latent defect rather than only guarding a new one: this hop was
+ * already reachable from `evaluateRegionalDeployGate` on the reconcile trigger path. M25.3 makes
+ * it reachable from the FREEZE path, which runs for every executing change on every 1 s tick, so
+ * the same malformed row would have gone from an errored region gate to an errored freeze
+ * evaluation on the whole instance. A malformed pair is treated as "names no deployment-target",
+ * which is what it is.
+ */
 async function deploymentTargetOfPlacement(
   tx: TenantTx,
   orgId: string,
@@ -285,5 +375,6 @@ async function deploymentTargetOfPlacement(
       )
     )
     .limit(1);
-  return rows[0]?.deploymentTargetId ?? null;
+  const declared = rows[0]?.deploymentTargetId ?? null;
+  return declared !== null && UUID_PATTERN.test(declared) ? declared : null;
 }
