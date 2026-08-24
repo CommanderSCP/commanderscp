@@ -21,12 +21,21 @@ You are continuing multi-region/HA work on CommanderSCP. A prior session's memor
 
 Keep this doc current as you work; delete it when M26 lands.
 
-## Where M26 stands
+## Where M26 stands (updated 2026-08-24)
 
-- **M26.1 (single-region hardening, §7.1) — CODE COMPLETE and REVIEW-CLEAN (2026-08-24).** All five items built; F1 fixed; the four-lens adversarial review reran and all nine findings it surfaced are cleared, each with a mutation-proven permanent gate (see "Four-lens adversarial review" below). `pnpm -w typecheck` + eslint clean; events/provision/watchdog integration + new unit gates green. Remaining M26.1 obligation: A2's **verify-only gate**, blocked on the M25 advisory-lock fix merging to `main` (see cross-session section — not merged as of 2026-08-24; watch `main`).
-- **ADR reservation:** M26's ADR is **0042** (M25 holds 0039–0041). Assign at M26.2 acceptance.
-- **M26.2 — IN PROGRESS.** Owner decisions settled 2026-08-24 (below); rail-4 seams verified against the code (below). **Rail 4 EXPAND-phase LANDED** (commit b3e3243): migration `0090_sync_cursors_tail_attestation` + `schema.ts` columns `attestedTailSeq`/`attestedTailRowHash` (validated — applies clean, sync-scope-asymmetry 23/23, typecheck green). **Next action:** rail 4's LOGIC (export-repo attach signed attestation, `SyncBundleSchema.tailAttestation` optional field + `pnpm gen`, import verify against `bundleKey`, `cursors-repo.verifyAndAdvanceTailAttestation` refusing `journal_divergence`) — which needs rail 1's `journal_divergence` problem-type scaffold, so build that first, then rails 1/2/4 together. Then rail 3 (verify-only). Hold resync/audit-witness/doctor.
-- **M26.3, M26.4 — NOT STARTED.**
+**LANDED & tested & pushed on `multi-region-ha`:**
+- **M26.1 (§7.1) — REVIEW-CLEAN.** All five items; F1 fixed; four-lens review reran, nine findings cleared, each mutation-proven. (A2 verify-only gate still owed — blocked on the M25 advisory-lock merge to `main`, STILL not merged as of 2026-08-24; watch `main`.)
+- **M26.2 rails 1/2/4/5 (§7.2)** — fork/rollback detection, commit `47bb4bd`. `journal_divergence` problem type; export tail check; anchor verification; signed tail attestation with a monotonic high-water mark (replay-safe); reanchor refusal under standing divergence. Rail 3 verified already covered by `verifySegment`. Gate `divergence-rails.integration.test.ts` 8/8; `federation.integration` 77/77. Migration 0090.
+- **M26.2 §7.2.7 audit witness** — commit `ebee565`, migration 0091, gate 2/2.
+- **M26.2 §7.3 D6 + decrypt canary** — commit `3604df8`. Deployment mode (production default), production refusal of ephemeral secrets, per-org RLS-correct decrypt canary before `app.listen`. Gate 3/3. Compose/dev set `evaluation`.
+- **M26.3 chart packaging** — commit `a4573ba`. PDB, topology spread, multi-cluster values contract, retrans volumes. `helm lint` clean.
+- **M26.4 docs** — commit `a4573ba`. `docs/runbooks/resilience.md`, GLOSSARY (member cluster / infra region / XO / instance), DESIGN §17, **ADR-0042**.
+
+**NOT YET BUILT (the remaining work to "finish M26"):**
+- **M26.2 §7.2.6 RESYNC — the big one, NOT started.** Owner chose a **SIGNED CROSS-DOMAIN HANDSHAKE** (below), a net-new authenticated cross-domain mutation surface. This is the highest-risk item and deserves its own focused pass. Grounded seams: migration 0092 = `federation_self.generation` stamp (`when` 1788152000000, ABOVE 0091's 1788151000000 — keep `when` monotonic with build order or hit the equal-`when` skip trap); new `FederationResyncRequestSchema`/`ResultSchema`; `graph/objects-repo.ts:867` revision-staleness guard (`if (input.federationImport.revision <= existing.revision) return`) needs a `forceOverwrite?` on `FederationImportContext` gated to bypass ONLY that early-return, NEVER the single-writer authority check just above it; `cursors-repo` `resetCursor` (unconditional, unlike forward-only `advanceCursor`); `self-repo` `bumpFederationGeneration`; `POST /api/v1/federation/resync`; and it must write a NEWER `federation-divergence`-kind Decision that SUPERSEDES the standing block so **rail 5's reanchor refusal clears** (that linkage is already built — resync just needs to record the clearing Decision). Model the one-shot permit shape on `reconcileOutpostConfig` (routes/federation.ts) + `scp federation outpost reconcile` (cli.ts). Permanent gate: the §7.5 lost-tail simulation.
+- **M26.2 §7.3 instance doctor** — `GET /api/v1/doctor/instance`, operator-token-gated (DSN reachability, `pg_is_in_recovery()`, mTLS SAN coverage, S3 endpoint consistency, XO readiness). NOT started.
+- **M26.3 S3 object-storage provider (C3)** + version-skew heartbeat mechanism (migration + migrate-bin refusal of a contract migration while a member cluster trails). NOT started.
+- **M26.4 CI drills** — Testcontainers failover drill, lost-tail simulation (permanent gate, depends on resync), two-member compose topology, boot-refusal tests for the D6 ephemeral case. NOT started (the credential-clobber gate already exists as provision PV-1; the decrypt-canary gate exists).
 
 ### M26.2 owner decisions (2026-08-24, settled)
 
