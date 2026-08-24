@@ -2,6 +2,25 @@
 
 **Temporary working document** — delete when M26 lands. This exists to carry cross-session context across a machine move (session scratchpad and `~/.claude` memory do NOT travel via git; this file does). Branch: `multi-region-ha`. Proposal: [multi-region-instance-resilience.md](multi-region-instance-resilience.md) (v0.3, all 7 owner decisions settled in §11).
 
+## ▶ Resume here (new session / new machine)
+
+You are continuing multi-region/HA work on CommanderSCP. A prior session's memory and scratchpad did **not** travel here — everything you need is committed in the repo. Read this whole doc plus the proposal and `CLAUDE.md` before acting.
+
+**Do, in order:**
+1. **Verify the environment fresh** — Docker/Testcontainers up, Node matches the repo's `engines`. Do NOT trust the old machine's colima/node-path quirks in "Environment quirks" below; re-establish what works here.
+2. **Fix F1** (the open blocker, see "Open findings"): the relay NOTIFYs an id only (orgId as a hint at most), and the SSE bridge ALWAYS re-derives the event from the authoritative `outbox` row under `SET LOCAL ROLE scp_relay` — collapse the small-event and oversized paths into one fetch so the payload is never the authority. Make `apps/server/src/events/sse-bridge-notify-authenticity.integration.test.ts` go green.
+3. **Rerun the M26.1 adversarial review** across four lenses (SSE correctness, watchdog/provision correctness, security, mutation/vacuous sweep) and clear anything it surfaces.
+4. **Then proceed M26.2 → M26.3 → M26.4** per proposal §7.2–§7.5 and the milestone sketch §12.
+
+**Standing constraints** (fuller detail in the sections below):
+- Migrations: M26 owns **0090+** (`when` ≥ 1788150000000); 0084–0089 are M25's. Watch the drizzle equal-`when` silent-skip trap on renumber.
+- **A2** (campaign-reconcile lock) is done in M25, not here — M26.1 owes only a **verify-only gate**, and only after that fix merges to `main`. No live link to the M25 session on this machine: **watch `main` for the merge**, don't wait on a peer ping. If it never lands, A2 reverts to an M26.1 fix.
+- Docs-first for M26.2+; assign the ADR number at acceptance (campaigns peers hold 0039+, so pick above that).
+- **Push after every round** (WIP commits fine) — the branch is the only durable carrier.
+- Integration tests need real Postgres via Testcontainers **and** the integration vitest config (plain vitest silently excludes them → vacuous green). Use `grep -rna`/`rg --text` for any census (NUL-byte source files exist).
+
+Keep this doc current as you work; delete it when M26 lands.
+
 ## Where M26 stands
 
 - **M26.1 (single-region hardening, §7.1) — CODE COMPLETE, review INCOMPLETE.** All five items built and passing their own tests + `pnpm -w typecheck` (green) + the integration battery (events/provision/federation-sync group 19/19; coordination group watchdog-race + reconcile-singleton + coordination + coupling + stage-dependency 54/54). The adversarial review round was **killed mid-run** (no findings recovered) — so this diff is NOT review-clean. One confirmed finding survived as F1 below.
