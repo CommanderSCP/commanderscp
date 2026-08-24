@@ -1,3 +1,4 @@
+import { LOOP_STARTUP_SINGLETON_KEY, LOOP_STARTUP_SINGLETON_SECONDS } from "../events/pgboss.js";
 import type PgBoss from "pg-boss";
 import type { ExecutorCapabilities, TriggerIntent } from "@scp/plugin-api";
 import { boundDetail } from "@scp/runner-launcher";
@@ -2797,8 +2798,10 @@ export async function startReconcileLoop(
     RECONCILE_QUEUE,
     {},
     {
-      singletonKey: "tick",
-      singletonSeconds: RECONCILE_TICK_INTERVAL_SECONDS
+      // NOT the chain's `"tick"` key — see LOOP_STARTUP_SINGLETON_KEY. Sharing it lets a completed
+      // tick silently swallow this kick (and vice versa), which kills the loop outright.
+      singletonKey: LOOP_STARTUP_SINGLETON_KEY,
+      singletonSeconds: LOOP_STARTUP_SINGLETON_SECONDS
     }
   );
   return {

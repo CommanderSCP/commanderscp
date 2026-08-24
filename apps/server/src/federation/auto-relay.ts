@@ -88,6 +88,7 @@
  * and the onward drop directory is operator config (`SCP_DELIVERY_ROOTS`-bounded when per-peer) —
  * never anything a bundle said.
  */
+import { LOOP_STARTUP_SINGLETON_KEY, LOOP_STARTUP_SINGLETON_SECONDS } from "../events/pgboss.js";
 import type PgBoss from "pg-boss";
 import type { Db } from "../db/client.js";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -658,10 +659,11 @@ export async function startAutoRelayLoop(
       { startAfter: interval, singletonKey: "tick", singletonSeconds: interval }
     );
   });
+  // Startup kick: its OWN key/window, never the chain's `"tick"` — see LOOP_STARTUP_SINGLETON_KEY.
   await boss.send(
     AUTO_RELAY_QUEUE,
     {},
-    { singletonKey: "tick", singletonSeconds: autoRelayIntervalSeconds() }
+    { singletonKey: LOOP_STARTUP_SINGLETON_KEY, singletonSeconds: LOOP_STARTUP_SINGLETON_SECONDS }
   );
   return {
     async stop() {

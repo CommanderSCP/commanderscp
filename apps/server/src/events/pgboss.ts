@@ -3,6 +3,37 @@ import PgBoss from "pg-boss";
 export const DOMAIN_EVENTS_QUEUE = "domain-events";
 
 /**
+ * THE STARTUP KICK'S OWN SINGLETON KEY — never the interval chain's `"tick"`. (§4-A4, and the bug
+ * that taught it: this milestone shipped six self-rescheduling loops whose STARTUP `boss.send`
+ * reused `singletonKey: "tick"` with the chain's `singletonSeconds`, and it silently killed them.)
+ *
+ * WHY REUSING `"tick"` IS FATAL, in pg-boss's own terms (pg-boss 10.4.2, src/plans.js):
+ *   - the unique index is `(name, singleton_on, COALESCE(singleton_key,''))` WHERE `state <>
+ *     'cancelled'` — so a COMPLETED or ACTIVE job STILL HOLDS the slot;
+ *   - `singleton_on` is a wall-clock BUCKET (`floor(epoch/singletonSeconds)*singletonSeconds`), not
+ *     "time since the last job";
+ *   - a losing insert is `ON CONFLICT DO NOTHING RETURNING id`, i.e. it returns NULL **silently**.
+ * A self-rescheduling loop's ONLY other source of ticks is the reschedule inside its own worker
+ * handler, so one swallowed send means: no job -> no handler -> no reschedule -> the loop is dead
+ * forever, with no error, no log and no failing health check.
+ *
+ * MEASURED: a 60s loop's first reschedule (sent ~2s after its startup job, inside the SAME 60s
+ * bucket) was swallowed by that just-completed startup job — killing the loop after ONE sweep on
+ * ~58 of every 60 boots, in production as well as in tests.
+ *
+ * A DISTINCT key with a SHORT window keeps what §4-A4 actually wanted — N replicas booting together
+ * dedupe their startup sweeps among themselves — while making a collision with the interval chain
+ * impossible. `federation/federation-sync.ts` established this shape first
+ * (`FEDERATION_SYNC_STARTUP_SINGLETON_SECONDS`) and its doc already warned that `"tick"` was off
+ * limits; these constants are that rule, hoisted to where every loop can see it.
+ * `coordination/loop-startup-singleton.test.ts` is the census that keeps it true.
+ */
+export const LOOP_STARTUP_SINGLETON_KEY = "startup";
+/** Short enough to collapse a simultaneous-restart storm, far short of any loop's interval so it can
+ *  never mask a genuine later start. Same value federation-sync chose. */
+export const LOOP_STARTUP_SINGLETON_SECONDS = 10;
+
+/**
  * One relayed outbox row, as the outbox relay sends it onto {@link DOMAIN_EVENTS_QUEUE}
  * (`events/outbox-relay.ts`). Fields are typed as what the relay writes; `data` stays `unknown`
  * because every event type carries its own payload and a router must narrow its own.
