@@ -29,6 +29,8 @@ import {
   evaluateFreezeHolds,
   type FreezeHoldVerdict
 } from "./freeze-hold.js";
+import { rollbackExemptible } from "../governance/freeze-scope.js";
+import { originalChangeDispatchedTarget } from "./wave-targets-repo.js";
 
 /** Reads `depends_on` edges among `targetIds` directly from the graph (DESIGN §9.3: "wave order
  * is computed from graph `depends_on` edges"). Both endpoints must be in `targetIds` — edges
@@ -398,13 +400,24 @@ function toChangePlanShape(
  * second implementation that could drift from admission (campaigns-rework.md's instruction on
  * this exact field).
  *
- * ONLY THE TARGETS THE HOLD CAN STILL ACT ON, mirroring `stage-dependency-status.ts`'s own gate
- * exactly (`isStillTriggerable` there, restated here): the active (non-terminal) wave's
+ * ONLY THE TARGETS THE HOLD CAN STILL ACT ON ARE *RETURNED*, mirroring `stage-dependency-status.ts`'s
+ * own gate exactly (`isStillTriggerable` there, restated here): the active (non-terminal) wave's
  * `pending`/`triggering` targets, and only while the change itself is `executing` — a `triggered`
  * target has already been handed to its executor (a freeze cannot un-ring that bell — ADR-0008
  * has no pause verb), and a hold reported against a dead change's never-run target would describe
  * a wait that is already over. Two changes reading the identical gate independently is exactly
  * the drift class `stage-dependency-status.ts`'s own doc warns about, restated for a second field.
+ *
+ * BUT `evaluateFreezeHolds` IS ASKED ABOUT EVERY ACTIVE-WAVE TARGET, not just the pending ones
+ * (M25.UI review finding 2 — "atomic drift"). `reconcile.ts`'s admission loop asks the identical
+ * question with `activeWave.targets.map((t) => t.targetObjectId)` (reconcile.ts, `loadFreezeHolds`)
+ * — every target of the active wave, succeeded siblings included. That matters because an `atomic`
+ * freeze's union (`freeze-hold.ts`'s `unionFreezes(byTarget)`) only ever sees the ids it was asked
+ * about: if this function asked only about the pending subset, a target held SOLELY because an
+ * `atomic` freeze covers an already-succeeded sibling would never surface here — the sibling that
+ * proves the union was never even queried. Asking about the full set and filtering the RESULT to
+ * the pending subset keeps the answer identical to what admission would do, while still never
+ * reporting a hold against a target a hold can no longer act on.
  */
 async function resolveWaveTargetFreezeHolds(
   tx: TenantTx,
@@ -414,7 +427,7 @@ async function resolveWaveTargetFreezeHolds(
   targets: (typeof changeWaveTargets.$inferSelect)[]
 ): Promise<Map<string, FreezeHoldVerdict>> {
   const [changeRow] = await tx
-    .select({ state: changes.state })
+    .select({ state: changes.state, rollbackOfObjectId: changes.rollbackOfObjectId })
     .from(changes)
     .where(and(eq(changes.orgId, orgId), eq(changes.objectId, changeObjectId)))
     .limit(1);
@@ -423,14 +436,42 @@ async function resolveWaveTargetFreezeHolds(
   const activeWave = waves.find((w) => w.status !== "succeeded" && w.status !== "skipped");
   if (!activeWave) return new Map();
 
-  const pendingTargetIds = targets
-    .filter(
-      (t) => t.waveId === activeWave.id && (t.status === "pending" || t.status === "triggering")
-    )
-    .map((t) => t.targetObjectId);
-  if (pendingTargetIds.length === 0) return new Map();
+  const activeWaveTargets = targets.filter((t) => t.waveId === activeWave.id);
+  const pendingTargetIds = new Set(
+    activeWaveTargets
+      .filter((t) => t.status === "pending" || t.status === "triggering")
+      .map((t) => t.targetObjectId)
+  );
+  if (pendingTargetIds.size === 0) return new Map();
 
-  return evaluateFreezeHolds(tx, { orgId, targetObjectIds: pendingTargetIds });
+  const allHolds = await evaluateFreezeHolds(tx, {
+    orgId,
+    targetObjectIds: activeWaveTargets.map((t) => t.targetObjectId)
+  });
+
+  // D7'S ROLLBACK EXEMPTION, MIRRORED (M25.UI review finding 3). `reconcile.ts`'s actuator
+  // (`!( rollbackExemptible(frozen.freezes) && rollbackHasSomethingToUndoAt(...) )`) lets a
+  // rollback's trigger through an org-tier freeze for a target the original change actually
+  // dispatched. Without the same check here, `explain` reports that target `held` by the very
+  // freeze reconcile has already stepped around — a target sitting in `triggering` backoff after
+  // a real dispatch, described as still waiting on a freeze it was exempted from.
+  const isRollback = changeRow.rollbackOfObjectId !== null;
+  const rollbackOfObjectId = changeRow.rollbackOfObjectId;
+
+  const holds = new Map<string, FreezeHoldVerdict>();
+  for (const [targetObjectId, verdict] of allHolds) {
+    if (!pendingTargetIds.has(targetObjectId)) continue;
+    if (
+      isRollback &&
+      rollbackOfObjectId &&
+      rollbackExemptible(verdict.freezes) &&
+      (await originalChangeDispatchedTarget(tx, orgId, rollbackOfObjectId, targetObjectId))
+    ) {
+      continue;
+    }
+    holds.set(targetObjectId, verdict);
+  }
+  return holds;
 }
 
 /** Display names for every covering freeze's `scopeObjectId`, in ONE query — the same
@@ -460,7 +501,23 @@ async function resolveFreezeScopeNames(
 export async function getLatestPlanForChange(
   tx: TenantTx,
   orgId: string,
-  changeObjectId: string
+  changeObjectId: string,
+  /**
+   * `withFreezeHolds: false` (M25.UI review finding 4) skips `resolveWaveTargetFreezeHolds` and
+   * `resolveFreezeScopeNames` entirely, for a caller that only needs wave/target *status* data and
+   * never reads `.hold`/`heldTargetCount` off the result. `reconcile.ts`'s per-tick trigger branch
+   * is the one that matters: `advanceExecutingChanges` calls this UNCONDITIONALLY, once per
+   * `executing` change per 1 s tick, to find the active wave — and its OWN trigger branch already
+   * does a second, real freeze evaluation a few lines later (`loadFreezeHolds`, lazily, only when a
+   * target is actually pending). Leaving the default true here meant every such tick paid for a
+   * FULL freeze evaluation whose `ChangePlan.hold`/`heldTargetCount` shape reconcile then threw
+   * away unread, immediately followed by `loadFreezeHolds` redoing the identical work for the
+   * decision that actually acts on it — silently falsifying the "resolved lazily, inside the
+   * trigger branch" invariant documented beside `loadFreezeHolds` itself. Default stays `true`
+   * because every OTHER caller (`routes/changes.ts`'s explain handler) is a wire consumer that
+   * needs the projection.
+   */
+  options?: { withFreezeHolds?: boolean }
 ): Promise<ChangePlan | null> {
   const planRow = await tx.query.changePlans.findFirst({
     where: (t, { eq: eqOp, and: andOp }) =>
@@ -484,6 +541,10 @@ export async function getLatestPlanForChange(
           .where(
             and(eq(changeWaveTargets.orgId, orgId), inArray(changeWaveTargets.waveId, waveIds))
           );
+
+  if (options?.withFreezeHolds === false) {
+    return toChangePlanShape(planRow, waveRows, targetRows);
+  }
 
   const freezeHolds = await resolveWaveTargetFreezeHolds(
     tx,

@@ -657,6 +657,84 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   });
 
   // ============================================================================================
+  // D7, READ SIDE — the read-time projection (`GET /changes/{id}/explain`) has to agree with the
+  // actuator above, or an operator sees a rollback dispatched WHILE `explain` still reports its
+  // target held by the very freeze it was exempted from (M25.UI review finding 3).
+  // ============================================================================================
+  it("D7 read-side: explain does not report the rollback target held by the freeze it was exempted from", async () => {
+    const app = await componentAt("rollback-explain", [amer]);
+    const soloTopology = await admin.object("release-topology").create({
+      name: `amer-only-explain-${randomUUID().slice(0, 8)}`,
+      properties: { waves: [{ name: "amer", mode: "parallel", targets: [amer.id] }] }
+    });
+    const original = await admin.changes.propose({
+      name: `rollback-explain-original-${randomUUID().slice(0, 8)}`,
+      targets: [app.id],
+      topology: soloTopology.id
+    });
+
+    // Drive the original to `accepted` — before the freeze exists, exactly as the actuator test
+    // above does. `executorConfig.autoSucceedAfterMs` is 10 minutes (this file's `beforeAll`), so
+    // the target that gets triggered below stays `triggering` for the whole assertion window
+    // instead of racing past it to `succeeded` — the pending/triggering state `explain`'s
+    // projection is scoped to.
+    executorConfig.forcePhase[app.at(amer)] = "succeeded";
+    const originalState = async () => {
+      const [row] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx
+          .select()
+          .from(changes)
+          .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, original.id)))
+      );
+      return row!.state;
+    };
+    await tick(8);
+    expect(await originalState()).toBe("validating");
+    await admin.changes.accept(original.id);
+    executorConfig.forcePhase = {};
+
+    // NOW the freeze — an ORG-tier freeze, exactly the tier D7 stands aside for.
+    await freezeAt(amer.id, "amer-freeze-vs-rollback-explain");
+
+    // THE EXECUTOR REFUSES the rollback's own trigger attempt (the measured `argocd trigger: sync
+    // returned HTTP 400` contention shape `triggerBackoffMs`'s own doc names) — the actuator's
+    // `continue` still does not fire (D7 exempts it), so `triggerWaveTarget` genuinely CALLS the
+    // executor every tick, and every call is refused. That is exactly the shape finding 3 names:
+    // the target sits in `triggering` BACKOFF — never advancing to `triggered`, never falling back
+    // to `pending` — for the whole of the assertion window, which is what makes the read-path's
+    // `pending`/`triggering` gate actually include it rather than racing past it to a terminal
+    // status before `explain` is ever called.
+    refuseTargets.add(app.at(amer));
+    const rollback = await admin.changes.rollback(original.id, "integration: the release is bad");
+    await tick(8);
+
+    // THE ACTUATOR DID ITS PART — the freeze `continue` did not fire (D7), so a REAL trigger
+    // attempt reached the executor and was refused. `attempt > 0` is `originalChangeDispatchedTarget`'s
+    // own definition of "dispatched" (wave-targets-repo.ts) — a failure here means the fixture
+    // drifted rather than that D7 itself broke.
+    const rollbackTarget = await waveTarget(rollback.id, app.at(amer));
+    expect(rollbackTarget.status, "fixture check: refused every attempt, never advances").toBe(
+      "triggering"
+    );
+    expect(
+      rollbackTarget.attempt,
+      "fixture check: a real trigger attempt reached the executor"
+    ).toBeGreaterThan(0);
+
+    // THE READ SIDE, over the wire. `explain` must not describe this target as held by a freeze
+    // reconcile has already let the trigger past — that is the gap between the actuator (above)
+    // and the projection (`resolveWaveTargetFreezeHolds`) this test pins shut.
+    const explained = await admin.changes.explain(rollback.id);
+    const wave = explained.plan!.waves[0]!;
+    const target = wave.targets.find((t) => t.targetObjectId === app.at(amer))!;
+    expect(
+      target.hold,
+      "the rollback target was exempted from this freeze (D7) — explain must not say otherwise"
+    ).toBeUndefined();
+    expect(wave.heldTargetCount ?? 0).toBe(0);
+  });
+
+  // ============================================================================================
   // D7 AT THE TIER BOUNDARY (M25.3) — the exemption stops above org, measured at the EXECUTOR.
   // ============================================================================================
   it("D7 does not carry above org: a rollback is NOT triggered into an active PLATFORM freeze, and ships the moment it is lifted", async () => {

@@ -148,6 +148,39 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
   // SURFACE 1 — `GET /changes/{id}/explain`
   // -----------------------------------------------------------------------------------------
 
+  it("does not double-count a target that is BOTH freeze-held and dependency-held (M25.UI review finding 1)", async () => {
+    // `ChangeWaveSchema.heldTargetCount` is composed from TWO independent predicates over the SAME
+    // candidate set — the active wave's `pending`/`triggering` targets (routes/changes.ts's explain
+    // handler adds the stage-dependency half onto `plan`'s freeze half). `reconcile.ts`'s admission
+    // loop keeps its two hold sets disjoint BY CONSTRUCTION (only one `continue` can fire per
+    // target per tick — invariant 4 on the freeze-hold `continue`); the read side has no such
+    // ordering, so a target genuinely covered by BOTH a freeze and an unsatisfied stage dependency
+    // must still count as ONE held target on a wave, not two.
+    const dependency = await componentAt("dedup-dep", [gamma]);
+    const dependant = await componentAt("dedup-app", [gamma]);
+    await admin.freezes.create({
+      scopeObjectId: gamma.id,
+      name: `gamma-dedup-freeze-${randomUUID().slice(0, 8)}`,
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+      reason: "dedup: integration fixture"
+    });
+    const change = await release("dedup-held", [dependant.id], [{ dependsOn: dependency.id }]);
+    await tick(3);
+
+    const explained = await admin.changes.explain(change.id);
+    // Both halves genuinely fired — this is not testing an unreachable configuration.
+    expect(explained.stageDependencyStatus?.held).toBe(true);
+    const wave = explained.plan!.waves[0]!;
+    const target = wave.targets.find((t) => t.targetObjectId === dependant.at(gamma))!;
+    expect(target.status).toBe("pending");
+    expect(target.hold).toBeTruthy();
+
+    // THE ONE TARGET THIS WAVE HAS IS HELD BY TWO PREDICATES AT ONCE. `heldTargetCount` counts
+    // TARGETS held, not holds applied — a 1-target wave must report 1, never 2.
+    expect(wave.heldTargetCount).toBe(1);
+  }, 60_000);
+
   it("explain NAMES the held dependency, its branch and the stage — not just a Decision row", async () => {
     const dependency = await componentAt("explain-dep", [gamma]);
     const dependant = await componentAt("explain-app", [gamma]);

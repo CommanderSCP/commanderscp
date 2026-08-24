@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { and, eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import type { GraphObject } from "@scp/schemas";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { changes } from "../db/schema.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -12,6 +15,8 @@ import {
 import type { PluginHost } from "../plugin-host/contract.js";
 import { reconcileOrgTick } from "./reconcile.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
+import { createFreeze } from "../governance/freezes-repo.js";
+import * as freezeHoldModule from "./freeze-hold.js";
 
 /**
  * M25.UI — THE WAVE-TARGET FREEZE-HOLD PROJECTION, end to end against `GET /changes/{id}/explain`.
@@ -214,15 +219,122 @@ describe("wave-target hold projection: ChangeWaveTargetSchema.hold / ChangeWaveS
     await admin.instanceFreezes.lift(key, { reason: "cleanup" }, OPERATOR_TOKEN);
   }, 60_000);
 
+  it("an `atomic` freeze covering only an already-succeeded sibling still surfaces on the pending target (M25.UI review finding 2 — atomic drift)", async () => {
+    // `reconcile.ts`'s admission asks `evaluateFreezeHolds` about EVERY active-wave target
+    // (`activeWave.targets.map((t) => t.targetObjectId)`, `loadFreezeHolds`) — succeeded siblings
+    // included — because an `atomic` freeze's union only sees the ids it was asked about. This
+    // pins that the READ side (`resolveWaveTargetFreezeHolds`) asks the identical question rather
+    // than a narrower one over only the pending subset, which would never even query the succeeded
+    // sibling and so could never see the freeze that covers it.
+    const fastHost = createInMemoryFakeHost({ autoSucceedAfterMs: 30 });
+    const fastTick = async (times = 1) => {
+      for (let i = 0; i < times; i++) {
+        await reconcileOrgTick(
+          server.deps.db,
+          org.orgId,
+          fastHost,
+          server.deps.celSandbox!,
+          server.deps.config.secretsMasterKey
+        );
+      }
+    };
+
+    const app = await componentAt("atomic-drift", [amer, apac]);
+    // Hold `apac` directly from the first tick, so `amer` — unfrozen — ships and succeeds while
+    // `apac` never leaves `pending`.
+    const directHold = await freezeAt(apac.id, "apac-atomic-drift-direct-hold");
+    const change = await release("atomic-drift", [app.id]);
+
+    await fastTick(2);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await fastTick(3);
+
+    const midway = await admin.changes.explain(change.id);
+    const amerMid = midway.plan!.waves[0]!.targets.find((t) => t.targetObjectId === app.at(amer))!;
+    expect(amerMid.status).toBe("succeeded");
+    const apacMid = midway.plan!.waves[0]!.targets.find((t) => t.targetObjectId === app.at(apac))!;
+    expect(apacMid.status).toBe("pending");
+    expect(apacMid.hold).toBeTruthy();
+
+    // Lift the DIRECT hold on `apac` and declare an ATOMIC freeze over `amer` ONLY — the
+    // already-succeeded sibling. `apac` itself is now covered by no freeze directly.
+    await admin.freezes.lift(directHold.id, { reason: "integration: replaced by atomic case" });
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      createFreeze(tx, {
+        orgId: org.orgId,
+        scopeObjectId: amer.id,
+        name: "amer-atomic-drift",
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 3_600_000),
+        reason: "atomic-drift: integration fixture",
+        createdByActorId: org.orgId,
+        atomic: true
+      })
+    );
+
+    await fastTick(3);
+
+    const after = await admin.changes.explain(change.id);
+    const wave = after.plan!.waves[0]!;
+    const apacAfter = wave.targets.find((t) => t.targetObjectId === app.at(apac))!;
+    // THE ATOMIC UNION MUST STILL REACH `apac` — it is held only because `amer`, a target that has
+    // ALREADY SUCCEEDED, is covered by an atomic freeze. A read side that asked only about pending
+    // targets would never see `amer`'s freeze at all and would report `apac` unheld here.
+    expect(apacAfter.hold).toBeTruthy();
+    expect(apacAfter.hold!.freezes.some((f) => f.summary.includes("amer-atomic-drift"))).toBe(true);
+    // `amer` itself is not reported held — it already succeeded, and a hold cannot act on it.
+    const amerAfter = wave.targets.find((t) => t.targetObjectId === app.at(amer))!;
+    expect(amerAfter.hold).toBeUndefined();
+    expect(wave.heldTargetCount).toBe(1);
+  }, 60_000);
+
+  it("evaluates the freeze hold exactly ONCE per tick for one executing change (M25.UI review finding 4 — the laziness invariant)", async () => {
+    // `reconcile.ts`'s own doc (`loadFreezeHolds`) claims the freeze hold is resolved LAZILY,
+    // inside the trigger branch, so a change with a pending target pays for exactly one
+    // evaluation per tick. `advanceExecutingChanges` calls `getLatestPlanForChange`
+    // UNCONDITIONALLY before that branch even runs; without `withFreezeHolds: false` there, that
+    // call performed a SECOND, full evaluation whose `ChangePlan.hold` shape was thrown away
+    // unread — falsifying the very invariant the doc states. Pinned by counting calls to the
+    // shared predicate both call sites route through, rather than by reasoning about it.
+    // A MIXED (partially-frozen) wave — `amer` frozen, `apac` not — so the wave GATE admits it to
+    // `running` (only an ALL-frozen wave is blocked at the gate) and reconcile's per-target trigger
+    // branch, and therefore `loadFreezeHolds`, genuinely runs every tick from here on.
+    const app = await componentAt("hot-path", [amer, apac]);
+    const change = await release("hot-path", [app.id]);
+    await freezeAt(amer.id, "amer-hot-path-freeze");
+
+    // Drive the change to `executing`, with the wave already `running`, first — NOT under test —
+    // so the spy below counts exactly one tick's worth of work.
+    await tick(2);
+    const [row] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ state: changes.state })
+        .from(changes)
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
+    expect(row!.state, "fixture check: must be executing before the spy is installed").toBe(
+      "executing"
+    );
+    const midway = await admin.changes.explain(change.id);
+    expect(
+      midway.plan!.waves[0]!.status,
+      "fixture check: the wave must be running (mixed, not all-frozen) before the spy is installed"
+    ).toBe("running");
+
+    const spy = vi.spyOn(freezeHoldModule, "evaluateFreezeHolds");
+    try {
+      await tick(1);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  }, 60_000);
+
   // ============================================================================================
   // NOT COVERED BY THIS FILE (stated rather than left to be discovered):
   //   * `heldTargetCount` merging the STAGE-DEPENDENCY half in with the freeze half — that union
   //     is asserted in `stage-dependency-surfaces.integration.test.ts`'s siblings and this file's
   //     freeze-only cases are deliberately kept orthogonal to ADR-0028's coupling machinery.
-  //   * The `atomic` freeze case (a target held only because a SIBLING is covered) — the wire
-  //     shape is identical to the direct-coverage case exercised here (`describeFreezeForWaveTarget`
-  //     has no branch on `atomic` beyond the trailing clause, already covered by
-  //     `freeze-admission.integration.test.ts`'s D5 case at the Decision layer).
   //   * `service-board.ts` and `campaigns.ts`'s own `getLatestCampaignPlan`/`CampaignWaveTarget`
   //     projection — a structurally separate schema (`CampaignWaveTargetSchema`), out of this
   //     increment's stated scope (`ChangeWaveTargetSchema` only).
