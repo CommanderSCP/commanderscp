@@ -15,6 +15,7 @@ import { runsBackgroundWork, startBackgroundLoops } from "./background-work.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
 import { runSecretsDecryptCanary } from "./secrets/decrypt-canary.js";
 import { assertProductionSecretsOrThrow } from "./boot-checks.js";
+import { recordMemberClusterHeartbeat } from "./db/member-heartbeat-repo.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import type { AppDeps } from "./types.js";
@@ -62,6 +63,13 @@ async function main(): Promise<void> {
   // `withTenantTx` cannot become a cross-tenant leak (DESIGN.md §4.2 "two independent failures").
   const pool = createPool(config.runtimeDatabaseUrl);
   const db = createDb(pool);
+
+  // §7.4 — heartbeat this member cluster's (cluster id, app version) so the migrations Job's
+  // version-skew gate can see whether an old-version member cluster is still live. Never fatal: a
+  // heartbeat failure must not block boot (the gate fails OPEN if the table isn't there yet anyway).
+  await recordMemberClusterHeartbeat(db, config.clusterId, config.appVersion).catch((err) =>
+    console.warn("[scpd] failed to record member-cluster heartbeat (non-fatal)", err)
+  );
 
   // M7: `deps` is captured here (not just `{db, config}` inline) so `deps.pluginHost` can be set
   // AFTER the plugin host is constructed below — route handlers registered against this same

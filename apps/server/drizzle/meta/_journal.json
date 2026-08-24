@@ -610,6 +610,13 @@
       "when": 1788152000000,
       "tag": "0092_federation_self_generation",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1788153000000,
+      "tag": "0093_member_cluster_heartbeat",
+      "breakpoints": true
     }
   ]
 }

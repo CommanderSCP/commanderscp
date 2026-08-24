@@ -12,6 +12,7 @@ import {
   describeFederationSelfOriginFinding,
   inspectFederationSelfOrigin
 } from "../federation/self-origin-check.js";
+import { listLiveMemberHeartbeats } from "../db/member-heartbeat-repo.js";
 
 /** Operator-token gate (the `x-scp-operator-token` pattern governance-move/scan-db use): the instance
  *  doctor answers to the DEPLOYMENT operator, not a tenant bearer — its checks are instance-wide
@@ -183,6 +184,33 @@ export function registerDoctorRoutes(app: FastifyInstance, deps: AppDeps): void 
         detail:
           "The ordered dial-URL list (D3) that names the XO's fallback dial entry is M26.3 work; this check is a placeholder that will verify secrets/mTLS/replica-current/dial-entry once it lands."
       });
+
+      // §7.4 — member-cluster version skew: warn if live member clusters disagree on the app version
+      // (the same condition the migrations Job's contract-phase gate refuses on).
+      try {
+        const live = await listLiveMemberHeartbeats(deps.db);
+        const versions = [...new Set(live.map((h) => h.appVersion))];
+        const skewed = versions.length > 1;
+        checks.push({
+          id: "member-cluster-version-skew",
+          status: skewed ? "warn" : "ok",
+          summary: skewed
+            ? `member clusters are running MIXED versions: ${versions.join(", ")} (${live.length} live)`
+            : live.length > 0
+              ? `all ${live.length} live member cluster(s) run the same version (${versions[0] ?? "?"})`
+              : "no member-cluster heartbeats recorded yet",
+          detail: skewed
+            ? "A contract-phase migration is refused while versions differ (§7.4, N and N+1 only). Finish rolling every member cluster to one version before deploying the contract half."
+            : "The supported upgrade window is N and N+1 only; a contract migration is safe only once every member cluster runs the release that shipped its expand half."
+        });
+      } catch {
+        checks.push({
+          id: "member-cluster-version-skew",
+          status: "warn",
+          summary: "could not read member-cluster heartbeats (table not present or unreadable)",
+          detail: "The heartbeat table lands with drizzle/0093; this check is inert until then."
+        });
+      }
 
       reply.status(200).send({ checks });
     }

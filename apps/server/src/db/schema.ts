@@ -1267,6 +1267,15 @@ export const federationSelf = pgTable("federation_self", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
 
+/** Member-cluster version heartbeat (§7.4, drizzle/0093) — one row per member cluster, upserted on
+ *  boot. INSTANCE-WIDE (no org_id). The migrations Job refuses a contract-phase deploy while any live
+ *  heartbeat reports a version != the deploying one (an old member cluster still up; N and N+1 only). */
+export const memberClusterHeartbeat = pgTable("member_cluster_heartbeat", {
+  clusterId: text("cluster_id").primaryKey(),
+  appVersion: text("app_version").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+});
+
 /** Known peer domains (DESIGN §13 "peer pairing"), one row per paired remote domain. `syncScope`
  *  is configurable per peer (§13: full graph / policies-only / changes-only / status-only /
  *  label-selector custom). Pairing is always initiated by dialing OUT (§13 outpost-initiated-only)

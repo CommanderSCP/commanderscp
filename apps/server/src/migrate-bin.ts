@@ -25,12 +25,41 @@ import { loadConfig } from "./config.js";
 import { createDb, createPool } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
 import { provisionPgBossRole, provisionRuntimeRole, runtimeCredentials } from "./db/provision.js";
+import {
+  assertNoVersionSkewOrThrow,
+  isMissingHeartbeatTable,
+  listLiveMemberHeartbeats
+} from "./db/member-heartbeat-repo.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const adminPool = createPool(config.databaseUrl);
   const adminDb = createDb(adminPool);
   try {
+    // §7.4 VERSION-SKEW GATE — a CONTRACT-phase deploy (operator sets SCP_MIGRATION_PHASE=contract on
+    // the migrations Job) must not run while an OLD-version member cluster is still live, because a
+    // contract migration is safe only once every member runs the release that shipped its expand
+    // half (N and N+1 only). Fails OPEN on the very first deploy (before 0093 creates the heartbeat
+    // table). An expand-phase deploy (the default, SCP_MIGRATION_PHASE unset) never gates — that is
+    // exactly the phase you run WHILE old-version pods are still up.
+    if (process.env.SCP_MIGRATION_PHASE === "contract") {
+      try {
+        const live = await listLiveMemberHeartbeats(adminDb);
+        assertNoVersionSkewOrThrow(live, config.appVersion);
+        console.log(
+          `[migrate-bin] version-skew gate passed: every live member cluster is on '${config.appVersion}'.`
+        );
+      } catch (err) {
+        if (isMissingHeartbeatTable(err)) {
+          console.log(
+            "[migrate-bin] version-skew gate skipped: heartbeat table not present yet (first deploy)."
+          );
+        } else {
+          throw err;
+        }
+      }
+    }
+
     console.log("[migrate-bin] applying forward-only migrations...");
     await runMigrations(adminDb);
     console.log("[migrate-bin] migrations applied.");

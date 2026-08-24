@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { deriveRuntimeDatabaseUrl } from "./db/provision.js";
 import { generateMasterKeyBase64, parseMasterKeyBase64 } from "./secrets/crypto.js";
 import { isCrlExpired, parseCrlNextUpdate } from "./federation/crl-parse.js";
@@ -116,6 +117,11 @@ export interface ServerConfig {
   /** True when `SCP_COOKIE_SECRET` was UNSET and an ephemeral one was generated — the cookie half of
    *  the D6 production refusal (a restart invalidates every session signed under the old ephemeral). */
   cookieSecretWasGenerated: boolean;
+  /** §7.4 — this member cluster's identity (`SCP_CLUSTER_ID`, else the host/pod name) and the running
+   *  release (`SCP_APP_VERSION`, else "dev"). Heartbeated on boot; the migrations Job's version-skew
+   *  gate refuses a contract-phase deploy while a live member cluster reports a different version. */
+  clusterId: string;
+  appVersion: string;
   /**
    * M17.5 (ADR-0016) — the INSTANCE OPERATOR's shared secret (`SCP_OPERATOR_TOKEN`). Authenticates
    * the one write surface that is deliberately NOT a tenant capability: authoring the
@@ -456,6 +462,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     federationRoleDeclared: (env.SCP_FEDERATION_ROLE ?? "").trim() !== "",
     deploymentMode: loadDeploymentMode(env),
     cookieSecretWasGenerated: (env.SCP_COOKIE_SECRET ?? "").trim() === "",
+    clusterId: (env.SCP_CLUSTER_ID ?? "").trim() || hostname(),
+    appVersion: (env.SCP_APP_VERSION ?? "").trim() || "dev",
     bootstrapOrgName: env.SCP_BOOTSTRAP_ORG ?? "default",
     bootstrapAdminUsername: env.SCP_BOOTSTRAP_ADMIN_USERNAME ?? "admin",
     cookieSecret: env.SCP_COOKIE_SECRET ?? randomSecret(),
