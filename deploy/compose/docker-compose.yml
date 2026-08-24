@@ -47,6 +47,10 @@ services:
       DATABASE_URL: postgres://scp:scp@postgres:5432/scp
       # BUILD_AND_TEST.md §5.3: demo data on by default for the eval stack.
       SCP_SEED_DEMO: "true"
+      # D6 (§7.3): this eval stack boots with zero required secrets (ephemeral master key + cookie),
+      # so it declares evaluation mode explicitly — production mode refuses ephemeral secrets. Helm
+      # defaults to production; a real deployment supplies appSecrets.existingSecret instead.
+      SCP_DEPLOYMENT_MODE: evaluation
     ports:
       - "8080:8080"
     depends_on:

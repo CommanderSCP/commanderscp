@@ -13,17 +13,31 @@ import { loginAndSeedDemoData } from "./seed.js";
 import { startPluginHostForRole } from "./plugin-host/host-bootstrap.js";
 import { runsBackgroundWork, startBackgroundLoops } from "./background-work.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
+import { runSecretsDecryptCanary } from "./secrets/decrypt-canary.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import type { AppDeps } from "./types.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  if (config.secretsMasterKeyWasGenerated) {
-    // M7 (secrets/crypto.ts) — see config.ts's doc comment: an ephemeral key lets the compose
-    // eval stack and a first `pnpm dev` boot with zero required env vars, but any org secret
-    // (GitHub App key, ArgoCD token, managed-iac infra creds) encrypted under it becomes
-    // undecryptable the moment this process restarts. Loud, not fatal.
+  // D6 (§7.3) — a PRODUCTION instance must not boot on ephemeral generated secrets: an ephemeral
+  // SCP_SECRETS_MASTER_KEY orphans every stored credential on restart, and an ephemeral
+  // SCP_COOKIE_SECRET invalidates every session on restart. Fail-closed here, before anything else.
+  // `evaluation` (compose-eval, `pnpm dev`) keeps the zero-required-env boot with only a warning.
+  if (config.deploymentMode === "production") {
+    const ephemeral: string[] = [];
+    if (config.secretsMasterKeyWasGenerated) ephemeral.push("SCP_SECRETS_MASTER_KEY");
+    if (config.cookieSecretWasGenerated) ephemeral.push("SCP_COOKIE_SECRET");
+    if (ephemeral.length > 0) {
+      throw new Error(
+        `[scpd] refusing to boot in production mode with EPHEMERAL generated ${ephemeral.join(" and ")} ` +
+          "— an ephemeral key silently orphans stored secrets / invalidates sessions on the next restart " +
+          "and cannot survive a failover. Provide them via appSecrets.existingSecret (identical across " +
+          "member clusters), or set SCP_DEPLOYMENT_MODE=evaluation for a dev/eval stack."
+      );
+    }
+  } else if (config.secretsMasterKeyWasGenerated) {
+    // M7 (secrets/crypto.ts) — evaluation mode keeps the loud-not-fatal warning.
     console.warn(
       "[scpd] SCP_SECRETS_MASTER_KEY is unset — generated an EPHEMERAL secrets master key for this process only. " +
         "Any plugin secret stored now will be unreadable after the next restart. Set SCP_SECRETS_MASTER_KEY " +
@@ -267,6 +281,18 @@ async function main(): Promise<void> {
   // enforcement then lives only at the deployment edge (`deploy/helm/templates/ingress.yaml`'s
   // `ingress.mtls` — nginx client-cert-verification annotations, see deploy/helm/README.md's
   // "Federation mTLS" section).
+  // D6 / B3 (§7.3) — PROVE the configured secrets master key decrypts this instance's vault BEFORE
+  // binding the listener, in production mode. A member cluster (or a restored instance) booting with
+  // the wrong key would otherwise serve happily and fail every executor call later, one at a time,
+  // with no single loud signal. A throw here fails the process closed. Evaluation mode skips it (an
+  // eval stack may legitimately run on an ephemeral key with an empty or throwaway vault).
+  if (config.deploymentMode === "production") {
+    const canary = await runSecretsDecryptCanary(db, config.secretsMasterKey);
+    app.log.info(
+      `secrets decrypt canary passed (${canary.decryptsAttempted} decrypt(s) across ${canary.orgsWithSecrets} org(s) with a vault)`
+    );
+  }
+
   await app.listen({ port: config.port, host: config.host });
   const scheme = config.federationServerMtls ? "https" : "http";
   app.log.info(`scp (${config.role}) listening on ${scheme}://${config.host}:${config.port}`);
