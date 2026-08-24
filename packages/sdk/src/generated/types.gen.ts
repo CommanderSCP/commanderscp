@@ -6739,6 +6739,16 @@ export type GetComponentPipelineResponses = {
             };
             unknownFields: Array<string>;
         } | null;
+        observedRun?: {
+            sourceKind: string;
+            repo: string | null;
+            runId: string;
+            workflowName: string | null;
+            workflowPath: string | null;
+            url: string | null;
+            observedAt: string;
+            changeId: string;
+        } | null;
         unknownFields: Array<string>;
     };
 };
@@ -12020,6 +12030,7 @@ export type ExplainChangeResponses = {
                 createdAt: string;
                 startedAt: string | null;
                 completedAt: string | null;
+                heldTargetCount?: number;
                 targets: Array<{
                     id: string;
                     waveId: string;
@@ -12050,6 +12061,17 @@ export type ExplainChangeResponses = {
                             };
                         };
                     } | null;
+                    hold?: {
+                        freezes: Array<{
+                            freezeId: string;
+                            scope: {
+                                objectId: string;
+                                name: string | null;
+                            } | null;
+                            summary: string;
+                            endsAt: string;
+                        }>;
+                    };
                     status: string;
                     attempt: number;
                     lastObservedAt: string | null;
@@ -14837,6 +14859,7 @@ export type ListFreezesResponses = {
             liftedAt: string | null;
             liftedByActorId: string | null;
             liftReason: string | null;
+            objectId: string | null;
         }>;
         nextCursor: string | null;
     };
@@ -14852,6 +14875,8 @@ export type CreateFreezeData = {
         endsAt: string;
         reason: string;
         atomic?: boolean;
+        federate?: boolean;
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -14913,6 +14938,7 @@ export type CreateFreezeResponses = {
         liftedAt: string | null;
         liftedByActorId: string | null;
         liftReason: string | null;
+        objectId: string | null;
     };
 };
 
@@ -15006,6 +15032,7 @@ export type LiftFreezeResponses = {
         liftedAt: string | null;
         liftedByActorId: string | null;
         liftReason: string | null;
+        objectId: string | null;
     };
 };
 
@@ -15075,6 +15102,7 @@ export type GetFreezeResponses = {
         liftedAt: string | null;
         liftedByActorId: string | null;
         liftReason: string | null;
+        objectId: string | null;
     };
 };
 
@@ -15169,6 +15197,7 @@ export type UpdateFreezeWindowResponses = {
         liftedAt: string | null;
         liftedByActorId: string | null;
         liftReason: string | null;
+        objectId: string | null;
     };
 };
 

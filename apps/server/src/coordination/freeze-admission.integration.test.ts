@@ -11,7 +11,9 @@ import {
   changes,
   changeWaveTargets,
   decisions,
-  freezes
+  freezes,
+  roleBindings,
+  roles
 } from "../db/schema.js";
 import {
   createTestComponent,
@@ -657,6 +659,84 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   });
 
   // ============================================================================================
+  // D7, READ SIDE — the read-time projection (`GET /changes/{id}/explain`) has to agree with the
+  // actuator above, or an operator sees a rollback dispatched WHILE `explain` still reports its
+  // target held by the very freeze it was exempted from (M25.UI review finding 3).
+  // ============================================================================================
+  it("D7 read-side: explain does not report the rollback target held by the freeze it was exempted from", async () => {
+    const app = await componentAt("rollback-explain", [amer]);
+    const soloTopology = await admin.object("release-topology").create({
+      name: `amer-only-explain-${randomUUID().slice(0, 8)}`,
+      properties: { waves: [{ name: "amer", mode: "parallel", targets: [amer.id] }] }
+    });
+    const original = await admin.changes.propose({
+      name: `rollback-explain-original-${randomUUID().slice(0, 8)}`,
+      targets: [app.id],
+      topology: soloTopology.id
+    });
+
+    // Drive the original to `accepted` — before the freeze exists, exactly as the actuator test
+    // above does. `executorConfig.autoSucceedAfterMs` is 10 minutes (this file's `beforeAll`), so
+    // the target that gets triggered below stays `triggering` for the whole assertion window
+    // instead of racing past it to `succeeded` — the pending/triggering state `explain`'s
+    // projection is scoped to.
+    executorConfig.forcePhase[app.at(amer)] = "succeeded";
+    const originalState = async () => {
+      const [row] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx
+          .select()
+          .from(changes)
+          .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, original.id)))
+      );
+      return row!.state;
+    };
+    await tick(8);
+    expect(await originalState()).toBe("validating");
+    await admin.changes.accept(original.id);
+    executorConfig.forcePhase = {};
+
+    // NOW the freeze — an ORG-tier freeze, exactly the tier D7 stands aside for.
+    await freezeAt(amer.id, "amer-freeze-vs-rollback-explain");
+
+    // THE EXECUTOR REFUSES the rollback's own trigger attempt (the measured `argocd trigger: sync
+    // returned HTTP 400` contention shape `triggerBackoffMs`'s own doc names) — the actuator's
+    // `continue` still does not fire (D7 exempts it), so `triggerWaveTarget` genuinely CALLS the
+    // executor every tick, and every call is refused. That is exactly the shape finding 3 names:
+    // the target sits in `triggering` BACKOFF — never advancing to `triggered`, never falling back
+    // to `pending` — for the whole of the assertion window, which is what makes the read-path's
+    // `pending`/`triggering` gate actually include it rather than racing past it to a terminal
+    // status before `explain` is ever called.
+    refuseTargets.add(app.at(amer));
+    const rollback = await admin.changes.rollback(original.id, "integration: the release is bad");
+    await tick(8);
+
+    // THE ACTUATOR DID ITS PART — the freeze `continue` did not fire (D7), so a REAL trigger
+    // attempt reached the executor and was refused. `attempt > 0` is `originalChangeDispatchedTarget`'s
+    // own definition of "dispatched" (wave-targets-repo.ts) — a failure here means the fixture
+    // drifted rather than that D7 itself broke.
+    const rollbackTarget = await waveTarget(rollback.id, app.at(amer));
+    expect(rollbackTarget.status, "fixture check: refused every attempt, never advances").toBe(
+      "triggering"
+    );
+    expect(
+      rollbackTarget.attempt,
+      "fixture check: a real trigger attempt reached the executor"
+    ).toBeGreaterThan(0);
+
+    // THE READ SIDE, over the wire. `explain` must not describe this target as held by a freeze
+    // reconcile has already let the trigger past — that is the gap between the actuator (above)
+    // and the projection (`resolveWaveTargetFreezeHolds`) this test pins shut.
+    const explained = await admin.changes.explain(rollback.id);
+    const wave = explained.plan!.waves[0]!;
+    const target = wave.targets.find((t) => t.targetObjectId === app.at(amer))!;
+    expect(
+      target.hold,
+      "the rollback target was exempted from this freeze (D7) — explain must not say otherwise"
+    ).toBeUndefined();
+    expect(wave.heldTargetCount ?? 0).toBe(0);
+  });
+
+  // ============================================================================================
   // D7 AT THE TIER BOUNDARY (M25.3) — the exemption stops above org, measured at the EXECUTOR.
   // ============================================================================================
   it("D7 does not carry above org: a rollback is NOT triggered into an active PLATFORM freeze, and ships the moment it is lifted", async () => {
@@ -1024,6 +1104,213 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     // The paired direction — otherwise the case above passes against a column that is always true.
     const created = await freezeAt(apac.id, "apac-default-atomicity");
     expect(created.atomic).toBe(false);
+  });
+
+  // ============================================================================================
+  // M25.7 / D6 AUTHORING DOOR — `federate` IS A SECOND, HIGHER GATE, AND IT DEFAULTS OFF
+  // ============================================================================================
+  // Two properties that fail in opposite directions, so both need a case: the default must change
+  // NOTHING (a new reach never defaults on), and the federating form must demand `federation:write`
+  // ON TOP of `freeze:write` — declaring a freeze that binds another security domain is not the act
+  // of describing your own estate (ADR-0022's line, applied by ADR-0043 §3).
+  //
+  // THE REFUSAL CASE'S ACTOR IS AN ORG-DEFINED ROLE, NOT A BUILT-IN ONE, and that is load-bearing.
+  // `freeze:write` and `federation:write` both land on Administrator and Owner and nowhere else, so
+  // nothing reachable through today's role table holds one without the other: against a built-in
+  // actor the gate would be satisfied by coincidence between two grant lists in two unrelated
+  // migrations, and deleting the check would leave every case green. `roles.org_id` exists for
+  // exactly this, and `governance/governance-managed-write-doors.integration.test.ts` builds the
+  // mirror-image actor for the mirror-image reason.
+  // ============================================================================================
+
+  /** `freeze:write` at the org root and `federation:write` NOWHERE — the actor no built-in role can
+   *  express, and the only actor for which the D6 gate is observable at all. */
+  async function createFreezeOnlyUser(): Promise<string> {
+    // Viewer purely so the harness mints the auth row and a live token; `object:read` grants no
+    // write anywhere and is no part of what is under test.
+    const user = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const roleId = randomUUID();
+      await tx.insert(roles).values({
+        id: roleId,
+        orgId: org.orgId,
+        name: `freeze-only-${randomUUID().slice(0, 8)}`,
+        permissions: ["freeze:write"]
+      });
+      await tx.insert(roleBindings).values({
+        id: randomUUID(),
+        orgId: org.orgId,
+        subjectId: user.objectId,
+        roleId,
+        scopeObjectId: org.orgId,
+        effect: "allow"
+      });
+    });
+    return user.token;
+  }
+
+  it("D6 door: `federate` is settable through POST /api/v1/freezes and reports the object it minted", async () => {
+    const created = await admin.freezes.create({
+      scopeObjectId: emea.id,
+      name: "emea-federating-via-api",
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+      reason: "d6 door: authored the way a commander authors one",
+      federate: true
+    });
+    // `objectId` is READ from the row, never inferred — it is what tells an operator at a receiving
+    // instance that this freeze is not one they can lift.
+    expect(created.objectId, "the 201 body must report the object that was minted").not.toBeNull();
+    expect((await admin.freezes.get(created.id)).objectId).toBe(created.objectId);
+  });
+
+  it("D6 door CONTROL: the default is OFF — an ordinary create mints no object at all", async () => {
+    // Without this, "federate works" is satisfied by an implementation that federates EVERY freeze,
+    // which would newly publish every freeze on every existing estate to every paired peer.
+    const created = await freezeAt(govcloud.id, "govcloud-default-federation");
+    expect(created.objectId).toBeNull();
+  });
+
+  it("D6 gate: `freeze:write` alone CANNOT author a federating freeze — and the same actor CAN author an ordinary one", async () => {
+    const token = await createFreezeOnlyUser();
+    const client = new ScpClient({ baseUrl: server.baseUrl, token });
+    const body = {
+      scopeObjectId: amer.id,
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+      reason: "d6 gate"
+    };
+
+    await expect(
+      client.freezes.create({ ...body, name: "gate-refused", federate: true })
+    ).rejects.toMatchObject({ status: 403 });
+    // NOTHING WAS STORED. A refusal reached only after the row landed is not a refusal: the freeze
+    // would then stand, enforced locally, with no object and no record of the refused reach.
+    expect(
+      (await admin.freezes.list()).items.filter((f) => f.name === "gate-refused")
+    ).toHaveLength(0);
+
+    // THE CONTROL, without which the case above is satisfied by a door that is simply broken for
+    // this actor: the SAME token authors an ordinary freeze and it lands.
+    const ordinary = await client.freezes.create({ ...body, name: "gate-allowed" });
+    expect(ordinary.objectId).toBeNull();
+  });
+
+  // ============================================================================================
+  // D6 GATE, THE OTHER TWO VERBS — `federation:write` IS DEMANDED WHEREVER THE OBJECT IS PUBLISHED
+  // ============================================================================================
+  // The create gate above is only one of three doors that reach another security domain. Both write
+  // verbs call `syncFreezeObject`, which re-snapshots the `freeze` object so the edit rides the next
+  // bundle — so gating the create alone left the SAME reach available with strictly less authority:
+  //
+  //   a `freeze:write`-only actor could take a federating freeze whose window ends in an hour and
+  //   PATCH its `endsAt` a year out, extending a release-stopping block across a boundary they hold
+  //   no federation authority over; or lift it, retracting a commander's protection at every
+  //   downstream instance.
+  //
+  // Keyed on `objectId !== null` — on whether the publish will actually happen — so a
+  // non-federating freeze is untouched, which is what the control half of each case measures. The
+  // actor is the same org-defined `freeze:write`-only role the create gate uses, and for the same
+  // reason: no built-in role separates these two permissions.
+  //
+  // MUTATION RUN 2026-08-24, MEASURED. Deleting BOTH `assertMayEditFederatingFreeze(tx, auth, …)`
+  // calls from `routes/governance.ts` fails exactly these two cases and nothing else:
+  //
+  //   × D6 gate: a `freeze:write`-only actor cannot LIFT a federating freeze …
+  //     → lifting a federating freeze retracts it downstream — that needs federation:write:
+  //       expected 200 to be 403
+  //   × D6 gate: a `freeze:write`-only actor cannot EXTEND a federating freeze's window …
+  //     → expected 200 to be 403
+  //
+  // The CREATE gate case stayed green through it, which is the point: the create check could not
+  // and did not cover these verbs.
+  // ============================================================================================
+
+  it("D6 gate: a `freeze:write`-only actor cannot LIFT a federating freeze — and CAN lift a non-federating one", async () => {
+    const token = await createFreezeOnlyUser();
+    const client = new ScpClient({ baseUrl: server.baseUrl, token });
+
+    const federating = await admin.freezes.create({
+      scopeObjectId: emea.id,
+      name: "d6-lift-gate-federating",
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+      reason: "d6 lift gate",
+      federate: true
+    });
+    // PREMISE, asserted rather than assumed: the guard is keyed on this field, so a fixture that
+    // silently stopped federating would make the refusal below prove nothing.
+    expect(federating.objectId, "the fixture must actually be a federating freeze").not.toBeNull();
+
+    expect(
+      await statusOf(
+        client.freezes.lift(federating.id, { reason: "retracting another domain's block" })
+      ),
+      "lifting a federating freeze retracts it downstream — that needs federation:write"
+    ).toBe(403);
+    // A REFUSAL REACHED AFTER THE WRITE IS NOT A REFUSAL: the row must still be standing.
+    expect((await freezeRow(federating.id)).liftedAt).toBeNull();
+
+    // THE CONTROL, without which the case is satisfied by a door broken for this actor entirely.
+    const ordinary = await freezeAt(apac.id, "d6-lift-gate-ordinary");
+    expect(
+      ordinary.objectId,
+      "the control must NOT federate, or it measures the same thing"
+    ).toBeNull();
+    const lifted = await client.freezes.lift(ordinary.id, { reason: "mine to lift" });
+    expect(lifted.liftedAt).not.toBeNull();
+  });
+
+  it("D6 gate: a `freeze:write`-only actor cannot EXTEND a federating freeze's window — and CAN move a non-federating one", async () => {
+    // THE SHARPER HALF. A lift is at least visibly a retraction; extending `endsAt` grows a block in
+    // another security domain and reads, in an audit log, exactly like ordinary window maintenance.
+    const token = await createFreezeOnlyUser();
+    const client = new ScpClient({ baseUrl: server.baseUrl, token });
+
+    const federating = await admin.freezes.create({
+      scopeObjectId: govcloud.id,
+      name: "d6-window-gate-federating",
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+      reason: "d6 window gate",
+      federate: true
+    });
+    expect(federating.objectId).not.toBeNull();
+    const before = await freezeRow(federating.id);
+
+    expect(
+      await statusOf(
+        client.freezes.updateWindow(federating.id, {
+          endsAt: new Date(Date.now() + 365 * 86_400_000).toISOString(),
+          reason: "a year of someone else's downtime"
+        })
+      )
+    ).toBe(403);
+    expect(
+      (await freezeRow(federating.id)).endsAt.toISOString(),
+      "the window must be untouched — a refusal that still moved endsAt is not a refusal"
+    ).toBe(before.endsAt.toISOString());
+
+    const ordinary = await freezeAt(amer.id, "d6-window-gate-ordinary");
+    expect(ordinary.objectId).toBeNull();
+    const moved = await client.freezes.updateWindow(ordinary.id, {
+      endsAt: new Date(Date.now() + 7_200_000).toISOString(),
+      reason: "mine to move"
+    });
+    expect(moved.endsAt).not.toBe(ordinary.endsAt);
+  });
+
+  it("D6: `domainLocal` without `federate` is REFUSED, not ignored — a locality declaration that no-ops is a field that lies", async () => {
+    await expect(
+      admin.freezes.create({
+        scopeObjectId: amer.id,
+        name: "local-without-object",
+        startsAt: new Date(Date.now() - 60_000).toISOString(),
+        endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+        reason: "d6: locality needs something to withhold",
+        domainLocal: true
+      })
+    ).rejects.toMatchObject({ status: 400 });
   });
 
   // ============================================================================================

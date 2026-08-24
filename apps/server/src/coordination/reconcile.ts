@@ -684,8 +684,14 @@ async function reconcileExecutingChange(
   masterKey: Buffer
 ): Promise<void> {
   const gateDeps: GateDeps = { sandbox, host };
+  // `withFreezeHolds: false` (M25.UI review finding 4) — this function reads `plan.waves[].status`
+  // and `.targets[].status`/`targetObjectId` only; it never touches `.hold`/`heldTargetCount` (the
+  // trigger branch below evaluates freezes itself, lazily, via `loadFreezeHolds`). Without this,
+  // EVERY executing change paid for a full freeze-hold evaluation here, on EVERY 1 s tick, whose
+  // result was discarded — then `loadFreezeHolds` redid the identical work moments later for the
+  // decision that actually acts on it.
   const plan = await withTenantTx(db, orgId, (tx) =>
-    getLatestPlanForChange(tx, orgId, change.objectId)
+    getLatestPlanForChange(tx, orgId, change.objectId, { withFreezeHolds: false })
   );
   if (!plan || plan.waves.length === 0) {
     // Shouldn't happen — `coordinated` never advances to `executing` without a compiled plan of

@@ -257,13 +257,38 @@ export function describeFreezeHold(verdict: FreezeHoldVerdict): string {
     .join("; ");
 }
 
-/** WHERE a freeze was declared, in one operator-readable phrase — the org tier's scope object id,
- *  or the platform tier's stage coordinate. A platform freeze printed as "at null" would be the
- *  hold explanation saying nothing in the one line an operator reads first. */
-function freezeAddress(f: FreezeHoldVerdict["freezes"][number]): string {
-  if (f.tier !== "platform") return String(f.scopeObjectId);
+/** WHERE a freeze was declared, in one operator-readable phrase — the org tier's scope object id
+ *  (or its resolved NAME, when the caller has one), or the platform tier's stage coordinate. A
+ *  platform freeze printed as "at null" would be the hold explanation saying nothing in the one
+ *  line an operator reads first.
+ *
+ *  `scopeName` is OPTIONAL and ignored for a platform freeze (which has no object id to name).
+ *  `describeFreezeHold`'s Decision-facing call omits it on purpose — a Decision's `reasonTree`
+ *  must stay byte-stable across a rename, so it names the id, never a name that can drift. */
+function freezeAddress(f: FreezeHoldVerdict["freezes"][number], scopeName?: string | null): string {
+  if (f.tier !== "platform") return scopeName ? `'${scopeName}'` : String(f.scopeObjectId);
   if (!f.match || f.match.allEnvironments) return "the whole deployment (platform tier)";
   return f.match.region === null
     ? `every region of '${f.match.environment}' (platform tier)`
     : `'${f.match.environment}'/'${f.match.region}' (platform tier)`;
+}
+
+/** One sentence per covering freeze, for the wave-target `hold.freezes[].summary` wire field
+ *  (`ChangeWaveTargetSchema.hold`, campaigns-rework.md's "wave-target hold projection", property
+ *  2) — the same idiom `describeStageDependencyHold` already uses: server-composed, rendered
+ *  verbatim, no client reconstruction (charter principle 6).
+ *
+ *  Unlike `describeFreezeHold` above (which joins EVERY covering freeze of a target into one
+ *  Decision-facing line), this describes exactly ONE freeze — the wire shape carries an array of
+ *  freezes, each with its own `summary`, so the join belongs to the renderer, not the server.
+ *  `scopeName` is the caller's resolved `{objectId, name}` enrichment (property 3); `null` for a
+ *  platform freeze or an org freeze whose scope resolved to no live object. */
+export function describeFreezeForWaveTarget(
+  f: FreezeHoldVerdict["freezes"][number],
+  scopeName: string | null
+): string {
+  return (
+    `freeze '${f.name ?? f.id}' at ${freezeAddress(f, scopeName)} until ${f.endsAt}` +
+    (f.atomic ? " (atomic — it holds EVERY target of the wave, covered or not)" : "")
+  );
 }

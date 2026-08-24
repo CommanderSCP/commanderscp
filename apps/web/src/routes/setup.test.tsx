@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { Freeze } from "@scp/schemas";
+import type { Freeze, InstanceFreeze } from "@scp/schemas";
 
 /**
  * G5 (`docs/proposals/outpost-ui.md` §4 close, owner decision 2026-08-13) — the setup landing.
@@ -22,11 +22,16 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 const {
   buildChecklistRows,
   buildCreateFreezePayload,
+  buildUpdateWindowPayload,
+  toDatetimeLocalValue,
   activeAndUpcomingFreezes,
   freezeWindowStatus,
+  platformFreezeMatchLabel,
   DeclareFreezeForm,
   emptyFreezeForm,
   FreezeRow,
+  PlatformFreezeCard,
+  PlatformFreezeRow,
   SetupChecklistCard
 } = await import("./setup");
 
@@ -209,6 +214,10 @@ describe("freezeWindowStatus / activeAndUpcomingFreezes", () => {
       liftReason: null,
       createdByActorId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
       createdAt: "2026-08-12T00:00:00.000Z",
+      // M25.7 — a freeze declared HERE and nowhere else, which is the default. Window status is
+      // computed from `startsAt`/`endsAt` alone and is deliberately blind to federation: an imported
+      // freeze is active in exactly the same window as a locally-declared one.
+      objectId: null,
       ...overrides
     };
   }
@@ -268,7 +277,11 @@ describe("FreezeRow — the lift claim, and the state a lift leaves behind", () 
     atomic: false,
     liftedAt: null,
     liftedByActorId: null,
-    liftReason: null
+    liftReason: null,
+    // M25.7 — a locally-declared, non-federating freeze: the one an operator on THIS instance can
+    // actually lift. (A freeze whose object is a foreign replica is refused with a 409 by
+    // `freezes-repo.ts`'s `lockFreezeRow`; rendering that distinction is the UI session's.)
+    objectId: null
   };
 
   // DELIBERATE INVERSION (M25.1). Until `DELETE /api/v1/freezes/{id}` shipped, these two cases
@@ -407,6 +420,16 @@ describe("DeclareFreezeForm — exactly CreateFreezeRequest's fields, nothing in
     // what makes the form's field set track `CreateFreezeRequestSchema` rather than drift from it.
     // `atomic` is a real key on that schema, so it belongs here; bumping the number is the correct
     // response, and inventing a field that is NOT on the schema still fails.
+    //
+    // M25.7 ADDED TWO SCHEMA KEYS AND THIS COUNT DELIBERATELY DID NOT MOVE — recorded rather than
+    // left to be rediscovered as drift. `federate` and `domainLocal` are gated on `federation:write`
+    // at the freeze's scope, not on the `freeze:write` this page's audience holds, and this form has
+    // no way to know whether the viewer holds it; an inert checkbox that 403s on submit is worse
+    // than no checkbox. Freeze authoring UI is the UI session's surface (coordinated in
+    // docs/proposals/campaigns-rework.md §2.3), and `scp freeze create --federate` is the door until
+    // then. So the invariant this case pins is now "one field per schema key the form OFFERS, and no
+    // field that is not on the schema" — inventing an off-schema field still fails, and adding
+    // `federate` later means bumping this to 6 with a testid above.
     expect((html.match(/<input\b/g) ?? []).length).toBe(5);
     expect((html.match(/<textarea\b/g) ?? []).length).toBe(1);
   });
@@ -447,6 +470,207 @@ describe("DeclareFreezeForm — exactly CreateFreezeRequest's fields, nothing in
     );
     expect(html).toContain('data-testid="declare-freeze-error"');
     expect(html).toContain("freeze endsAt must be after startsAt");
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// FreezeRow — the window-edit control (M25.UI increment 3, PATCH /freezes/{id}).
+// -------------------------------------------------------------------------------------------
+
+describe("FreezeRow — 'Adjust window'", () => {
+  const ROW_FREEZE: Freeze = {
+    id: "6f0a1b2c-3d4e-4f50-8161-728394a5b6c7",
+    scopeObjectId: "0c1d2e3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5",
+    name: "code freeze",
+    startsAt: "2026-08-13T00:00:00.000Z",
+    endsAt: "2026-08-20T00:00:00.000Z",
+    reason: "quarter close",
+    createdByActorId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    createdAt: "2026-08-12T00:00:00.000Z",
+    atomic: false,
+    liftedAt: null,
+    liftedByActorId: null,
+    liftReason: null,
+    // M25.7 (D6) — `null` is the HONEST value here, not merely the one that compiles: this fixture
+    // never declared `federate: true`, so no `freeze` graph object exists for it, and `objectId` is
+    // precisely "does a wire form of this freeze exist". The control under test is the WINDOW edit,
+    // which federation does not change.
+    objectId: null
+  };
+  const NOW = new Date("2026-08-14T00:00:00.000Z");
+
+  it("offers no window-edit control when the caller passes no `onUpdateWindow` — read-only stays read-only", () => {
+    const html = renderToStaticMarkup(<FreezeRow freeze={ROW_FREEZE} now={NOW} />);
+    expect(html).not.toContain('data-testid="freeze-window-toggle"');
+  });
+
+  it("offers the 'Adjust window' toggle when `onUpdateWindow` is supplied, on an UNLIFTED row", () => {
+    const html = renderToStaticMarkup(
+      <FreezeRow freeze={ROW_FREEZE} now={NOW} onUpdateWindow={() => undefined} />
+    );
+    expect(html).toContain('data-testid="freeze-window-toggle"');
+    expect(html).toContain("Adjust window");
+    // Collapsed by default — the form itself is not in the DOM until toggled.
+    expect(html).not.toContain('data-testid="freeze-window-form"');
+  });
+
+  it("does NOT offer the toggle on a LIFTED row, even with `onUpdateWindow` supplied", () => {
+    const html = renderToStaticMarkup(
+      <FreezeRow
+        freeze={{ ...ROW_FREEZE, liftedAt: "2026-08-15T00:00:00.000Z", liftReason: "resolved" }}
+        now={new Date("2026-08-16T00:00:00.000Z")}
+        onUpdateWindow={() => undefined}
+      />
+    );
+    expect(html).not.toContain('data-testid="freeze-window-toggle"');
+  });
+
+  it("`buildUpdateWindowPayload` converts the local datetime value and trims the reason — mandatory reason enforced client-side like Lift", () => {
+    const payload = buildUpdateWindowPayload("2026-08-25T09:30", "  incident over  ");
+    expect(payload.endsAt).toBe(new Date("2026-08-25T09:30").toISOString());
+    expect(payload.reason).toBe("incident over");
+  });
+
+  it("`toDatetimeLocalValue` round-trips through `Date` — the field an operator sees is the field submitted", () => {
+    const local = toDatetimeLocalValue("2026-08-20T09:30:00.000Z");
+    // Not asserting an exact clock-dependent string (the conversion is LOCAL time, which varies by
+    // CI timezone) — asserting the round trip: re-parsing what was rendered reproduces the same
+    // instant `Date` would parse it as, which is exactly what the submit handler does downstream.
+    expect(new Date(local).getTime()).toBe(new Date("2026-08-20T09:30:00.000Z").getTime());
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Platform freezes card (M25.UI increment 3) — read-only, structural match-coordinate rendering,
+// retracted state, and the CLI/HTTP pointer.
+// -------------------------------------------------------------------------------------------
+
+describe("platformFreezeMatchLabel", () => {
+  it("renders 'All environments' for a deployment-wide match", () => {
+    expect(
+      platformFreezeMatchLabel({ allEnvironments: true, environment: null, region: null })
+    ).toBe("All environments");
+  });
+
+  it("renders 'environment (every region)' when no region narrows it", () => {
+    expect(
+      platformFreezeMatchLabel({ allEnvironments: false, environment: "prod", region: null })
+    ).toBe("prod (every region)");
+  });
+
+  it("renders 'environment / region' when narrowed", () => {
+    expect(
+      platformFreezeMatchLabel({ allEnvironments: false, environment: "prod", region: "amer" })
+    ).toBe("prod / amer");
+  });
+});
+
+describe("PlatformFreezeRow", () => {
+  const PLATFORM_FREEZE: InstanceFreeze = {
+    id: "7a8b9c0d-1e2f-4a3b-9c4d-5e6f7a8b9c0d",
+    key: "incident-2026-08",
+    name: "incident freeze",
+    startsAt: "2026-08-13T00:00:00.000Z",
+    endsAt: "2026-08-20T00:00:00.000Z",
+    reason: "platform-wide incident",
+    match: { allEnvironments: true, environment: null, region: null },
+    atomic: true,
+    overridable: false,
+    note: null,
+    liftedAt: null,
+    liftReason: null,
+    updatedAt: "2026-08-13T00:00:00.000Z"
+  };
+  const NOW = new Date("2026-08-14T00:00:00.000Z");
+
+  it("renders key, name, match coordinate, window, reason, and the atomic/overridable badges", () => {
+    const html = renderToStaticMarkup(<PlatformFreezeRow freeze={PLATFORM_FREEZE} now={NOW} />);
+    expect(html).toContain("incident-2026-08");
+    expect(html).toContain("incident freeze");
+    expect(html).toContain("All environments");
+    expect(html).toContain("atomic");
+    // `overridable: false` on this fixture — its badge must NOT render.
+    expect(html).not.toContain(">overridable<");
+    expect(html).toContain("platform-wide incident");
+  });
+
+  it("an untitled freeze (nullable `name`) still renders as 'Untitled', never crashes or drops the row", () => {
+    const html = renderToStaticMarkup(
+      <PlatformFreezeRow freeze={{ ...PLATFORM_FREEZE, name: null }} now={NOW} />
+    );
+    expect(html).toContain("Untitled");
+  });
+
+  it("a RETRACTED row renders distinctly — never disappears, never confused with an active one", () => {
+    const html = renderToStaticMarkup(
+      <PlatformFreezeRow
+        freeze={{
+          ...PLATFORM_FREEZE,
+          liftedAt: "2026-08-15T00:00:00.000Z",
+          liftReason: "incident resolved early"
+        }}
+        now={new Date("2026-08-16T00:00:00.000Z")}
+      />
+    );
+    expect(html).toContain('data-testid="platform-freeze-lifted-note"');
+    expect(html).toContain("incident resolved early");
+    expect(html).toContain("Lifted");
+    // Still no write control anywhere on this row — it is read-only regardless of lift state.
+    expect(html).not.toContain("<button");
+  });
+
+  it("renders no `<button>` ever — this card is read-only by construction", () => {
+    const html = renderToStaticMarkup(<PlatformFreezeRow freeze={PLATFORM_FREEZE} now={NOW} />);
+    expect(html).not.toContain("<button");
+  });
+});
+
+describe("PlatformFreezeCard — the empty state and the operator's CLI/HTTP pointer", () => {
+  const NOW = new Date("2026-08-14T00:00:00.000Z");
+
+  it("renders the empty state without error when the list is empty — not conflated with 'still loading'", () => {
+    const html = renderToStaticMarkup(
+      <PlatformFreezeCard freezes={[]} isLoading={false} isError={false} now={NOW} />
+    );
+    expect(html).toContain("No platform freezes declared.");
+    expect(html).not.toContain('data-testid="platform-freeze-row"');
+    // The CLI pointer still renders beneath an empty list — an operator reading an empty card is
+    // exactly who needs to be told where the write door is.
+    expect(html).toContain('data-testid="platform-freeze-cli-pointer"');
+  });
+
+  it("renders a loading skeleton, never the empty-state honesty text, while the call is in flight", () => {
+    const html = renderToStaticMarkup(
+      <PlatformFreezeCard freezes={undefined} isLoading={true} isError={false} now={NOW} />
+    );
+    expect(html).not.toContain("No platform freezes declared.");
+    expect(html).toContain("animate-pulse");
+  });
+
+  it("renders the server's refusal verbatim through QueryErrorNotice on error", () => {
+    const html = renderToStaticMarkup(
+      <PlatformFreezeCard
+        freezes={undefined}
+        isLoading={false}
+        isError={true}
+        error={new Error("upstream unavailable")}
+        now={NOW}
+      />
+    );
+    expect(html).toContain('data-testid="platform-freezes-error"');
+    expect(html).toContain("upstream unavailable");
+  });
+
+  it("the CLI-pointer copy is pinned: both routes, both methods, and the operator-token header, never a browser-write claim", () => {
+    const html = renderToStaticMarkup(
+      <PlatformFreezeCard freezes={[]} isLoading={false} isError={false} now={NOW} />
+    );
+    expect(html).toContain("Operator-only, never a browser write");
+    expect(html).toContain("PUT /v1/instance/freezes/{key}");
+    expect(html).toContain("DELETE /v1/instance/freezes/{key}");
+    expect(html).toContain("x-scp-operator-token");
+    // No pressable write control anywhere on this card, in any query state.
+    expect(html).not.toContain("<button");
   });
 });
 

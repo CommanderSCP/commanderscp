@@ -162,8 +162,16 @@ describe("service board staleness: an upstream is labelled, and an overdue one i
     expect(result.asOf!.stale).toBe(false);
 
     // THE NEGATIVE HALF. A caveat that is always on is exactly as useless as no caveat: it teaches
-    // an operator to ignore the one signal that matters. Freeze visibility is unobservable the
-    // moment a peer exists (freezes never ride the journal), but nothing about CHANGE visibility is.
+    // an operator to ignore the one signal that matters. Freeze visibility is PARTIAL the moment a
+    // peer exists, but nothing about CHANGE visibility is.
+    //
+    // M25.7 (owner decision D6) NARROWED WHY, not whether. This comment used to say "freezes never
+    // ride the journal" — true when written. A freeze authored `federate: true` now rides
+    // `object_upsert` as a graph object and is rebuilt into the receiver's own `freezes` table. The
+    // caveat still fires unconditionally on any peer because federation is OPT-IN and defaults off:
+    // a peer's un-federated freezes are invisible here and nothing reports how many there are. The
+    // ASSERTIONS below are unchanged, which is the point of recording the reason change here rather
+    // than silently leaving a stale parenthesis in a green test.
     expect(result.unknownFields).not.toContain("summary.stable");
     expect(result.unknownFields).not.toContain("rows[].latestChangeId");
     expect(result.unknownFields).toContain("rows[].activeFreeze");

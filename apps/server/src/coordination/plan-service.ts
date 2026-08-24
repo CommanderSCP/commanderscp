@@ -9,6 +9,7 @@ import {
 import type { TenantTx } from "../db/tenant-tx.js";
 import {
   changePlans,
+  changes,
   changeWaveTargets,
   changeWaves,
   objects,
@@ -23,6 +24,13 @@ import {
 } from "./plan-compiler.js";
 import { stageDependenciesOf, typeOf } from "./changes-repo.js";
 import { parseTopologyWaves } from "./topology-waves.js";
+import {
+  describeFreezeForWaveTarget,
+  evaluateFreezeHolds,
+  type FreezeHoldVerdict
+} from "./freeze-hold.js";
+import { rollbackExemptible } from "../governance/freeze-scope.js";
+import { originalChangeDispatchedTarget } from "./wave-targets-repo.js";
 
 /** Reads `depends_on` edges among `targetIds` directly from the graph (DESIGN §9.3: "wave order
  * is computed from graph `depends_on` edges"). Both endpoints must be in `targetIds` — edges
@@ -259,7 +267,37 @@ export async function compileAndPersistPlan(
   return toChangePlanShape(planRow, waveRows, targetRows);
 }
 
-function toChangeWaveTargetShape(row: typeof changeWaveTargets.$inferSelect): ChangeWaveTarget {
+/** Wire shape of `ChangeWaveTargetSchema.hold` — see that schema's doc for the four properties it
+ *  satisfies. Built by `toWaveTargetHold` below from a live `FreezeHoldVerdict`, never persisted. */
+type WaveTargetHold = NonNullable<ChangeWaveTarget["hold"]>;
+
+/** `FreezeHoldVerdict` -> the wire `hold` shape (or `undefined` for an unheld target) — the ONE
+ *  place a `FreezeHoldVerdict` becomes API surface, so the freeze-projection idiom
+ *  (`describeFreezeForWaveTarget`) is applied exactly once. `scopeNames` is the caller's one-query
+ *  resolution of every covering freeze's `scopeObjectId` (`resolveFreezeScopeNames` below) —
+ *  passed in rather than re-queried per target. */
+function toWaveTargetHold(
+  verdict: FreezeHoldVerdict | undefined,
+  scopeNames: Map<string, string>
+): WaveTargetHold | undefined {
+  if (!verdict || verdict.freezes.length === 0) return undefined;
+  return {
+    freezes: verdict.freezes.map((f) => {
+      const scopeName = f.scopeObjectId ? (scopeNames.get(f.scopeObjectId) ?? null) : null;
+      return {
+        freezeId: f.id,
+        scope: f.scopeObjectId ? { objectId: f.scopeObjectId, name: scopeName } : null,
+        summary: describeFreezeForWaveTarget(f, scopeName),
+        endsAt: f.endsAt
+      };
+    })
+  };
+}
+
+function toChangeWaveTargetShape(
+  row: typeof changeWaveTargets.$inferSelect,
+  hold?: WaveTargetHold
+): ChangeWaveTarget {
   const waveTargetType = (row.type as ExecutorType | null) ?? "configuration";
   return {
     id: row.id,
@@ -293,6 +331,7 @@ function toChangeWaveTargetShape(row: typeof changeWaveTargets.$inferSelect): Ch
           }
         >;
       } | null) ?? null,
+    ...(hold ? { hold } : {}),
     status: row.status,
     attempt: row.attempt,
     lastObservedAt: row.lastObservedAt?.toISOString() ?? null,
@@ -301,10 +340,31 @@ function toChangeWaveTargetShape(row: typeof changeWaveTargets.$inferSelect): Ch
   };
 }
 
+/**
+ * `freezeHolds` is OPTIONAL: `compileAndPersistPlan` (below) never passes it, because a plan is
+ * only ever compiled on the `evaluated -> coordinated` edge — the change cannot be `executing`
+ * yet, so `resolveWaveTargetFreezeHolds`'s own gate would return an empty map regardless, and
+ * skipping the call there skips a query that could only ever come back empty. `getLatestPlanForChange`
+ * (the GET read path) always computes and passes it. `heldTargetCount` is then emitted ONLY for
+ * the wave admission currently governs (`activeWaveOf` — the same selector the evaluation itself
+ * uses, so "which wave was evaluated" and "which wave carries the count" cannot drift): the
+ * evaluation never looks at any other wave, and emitting `0` for an unevaluated future wave would
+ * claim "evaluated, nothing held" about targets a standing freeze may well cover when their turn
+ * comes (`ChangeWaveSchema.heldTargetCount`'s absent-vs-zero rule; M25.UI review minor finding 4).
+ */
+/** THE ONE WAVE ADMISSION CURRENTLY GOVERNS — first wave not yet terminal. Shared by
+ *  `resolveWaveTargetFreezeHolds` (which only ever evaluates THIS wave's targets) and
+ *  `toChangePlanShape`'s `heldTargetCount` emission, so the two cannot disagree about which wave
+ *  that is. */
+function activeWaveOf<W extends { status: string }>(waves: W[]): W | undefined {
+  return waves.find((w) => w.status !== "succeeded" && w.status !== "skipped");
+}
 function toChangePlanShape(
   plan: typeof changePlans.$inferSelect,
   waves: (typeof changeWaves.$inferSelect)[],
-  targets: (typeof changeWaveTargets.$inferSelect)[]
+  targets: (typeof changeWaveTargets.$inferSelect)[],
+  freezeHolds?: Map<string, FreezeHoldVerdict>,
+  scopeNames?: Map<string, string>
 ): ChangePlan {
   return {
     id: plan.id,
@@ -313,27 +373,168 @@ function toChangePlanShape(
     topologyVersion: plan.topologyVersion,
     status: plan.status,
     createdAt: plan.createdAt.toISOString(),
-    waves: waves
-      .sort((a, b) => a.waveIndex - b.waveIndex)
-      .map((w) => ({
-        id: w.id,
-        planId: w.planId,
-        waveIndex: w.waveIndex,
-        name: w.name,
-        requiresFanIn: w.requiresFanIn,
-        status: w.status,
-        createdAt: w.createdAt.toISOString(),
-        startedAt: w.startedAt?.toISOString() ?? null,
-        completedAt: w.completedAt?.toISOString() ?? null,
-        targets: targets.filter((t) => t.waveId === w.id).map(toChangeWaveTargetShape)
-      }))
+    waves: (() => {
+      const activeWaveId = freezeHolds !== undefined ? activeWaveOf(waves)?.id : undefined;
+      return waves
+        .sort((a, b) => a.waveIndex - b.waveIndex)
+        .map((w) => {
+          const waveTargets = targets.filter((t) => t.waveId === w.id);
+          // Freeze-held count only, here — the stage-dependency half of `heldTargetCount` is added
+          // by `routes/changes.ts`'s explain handler, which is the one caller that also computes
+          // `stageDependencyStatus` (see that field's doc for why the two halves live apart).
+          // ACTIVE WAVE ONLY: the evaluation never looks at any other wave, so any other wave's
+          // count would be a fabricated zero (absent = not evaluated; see the schema doc).
+          const heldTargetCount =
+            freezeHolds !== undefined && w.id === activeWaveId
+              ? waveTargets.filter((t) => freezeHolds.has(t.targetObjectId)).length
+              : undefined;
+          return {
+            id: w.id,
+            planId: w.planId,
+            waveIndex: w.waveIndex,
+            name: w.name,
+            requiresFanIn: w.requiresFanIn,
+            status: w.status,
+            createdAt: w.createdAt.toISOString(),
+            startedAt: w.startedAt?.toISOString() ?? null,
+            completedAt: w.completedAt?.toISOString() ?? null,
+            ...(heldTargetCount !== undefined ? { heldTargetCount } : {}),
+            targets: waveTargets.map((t) =>
+              toChangeWaveTargetShape(
+                t,
+                toWaveTargetHold(freezeHolds?.get(t.targetObjectId), scopeNames ?? new Map())
+              )
+            )
+          };
+        });
+    })()
   };
+}
+
+/**
+ * THE READ-TIME HALF OF THE WAVE-TARGET FREEZE-HOLD PROJECTION — reuses `evaluateFreezeHolds`
+ * (`freeze-hold.ts`), the SAME predicate `reconcile.ts`'s engine loop consults, rather than a
+ * second implementation that could drift from admission (campaigns-rework.md's instruction on
+ * this exact field).
+ *
+ * ONLY THE TARGETS THE HOLD CAN STILL ACT ON ARE *RETURNED*, mirroring `stage-dependency-status.ts`'s
+ * own gate exactly (`isStillTriggerable` there, restated here): the active (non-terminal) wave's
+ * `pending`/`triggering` targets, and only while the change itself is `executing` — a `triggered`
+ * target has already been handed to its executor (a freeze cannot un-ring that bell — ADR-0008
+ * has no pause verb), and a hold reported against a dead change's never-run target would describe
+ * a wait that is already over. Two changes reading the identical gate independently is exactly
+ * the drift class `stage-dependency-status.ts`'s own doc warns about, restated for a second field.
+ *
+ * BUT `evaluateFreezeHolds` IS ASKED ABOUT EVERY ACTIVE-WAVE TARGET, not just the pending ones
+ * (M25.UI review finding 2 — "atomic drift"). `reconcile.ts`'s admission loop asks the identical
+ * question with `activeWave.targets.map((t) => t.targetObjectId)` (reconcile.ts, `loadFreezeHolds`)
+ * — every target of the active wave, succeeded siblings included. That matters because an `atomic`
+ * freeze's union (`freeze-hold.ts`'s `unionFreezes(byTarget)`) only ever sees the ids it was asked
+ * about: if this function asked only about the pending subset, a target held SOLELY because an
+ * `atomic` freeze covers an already-succeeded sibling would never surface here — the sibling that
+ * proves the union was never even queried. Asking about the full set and filtering the RESULT to
+ * the pending subset keeps the answer identical to what admission would do, while still never
+ * reporting a hold against a target a hold can no longer act on.
+ */
+async function resolveWaveTargetFreezeHolds(
+  tx: TenantTx,
+  orgId: string,
+  changeObjectId: string,
+  waves: (typeof changeWaves.$inferSelect)[],
+  targets: (typeof changeWaveTargets.$inferSelect)[]
+): Promise<Map<string, FreezeHoldVerdict>> {
+  const [changeRow] = await tx
+    .select({ state: changes.state, rollbackOfObjectId: changes.rollbackOfObjectId })
+    .from(changes)
+    .where(and(eq(changes.orgId, orgId), eq(changes.objectId, changeObjectId)))
+    .limit(1);
+  if (changeRow?.state !== "executing") return new Map();
+
+  const activeWave = activeWaveOf(waves);
+  if (!activeWave) return new Map();
+
+  const activeWaveTargets = targets.filter((t) => t.waveId === activeWave.id);
+  const pendingTargetIds = new Set(
+    activeWaveTargets
+      .filter((t) => t.status === "pending" || t.status === "triggering")
+      .map((t) => t.targetObjectId)
+  );
+  if (pendingTargetIds.size === 0) return new Map();
+
+  const allHolds = await evaluateFreezeHolds(tx, {
+    orgId,
+    targetObjectIds: activeWaveTargets.map((t) => t.targetObjectId)
+  });
+
+  // D7'S ROLLBACK EXEMPTION, MIRRORED (M25.UI review finding 3). `reconcile.ts`'s actuator
+  // (`!( rollbackExemptible(frozen.freezes) && rollbackHasSomethingToUndoAt(...) )`) lets a
+  // rollback's trigger through an org-tier freeze for a target the original change actually
+  // dispatched. Without the same check here, `explain` reports that target `held` by the very
+  // freeze reconcile has already stepped around — a target sitting in `triggering` backoff after
+  // a real dispatch, described as still waiting on a freeze it was exempted from.
+  const isRollback = changeRow.rollbackOfObjectId !== null;
+  const rollbackOfObjectId = changeRow.rollbackOfObjectId;
+
+  const holds = new Map<string, FreezeHoldVerdict>();
+  for (const [targetObjectId, verdict] of allHolds) {
+    if (!pendingTargetIds.has(targetObjectId)) continue;
+    if (
+      isRollback &&
+      rollbackOfObjectId &&
+      rollbackExemptible(verdict.freezes) &&
+      (await originalChangeDispatchedTarget(tx, orgId, rollbackOfObjectId, targetObjectId))
+    ) {
+      continue;
+    }
+    holds.set(targetObjectId, verdict);
+  }
+  return holds;
+}
+
+/** Display names for every covering freeze's `scopeObjectId`, in ONE query — the same
+ *  "resolve every id this response mentions, in one indexed IN()" idiom
+ *  `stage-dependency-status.ts`'s `resolveNames` uses. Ids that resolve to nothing (a deleted
+ *  scope object) are simply absent, and `toWaveTargetHold` renders `name: null` — never the id
+ *  dressed up as a name. */
+async function resolveFreezeScopeNames(
+  tx: TenantTx,
+  orgId: string,
+  holds: Map<string, FreezeHoldVerdict>
+): Promise<Map<string, string>> {
+  const ids = new Set<string>();
+  for (const verdict of holds.values()) {
+    for (const f of verdict.freezes) {
+      if (f.scopeObjectId) ids.add(f.scopeObjectId);
+    }
+  }
+  if (ids.size === 0) return new Map();
+  const rows = await tx
+    .select({ id: objects.id, name: objects.name })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), inArray(objects.id, [...ids]), isNull(objects.deletedAt)));
+  return new Map(rows.map((row) => [row.id, row.name]));
 }
 
 export async function getLatestPlanForChange(
   tx: TenantTx,
   orgId: string,
-  changeObjectId: string
+  changeObjectId: string,
+  /**
+   * `withFreezeHolds: false` (M25.UI review finding 4) skips `resolveWaveTargetFreezeHolds` and
+   * `resolveFreezeScopeNames` entirely, for a caller that only needs wave/target *status* data and
+   * never reads `.hold`/`heldTargetCount` off the result. `reconcile.ts`'s per-tick trigger branch
+   * is the one that matters: `advanceExecutingChanges` calls this UNCONDITIONALLY, once per
+   * `executing` change per 1 s tick, to find the active wave — and its OWN trigger branch already
+   * does a second, real freeze evaluation a few lines later (`loadFreezeHolds`, lazily, only when a
+   * target is actually pending). Leaving the default true here meant every such tick paid for a
+   * FULL freeze evaluation whose `ChangePlan.hold`/`heldTargetCount` shape reconcile then threw
+   * away unread, immediately followed by `loadFreezeHolds` redoing the identical work for the
+   * decision that actually acts on it — silently falsifying the "resolved lazily, inside the
+   * trigger branch" invariant documented beside `loadFreezeHolds` itself. Default stays `true`
+   * because every OTHER caller (`routes/changes.ts`'s explain handler) is a wire consumer that
+   * needs the projection.
+   */
+  options?: { withFreezeHolds?: boolean }
 ): Promise<ChangePlan | null> {
   const planRow = await tx.query.changePlans.findFirst({
     where: (t, { eq: eqOp, and: andOp }) =>
@@ -358,5 +559,18 @@ export async function getLatestPlanForChange(
             and(eq(changeWaveTargets.orgId, orgId), inArray(changeWaveTargets.waveId, waveIds))
           );
 
-  return toChangePlanShape(planRow, waveRows, targetRows);
+  if (options?.withFreezeHolds === false) {
+    return toChangePlanShape(planRow, waveRows, targetRows);
+  }
+
+  const freezeHolds = await resolveWaveTargetFreezeHolds(
+    tx,
+    orgId,
+    changeObjectId,
+    waveRows,
+    targetRows
+  );
+  const scopeNames = await resolveFreezeScopeNames(tx, orgId, freezeHolds);
+
+  return toChangePlanShape(planRow, waveRows, targetRows, freezeHolds, scopeNames);
 }

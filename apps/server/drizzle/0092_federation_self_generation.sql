@@ -1,5 +1,5 @@
 -- ===========================================================================================
--- 0091 — FEDERATION GENERATION STAMP (§7.2.6 resync + the promotion runbook)
+-- 0092 — FEDERATION GENERATION STAMP (§7.2.6 resync + the promotion runbook)
 --        (docs/proposals/multi-region-instance-resilience.md §7.2.6, M26.2)
 --
 -- A per-org monotonic counter, bumped by the RESYNC operation (and, out of this milestone's scope,

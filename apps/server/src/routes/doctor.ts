@@ -208,7 +208,7 @@ export function registerDoctorRoutes(app: FastifyInstance, deps: AppDeps): void 
           id: "member-cluster-version-skew",
           status: "warn",
           summary: "could not read member-cluster heartbeats (table not present or unreadable)",
-          detail: "The heartbeat table lands with drizzle/0092; this check is inert until then."
+          detail: "The heartbeat table lands with drizzle/0093; this check is inert until then."
         });
       }
 

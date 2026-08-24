@@ -14,6 +14,8 @@ import {
   createIsolatedDomain,
   type IsolatedDomain
 } from "../federation/test-support/isolated-domain.js";
+import { createFreeze } from "../governance/freezes-repo.js";
+import { attachFreezeObject } from "../governance/freeze-object.js";
 import { proposeChange } from "./changes-repo.js";
 import { compileAndPersistPlan } from "./plan-service.js";
 import { buildServiceBoard } from "./service-board.js";
@@ -63,6 +65,12 @@ describe("service board precedence: an observation outranks a replica (Testconta
   let contestedLocalChangeId: string;
   let localChangeId: string;
   let replicaChangeId: string;
+  /** M25.7 — a COMMANDER-declared, FEDERATING freeze over `sharedComponentId`. See the pin below. */
+  let federatedFreezeId: string;
+  /** M25.7 — its PAIR: a commander freeze over `commanderOnlyComponentId` declared WITHOUT
+   *  `federate`, so it must never appear at the outpost. Without it the inversion's discriminating
+   *  half is unfalsifiable — see fixture 3c. */
+  let nonFederatingFreezeId: string;
 
   let outpostBoard: ServiceBoardResponse;
 
@@ -234,6 +242,62 @@ describe("service board precedence: an observation outranks a replica (Testconta
       });
       return change.id;
     });
+
+    // 3b. M25.7 (owner decision D6) — the commander ALSO declares a FEDERATING freeze over the
+    //     shared component: the row the outpost DRIVES. This fixture is what the inverted pin at
+    //     the bottom of this file is about, and it did not exist before M25.7 because it could not:
+    //     `attachFreezeObject` and `freezes.object_id` are that increment's.
+    //
+    //     The window is anchored to the real clock because `buildServiceBoard` resolves freezes at
+    //     `new Date()` and has no clock seam — a fixed calendar window would make this fixture
+    //     silently inert the day it passed, which is the vacuous-test shape. No sleep is involved:
+    //     the window is simply declared open around now.
+    federatedFreezeId = await withTenantTx(commander.db, commander.orgId, async (tx) => {
+      const row = await createFreeze(tx, {
+        orgId: commander.orgId,
+        scopeObjectId: sharedComponentId,
+        name: "commander change freeze",
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 86_400_000),
+        reason: "commander-declared, federating",
+        createdByActorId: commander.orgId
+      });
+      const attached = await attachFreezeObject(tx, {
+        orgId: commander.orgId,
+        freeze: row,
+        actorObjectId: commander.orgId,
+        requestId: "board-prec-federating-freeze"
+      });
+      return attached.id;
+    });
+
+    // 3c. M25.7 — THE PAIRED FIXTURE, and the reason it exists is a defect in the FIRST version of
+    //     the inversion below. That version asserted `unknownFields` does NOT contain
+    //     `"activeFreeze"` for the federated row — an assertion nothing in the fixture could ever
+    //     falsify, because `activeFreeze` reaches a row's `unknownFields` on exactly one code path
+    //     (`service-board.ts`'s `!latest.drivenHere` branch, `componentFreeze ? [] : [...]`), and
+    //     the federated row is driven here, so its `unknownFields` is `[]` by construction. A
+    //     negative assertion over a value nothing can produce measures nothing at all.
+    //
+    //     The pair fixes that by making the SAME field appear and not appear for a reason the
+    //     fixture controls. The commander declares a second freeze, over the component the outpost
+    //     does NOT drive, and declares it WITHOUT `federate` — so this one really is invisible at
+    //     the outpost, that row's `activeFreeze` is null, and the row SAYS SO. The case below then
+    //     asserts both directions plus the fact that separates them (exactly ONE `freezes` row
+    //     crossed), so "the freeze arrived" and "the board gave up" cannot be confused.
+    nonFederatingFreezeId = await withTenantTx(commander.db, commander.orgId, async (tx) => {
+      const row = await createFreeze(tx, {
+        orgId: commander.orgId,
+        scopeObjectId: commanderOnlyComponentId,
+        name: "commander worker freeze",
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 86_400_000),
+        reason: "commander-declared, NOT federating",
+        createdByActorId: commander.orgId
+      });
+      return row.id;
+    });
+
     await syncToOutpost();
 
     outpostBoard = await withTenantTx(outpost.db, outpost.orgId, async (tx) =>
@@ -333,11 +397,162 @@ describe("service board precedence: an observation outranks a replica (Testconta
     expect(row!.unknownFields ?? []).not.toContain("changeState");
   });
 
-  it("freeze visibility is declared board-level on a federated instance (freezes never ride the journal)", () => {
-    // Freezes are a local projection that is never journaled, so a freeze declared in the commander
-    // is invisible here for EVERY row — including the one the outpost drives. That is a property of
-    // the deployment, not of any row's driver, so it is stated once at the response level. Without
-    // it a driven-here row's `activeFreeze: null` would read as "no freeze applies".
+  // ============================================================================================
+  // DELIBERATE INVERSION (M25.7, owner decision D6, ADR-0043) — READ THE RETIRED PIN FIRST
+  // ============================================================================================
+  //
+  // THE RETIRED PIN, verbatim, because it is the thing this file was cited for across the codebase
+  // and a reader who finds only the new case will re-derive the old claim and be wrong:
+  //
+  //     it("freeze visibility is declared board-level on a federated instance (freezes never ride
+  //        the journal)", () => {
+  //       // Freezes are a local projection that is never journaled, so a freeze declared in the
+  //       // commander is invisible here for EVERY row — including the one the outpost drives. That
+  //       // is a property of the deployment, not of any row's driver, so it is stated once at the
+  //       // response level. Without it a driven-here row's `activeFreeze: null` would read as "no
+  //       // freeze applies".
+  //       expect(outpostBoard.unknownFields).toEqual(
+  //         expect.arrayContaining(["serviceFreeze", "rows[].activeFreeze"])
+  //       );
+  //     });
+  //
+  // WHAT WAS TRUE WHEN IT WAS PINNED. A freeze was a `freezes` projection row and nothing else:
+  // `db/schema.ts` said the generic object model has no place for freezes, and
+  // `JournalEntryKindSchema` admits nine entry kinds, none freeze-shaped. So no freeze could cross
+  // a boundary by any route, and the board's caveat rested on a structural impossibility. This
+  // parenthetical was cited as the measurement by `outpost-configuration.tsx`,
+  // `outpost-ui.md` and `campaigns-rework.md`.
+  //
+  // WHAT CHANGED. Owner decision D6 (2026-08-23): an ORG-TIER freeze declared `federate: true` gains
+  // a `freeze` graph object and rides the EXISTING `object_upsert`, and `import-repo.ts` rebuilds
+  // its projection row at the receiving instance, where it blocks. The parenthetical is now false.
+  //
+  // WHAT DID NOT CHANGE, AND WHY THE CAVEAT SURVIVES. `federate` DEFAULTS TO FALSE and nothing in a
+  // bundle reports the freezes a peer withheld, so a null `activeFreeze` is still not "no freeze
+  // applies" — only the reason moved, from "structurally impossible" to "opt-in and unreportable".
+  // Deleting the caveat would have been the wrong inversion; so would silently flipping the title
+  // and leaving the same one-line assertion, which is the vacuous shape this repo names.
+  //
+  // The two cases below therefore split the old one: the RULE that survived, and the FACT that
+  // retracted it — the second measured on a real freeze that really crossed.
+  // ============================================================================================
+
+  it("THE RULE THAT SURVIVED: freeze visibility is still declared board-level, because federation is opt-in and a peer's withheld freezes are unreportable", () => {
+    // Unchanged assertion, retained deliberately. It fires on ANY paired peer, and it must: the
+    // commander here HAS federated one freeze, and that makes the board's blindness to the ones it
+    // did not federate strictly harder to notice, not easier.
+    expect(outpostBoard.unknownFields).toEqual(
+      expect.arrayContaining(["serviceFreeze", "rows[].activeFreeze"])
+    );
+  });
+
+  it("THE FACT THAT RETRACTED IT (M25.7/D6): a commander-declared FEDERATING freeze is visible on the row the OUTPOST drives — freezes now ride the journal, as graph objects", () => {
+    // The exact case the retired pin declared impossible: a DRIVEN-HERE row whose `activeFreeze` is
+    // a freeze another domain declared. Before D6 this was `null` for every row, always.
+    const row = outpostBoard.rows.find((r) => r.component.id === sharedComponentId);
+    expect(row).toBeDefined();
+    expect(row!.driver?.drivenHere, "the fixture stopped being about a driven-here row").toBe(true);
+    expect(row!.activeFreeze, "the commander's federated freeze did not reach the board").not.toBe(
+      null
+    );
+    // Same id at both instances — `freezes.id` IS the object's `properties.freezeId`, preserved
+    // verbatim, which is what keeps a Decision written here resolvable at the commander.
+    expect(row!.activeFreeze!.id).toBe(federatedFreezeId);
+    expect(row!.activeFreeze!.reason).toBe("commander-declared, federating");
+    // A DRIVEN-HERE ROW DECLARES NOTHING UNOBSERVABLE — a shape check, deliberately spelled as an
+    // equality rather than as `not.toContain("activeFreeze")`.
+    //
+    // The `not.toContain` form shipped here first and was a VACUOUS TEST, in the strict sense: it
+    // could not fail. `service-board.ts` puts `"activeFreeze"` into a row's `unknownFields` on
+    // exactly one path — the `!latest.drivenHere` branch — and this row is driven here, so the
+    // array is `[]` whatever the freeze does. A negative assertion over a value nothing in the
+    // fixture can produce measures the fixture's shape, not the feature.
+    //
+    // The claim it was reaching for — "this domain names `activeFreeze` unknown when it cannot see
+    // one, and does not when it can" — is real, and is measured by its own case below, on the pair
+    // of rows the fixture built for it.
+    expect(row!.unknownFields ?? []).toEqual([]);
+
+    // NON-VACUITY, MEASURED (2026-08-24), not predicted. Deleting the
+    // `rebuildFreezeProjectionFromObject` call from `federation/import-repo.ts`'s `object_upsert`
+    // branch — the one line that turns a replicated `freeze` object into an enforceable row — fails
+    // this case AND `federation/freeze-federation.integration.test.ts`'s admission case:
+    //
+    //   AssertionError: the outpost did not hold the component the commander froze:
+    //     expected undefined to be defined
+    //    ❯ src/federation/freeze-federation.integration.test.ts:255
+    //
+    // with 7 of that file's 8 cases red. Restored, all 8 pass. The object still replicates under the
+    // mutation, so a test that asserted only "a `freeze` object exists at the outpost" would have
+    // stayed GREEN through it — which is precisely why this case reads `activeFreeze` off the board
+    // and its sibling reads `evaluateFreezeHolds`, the predicate that actually withholds a trigger.
+  });
+
+  it("THE DISCRIMINATING PAIR: `federate` is what decides whether a commander freeze is an OBSERVATION here or an UNKNOWN — same board, two rows, one difference", async () => {
+    // ==========================================================================================
+    // THE FALSIFIABLE FORM OF THE CLAIM ABOVE.
+    //
+    // Two commander-declared freezes, both live, both over components of this same service, in the
+    // same bundle. They differ in exactly one field — `federate` — and the board has to tell them
+    // apart the only honest way it can: the one that CROSSED is reported as a real
+    // `activeFreeze`; the one that did not is reported as a null whose unobservability is NAMED.
+    //
+    // The half this pins that nothing else could: a board that simply never received either freeze
+    // would show `activeFreeze: null` twice and satisfy any single-row assertion about the second
+    // row. The `freezes`-table check below is what rules that out — exactly one row crossed, and it
+    // is the federated one.
+    // ==========================================================================================
+
+    // PREMISE at the DECLARING end. Both freezes are live at the commander; the difference under
+    // test is federation, not one of them having been mistyped into a closed window.
+    const commanderFreezes = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      tx.execute<{ id: string; object_id: string | null }>(
+        sql`SELECT id::text, object_id::text AS object_id FROM freezes
+            WHERE org_id = ${commander.orgId}::uuid AND lifted_at IS NULL
+            ORDER BY created_at`
+      )
+    );
+    expect(commanderFreezes.rows.map((r) => r.id).sort()).toEqual(
+      [federatedFreezeId, nonFederatingFreezeId].sort()
+    );
+    expect(
+      commanderFreezes.rows.find((r) => r.id === federatedFreezeId)!.object_id,
+      "the federating fixture must actually have a graph object"
+    ).not.toBeNull();
+    expect(
+      commanderFreezes.rows.find((r) => r.id === nonFederatingFreezeId)!.object_id,
+      "the control must NOT have one, or the pair measures the same thing twice"
+    ).toBeNull();
+
+    // WHAT ACTUALLY CROSSED: exactly one row, and it is the federated one. This is the assertion
+    // that makes the two board rows below distinguishable rather than merely different.
+    const outpostFreezes = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      tx.execute<{ id: string }>(
+        sql`SELECT id::text FROM freezes WHERE org_id = ${outpost.orgId}::uuid`
+      )
+    );
+    expect(outpostFreezes.rows.map((r) => r.id)).toEqual([federatedFreezeId]);
+
+    // ROW A — the freeze CROSSED: a real observation, so `activeFreeze` is not named unknown.
+    const federatedRow = outpostBoard.rows.find((r) => r.component.id === sharedComponentId);
+    expect(federatedRow!.activeFreeze?.id).toBe(federatedFreezeId);
+    expect(federatedRow!.unknownFields ?? []).not.toContain("activeFreeze");
+
+    // ROW B — the freeze DID NOT cross: a null this domain must not let anyone read as "no freeze
+    // applies", so the row declares the field unobservable. THIS is the assertion the single-row
+    // form could not make: it fires on a value the fixture genuinely produces, and deleting the
+    // `...(componentFreeze ? [] : ["activeFreeze"])` clause from `service-board.ts` turns it red.
+    const withheldRow = outpostBoard.rows.find((r) => r.component.id === commanderOnlyComponentId);
+    expect(withheldRow).toBeDefined();
+    expect(
+      withheldRow!.activeFreeze,
+      "a freeze declared WITHOUT federate must not reach a peer at all"
+    ).toBeNull();
+    expect(withheldRow!.unknownFields ?? []).toContain("activeFreeze");
+
+    // AND THE BOARD-LEVEL CAVEAT STILL FIRES OVER BOTH, which is the whole reason it survived D6:
+    // this board is holding one freeze it can see and one it cannot, and it cannot tell an operator
+    // how many more of the second kind exist.
     expect(outpostBoard.unknownFields).toEqual(
       expect.arrayContaining(["serviceFreeze", "rows[].activeFreeze"])
     );

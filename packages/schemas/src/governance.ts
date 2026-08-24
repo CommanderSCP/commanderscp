@@ -218,7 +218,21 @@ export const FreezeSchema = z.object({
    *  lift is a governance LOOSENING that applies to everyone at once; `freeze:override` already
    *  refuses to bypass a freeze for a single change without a reason, and retracting one outright
    *  cannot be held to a lower standard. */
-  liftReason: z.string().nullable()
+  liftReason: z.string().nullable(),
+  /** M25.7 / owner decision D6 — the id of this freeze's `freeze` GRAPH OBJECT, or `null` when this
+   *  freeze does not federate (the default, and every freeze authored before M25.7).
+   *
+   *  READ, NEVER INFERRED. A client must not compute "does this federate?" from anything else —
+   *  not from the presence of a peer, not from the actor's permissions. This is the column
+   *  `governance/freeze-object.ts` writes, and it is also what tells an operator staring at a
+   *  freeze on an OUTPOST whether it is one they can lift: a non-null `objectId` on a freeze whose
+   *  object is a read-only replica means `DELETE`/`PATCH` will refuse with a 409 and the remedy is
+   *  `freeze:override`.
+   *
+   *  REQUIRED AND NULLABLE, exactly like `liftedAt` and `name`: every row has an answer, and adding
+   *  a required response property is additive and oasdiff-safe (the standing rule is never to make
+   *  an EXISTING required field optional). */
+  objectId: z.string().uuid().nullable()
 });
 export type Freeze = z.infer<typeof FreezeSchema>;
 
@@ -237,7 +251,50 @@ export const CreateFreezeRequestSchema = z.object({
    *  the escape hatch that decision was taken on the strength of, so it ships in the SAME increment
    *  as the loosening rather than in the one after it — a mitigation that lands later is a window
    *  in which the mitigation does not exist. */
-  atomic: z.boolean().optional()
+  atomic: z.boolean().optional(),
+  /** M25.7 / owner decision D6 (ADR-0043) — ALSO GIVE THIS FREEZE A GRAPH OBJECT, so it rides the
+   *  federation journal to this org's peers and BLOCKS there too.
+   *
+   *  DEFAULTS TO `false`, AND THAT IS THE POINT. Federation is a new REACH — a freeze declared here
+   *  becomes a freeze that stops releases in another security domain — and a new reach never
+   *  defaults on. Omitted, the request is byte-identical to a pre-M25.7 one and so is everything
+   *  that happens to it.
+   *
+   *  GATED ON `federation:write`, NOT `freeze:write`. Declaring a freeze that binds another security
+   *  domain is categorically different from describing your own estate; ADR-0022 drew exactly this
+   *  line for commander-authored outpost config and this is the same act. `freeze:write` at the
+   *  freeze's own scope is still required as well — this permission is added, never substituted.
+   *  The same pair is demanded on `DELETE` and `PATCH` for any freeze that HAS an object, because
+   *  both verbs re-publish it: extending or lifting a federating freeze reaches the other domain
+   *  just as declaring it did.
+   *
+   *  IT REACHES `full`-SCOPE PEERS ONLY, AND THE DROP IS SILENT (ADR-0043 §5a). A federating freeze
+   *  rides an `object_upsert`, and `federation/scope-filter.ts` admits that entry kind under `full`
+   *  and under `changes_only` — the latter only for `typeId: "change"`, which this is not. A peer
+   *  paired `policies_only`, `changes_only`, `status_only`, or with a non-empty `custom` label
+   *  selector (a freeze object carries no labels) never receives it; the export filter records
+   *  nothing and the receiver never sees it, so NEITHER instance can report that the freeze was
+   *  withheld and this request still answers 201. Scope is evaluated per bundle at EXPORT time, so
+   *  re-scoping a peer later changes the answer for freezes already authored. Read
+   *  `GET /v1/federation/peers`' `syncScope` before relying on a freeze reaching a given outpost.
+   *
+   *  A PLATFORM-TIER FREEZE HAS NO EQUIVALENT AND CANNOT. `POST /v1/instance/freezes` carries no
+   *  such field: the sync journal is org-scoped at every layer and `instance_freezes` has no
+   *  `org_id`. See ADR-0040 and GLOSSARY's "platform-tier freeze". */
+  federate: z.boolean().optional(),
+  /** ADR-0031 — this freeze's graph object NEVER LEAVES THIS SECURITY DOMAIN, in either direction,
+   *  even under a peer paired at `full` scope.
+   *
+   *  For the OUTPOST-declared case: an outpost that wants its freeze to be a first-class graph
+   *  object locally, and to be structurally incapable of travelling upward to the commander. Only
+   *  meaningful with `federate: true` (without an object there is nothing to withhold), and the
+   *  route refuses the combination `domainLocal` without `federate` rather than silently ignoring
+   *  it — a locality declaration that no-ops is a field that lies.
+   *
+   *  Locality is DECLARED, never inferred, and declaring it is a `federation:write` act
+   *  (`federation/domain-local.ts`). Immutable after create, structurally: only the INSERT names
+   *  the column. */
+  domainLocal: z.boolean().optional()
 });
 export type CreateFreezeRequest = z.infer<typeof CreateFreezeRequestSchema>;
 

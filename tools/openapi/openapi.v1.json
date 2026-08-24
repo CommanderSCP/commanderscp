@@ -27162,6 +27162,85 @@
                         }
                       ]
                     },
+                    "observedRun": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "sourceKind": {
+                              "type": "string"
+                            },
+                            "repo": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "runId": {
+                              "type": "string"
+                            },
+                            "workflowName": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "workflowPath": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "url": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "observedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                            },
+                            "changeId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
+                          },
+                          "required": [
+                            "sourceKind",
+                            "repo",
+                            "runId",
+                            "workflowName",
+                            "workflowPath",
+                            "url",
+                            "observedAt",
+                            "changeId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "unknownFields": {
                       "type": "array",
                       "items": {
@@ -48502,6 +48581,11 @@
                                       }
                                     ]
                                   },
+                                  "heldTargetCount": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
                                   "targets": {
                                     "type": "array",
                                     "items": {
@@ -48643,6 +48727,75 @@
                                               "type": "null"
                                             }
                                           ]
+                                        },
+                                        "hold": {
+                                          "type": "object",
+                                          "properties": {
+                                            "freezes": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "freezeId": {
+                                                    "type": "string",
+                                                    "format": "uuid",
+                                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                                  },
+                                                  "scope": {
+                                                    "anyOf": [
+                                                      {
+                                                        "type": "object",
+                                                        "properties": {
+                                                          "objectId": {
+                                                            "type": "string",
+                                                            "format": "uuid",
+                                                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                                          },
+                                                          "name": {
+                                                            "anyOf": [
+                                                              {
+                                                                "type": "string"
+                                                              },
+                                                              {
+                                                                "type": "null"
+                                                              }
+                                                            ]
+                                                          }
+                                                        },
+                                                        "required": [
+                                                          "objectId",
+                                                          "name"
+                                                        ],
+                                                        "additionalProperties": false
+                                                      },
+                                                      {
+                                                        "type": "null"
+                                                      }
+                                                    ]
+                                                  },
+                                                  "summary": {
+                                                    "type": "string"
+                                                  },
+                                                  "endsAt": {
+                                                    "type": "string",
+                                                    "format": "date-time",
+                                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "freezeId",
+                                                  "scope",
+                                                  "summary",
+                                                  "endsAt"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            }
+                                          },
+                                          "required": [
+                                            "freezes"
+                                          ],
+                                          "additionalProperties": false
                                         },
                                         "status": {
                                           "type": "string"
@@ -59968,6 +60121,12 @@
                   },
                   "atomic": {
                     "type": "boolean"
+                  },
+                  "federate": {
+                    "type": "boolean"
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -60069,6 +60228,18 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "objectId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -60083,7 +60254,8 @@
                     "atomic",
                     "liftedAt",
                     "liftedByActorId",
-                    "liftReason"
+                    "liftReason",
+                    "objectId"
                   ],
                   "additionalProperties": false
                 }
@@ -60322,6 +60494,18 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "objectId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "uuid",
+                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -60336,7 +60520,8 @@
                           "atomic",
                           "liftedAt",
                           "liftedByActorId",
-                          "liftReason"
+                          "liftReason",
+                          "objectId"
                         ],
                         "additionalProperties": false
                       }
@@ -60561,6 +60746,18 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "objectId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -60575,7 +60772,8 @@
                     "atomic",
                     "liftedAt",
                     "liftedByActorId",
-                    "liftReason"
+                    "liftReason",
+                    "objectId"
                   ],
                   "additionalProperties": false
                 }
@@ -60843,6 +61041,18 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "objectId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -60857,7 +61067,8 @@
                     "atomic",
                     "liftedAt",
                     "liftedByActorId",
-                    "liftReason"
+                    "liftReason",
+                    "objectId"
                   ],
                   "additionalProperties": false
                 }
@@ -61215,6 +61426,18 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "objectId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -61229,7 +61452,8 @@
                     "atomic",
                     "liftedAt",
                     "liftedByActorId",
-                    "liftReason"
+                    "liftReason",
+                    "objectId"
                   ],
                   "additionalProperties": false
                 }

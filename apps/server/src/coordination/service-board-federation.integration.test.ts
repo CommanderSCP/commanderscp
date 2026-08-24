@@ -30,9 +30,9 @@ import { buildServiceBoard } from "./service-board.js";
  * The outpost reported STABLE — green — while a release was in flight through its own components.
  * Not an empty view: a fabricated all-clear, synthesized from tables the outpost never had. Every
  * table the board reads for a row's detail (`change_plans`/`change_waves`/`change_wave_targets`,
- * `changes`, `decisions`, `approval_requests`, `freezes`) is a LOCAL projection that never rides the
- * sync journal, so the old `latestChangeIdByComponent` join found nothing and the row fell through
- * to `stable` with all-false attention.
+ * `changes`, `decisions`, `approval_requests`) is a LOCAL projection that never rides the sync
+ * journal, so the old `latestChangeIdByComponent` join found nothing and the row fell through to
+ * `stable` with all-false attention.
  *
  * WHAT THE OUTPOST GENUINELY KNOWS (so the honest state is "not driven here", NOT a bare "unknown"):
  *   - the change's graph OBJECT replicates (`objects-repo.ts` emits `object_upsert` for `change`);
@@ -43,8 +43,13 @@ import { buildServiceBoard } from "./service-board.js";
  *   - `properties.federationState` carries the lifecycle state the origin last reported.
  *
  * WHAT IT GENUINELY CANNOT KNOW: waves, block Decisions, approvals, and any freeze the driving
- * domain declared. Those are named in `row.unknownFields` rather than emitted as false/[]/null and
- * called an observation.
+ * domain declared WITHOUT `federate: true`. Those are named in `row.unknownFields` rather than
+ * emitted as false/[]/null and called an observation.
+ *
+ * (`freezes` sat in the projection-table list above until M25.7 / owner decision D6, which gave a
+ * freeze a graph object so an org-tier one can cross. Nothing about THIS defect or its fix depends
+ * on that: the lie was about the CHANGE, and a freeze the peer chose not to federate is still
+ * invisible here — which is why the freeze caveat is board-level and unconditional on any peer.)
  *
  * The assertions below are POSITIVE on purpose — asserting only "not stable" would also pass on an
  * empty view, which is precisely the failure mode this test exists to distinguish.

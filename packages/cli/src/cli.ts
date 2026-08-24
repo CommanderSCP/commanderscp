@@ -1388,7 +1388,33 @@ function freezeRow(f: Freeze): Record<string, string> {
     // too (they stay readable forever so a Decision citing one resolves) and a retracted freeze
     // that renders identically to a live one is a list an operator cannot act on. Empty means
     // still standing.
-    liftedAt: f.liftedAt ?? ""
+    liftedAt: f.liftedAt ?? "",
+    // ==========================================================================================
+    // M25.7 — `federates`, AND THE HEADER IS THE ONLY QUESTION `objectId` CAN ANSWER
+    // ==========================================================================================
+    // On the DEFAULT row for the same reason `liftedAt` is: `scp freeze list` on an outpost now
+    // mixes freezes that stop at this instance with freezes that ride the journal, and two rows
+    // rendering identically leave an operator to discover the difference from a 409.
+    //
+    // THIS COLUMN WAS CALLED `federated` AND THE NAME WAS A LIE, which is the whole reason for this
+    // paragraph. It was introduced to tell an operator whether a listed freeze is one they can
+    // lift — i.e. whether it came from ANOTHER domain — and `objectId` cannot answer that. It is
+    // non-null on a commander's own federating freeze and on an outpost's replica of it alike; the
+    // fact that separates them is the OBJECT's `origin_domain_id`, which is not on this wire shape
+    // at all. A column whose header asks one question and whose value answers a different one is
+    // worse than no column: it reads as an answer.
+    //
+    // `federates` is exactly what a non-null `objectId` supports: this freeze has a graph object,
+    // so it rides `object_upsert` to this org's peers and blocks there too. Read from the field,
+    // never inferred from role or from the presence of a peer.
+    //
+    // TO ANSWER "CAN I LIFT THIS?", resolve the object: `--output json` carries `objectId`, and
+    // `scp object get freeze <objectId> --output json` reports `originDomainId` — a replica's is
+    // not this instance's, and `DELETE`/`PATCH` answer 409 naming that domain. Surfacing origin on the
+    // freeze row itself needs `originDomainId` on the wire (a required-nullable response field plus
+    // a join in `listFreezes`); it is deliberately NOT invented here from data that cannot support
+    // it.
+    federates: f.objectId === null ? "" : "yes"
   };
 }
 
@@ -3663,6 +3689,14 @@ export function buildProgram(): Command {
       "--atomic",
       "park the WHOLE wave rather than only the targets this freeze covers (owner decision D5) — use it when half-applied is worse than not-applied, e.g. a schema migration and the service that reads it"
     )
+    .option(
+      "--federate",
+      "also give this freeze a graph object so it rides the federation journal to this org's peers and blocks THERE too (owner decision D6) — requires 'federation:write' at the freeze's scope, because it binds another security domain, and the same pair is required to lift or move its endsAt afterwards. It reaches peers paired at FULL sync scope only; a policies_only/changes_only/status_only/custom peer silently drops it and neither side reports that (check 'scp federation peers'). Platform-tier freezes cannot federate at all."
+    )
+    .option(
+      "--domain-local",
+      "with --federate: keep the freeze's graph object inside this security domain, in both directions, even under a peer paired at full scope (ADR-0031) — the outpost-declared case"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -3674,6 +3708,8 @@ export function buildProgram(): Command {
           reason: string;
           name?: string;
           atomic?: boolean;
+          federate?: boolean;
+          domainLocal?: boolean;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -3686,7 +3722,11 @@ export function buildProgram(): Command {
           // Sent only when the flag is present, so an ordinary `scp freeze create` keeps sending a
           // byte-identical body and the server-side default (`false`) stays the one place the
           // default lives.
-          ...(opts.atomic ? { atomic: true } : {})
+          ...(opts.atomic ? { atomic: true } : {}),
+          // M25.7 — same discipline, and it matters more here: `federate` is a new REACH, so an
+          // omitted flag must produce a request indistinguishable from a pre-M25.7 one.
+          ...(opts.federate ? { federate: true } : {}),
+          ...(opts.domainLocal ? { domainLocal: true } : {})
         });
         printResult(freeze, opts.output, (item) => freezeRow(item as Freeze));
       }

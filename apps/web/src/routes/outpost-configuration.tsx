@@ -38,9 +38,14 @@ import { problemDetail } from "./outpost-settings";
  *     SEND a wake signal; the outpost's OWN flag, set at the outpost, decides whether it accepts one
  *     and stops polling. Presenting one toggle as controlling both sides would be the fabrication.
  *  3. FREEZES / LOCAL GITEA REGISTRY / BUNDLED BACKENDS — READ-ONLY "managed elsewhere" notes (owner
- *     decision). None has a commander-writable data model, and freezes are TESTED never to ride the
- *     journal (`coordination/service-board-precedence.integration.test.ts`). They are named, with
- *     where they are actually configured, and offered NO edit control.
+ *     decision). They are named, with where they are actually configured, and offered NO edit
+ *     control. FREEZES USED TO BE HERE FOR A STRONGER REASON — they were TESTED never to ride the
+ *     journal — and M25.7 (owner decision D6) retracted that: an org-tier freeze declared
+ *     `federate: true` now rides `object_upsert` and DOES block at the outpost. It stays a read-only
+ *     note here anyway, on the reason that survives: a freeze is scoped at an object in the ORG's
+ *     containment graph and there is no "the outpost this freeze belongs to", so PER-OUTPOST freeze
+ *     configuration is structurally wrong rather than merely unbuilt (campaigns-rework.md
+ *     "Pre-existing contradictions" #5). The note's copy below was rewritten to match.
  *  4. RECONCILE — the recovery verb for a peer wedged by duplicate config objects, including the
  *     `?keep=` form, with the two removal outcomes rendered DISTINCTLY: dropping a row THIS domain
  *     authored journals a tombstone that PROPAGATES downstream to the outpost, while dropping an
@@ -607,21 +612,40 @@ export function PokeModeCard({
  * MANAGED ELSEWHERE — READ-ONLY NOTES, NO EDIT CONTROLS (owner decision).
  *
  * The proposal listed freezes, the outpost-local Gitea registry and the enabled bundled backends as
- * per-outpost configuration. None of the three has a commander-writable data model today, and
- * freezes are TESTED never to ride the journal
- * (`coordination/service-board-precedence.integration.test.ts`) — a freeze declared at the commander
- * does not become a freeze at the outpost. So they are named here, with where they are ACTUALLY
- * configured, and offered no control at all. An edit box that silently does nothing downstream would
- * be worse than no box.
+ * per-outpost configuration. None of the three has a commander-writable data model IN THIS SURFACE,
+ * so they are named here, with where they are ACTUALLY configured, and offered no control at all. An
+ * edit box that silently does nothing downstream would be worse than no box.
+ *
+ * ============================================================================================
+ * THE FREEZE NOTE WAS REWRITTEN IN M25.7, AND THE RETIRED REASONING MATTERS
+ * ============================================================================================
+ * This copy used to tell the operator, verbatim, that a freeze is a local projection row that does
+ * NOT ride the sync journal, so a freeze declared at the commander is not a freeze at the outpost.
+ * That was TRUE and it was the honest correction of M16.2's "commander-origin, syncs down"
+ * aspiration, which was found false at build time; it was TESTED by
+ * `coordination/service-board-precedence.integration.test.ts`.
+ *
+ * OWNER DECISION D6 (2026-08-23) RETRACTED IT. An org-tier freeze declared `federate: true` gets a
+ * `freeze` graph object, rides `object_upsert`, and is rebuilt into the outpost's own `freezes`
+ * table where it BLOCKS. Leaving the old sentence would now be an operator-facing lie in the exact
+ * place an operator goes to ask the question.
+ *
+ * WHAT DID NOT CHANGE — and why this stays a note rather than becoming a form: a freeze is scoped at
+ * an object in the ORG's containment graph, and there is no "the outpost this freeze belongs to".
+ * A service-scoped freeze reaches every placement under it regardless of which outpost executes
+ * which region. Per-outpost freeze configuration is structurally wrong, not merely unbuilt
+ * (campaigns-rework.md "Pre-existing contradictions" #5), so the honest note is WHERE freezes are
+ * declared and what reaches here, not an edit box scoped to a peer.
  */
 export const MANAGED_ELSEWHERE = [
   {
     id: "freezes",
     title: "Freeze windows",
     where:
-      "Declared per object in the governance surface of the instance that enforces them. A freeze is a " +
-      "local projection row: it does NOT ride the sync journal, so a freeze declared at the commander is " +
-      "not a freeze at the outpost."
+      "Declared per object in the governance surface, never per outpost — a freeze names a scope in the " +
+      "org's graph, and one service-scoped freeze reaches every region under it. A freeze declared at the " +
+      "commander reaches this outpost only if it was declared federating; otherwise it stays where it was " +
+      "declared."
   },
   {
     id: "local-registry",
