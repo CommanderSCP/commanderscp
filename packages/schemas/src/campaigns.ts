@@ -388,23 +388,63 @@ export const CampaignDeadlineAdoptionSignalSchema = z.enum(["delivered", "depend
 export type CampaignDeadlineAdoptionSignal = z.infer<typeof CampaignDeadlineAdoptionSignalSchema>;
 
 /**
- * THE AUTHOR'S DOOR — `z.strictObject`, and OPEN in the property registry, the same 0043/0075 split
- * `CampaignRecipeSchema` documents. Wire-side strictness is a LOCAL authoring refusal (one 400,
- * nobody's bundle); a tightened REGISTRY schema is a fail-closed version-skew hazard that wedges a
- * peer's whole signed bundle at an older receiver. Hence: no property-schema migration in this
- * increment, and a document a newer commander writes that this schema refuses degrades to "no
- * deadline" on the read surface and to a loud `warn` at the predicate — never to a silent lock.
+ * M25.6b — ONE PER-TARGET WAIVER of this campaign's deadline (§4.5).
  *
- * `overrides[]` — §4.1's fourth key — is **M25.6b and is deliberately not here**. Its authoring
- * door needs a new `campaign:deadline-override` permission, which needs an `array_append` migration
- * (drizzle/0010_governance.sql:180 is how every role grant in this repo works), and migration
- * numbering is serialized across concurrent sessions behind a hard contiguity gate
- * (`db/journal-ordering.test.ts`). Shipping the storage shape without its authority check would be
- * an unauthenticated waiver channel sitting in the schema waiting for a writer.
+ * ================================================================================================
+ * IT IS A STORED DOCUMENT, NEVER A REQUEST BODY — AND THAT SPLIT IS THE AUTHORITY CHECK
+ * ================================================================================================
+ * Every field here except `until` is filled in BY THE SERVER from the authenticated act:
+ * `targetObjectId` from the resolved target, `reason` from the mandatory request field, `actorId`
+ * from the bearer subject, `at` from the write's own clock. Nothing on the wire can author one.
  *
- * THE ESCAPE HATCH THIS INCREMENT SHIPS INSTEAD is `POST /campaigns/{id}/deadline`, which sets,
- * MOVES and CLEARS at plain `object:write` with a mandatory reason. Clearing the deadline unlocks
- * every target at once, so this is not an entrance with no exit.
+ * That is not stylistic. `POST /campaigns` and `POST /campaigns/{id}/deadline` both take a
+ * {@link CampaignDeadlineInputSchema} at plain `object:write`, and `POST
+ * /campaigns/{id}/deadline-override` takes {@link OverrideCampaignDeadlineRequestSchema} behind the
+ * Owner-only `campaign:deadline-override`. If the two doors shared one schema, the cheap door would
+ * mint waivers the expensive one exists to gate — a self-service waiver channel that LOOKS
+ * enforced, which is precisely the hazard M25.6a refused this key to avoid. `CampaignDeadlineSchema`
+ * (storage + read) carries `overrides`; `CampaignDeadlineInputSchema` (both authoring doors) does
+ * not, and it is `.strict()`, so naming the key there is a 400 rather than a silent drop.
+ *
+ * `until` IS A BOUNDARY, NOT A TIMER, and its expiry is READ-TIME: `campaign-deadline-lock.ts`
+ * compares it against the tick's `now` on every evaluation and no job un-flips anything. An `until`
+ * in the past is simply not effective — the M22.6 ruling, applied a third time in this milestone.
+ * ABSENT means "until the deadline is cleared or the target adopts", which is the common case: an
+ * Owner excusing a laggard usually cannot say when it will be done.
+ */
+export const CampaignDeadlineOverrideSchema = z.strictObject({
+  /** The campaign wave target this waiver covers — one entry per target, never a scope or a
+   *  pattern. A waiver that matched by scope would be a freeze in miniature, which is the exact
+   *  thing owner decision D4 excludes. */
+  targetObjectId: z.string().uuid(),
+  /** The authoring operator's own words. MANDATORY at the door (`min(1)`) — a waiver of a
+   *  governance deadline with no stated reason is the record failing at the one job it has. */
+  reason: z.string().min(1),
+  /** The subject that minted it. Recorded so the durable document names who excused whom; it is
+   *  DELIBERATELY absent from the Decision's `inputContext` (identity-shaped, ADR-0024) and lives
+   *  there and on the `campaign.deadline.override` audit event instead. */
+  actorId: z.string().uuid(),
+  /** When it was minted. Clock-shaped, so likewise NEVER in a Decision's `inputContext`. */
+  at: z.string().datetime(),
+  /** Optional expiry BOUNDARY. Effective while `now <= until`; an instant in the past is not
+   *  effective and needs no job to make it so. */
+  until: z.string().datetime().optional()
+});
+export type CampaignDeadlineOverride = z.infer<typeof CampaignDeadlineOverrideSchema>;
+
+/**
+ * THE STORED / READ SHAPE — `z.strictObject`, and OPEN in the property registry, the same 0043/0075
+ * split `CampaignRecipeSchema` documents. Wire-side strictness is a LOCAL authoring refusal (one
+ * 400, nobody's bundle); a tightened REGISTRY schema is a fail-closed version-skew hazard that
+ * wedges a peer's whole signed bundle at an older receiver. Hence: no property-schema migration in
+ * this increment either, and a document a newer commander writes that this schema refuses degrades
+ * to "no deadline" on the read surface and to a loud `warn` at the predicate — never to a silent
+ * lock.
+ *
+ * `overrides[]` — §4.1's fourth key — LANDS HERE IN M25.6b, and only here. The two AUTHORING doors
+ * take {@link CampaignDeadlineInputSchema}, which omits it; see
+ * {@link CampaignDeadlineOverrideSchema} for why that split is the authority check rather than a
+ * tidiness preference.
  */
 export const CampaignDeadlineSchema = z.strictObject({
   /**
@@ -418,9 +458,38 @@ export const CampaignDeadlineSchema = z.strictObject({
    */
   at: z.string().datetime(),
   /** See {@link CampaignDeadlineAdoptionSignalSchema} — DECLARATIVE, never a selector. */
-  adoptionSignal: CampaignDeadlineAdoptionSignalSchema.optional()
+  adoptionSignal: CampaignDeadlineAdoptionSignalSchema.optional(),
+  /**
+   * M25.6b — the per-target waivers in force, AT MOST ONE PER TARGET and stored sorted by
+   * `targetObjectId`.
+   *
+   * BOTH OF THOSE ARE LOAD-BEARING RATHER THAN TIDY. This document rides `object_upsert` to every
+   * federated replica and is content-hashed on every write, so an append-only list would grow
+   * without bound and re-hash the campaign object on every re-statement of a waiver that already
+   * existed; sorting makes a re-issued waiver byte-identical instead. Re-overriding a target
+   * REPLACES its entry — the newest reason and the newest `until` are the ones in force, and the
+   * superseded one survives on the hash chain where history belongs.
+   */
+  overrides: z.array(CampaignDeadlineOverrideSchema).optional()
 });
 export type CampaignDeadline = z.infer<typeof CampaignDeadlineSchema>;
+
+/**
+ * THE AUTHOR'S DOOR — what `POST /campaigns` and `POST /campaigns/{id}/deadline` accept.
+ *
+ * IDENTICAL TO {@link CampaignDeadlineSchema} MINUS `overrides`, and still STRICT, so naming
+ * `overrides` at either door is a 400 rather than a value silently dropped on the floor. Minting a
+ * waiver takes `campaign:deadline-override` (Owner-only, drizzle/0088) at the campaign PLUS
+ * `object:write` at each named target; both of these doors take plain `object:write` at the
+ * campaign alone. One shared schema would make the cheaper door the whole permission's bypass.
+ *
+ * Deriving it by `.omit()` rather than declaring a second literal object is what keeps a future
+ * third key (`at`-like configuration, not a waiver) from being added to one and not the other.
+ */
+export const CampaignDeadlineInputSchema = CampaignDeadlineSchema.omit({
+  overrides: true
+}).strict();
+export type CampaignDeadlineInput = z.infer<typeof CampaignDeadlineInputSchema>;
 
 /**
  * `POST /api/v1/campaigns/{id}/deadline` — set, move, or CLEAR.
@@ -436,11 +505,57 @@ export type CampaignDeadline = z.infer<typeof CampaignDeadlineSchema>;
  * times" is otherwise unreconstructible from a chain of writes that each say only where it landed.
  */
 export const SetCampaignDeadlineRequestSchema = z.object({
-  /** The new deadline, or `null` to clear it. */
-  deadline: CampaignDeadlineSchema.nullable(),
+  /**
+   * The new deadline, or `null` to clear it.
+   *
+   * {@link CampaignDeadlineInputSchema}, NOT `CampaignDeadlineSchema`: this verb runs at plain
+   * `object:write`, and accepting `overrides` here would let it mint the very waivers
+   * `campaign:deadline-override` exists to gate. Naming the key is a 400 (the schema is strict), not
+   * a silent drop. The waivers already in force are PRESERVED across a set or a move — see
+   * `setCampaignDeadline`.
+   */
+  deadline: CampaignDeadlineInputSchema.nullable(),
   reason: z.string().min(1)
 });
 export type SetCampaignDeadlineRequest = z.infer<typeof SetCampaignDeadlineRequestSchema>;
+
+/**
+ * `POST /api/v1/campaigns/{id}/deadline-override` (M25.6b, §4.5) — EXCUSE ONE LAGGARD without
+ * clearing the deadline for everybody, which is the only exit M25.6a shipped.
+ *
+ * ================================================================================================
+ * THE AUTHORIZATION IS THE SUBSTANCE, AND IT IS TWO CHECKS AT TWO DIFFERENT OBJECTS
+ * ================================================================================================
+ *  * `campaign:deadline-override` **AT THE CAMPAIGN OBJECT**. The thing being waived is *this
+ *    campaign's* deadline, so the authority that waives it is authority over the campaign. A
+ *    target-scoped check would hand the laggard their own waiver — the component's own operator
+ *    could excuse the component from the migration the campaign exists to force.
+ *  * `object:write` **AT EACH NAMED TARGET**, so a waiver cannot be minted over a component the
+ *    actor has no standing on at all.
+ *
+ * It is deliberately NOT `freeze:override`. Borrowing that would let anyone holding a freeze
+ * override waive migration deadlines and vice versa — two unrelated blast radii collapsed onto one
+ * permission, and neither grant could afterwards be narrowed without taking the other with it.
+ */
+export const OverrideCampaignDeadlineRequestSchema = z.object({
+  /**
+   * WHICH targets to excuse — object ids or URNs, each of which must already be a target of this
+   * campaign (a waiver over a non-target is dead data in a governance record, so it is a 400).
+   *
+   * OMITTED MEANS EVERY TARGET THE CAMPAIGN CURRENTLY DECLARES, and that is NOT a synonym for
+   * clearing the deadline: the deadline stands, each waiver is recorded per target with its own
+   * audit event, `until` still expires them, and a target added to a later campaign is not covered.
+   * `object:write` is then demanded at every one of them, so the broad form needs broad standing.
+   */
+  targets: z.array(z.string().min(1)).min(1).optional(),
+  /** MANDATORY. Recorded verbatim in the stored waiver and on one high-severity audit event per
+   *  target. A governance waiver with no stated reason fails at the one job the record has. */
+  reason: z.string().min(1),
+  /** Optional expiry BOUNDARY — effective while `now <= until`. Read-time expiry, no job: an
+   *  instant already in the past yields a waiver that is stored, audited and NOT effective. */
+  until: z.string().datetime().optional()
+});
+export type OverrideCampaignDeadlineRequest = z.infer<typeof OverrideCampaignDeadlineRequestSchema>;
 
 export const CampaignSchema = z.object({
   id: z.string().uuid(), // = the underlying graph object's id
@@ -507,8 +622,12 @@ export const CreateCampaignRequestSchema = z.object({
    *  cannot observe as migrated. A REQUEST widening, so oasdiff-free. Authoring it here rather than
    *  only through `POST /campaigns/{id}/deadline` is what keeps a deadlined campaign a single call;
    *  the dedicated route exists to MOVE and CLEAR it afterwards, with a mandatory reason and an
-   *  audit event carrying the previous value. */
-  deadline: CampaignDeadlineSchema.optional(),
+   *  audit event carrying the previous value.
+   *
+   *  {@link CampaignDeadlineInputSchema}, so a campaign cannot be CREATED carrying waivers: this
+   *  route runs at `object:write`, and `overrides` takes the Owner-only `campaign:deadline-override`
+   *  at the campaign plus `object:write` at every named target. */
+  deadline: CampaignDeadlineInputSchema.optional(),
   targets: z.array(z.string().min(1)).min(1)
 });
 export type CreateCampaignRequest = z.infer<typeof CreateCampaignRequestSchema>;

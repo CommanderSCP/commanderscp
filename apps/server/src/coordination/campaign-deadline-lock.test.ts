@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { AdoptionEvidenceSchema, CampaignDeadlineAdoptionSignalSchema } from "@scp/schemas";
-import type { CampaignRecipe } from "@scp/schemas";
+import {
+  AdoptionEvidenceSchema,
+  CampaignDeadlineAdoptionSignalSchema,
+  CampaignDeadlineInputSchema,
+  CampaignDeadlineSchema
+} from "@scp/schemas";
+import type { CampaignDeadline, CampaignRecipe } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import type { CampaignAdoptionResult } from "./campaign-adoption.js";
 
@@ -50,9 +55,11 @@ vi.mock("./campaign-adoption.js", async (importOriginal) => {
 
 const {
   CAMPAIGN_DEADLINE_DECISION_KIND,
+  CAMPAIGN_DEADLINE_OVERRIDE_DECISION_KIND,
   CAMPAIGN_DEADLINE_SET_DECISION_KIND,
   describeLockedTargets,
   evaluateCampaignDeadlineLock,
+  findEffectiveDeadlineOverride,
   resolveCampaignDeadline
 } = await import("./campaign-deadline-lock.js");
 
@@ -72,10 +79,22 @@ const ORG_ID = "00000000-0000-4000-8000-000000000000";
 const CAMPAIGN_ID = "11111111-1111-4111-8111-111111111111";
 const TARGET_A = "22222222-2222-4222-8222-222222222222";
 const TARGET_B = "33333333-3333-4333-8333-333333333333";
+const ACTOR_ID = "44444444-4444-4444-8444-444444444444";
 
 const DEADLINE_AT = "2026-12-31T23:59:59.000Z";
 const DEADLINE = { at: DEADLINE_AT } as const;
 const AT = new Date(DEADLINE_AT);
+
+/** One stored waiver, as `POST /campaigns/{id}/deadline-override` writes it. */
+function waiver(targetObjectId: string, until?: string) {
+  return {
+    targetObjectId,
+    reason: "the vendor image is not out yet",
+    actorId: ACTOR_ID,
+    at: "2026-06-01T00:00:00.000Z",
+    ...(until !== undefined ? { until } : {})
+  };
+}
 
 const DEPENDENCY_RECIPE: CampaignRecipe = {
   version: 1,
@@ -137,15 +156,85 @@ describe("resolveCampaignDeadline — a refusal is never an absence", () => {
   });
 
   /**
-   * §4.1's `overrides[]` is M25.6b. Until its authoring door and its `campaign:deadline-override`
-   * permission exist, a document carrying one is refused rather than silently accepted and ignored —
-   * an accepted-but-unread waiver list is an unauthenticated waiver channel that LOOKS enforced.
+   * §4.1's `overrides[]` — M25.6a REFUSED this key outright, and this case is the same case flipped
+   * rather than a new one, because what changed is a fact about the system rather than about the
+   * test: THERE IS NOW A WRITER. `POST /campaigns/{id}/deadline-override` mints entries behind the
+   * Owner-only `campaign:deadline-override` (drizzle/0088) checked at the campaign plus
+   * `object:write` at each named target, so an `overrides` array on a stored document is now an
+   * AUTHORIZED artefact rather than an unauthenticated waiver channel sitting in the schema.
+   *
+   * THE MEMBERS ARE STILL STRICT, and that half is asserted directly below rather than assumed. The
+   * accepted-but-unread hazard M25.6a named did not go away; it moved down one level. A waiver whose
+   * unknown key was silently dropped would be a document an operator believes says one thing while
+   * the predicate reads another — and this document is the input to a governance record.
    */
-  it("refuses an `overrides` array — that is M25.6b and there is no writer for it yet", () => {
+  it("accepts an `overrides` array now that M25.6b has a writer for it", () => {
     const resolved = resolveCampaignDeadline({
-      deadline: { at: DEADLINE_AT, overrides: [{ targetObjectId: TARGET_A, reason: "later" }] }
+      deadline: {
+        at: DEADLINE_AT,
+        overrides: [
+          {
+            targetObjectId: TARGET_A,
+            reason: "the vendor image is not out yet",
+            actorId: ACTOR_ID,
+            at: "2026-06-01T00:00:00.000Z"
+          }
+        ]
+      }
     });
-    expect(resolved.outcome).toBe("malformed");
+    expect(resolved.outcome).toBe("deadline");
+    if (resolved.outcome !== "deadline") throw new Error("unreachable");
+    expect(resolved.deadline.overrides).toHaveLength(1);
+    expect(resolved.deadline.overrides![0]!.targetObjectId).toBe(TARGET_A);
+  });
+
+  it("still refuses a MEMBER of `overrides` that is short a field or carries an unknown one", () => {
+    const complete = {
+      targetObjectId: TARGET_A,
+      reason: "the vendor image is not out yet",
+      actorId: ACTOR_ID,
+      at: "2026-06-01T00:00:00.000Z"
+    };
+    // The M25.6a shape — `{targetObjectId, reason}` alone — is now missing `actorId`/`at`, the two
+    // fields that make the stored waiver say WHO excused this target and WHEN.
+    const cases: Record<string, unknown>[] = [
+      { targetObjectId: TARGET_A, reason: "later" },
+      { ...complete, actorId: undefined },
+      { ...complete, at: undefined },
+      { ...complete, reason: "" },
+      { ...complete, until: "next Tuesday" },
+      { ...complete, forever: true }
+    ];
+    for (const override of cases) {
+      expect(
+        resolveCampaignDeadline({ deadline: { at: DEADLINE_AT, overrides: [override] } }).outcome,
+        JSON.stringify(override)
+      ).toBe("malformed");
+    }
+  });
+
+  /**
+   * THE AUTHORING DOORS CANNOT MINT ONE. `POST /campaigns` and `POST /campaigns/{id}/deadline` both
+   * run at plain `object:write`; the waiver takes the Owner-only `campaign:deadline-override`. If
+   * the two shared one schema the cheap door would be the expensive permission's bypass, so the
+   * split is the authority check and this is what holds it in place — a 400 at the door, never a key
+   * silently dropped.
+   */
+  it("the AUTHORING schema omits `overrides` entirely — the cheap door cannot mint a waiver", () => {
+    expect("overrides" in CampaignDeadlineSchema.shape).toBe(true);
+    expect("overrides" in CampaignDeadlineInputSchema.shape).toBe(false);
+    const attempt = CampaignDeadlineInputSchema.safeParse({
+      at: DEADLINE_AT,
+      overrides: [
+        {
+          targetObjectId: TARGET_A,
+          reason: "let me out",
+          actorId: ACTOR_ID,
+          at: "2026-06-01T00:00:00.000Z"
+        }
+      ]
+    });
+    expect(attempt.success).toBe(false);
   });
 
   /**
@@ -171,18 +260,21 @@ describe("resolveCampaignDeadline — a refusal is never an absence", () => {
     }
   });
 
-  it("names four distinct decision kinds so no two writers about a campaign can alternate", () => {
+  it("names six distinct decision kinds so no two writers about a campaign can alternate", () => {
     // `insertDecisionIfChanged` dedupes against the LATEST row of a `(subject_id, kind)` pair, and
-    // the wave gate, the freeze hold, the adoption shortcut, the lock and the authoring act all
-    // write about the SAME subject. Any two sharing a kind is ADR-0024's 1.44 GB/day flood.
+    // the wave gate, the freeze hold, the adoption shortcut, the lock, the authoring act and
+    // M25.6b's waiver all write about the SAME subject — a campaign object. Any two sharing a kind
+    // is ADR-0024's 1.44 GB/day flood: a human `allow` row interleaving with the tick's `block`
+    // rows means suppression never fires once.
     const kinds = new Set([
       "gate",
       "freeze_admission",
       "campaign_adoption",
       CAMPAIGN_DEADLINE_DECISION_KIND,
-      CAMPAIGN_DEADLINE_SET_DECISION_KIND
+      CAMPAIGN_DEADLINE_SET_DECISION_KIND,
+      CAMPAIGN_DEADLINE_OVERRIDE_DECISION_KIND
     ]);
-    expect(kinds.size).toBe(5);
+    expect(kinds.size).toBe(6);
   });
 });
 
@@ -257,6 +349,149 @@ describe("evaluateCampaignDeadlineLock — the predicate", () => {
 
     expect((await evaluate(new Date(AT.getTime() + 60_000), [])).locked).toEqual([]);
     expect(adoptionCore).toHaveBeenCalledTimes(0);
+  });
+});
+
+/**
+ * ================================================================================================
+ * M25.6b — THE PER-TARGET WAIVER, INSIDE THE SAME PREDICATE
+ * ================================================================================================
+ */
+describe("evaluateCampaignDeadlineLock — the M25.6b override branch", () => {
+  function evaluateWith(
+    deadline: CampaignDeadline,
+    now: Date,
+    targetObjectIds: string[] = [TARGET_A]
+  ) {
+    return evaluateCampaignDeadlineLock(FORBIDDEN_TX, {
+      orgId: ORG_ID,
+      campaignObjectId: CAMPAIGN_ID,
+      targetObjectIds,
+      deadline,
+      at: AT,
+      recipe: DEPENDENCY_RECIPE,
+      now
+    });
+  }
+
+  /**
+   * THE WAIVER EXITS BEFORE THE RESOLUTION CORE IS ASKED — §4.2's "cheapest first", asserted by CALL
+   * COUNT rather than by reading the source. That is the same non-vacuity trick the not-due case
+   * uses: every query this predicate can make goes through `evaluateCampaignAdoption`, so "the core
+   * was not called" IS "this cost no evidence query". Moving the override check BELOW the adoption
+   * call leaves `locked` correct and turns this count into 1.
+   */
+  it("a live waiver excuses the target AND costs no evidence query — the core is not called ONCE", async () => {
+    adoptionCore.mockClear();
+    adoptionCore.mockResolvedValue(adoption("not_adopted"));
+
+    const result = await evaluateWith(
+      { at: DEADLINE_AT, overrides: [waiver(TARGET_A)] },
+      new Date(AT.getTime() + 60_000)
+    );
+
+    expect(result.locked).toEqual([]);
+    expect(adoptionCore).toHaveBeenCalledTimes(0);
+  });
+
+  /**
+   * THE WAIVER IS PER TARGET, not per campaign — the whole reason this exists rather than
+   * `deadline --clear`. B is excused; A is not, and A is still asked about.
+   */
+  it("waives only the named target — its unoverridden sibling stays locked", async () => {
+    adoptionCore.mockClear();
+    adoptionCore.mockResolvedValue(adoption("not_adopted"));
+
+    const result = await evaluateWith(
+      { at: DEADLINE_AT, overrides: [waiver(TARGET_B)] },
+      new Date(AT.getTime() + 60_000),
+      [TARGET_A, TARGET_B]
+    );
+
+    expect(result.locked.map((l) => l.targetObjectId)).toEqual([TARGET_A]);
+    expect(adoptionCore).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * READ-TIME EXPIRY, WHICH IS THE WHOLE DESIGN. `until` is a stored BOUNDARY compared against the
+   * caller's `now` on every evaluation; there is no job, nothing to un-flip, and an `until` in the
+   * past is simply not effective. The two rows here are one document read at two instants — which is
+   * exactly how production sees it, since nothing rewrites the waiver as it lapses.
+   */
+  it("an `until` in the PAST is not effective — the target is locked again, with no job to run", async () => {
+    const past = new Date(AT.getTime() + 60_000);
+    const deadline: CampaignDeadline = {
+      at: DEADLINE_AT,
+      // Expires 30 s after the deadline; `past` above is 60 s after it.
+      overrides: [waiver(TARGET_A, new Date(AT.getTime() + 30_000).toISOString())]
+    };
+
+    adoptionCore.mockClear();
+    adoptionCore.mockResolvedValue(adoption("not_adopted"));
+    const lapsed = await evaluateWith(deadline, past);
+    expect(lapsed.locked.map((l) => l.targetObjectId)).toEqual([TARGET_A]);
+
+    // ...and the SAME document, read one instant before its own expiry, still waives.
+    adoptionCore.mockClear();
+    const live = await evaluateWith(deadline, new Date(AT.getTime() + 20_000));
+    expect(live.locked).toEqual([]);
+    expect(adoptionCore).toHaveBeenCalledTimes(0);
+  });
+});
+
+/**
+ * `findEffectiveDeadlineOverride` — the boundary and the unreadable case, driven directly because
+ * neither is reachable through the predicate without a second document.
+ */
+describe("findEffectiveDeadlineOverride", () => {
+  const NOW = new Date("2027-01-01T00:00:00.000Z");
+
+  it("treats the `until` INSTANT as still inside the waiver, and one millisecond later as past it", () => {
+    const exact: CampaignDeadline = {
+      at: DEADLINE_AT,
+      overrides: [waiver(TARGET_A, NOW.toISOString())]
+    };
+    // INCLUSIVE, matching `now <= deadline.at` one level up. Two comparisons in one predicate
+    // disagreeing about who owns the boundary instant is how an off-by-one becomes invisible.
+    expect(findEffectiveDeadlineOverride(exact, TARGET_A, NOW)).toBeDefined();
+    expect(
+      findEffectiveDeadlineOverride(exact, TARGET_A, new Date(NOW.getTime() + 1))
+    ).toBeUndefined();
+  });
+
+  it("never expires an `until`-less waiver — the common case an Owner cannot put a date on", () => {
+    const forever: CampaignDeadline = { at: DEADLINE_AT, overrides: [waiver(TARGET_A)] };
+    expect(findEffectiveDeadlineOverride(forever, TARGET_A, new Date(8.64e15))).toBeDefined();
+  });
+
+  it("answers `undefined` for an absent, empty or other-target list without scanning further", () => {
+    expect(findEffectiveDeadlineOverride({ at: DEADLINE_AT }, TARGET_A, NOW)).toBeUndefined();
+    expect(
+      findEffectiveDeadlineOverride({ at: DEADLINE_AT, overrides: [] }, TARGET_A, NOW)
+    ).toBeUndefined();
+    expect(
+      findEffectiveDeadlineOverride(
+        { at: DEADLINE_AT, overrides: [waiver(TARGET_B)] },
+        TARGET_A,
+        NOW
+      )
+    ).toBeUndefined();
+  });
+
+  /**
+   * AN UNREADABLE `until` IS NOT A WAIVER. Two doors refuse it before this ever runs
+   * (`CampaignDeadlineOverrideSchema` at the route, `resolveCampaignDeadline` at the read), so this
+   * is a third bar nothing reaches today — asserted anyway because `Date.parse` returns `NaN` and
+   * every comparison against `NaN` is `false`, so getting the direction wrong here would silently
+   * waive a deadline forever rather than fail loudly. The one place fail-CLOSED is right in this
+   * fail-open module: the failure withholds a WAIVER, never a change.
+   */
+  it("does not waive on an unparseable `until` — NaN falls out as NOT effective", () => {
+    const broken = {
+      at: DEADLINE_AT,
+      overrides: [{ ...waiver(TARGET_A), until: "next Tuesday" }]
+    } as unknown as CampaignDeadline;
+    expect(findEffectiveDeadlineOverride(broken, TARGET_A, NOW)).toBeUndefined();
   });
 });
 

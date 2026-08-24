@@ -55,7 +55,22 @@ export type Permission =
   // to Operator: Operator/Approver/Administrator/Owner all hold `object:write`, so an
   // Operator-and-above grant would make every principal who can move also able to move under
   // enforcement — the lattice would be inert until custom roles exist, and nothing authors one yet.
-  | "governance:move";
+  | "governance:move"
+  // M25.6b (campaigns-rework §4.5, ADR-0042 §9) — WAIVE A CAMPAIGN'S DEADLINE FOR ONE TARGET.
+  // Granted by drizzle/0088 to Owner ALONE, the `freeze:override` grant's shape exactly.
+  //
+  // CHECKED AT THE CAMPAIGN OBJECT, never at the target. The thing being waived is *this campaign's*
+  // deadline, so the authority that waives it is authority over the campaign; a target-scoped check
+  // would hand the laggard their own waiver — the component's own operator excusing the component
+  // from the migration the campaign exists to force. `routes/campaigns.ts` then demands plain
+  // `object:write` AT EACH NAMED TARGET as a second, narrower bar, so a waiver cannot be minted over
+  // a component the actor has no standing on.
+  //
+  // DELIBERATELY NOT `freeze:override`, which was available and is the wrong shape: one permission
+  // would then carry two unrelated blast radii — a freeze-override holder could waive migration
+  // deadlines and a deadline-waiver holder could bypass release freezes — and neither grant could
+  // afterwards be narrowed without taking the other with it.
+  | "campaign:deadline-override";
 
 export interface PermissionCheck {
   orgId: string;

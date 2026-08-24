@@ -195,6 +195,8 @@ import {
   rollbackCampaign as rollbackCampaignRequest,
   // M25.6a (owner decision D4) — the deadline's set/move/CLEAR verb.
   setCampaignDeadline as setCampaignDeadlineRequest,
+  // M25.6b (§4.5) — the per-target waiver of that deadline.
+  overrideCampaignDeadline as overrideCampaignDeadlineRequest,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
   initFederation as initFederationRequest,
   getFederationSelf as getFederationSelfRequest,
@@ -371,7 +373,8 @@ import type {
   CampaignListQuery,
   CampaignListResponse,
   CampaignExplainResponse,
-  CampaignDeadline,
+  CampaignDeadlineInput,
+  OverrideCampaignDeadlineRequest,
   CreateCampaignRequest,
   RollbackCampaignResponse,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
@@ -1815,8 +1818,11 @@ export class ScpClient {
     /**
      * M25.6a (owner decision D4) — SET, MOVE or CLEAR this campaign's deadline. `deadline: null`
      * CLEARS it, which releases every target the deadline was withholding fan-out from on the next
-     * tick. That is the escape hatch this increment ships in place of §4.5's per-target override
-     * (M25.6b, whose new permission needs a migration).
+     * tick. That is the BLUNT exit; `overrideDeadline` below is the per-target one.
+     *
+     * `CampaignDeadlineInput`, not `CampaignDeadline`: the stored document carries `overrides[]` and
+     * this verb cannot author them — it runs at plain `object:write`, while minting a waiver takes
+     * the Owner-only `campaign:deadline-override`. Waivers already in force survive a set or a move.
      *
      * `reason` is MANDATORY on all three acts including the clear: the audit event records the
      * operator's own words and the Decision it cites carries the PREVIOUS value, without which "the
@@ -1824,13 +1830,37 @@ export class ScpClient {
      */
     setDeadline: async (
       id: string,
-      deadline: CampaignDeadline | null,
+      deadline: CampaignDeadlineInput | null,
       reason: string
     ): Promise<Campaign> => {
       const result = await setCampaignDeadlineRequest({
         client: this.client,
         path: { id },
         body: { deadline, reason }
+      });
+      return unwrap(result);
+    },
+    /**
+     * M25.6b (§4.5) — WAIVE this campaign's deadline for named targets, so one laggard can be
+     * excused without clearing the deadline for everybody.
+     *
+     * Takes `campaign:deadline-override` (Owner-only) AT THE CAMPAIGN — the thing being waived is
+     * *this campaign's* deadline, and a target-scoped check would hand the laggard their own waiver
+     * — PLUS `object:write` at each named target. OMITTING `targets` waives every target the
+     * campaign declares, which still is not the same as clearing: the deadline stands, each waiver
+     * is audited per target, and `until` expires them individually.
+     *
+     * `until` is a BOUNDARY with read-time expiry: an instant in the past is stored, audited, and
+     * simply not effective. There is no un-waive verb, for the same reason there is no unlock verb.
+     */
+    overrideDeadline: async (
+      id: string,
+      req: OverrideCampaignDeadlineRequest
+    ): Promise<Campaign> => {
+      const result = await overrideCampaignDeadlineRequest({
+        client: this.client,
+        path: { id },
+        body: req
       });
       return unwrap(result);
     },

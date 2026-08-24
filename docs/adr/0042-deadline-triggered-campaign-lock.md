@@ -1,6 +1,6 @@
 # ADR-0042: The deadline-triggered campaign lock — a per-(campaign × target) admission gate, not a freeze
 
-**Status:** Accepted (owner decision **D4**, 2026-08-23, recorded in [campaigns-rework.md](../proposals/campaigns-rework.md) §4). Shipped as **M25.6a**. The per-target override route and its `campaign:deadline-override` permission are **M25.6b and are not in this decision's scope** — see §9.
+**Status:** Accepted (owner decision **D4**, 2026-08-23, recorded in [campaigns-rework.md](../proposals/campaigns-rework.md) §4). Shipped as **M25.6a**; the per-target override route and its `campaign:deadline-override` permission followed as **M25.6b** — see §9, which records what M25.6b added and the two things it decided that this ADR did not.
 
 **Numbering note (2026-08-23):** `main` topped out at 0033; 0034 is reserved in prose by `docs/proposals/governance-label-namespace.md`; 0035 is M23's; 0036/0037/0038 are taken on the UI branch. 0039–0042 are reserved by campaigns-rework.md; this is 0042.
 
@@ -77,11 +77,19 @@ A high-severity `campaign.deadline.lock` audit event is appended **only when `in
 
 `reconcileCampaignsOrgTick(..., opts: { now?: Date } = {})`, on `watchdog.ts`'s precedent — and resolved **once per tick for the whole batch**, so two campaigns straddling the same instant cannot disagree within a tick. Production passes nothing.
 
-### 9. What is deliberately NOT here
+### 9. What M25.6a deliberately deferred, and what M25.6b then decided (2026-08-24)
 
-**The per-target override route and the `campaign:deadline-override` permission are M25.6b.** Every role grant in this repo lands via an `array_append` migration, and migration numbering was serialized across three concurrent sessions under a hard contiguity gate (`db/journal-ordering.test.ts` asserts `idx` contiguous from 0, so an out-of-order number reds the *unit* suite, not merely a merge). M25.6a therefore adds **no migration at all**.
+**The per-target override route and the `campaign:deadline-override` permission were M25.6b.** Every role grant in this repo lands via an `array_append` migration, and migration numbering was serialized across three concurrent sessions under a hard contiguity gate (`db/journal-ordering.test.ts` asserts `idx` contiguous from 0, so an out-of-order number reds the *unit* suite, not merely a merge). M25.6a therefore added **no migration at all**.
 
-**This is not an entrance with no exit** — the failure mode M25.1 existed to close for freezes. `POST /api/v1/campaigns/{id}/deadline` **sets, moves and clears** at plain `object:write` with a mandatory reason, and clearing releases every locked target on the next tick. `scp campaign deadline --clear` is the operator-reachable form. The per-target waiver is a finer-grained convenience, not the only way out.
+**M25.6b has since shipped it** — `POST /api/v1/campaigns/{id}/deadline-override`, `drizzle/0088_campaign_deadline_override_permission.sql` (Owner alone, the 0010 §4 `array_append` idiom), `deadline.overrides[]` read first in the predicate, and a sixth Decision kind `campaign_deadline_override`. Two decisions inside it are **not** derivable from anything above and are recorded here rather than only in code:
+
+1. **The authoring doors take a NARROWER schema than the stored document.** `CampaignDeadlineSchema` carries `overrides`; `CampaignDeadlineInputSchema` — what `POST /campaigns` and `POST /campaigns/{id}/deadline` accept — omits it and stays `.strict()`. Both of those run at plain `object:write`, so one shared schema would have made the cheap door the Owner-only permission's bypass. The split *is* the authority check; it is not tidiness. Naming the key at either door is a 400, never a silently dropped value, because a dropped key leaves an operator believing they excused a target that is still locked.
+
+2. **A `set`/`move` PRESERVES waivers already in force; a `clear` takes them with the deadline.** The move verb's body cannot express `overrides`, so an author moving the date has said nothing about the waivers, and dropping them would be an unexpressed **tightening** — re-locking targets an Owner deliberately excused, performed by someone holding only `object:write` and therefore no authority to un-excuse them. A clear is different in kind: it removes the deadline, so there is nothing left to be excused from.
+
+Two further properties worth naming, both consequences of the shape rather than new choices: **at most one waiver per target, stored sorted** (this document rides `object_upsert` to every replica and is content-hashed on every write, so append-only would grow unbounded and re-hash on every restatement), and **`until` expires at read time** — no job, an instant in the past is simply not effective, the M22.6 ruling applied a third time in this milestone.
+
+**This is not an entrance with no exit** — the failure mode M25.1 existed to close for freezes. `POST /api/v1/campaigns/{id}/deadline` **sets, moves and clears** at plain `object:write` with a mandatory reason, and clearing releases every locked target on the next tick. `scp campaign deadline --clear` is the operator-reachable form. The per-target waiver is a finer-grained convenience, not the only way out — and the two remain deliberately different prices for different radii: the blunt exit costs `object:write` at the campaign, the narrow one costs the Owner-only permission at the campaign **plus** `object:write` at every named target.
 
 `campaign.deadline.set` records the **previous** value, or "the deadline slipped four times" is unreconstructible.
 
@@ -115,3 +123,12 @@ Deleting the `continue` that is the refusal, and — separately — replacing `o
 > `AssertionError: the locked target must have NO member Change minted for it: expected 2 to be 1`
 
 Both must be re-run if either seam is touched. The radius case (`W-radius`) is the other one that matters: a locked component must still accept an unrelated change — the fixture names it `CVE-2026-0001 hotfix` — with **no** `campaign_deadline` Decision attached to it. If that case ever goes green while the lock has become scope-based, the feature has quietly turned into the freeze D4 excluded.
+
+**M25.6b adds two more to the same standing set** (`campaign-deadline-override.integration.test.ts`):
+
+* deleting the waiver branch — `if (findEffectiveDeadlineOverride(...)) continue;` — from `evaluateCampaignDeadlineLock` fails case `O` with
+  > `AssertionError: the waived target must get its member Change minted: expected +0 to be 1`
+* deleting the per-target `object:write` block from `routes/campaigns.ts` fails case `A2` with
+  > `AssertionError: expected 200 to be 403`
+
+The second is the one to re-run whenever that handler is touched: it is the only thing standing between "authority over a campaign" and "authority to mint a permanent governance record about any component in the org".

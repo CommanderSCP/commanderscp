@@ -17980,6 +17980,13 @@ export type ListCampaignsResponses = {
             deadline: {
                 at: string;
                 adoptionSignal?: 'delivered' | 'dependency' | 'control';
+                overrides?: Array<{
+                    targetObjectId: string;
+                    reason: string;
+                    actorId: string;
+                    at: string;
+                    until?: string;
+                }>;
             } | null;
             createdAt: string;
             updatedAt: string;
@@ -18118,6 +18125,13 @@ export type ProposeCampaignResponses = {
         deadline: {
             at: string;
             adoptionSignal?: 'delivered' | 'dependency' | 'control';
+            overrides?: Array<{
+                targetObjectId: string;
+                reason: string;
+                actorId: string;
+                at: string;
+                until?: string;
+            }>;
         } | null;
         createdAt: string;
         updatedAt: string;
@@ -18215,6 +18229,13 @@ export type GetCampaignResponses = {
         deadline: {
             at: string;
             adoptionSignal?: 'delivered' | 'dependency' | 'control';
+            overrides?: Array<{
+                targetObjectId: string;
+                reason: string;
+                actorId: string;
+                at: string;
+                until?: string;
+            }>;
         } | null;
         createdAt: string;
         updatedAt: string;
@@ -18313,6 +18334,13 @@ export type ExplainCampaignResponses = {
             deadline: {
                 at: string;
                 adoptionSignal?: 'delivered' | 'dependency' | 'control';
+                overrides?: Array<{
+                    targetObjectId: string;
+                    reason: string;
+                    actorId: string;
+                    at: string;
+                    until?: string;
+                }>;
             } | null;
             createdAt: string;
             updatedAt: string;
@@ -18550,6 +18578,13 @@ export type SetCampaignDeadlineResponses = {
         deadline: {
             at: string;
             adoptionSignal?: 'delivered' | 'dependency' | 'control';
+            overrides?: Array<{
+                targetObjectId: string;
+                reason: string;
+                actorId: string;
+                at: string;
+                until?: string;
+            }>;
         } | null;
         createdAt: string;
         updatedAt: string;
@@ -18557,6 +18592,125 @@ export type SetCampaignDeadlineResponses = {
 };
 
 export type SetCampaignDeadlineResponse = SetCampaignDeadlineResponses[keyof SetCampaignDeadlineResponses];
+
+export type OverrideCampaignDeadlineData = {
+    body: {
+        targets?: Array<string>;
+        reason: string;
+        until?: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/campaigns/{id}/deadline-override';
+};
+
+export type OverrideCampaignDeadlineErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type OverrideCampaignDeadlineError = OverrideCampaignDeadlineErrors[keyof OverrideCampaignDeadlineErrors];
+
+export type OverrideCampaignDeadlineResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        urn: string;
+        name: string;
+        description: string | null;
+        targets: Array<string>;
+        topologyObjectId: string | null;
+        topologyVersion: number | null;
+        status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        recipe?: {
+            version: 1;
+            trigger: {
+                kind: 'sync' | 'workflow_dispatch' | 'custom';
+                parameters?: {
+                    [key: string]: unknown;
+                };
+            };
+            adoption?: {
+                kind: 'delivered';
+            } | {
+                kind: 'dependency';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                minVersion: string;
+            } | {
+                kind: 'control';
+                controlObjectId: string;
+            };
+            guidance?: {
+                title: string;
+                summary?: string;
+                docsUrl?: string;
+            };
+        };
+        deadline: {
+            at: string;
+            adoptionSignal?: 'delivered' | 'dependency' | 'control';
+            overrides?: Array<{
+                targetObjectId: string;
+                reason: string;
+                actorId: string;
+                at: string;
+                until?: string;
+            }>;
+        } | null;
+        createdAt: string;
+        updatedAt: string;
+    };
+};
+
+export type OverrideCampaignDeadlineResponse = OverrideCampaignDeadlineResponses[keyof OverrideCampaignDeadlineResponses];
 
 export type RollbackCampaignData = {
     body: {
