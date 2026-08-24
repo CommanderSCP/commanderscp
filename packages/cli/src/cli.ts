@@ -3133,6 +3133,43 @@ export function buildProgram(): Command {
       if (report.checks.some((c) => c.status !== "ok")) process.exitCode = 1;
     });
 
+  // §7.3 — instance-wide checks (DSN reachability, recovery state, delivery config, mTLS/XO). Gated
+  // by the DEPLOYMENT operator token (x-scp-operator-token), read from --operator-token or the
+  // SCP_OPERATOR_TOKEN env; NOT a tenant bearer. Same non-zero-on-warn gate contract as `scp doctor`.
+  program
+    .command("doctor:instance")
+    .description(
+      "Read-only INSTANCE-wide operational self-checks (operator-token-gated; exits 1 if any check warns)"
+    )
+    .option("--operator-token <token>", "deployment operator token (else $SCP_OPERATOR_TOKEN)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { operatorToken?: string }) => {
+      const token = opts.operatorToken ?? process.env.SCP_OPERATOR_TOKEN;
+      if (!token) {
+        console.error(
+          "an operator token is required: pass --operator-token or set SCP_OPERATOR_TOKEN (this is the deployment operator credential, not your tenant login)"
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const client = await clientFromStoredCredentials(opts);
+      const report = await client.doctor.instanceReport(token);
+      if (opts.output === "json") {
+        printResult(report, opts.output, (item) => item as Record<string, unknown>);
+      } else {
+        printResult(report.checks, opts.output, (item) => {
+          const check = item as DoctorCheck;
+          return { check: check.id, status: check.status.toUpperCase(), summary: check.summary };
+        });
+        for (const check of report.checks) {
+          if (check.status === "ok") continue;
+          console.log(`\n--- ${check.id} ---\n${check.detail}`);
+        }
+      }
+      if (report.checks.some((c) => c.status !== "ok")) process.exitCode = 1;
+    });
+
   // -------------------------------------------------------------------------------------
   // plan / apply (`@scp/iac` server-side plan/apply — BUILD_AND_TEST.md §8 M2 item 4). A
   // manifest file is what `@scp/iac`'s `synthToFile` writes (or any hand-authored/CI-generated

@@ -21461,3 +21461,53 @@ export type DoctorReportResponses = {
 };
 
 export type DoctorReportResponse = DoctorReportResponses[keyof DoctorReportResponses];
+
+export type DoctorInstanceReportData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/doctor/instance';
+};
+
+export type DoctorInstanceReportErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DoctorInstanceReportError = DoctorInstanceReportErrors[keyof DoctorInstanceReportErrors];
+
+export type DoctorInstanceReportResponses = {
+    /**
+     * Success
+     */
+    200: {
+        checks: Array<{
+            id: string;
+            status: 'ok' | 'warn';
+            summary: string;
+            detail: string;
+        }>;
+    };
+};
+
+export type DoctorInstanceReportResponse = DoctorInstanceReportResponses[keyof DoctorInstanceReportResponses];

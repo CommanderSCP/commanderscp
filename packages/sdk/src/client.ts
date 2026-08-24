@@ -31,6 +31,7 @@ import {
   graphSubgraph as graphSubgraphRequest,
   graphIntegrity as graphIntegrityRequest,
   doctorReport as doctorReportRequest,
+  doctorInstanceReport as doctorInstanceReportRequest,
   pushObjectHealth as pushObjectHealthRequest,
   getObjectHealth as getObjectHealthRequest,
   graphHealth as graphHealthRequest,
@@ -1305,6 +1306,18 @@ export class ScpClient {
      */
     report: async (): Promise<DoctorReport> => {
       const result = await doctorReportRequest({ client: this.client });
+      return unwrap(result);
+    },
+    /**
+     * §7.3 — INSTANCE-WIDE operational self-checks (DSN reachability, recovery state, delivery
+     * config, mTLS/XO readiness). Gated by the deployment OPERATOR token (not a tenant bearer),
+     * passed as the `x-scp-operator-token` header. `scp doctor instance`.
+     */
+    instanceReport: async (operatorToken: string): Promise<DoctorReport> => {
+      const result = await doctorInstanceReportRequest({
+        client: this.client,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
       return unwrap(result);
     }
   };

@@ -7920,3 +7920,15 @@ export const zDoctorReportResponse = z.object({
         detail: z.string()
     }))
 });
+
+/**
+ * Success
+ */
+export const zDoctorInstanceReportResponse = z.object({
+    checks: z.array(z.object({
+        id: z.string(),
+        status: z.enum(['ok', 'warn']),
+        summary: z.string(),
+        detail: z.string()
+    }))
+});
