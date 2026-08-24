@@ -197,7 +197,9 @@ async function applyEntry(
   tx: TenantTx,
   orgId: string,
   entry: SyncJournalEntry,
-  exporterDomainId: TrustDomainId
+  exporterDomainId: TrustDomainId,
+  /** §7.2.6 — threaded onto every `federationImport` context so a resync overwrites stale revisions. */
+  forceOverwrite = false
 ): Promise<void> {
   const payload = entry.payload;
   const requestId = `federation-import:${entry.id}`;
@@ -223,7 +225,7 @@ async function applyEntry(
         domainId: await resolveImportDomainId(tx, orgId, payload.domainId),
         properties: (payload.properties as Record<string, unknown>) ?? {},
         labels: (payload.labels as Record<string, unknown>) ?? {},
-        federationImport: { originDomainId, revision, provenance: null }
+        federationImport: { originDomainId, revision, provenance: null, forceOverwrite }
       });
       // THE EVIDENCE RESOLVES ITSELF. If this domain had previously recorded unattached
       // `change_status` for this very object (the status entry arrived before its object — routine
@@ -246,7 +248,7 @@ async function applyEntry(
           actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
           requestId,
           idOrUrn,
-          federationImport: { originDomainId: exporterDomainId, revision: entry.sequence }
+          federationImport: { originDomainId: exporterDomainId, revision: entry.sequence, forceOverwrite }
         });
       } catch (err) {
         if (isNotFound(err)) return; // never replicated locally — nothing to tombstone
@@ -270,7 +272,7 @@ async function applyEntry(
           toId: String(payload.toId),
           properties: (payload.properties as Record<string, unknown>) ?? {},
           labels: (payload.labels as Record<string, unknown>) ?? {},
-          federationImport: { originDomainId, revision }
+          federationImport: { originDomainId, revision, forceOverwrite }
         });
       } catch (err) {
         // Endpoints not yet replicated locally. Skipped rather than failing the whole bundle over
@@ -302,7 +304,7 @@ async function applyEntry(
           actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
           requestId,
           id: String(payload.id),
-          federationImport: { originDomainId: exporterDomainId, revision: entry.sequence }
+          federationImport: { originDomainId: exporterDomainId, revision: entry.sequence, forceOverwrite }
         });
       } catch (err) {
         if (isNotFound(err)) return;
@@ -374,7 +376,11 @@ async function applyEntry(
           requestId,
           idOrUrn: existing.id,
           properties: { ...existing.properties, federationState: state },
-          federationImport: { originDomainId: exporterDomainId, revision: existing.revision + 1 }
+          federationImport: {
+            originDomainId: exporterDomainId,
+            revision: existing.revision + 1,
+            forceOverwrite
+          }
         });
       } catch {
         // (b) only — case (a) never reaches here (it returns from inside the branch above). Still
@@ -710,7 +716,13 @@ export async function importSyncBundle(
    *  is a file/pushed/inbox handoff, and the scheduler is the one caller that passes `"live-pull"`
    *  explicitly. Recorded on the transfer row so the §13 "as of" label can attribute the transport
    *  from fact rather than from a timestamp comparison that cannot work (drizzle/0041). */
-  transport: BundleTransport = "bundle"
+  transport: BundleTransport = "bundle",
+  /** §7.2.6 RESYNC ONLY. When true, every applied entry carries `forceOverwrite` into its
+   *  `FederationImportContext`, so a stale-revision entry OVERWRITES instead of no-op'ing — how a
+   *  lost-tail restore re-converges. The single-writer authority check is still enforced. Set only by
+   *  the mutually-authorized resync path, which resets the cursor to genesis first (so rail 4's
+   *  high-water mark, cleared by that reset, does not refuse the resync bundle as a regression). */
+  forceOverwrite = false
 ): Promise<ImportSyncBundleResult> {
   const self = await ensureFederationSelf(tx, orgId);
   if (bundle.header.peerDomainId !== self.domainId) {
@@ -832,7 +844,7 @@ export async function importSyncBundle(
     // export). All toApply entries in a scoped bundle are in-scope; this only ever skips if an
     // exporter shipped something out-of-scope.
     if (entryMatchesScope(entry, peer.syncScope)) {
-      await applyEntry(tx, orgId, entry, exporterDomainId);
+      await applyEntry(tx, orgId, entry, exporterDomainId, forceOverwrite);
       applied += 1;
     } else if (entry.entryKind === "change_status") {
       // THE SECOND DROP CHOKEPOINT. This receiver's OWN scope discarded a change-status entry that

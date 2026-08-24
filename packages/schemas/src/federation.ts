@@ -819,6 +819,39 @@ export const SyncBundleSchema = z.object({
 });
 export type SyncBundle = z.infer<typeof SyncBundleSchema>;
 
+/** §7.2.6 RESYNC — the SIGNED CROSS-DOMAIN HANDSHAKE. The IMPORTER (the diverged side) sends this to
+ *  the exporter's `POST /federation/resync`. `requestSignature` is the importer's signature over a
+ *  canonical `{resync:true, importerDomainId, exporterDomainId}` payload, made with the importer's own
+ *  instance key — the exporter verifies it against the importer's paired public key, so the request
+ *  authenticates the importer authorizing a forced overwrite of ITS OWN replica. `peer` is the
+ *  importer's own domain id (how the exporter knows it as a peer). */
+export const FederationResyncRequestSchema = z.object({
+  peer: z.string().min(1),
+  requestSignature: z.string()
+});
+export type FederationResyncRequest = z.infer<typeof FederationResyncRequestSchema>;
+
+/** The exporter's signed response: a FULL re-export from genesis (a normal, signature-verified
+ *  `SyncBundle`) plus the exporter's generation stamp at consent time. The exporter records its OWN
+ *  consent Decision before returning this — the "both sides record" half on the exporter. */
+export const FederationResyncResponseSchema = z.object({
+  bundle: SyncBundleSchema,
+  exporterGeneration: z.number().int().nonnegative()
+});
+export type FederationResyncResponse = z.infer<typeof FederationResyncResponseSchema>;
+
+/** The importer-side result of `scp federation resync` — the local operation that dials the
+ *  exporter, force-imports the re-export, resets its cursor, bumps its own generation, and clears
+ *  the standing divergence (so rail 5's reanchor refusal lifts). */
+export const FederationResyncResultSchema = z.object({
+  peerDomainId: z.string().uuid(),
+  previousCursorSequence: z.number().int().nonnegative(),
+  appliedEntries: z.number().int(),
+  generation: z.number().int().nonnegative(),
+  decisionId: z.string().uuid()
+});
+export type FederationResyncResult = z.infer<typeof FederationResyncResultSchema>;
+
 export const ImportBundleResponseSchema = z.object({
   peerDomainId: z.string().uuid(),
   appliedEntries: z.number().int(),

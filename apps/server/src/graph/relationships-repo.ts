@@ -610,7 +610,10 @@ export async function deleteRelationship(
         `single-writer authority violation: relationship '${existing.id}' is authoritatively owned by domain '${existing.originDomainId}', not '${input.federationImport.originDomainId}'`
       );
     }
-    if (input.federationImport.revision <= existing.revision) return; // stale replay — no-op
+    // Stale replay → no-op, EXCEPT under a resync force-overwrite permit (§7.2.6), which re-applies
+    // even a stale-revision edge so a lost-tail restore re-converges relationships too.
+    if (input.federationImport.revision <= existing.revision && !input.federationImport.forceOverwrite)
+      return;
   } else {
     const self = await ensureFederationSelf(tx, input.orgId);
     if (existing.originDomainId !== self.domainId) {

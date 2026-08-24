@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
-import type { SyncBundle } from "@scp/schemas";
+import type { SyncBundle, FederationResyncRequest, FederationResyncResponse } from "@scp/schemas";
 
 /**
  * M14.0 — the PER-PEER mTLS OUTBOUND DIALER (the load-bearing, security-critical half of the
@@ -235,6 +235,38 @@ export async function pullSyncBundleFromCommander(opts: {
     throw new FederationExportRefused(result.status, type, detail);
   }
   return result.body as SyncBundle;
+}
+
+/**
+ * §7.2.6 RESYNC — the IMPORTER dials the exporter's `POST /federation/resync` with a signed request
+ * and receives a signed full re-export + the exporter's generation. Same transport discipline as the
+ * pull dialer (mTLS derived from the peer's own URL scheme, per-URL timeout via `federationDialJson`).
+ */
+export async function dialResync(opts: {
+  baseUrl: string;
+  body: FederationResyncRequest;
+  bearer?: string;
+  mtls?: FederationClientMtls;
+}): Promise<FederationResyncResponse> {
+  const url = `${opts.baseUrl.replace(/\/+$/, "")}/api/v1/federation/resync`;
+  const requireMtls = federationPeerRequiresMtls(opts.baseUrl);
+  const result = await federationDialJson({
+    url,
+    body: opts.body,
+    bearer: opts.bearer,
+    mtls: opts.mtls,
+    requireMtls
+  });
+  if (result.status < 200 || result.status >= 300) {
+    const body =
+      result.body && typeof result.body === "object"
+        ? (result.body as { detail?: unknown; type?: unknown })
+        : {};
+    const detail = "detail" in body ? String(body.detail) : `HTTP ${result.status}`;
+    const type = typeof body.type === "string" ? body.type : "about:blank";
+    throw new FederationExportRefused(result.status, type, detail);
+  }
+  return result.body as FederationResyncResponse;
 }
 
 /**

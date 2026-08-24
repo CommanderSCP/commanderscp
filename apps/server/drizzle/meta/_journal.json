@@ -603,6 +603,13 @@
       "when": 1788151000000,
       "tag": "0091_federation_audit_witness",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1788152000000,
+      "tag": "0092_federation_self_generation",
+      "breakpoints": true
     }
   ]
 }

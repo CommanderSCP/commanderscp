@@ -7134,6 +7134,67 @@ export const zExportSyncBundleResponse = z.object({
 /**
  * Success
  */
+export const zFederationResyncAuthorizeResponse = z.object({
+    bundle: z.object({
+        header: z.object({
+            formatVersion: z.literal(1),
+            kind: z.literal('sync'),
+            exporterDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            peerDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            sinceSequence: z.int().gte(0).lte(9007199254740991),
+            throughSequence: z.int().gte(0).lte(9007199254740991),
+            exportedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+        }),
+        entries: z.array(z.object({
+            id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            sequence: z.int().gte(0).lte(9007199254740991),
+            entryKind: z.enum([
+                'object_upsert',
+                'object_tombstone',
+                'relationship_upsert',
+                'relationship_tombstone',
+                'change_status',
+                'policy_upsert',
+                'approval_evidence',
+                'audit_segment',
+                'key_rotation'
+            ]),
+            payload: z.record(z.string(), z.unknown()),
+            contentHash: z.string(),
+            baseRevision: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+            conflict: z.string().nullable(),
+            prevHash: z.string(),
+            rowHash: z.string(),
+            signature: z.string(),
+            createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+        })),
+        checksum: z.string(),
+        bundleSignature: z.string(),
+        tailAttestation: z.object({
+            tailSequence: z.int().gte(0).lte(9007199254740991),
+            tailRowHash: z.string(),
+            signature: z.string()
+        }).optional()
+    }),
+    exporterGeneration: z.int().gte(0).lte(9007199254740991)
+});
+
+/**
+ * Success
+ */
+export const zFederationResyncPeerResponse = z.object({
+    peerDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    previousCursorSequence: z.int().gte(0).lte(9007199254740991),
+    appliedEntries: z.int().gte(-9007199254740991).lte(9007199254740991),
+    generation: z.int().gte(0).lte(9007199254740991),
+    decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+});
+
+/**
+ * Success
+ */
 export const zExportPromotionBundleResponse = z.object({
     header: z.object({
         formatVersion: z.literal(1),

@@ -5166,6 +5166,37 @@ export function buildProgram(): Command {
       printResult(peer, opts.output, (item) => peerRow(item as FederationPeer));
     });
 
+  // §7.2.6 — the sanctioned recovery from a journal divergence. NOT a re-anchor (rail 5 refuses that
+  // while a divergence stands): this signs a request to the exporter, force-overwrites this domain's
+  // replica to the exporter's restored reality, and clears the divergence. Mutually authorized +
+  // Decision-recorded on both sides.
+  federationCmd
+    .command("resync")
+    .description("Resync this domain's replica with a peer after a journal divergence (§7.2.6)")
+    .requiredOption("--peer <idOrName>", "the exporter peer's trust-domain id or name")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { peer: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.federation.resyncPeer(opts.peer);
+      printResult(result, opts.output, (item) => {
+        const r = item as {
+          peerDomainId: string;
+          previousCursorSequence: number;
+          appliedEntries: number;
+          generation: number;
+          decisionId: string;
+        };
+        return {
+          peer: r.peerDomainId,
+          previousCursor: String(r.previousCursorSequence),
+          appliedEntries: String(r.appliedEntries),
+          generation: String(r.generation),
+          decision: r.decisionId
+        };
+      });
+    });
+
   // -----------------------------------------------------------------------------------------
   // M16.2 phase A (E1) — `outpost` config objects: the commander-authored declared config that SYNCS
   // DOWN (a peer ROW never can — the journal has no peer-shaped entry kind). Commander-side commands;

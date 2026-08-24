@@ -1260,6 +1260,10 @@ export const federationSelf = pgTable("federation_self", {
   domainId: uuid("domain_id").notNull().unique().$type<TrustDomainId>(),
   name: text("name").notNull(),
   role: text("role").notNull().default("unset"), // 'unset' | 'commander' | 'outpost' | 'retrans'
+  /** §7.2.6 (drizzle/0092) — a per-org monotonic counter bumped by the resync operation (and the
+   *  promotion runbook). Recorded WITH the resync Decision so a forensic reading can attribute
+   *  entries to before/after a lost-tail event. Never enters the signed journal-entry format. */
+  generation: bigint("generation", { mode: "number" }).notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
 

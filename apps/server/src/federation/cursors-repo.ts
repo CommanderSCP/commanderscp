@@ -229,6 +229,63 @@ export async function advanceCursor(
 }
 
 /**
+ * §7.2.6 RESYNC ONLY — reset a cursor to an EXACT position, forward OR backward, unlike the
+ * deliberately forward-only {@link advanceCursor}. A lost-tail resync must be able to rewind the
+ * cursor (typically to genesis) so the re-import re-applies the exporter's restored journal from the
+ * start; `advanceCursor`'s "never regress" ratchet is exactly what would otherwise make resync a
+ * no-op. Clears any standing re-anchor permit and the attested-tail high-water mark, because after a
+ * resync everything about this (peer, origin) is being re-established from the exporter's new truth.
+ * Called ONLY from the mutually-authorized resync path; no import/relay/poke/pull path may reach it.
+ */
+export async function resetCursor(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: TrustDomainId,
+  originDomainId: TrustDomainId,
+  toSequence: number,
+  toRowHash: string | null
+): Promise<void> {
+  const existing = await tx
+    .select({ orgId: syncCursors.orgId })
+    .from(syncCursors)
+    .where(
+      and(
+        eq(syncCursors.orgId, orgId),
+        eq(syncCursors.peerDomainId, peerDomainId),
+        eq(syncCursors.originDomainId, originDomainId)
+      )
+    )
+    .limit(1);
+  if (existing[0]) {
+    await tx
+      .update(syncCursors)
+      .set({
+        lastAppliedSeq: toSequence,
+        lastAppliedRowHash: toRowHash,
+        reanchorFromSeq: null,
+        attestedTailSeq: null,
+        attestedTailRowHash: null,
+        updatedAt: new Date()
+      })
+      .where(
+        and(
+          eq(syncCursors.orgId, orgId),
+          eq(syncCursors.peerDomainId, peerDomainId),
+          eq(syncCursors.originDomainId, originDomainId)
+        )
+      );
+  } else {
+    await tx.insert(syncCursors).values({
+      orgId,
+      peerDomainId,
+      originDomainId,
+      lastAppliedSeq: toSequence,
+      lastAppliedRowHash: toRowHash
+    });
+  }
+}
+
+/**
  * DIVERGENCE RAIL 4 (multi-region-instance-resilience.md §7.2) — verify the exporter's signed tail
  * attestation against the MONOTONIC high-water mark this side holds for (peer, origin), then advance
  * it. The attestation's SIGNATURE is verified by the caller (import-repo, which holds the peer key);
