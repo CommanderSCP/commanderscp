@@ -419,7 +419,14 @@ export async function startObserveLoop(
       }
     );
   });
-  await boss.send(OBSERVE_QUEUE, {});
+  await boss.send(
+    OBSERVE_QUEUE,
+    {},
+    {
+      singletonKey: "tick",
+      singletonSeconds: OBSERVE_TICK_INTERVAL_SECONDS
+    }
+  );
   return {
     async stop() {
       stopped = true;

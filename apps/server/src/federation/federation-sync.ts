@@ -680,6 +680,17 @@ export const FEDERATION_SYNC_POKE_REASON = "poke";
  */
 export const FEDERATION_SYNC_STARTUP_REASON = "startup";
 
+/**
+ * M26.1 (§4-A4) — the startup send's OWN singleton key/window, distinct from the interval chain's
+ * `"tick"` key. N replicas restarting together (or one replica bouncing repeatedly within the
+ * window) must dedupe their startup pulls AMONG THEMSELVES, but the shared `"tick"` key is off
+ * limits: `wakeFederationSyncNow`'s doc (see {@link FEDERATION_SYNC_POKE_REASON}) already
+ * established that a pending interval tick occupying `"tick"` would silently swallow a later
+ * singleton-keyed send under the same key. A short window (well under the sync interval) is enough
+ * to collapse a simultaneous-restart storm without masking a genuine later reconnect.
+ */
+export const FEDERATION_SYNC_STARTUP_SINGLETON_SECONDS = 10;
+
 /** The wake payload a tick carries (see {@link FEDERATION_SYNC_POKE_REASON}). */
 export interface FederationSyncJobData {
   reason?: string;
@@ -785,8 +796,17 @@ export async function startFederationSyncLoop(
     );
   });
   // PULL-ON-(RE)CONNECT: fire the first tick immediately, FORCED (see the constant's doc) — and it
-  // is this tick that bootstraps the self-rescheduling interval chain.
-  await boss.send(FEDERATION_SYNC_QUEUE, { reason: FEDERATION_SYNC_STARTUP_REASON });
+  // is this tick that bootstraps the self-rescheduling interval chain. Its OWN singleton key (never
+  // the shared "tick" key — see FEDERATION_SYNC_STARTUP_SINGLETON_SECONDS) dedupes N replicas
+  // restarting together without letting a pending interval tick swallow it.
+  await boss.send(
+    FEDERATION_SYNC_QUEUE,
+    { reason: FEDERATION_SYNC_STARTUP_REASON },
+    {
+      singletonKey: FEDERATION_SYNC_STARTUP_REASON,
+      singletonSeconds: FEDERATION_SYNC_STARTUP_SINGLETON_SECONDS
+    }
+  );
   return {
     async stop() {
       stopped = true;

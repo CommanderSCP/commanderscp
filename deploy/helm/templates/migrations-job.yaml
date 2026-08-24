@@ -117,6 +117,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "commanderscp.postgresSecretName" . }}
                   key: {{ .Values.postgres.existingSecretKeys.pgboss }}
+            {{- if .Values.migrations.allowPasswordReset }}
+            # B9 guard opt-out (proposal §4-B9, §7.4) — see values.yaml's doc comment. Restores the
+            # pre-guard unconditional ALTER ROLE ... PASSWORD for a deliberate rotation; unset
+            # (the default) leaves the guard refusing on any live-password mismatch.
+            - name: SCP_PROVISION_ALLOW_PASSWORD_RESET
+              value: "1"
+            {{- end }}
           resources:
             {{- toYaml .Values.migrations.resources | nindent 12 }}
           volumeMounts:

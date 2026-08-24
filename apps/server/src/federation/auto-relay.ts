@@ -658,7 +658,11 @@ export async function startAutoRelayLoop(
       { startAfter: interval, singletonKey: "tick", singletonSeconds: interval }
     );
   });
-  await boss.send(AUTO_RELAY_QUEUE, {});
+  await boss.send(
+    AUTO_RELAY_QUEUE,
+    {},
+    { singletonKey: "tick", singletonSeconds: autoRelayIntervalSeconds() }
+  );
   return {
     async stop() {
       stopped = true;

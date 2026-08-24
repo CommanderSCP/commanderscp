@@ -394,11 +394,17 @@ describe("coordination engine: watchdog", () => {
     // sleep — `proposed`'s SLA is 5 minutes (coordination/watchdog.ts's `WATCHDOG_SLA_MS`).
     const farFuture = new Date(Date.now() + 10 * 60_000);
     const watchdogHost = createInMemoryFakeHost();
-    const flags = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      runWatchdogSweep(tx, org.orgId, watchdogHost, server.deps.config.secretsMasterKey, {
+    // `runWatchdogSweep` manages its own per-row short transactions (§7.1 item 3) — no outer
+    // `withTenantTx` wraps it any more.
+    const flags = await runWatchdogSweep(
+      server.deps.db,
+      org.orgId,
+      watchdogHost,
+      server.deps.config.secretsMasterKey,
+      {
         requestId: "watchdog-test-sweep",
         now: farFuture
-      })
+      }
     );
 
     const flagged = flags.find((f) => f.changeObjectId === target.id);
@@ -414,11 +420,15 @@ describe("coordination engine: watchdog", () => {
 
     // Idempotent per state-entry: a second sweep at the same (or later) `now` does NOT re-flag —
     // `watchdog_flagged_at` guards it (coordination/watchdog.ts's module doc).
-    const secondSweep = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      runWatchdogSweep(tx, org.orgId, watchdogHost, server.deps.config.secretsMasterKey, {
+    const secondSweep = await runWatchdogSweep(
+      server.deps.db,
+      org.orgId,
+      watchdogHost,
+      server.deps.config.secretsMasterKey,
+      {
         requestId: "watchdog-test-sweep-2",
         now: farFuture
-      })
+      }
     );
     expect(secondSweep.some((f) => f.changeObjectId === target.id)).toBe(false);
   });

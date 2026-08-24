@@ -1,4 +1,152 @@
-import type pg from "pg";
+import pg from "pg";
+
+const { Client } = pg;
+
+/**
+ * `SCP_PROVISION_ALLOW_PASSWORD_RESET=1` restores the pre-B9 unconditional-ALTER behavior for a
+ * deliberate, operator-initiated password rotation (proposal multi-region-instance-resilience.md
+ * §4-B9, §7.4). Read directly from `process.env` rather than through `config.ts`: `config.ts`
+ * itself imports `deriveRuntimeDatabaseUrl` from this module, so importing `loadConfig` back here
+ * would be circular. Every call site may still override per-call via the `allowPasswordReset`
+ * option (used by the guard's own tests).
+ */
+function passwordResetAllowedByDefault(): boolean {
+  return process.env.SCP_PROVISION_ALLOW_PASSWORD_RESET === "1";
+}
+
+/**
+ * True for a Postgres SQLSTATE class-28 error ("Invalid Authorization Specification" — 28000 role/
+ * db mismatch, 28P01 bad password): the ONLY signal that means "this role's live password differs
+ * from what we're configured with." Anything else (refused connection, DNS failure, timeout, the
+ * role's own CONNECTION LIMIT) is a connectivity failure, not evidence of a clobber risk, and must
+ * propagate instead of being read as "needs a reset."
+ */
+function isAuthenticationError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  return typeof code === "string" && code.startsWith("28");
+}
+
+/**
+ * Connects as `user`/`password` against the same server + database `adminPool` targets, purely to
+ * find out whether that password is ALREADY the role's live password — a read, never a write.
+ * Returns `true` (matches — the ALTER can be skipped), `false` (a class-28 auth failure — a
+ * DIFFERENT password is live), or throws (a non-auth connectivity failure, which proves nothing
+ * about the password and must not be treated as a mismatch).
+ */
+async function passwordMatchesLiveRole(
+  adminPool: pg.Pool,
+  user: string,
+  password: string
+): Promise<boolean> {
+  const adminConnectionString = adminPool.options.connectionString;
+  if (!adminConnectionString) {
+    // Every construction site in this codebase goes through db/client.ts's `createPool` (or, in
+    // test-support, a bare `new pg.Pool({ connectionString })`) — both always set this.
+    throw new Error(
+      "provisionRuntimeRole/provisionPgBossRole's password-verification probe requires the admin " +
+        "pool to have been constructed with a connectionString"
+    );
+  }
+  const probeUrl = new URL(adminConnectionString);
+  probeUrl.username = encodeURIComponent(user);
+  probeUrl.password = encodeURIComponent(password);
+  const probe = new Client({
+    connectionString: probeUrl.toString(),
+    connectionTimeoutMillis: 5000
+  });
+  try {
+    await probe.connect();
+    return true;
+  } catch (err) {
+    if (isAuthenticationError(err)) return false;
+    throw err;
+  } finally {
+    await probe.end().catch(() => undefined);
+  }
+}
+
+/**
+ * Shared implementation behind `provisionRuntimeRole`/`provisionPgBossRole` (B9 —
+ * multi-region-instance-resilience.md §4-B9, §7.4's "compare-and-skip-or-refuse rather than
+ * unconditional reset"). The old behavior was `ALTER ROLE ... WITH LOGIN PASSWORD` unconditionally,
+ * every boot — harmless for one cluster, but a second member cluster installed against the SAME
+ * shared database with its OWN independently-generated password would silently clobber the first
+ * cluster's live credentials on every one of ITS boots. Now:
+ *
+ *   - role doesn't exist yet → CREATE it with LOGIN + the configured password.
+ *   - role exists but has never been granted LOGIN before (`rolcanlogin = false` — this is what
+ *     the migration files leave it as: `CREATE ROLE scp_app NOLOGIN ...`, drizzle/0002 etc.) →
+ *     there is no LIVE password to clobber, so this is a FIRST provisioning wearing the role's
+ *     migration-created shell, not a re-provisioning. Grant LOGIN + the configured password
+ *     directly (via ALTER, since the role object already exists) — no verification needed or
+ *     possible, since a NOLOGIN role rejects every password with the SAME class-28 error a real
+ *     mismatch would, which would otherwise misfire this guard on every fresh install.
+ *   - role exists AND already has LOGIN (a previous boot provisioned it) — this is a genuine
+ *     RE-provisioning. If the configured password is ALREADY live (verified by actually
+ *     connecting as it, never by comparing anything at rest) → skip the ALTER. Nothing to clobber.
+ *     If it is NOT live → refuse loudly, naming the hazard, unless `allowPasswordReset` is set, in
+ *     which case this falls back to the old unconditional ALTER for a deliberate,
+ *     operator-initiated rotation.
+ */
+async function ensureManagedRolePassword(
+  adminPool: pg.Pool,
+  role: string,
+  password: string,
+  allowPasswordReset: boolean
+): Promise<void> {
+  const existsResult = await adminPool.query<{ rolcanlogin: boolean }>(
+    "SELECT rolcanlogin FROM pg_roles WHERE rolname = $1",
+    [role]
+  );
+  const existingRow = existsResult.rows[0];
+
+  if (!existingRow) {
+    const client = await adminPool.connect();
+    try {
+      const roleIdent = client.escapeIdentifier(role);
+      const passwordLit = client.escapeLiteral(password);
+      await client.query(`CREATE ROLE ${roleIdent} WITH LOGIN PASSWORD ${passwordLit}`);
+    } finally {
+      client.release();
+    }
+    return;
+  }
+
+  if (!existingRow.rolcanlogin) {
+    const client = await adminPool.connect();
+    try {
+      const roleIdent = client.escapeIdentifier(role);
+      const passwordLit = client.escapeLiteral(password);
+      await client.query(`ALTER ROLE ${roleIdent} WITH LOGIN PASSWORD ${passwordLit}`);
+    } finally {
+      client.release();
+    }
+    return;
+  }
+
+  if (await passwordMatchesLiveRole(adminPool, role, password)) {
+    return; // Already correct — no ALTER, nothing to clobber.
+  }
+
+  if (!allowPasswordReset) {
+    throw new Error(
+      `[scpd] refusing to reset the password for role "${role}": a connection using the ` +
+        "configured password failed authentication, which means this role's LIVE password on the " +
+        "shared database differs from what THIS cluster is configured with — another member " +
+        "cluster's credentials would be clobbered. Set postgres.existingSecret identically across " +
+        "member clusters, or set SCP_PROVISION_ALLOW_PASSWORD_RESET=1 to rotate deliberately."
+    );
+  }
+
+  const client = await adminPool.connect();
+  try {
+    const roleIdent = client.escapeIdentifier(role);
+    const passwordLit = client.escapeLiteral(password);
+    await client.query(`ALTER ROLE ${roleIdent} WITH LOGIN PASSWORD ${passwordLit}`);
+  } finally {
+    client.release();
+  }
+}
 
 /**
  * Boot-time runtime-role provisioning (PR #4 review, CRITICAL 3). Runs over the admin/bootstrap
@@ -8,20 +156,23 @@ import type pg from "pg";
  * The migration files fix `scp_app`'s privilege shape (NOSUPERUSER, NOBYPASSRLS, table grants,
  * RLS policies — drizzle/0002, 0003); this only grants LOGIN and sets the password, which cannot
  * live in committed SQL. Idempotent: safe on every boot.
+ *
+ * B9 GUARD (multi-region-instance-resilience.md §4-B9, §7.4): does NOT unconditionally reset the
+ * password any more — see `ensureManagedRolePassword`'s doc comment above. `options.
+ * allowPasswordReset` defaults to `SCP_PROVISION_ALLOW_PASSWORD_RESET=1` when omitted.
  */
 export async function provisionRuntimeRole(
   adminPool: pg.Pool,
   runtimeUser: string,
-  runtimePassword: string
+  runtimePassword: string,
+  options?: { allowPasswordReset?: boolean }
 ): Promise<void> {
-  const client = await adminPool.connect();
-  try {
-    const role = client.escapeIdentifier(runtimeUser);
-    const password = client.escapeLiteral(runtimePassword);
-    await client.query(`ALTER ROLE ${role} WITH LOGIN PASSWORD ${password}`);
-  } finally {
-    client.release();
-  }
+  await ensureManagedRolePassword(
+    adminPool,
+    runtimeUser,
+    runtimePassword,
+    options?.allowPasswordReset ?? passwordResetAllowedByDefault()
+  );
 }
 
 /**
@@ -33,20 +184,22 @@ export async function provisionRuntimeRole(
  * distinct function (rather than reusing `provisionRuntimeRole` under this name) keeps main.ts's
  * boot sequence self-documenting: each role provisioned in Phase 1 gets its own named call.
  * Idempotent: safe on every boot.
+ *
+ * B9 GUARD: same compare-and-skip-or-refuse behavior as `provisionRuntimeRole` — see
+ * `ensureManagedRolePassword`.
  */
 export async function provisionPgBossRole(
   adminPool: pg.Pool,
   pgBossUser: string,
-  pgBossPassword: string
+  pgBossPassword: string,
+  options?: { allowPasswordReset?: boolean }
 ): Promise<void> {
-  const client = await adminPool.connect();
-  try {
-    const role = client.escapeIdentifier(pgBossUser);
-    const password = client.escapeLiteral(pgBossPassword);
-    await client.query(`ALTER ROLE ${role} WITH LOGIN PASSWORD ${password}`);
-  } finally {
-    client.release();
-  }
+  await ensureManagedRolePassword(
+    adminPool,
+    pgBossUser,
+    pgBossPassword,
+    options?.allowPasswordReset ?? passwordResetAllowedByDefault()
+  );
 }
 
 /**

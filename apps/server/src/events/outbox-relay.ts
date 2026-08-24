@@ -1,14 +1,21 @@
-import pg from "pg";
+import type pg from "pg";
 import type PgBoss from "pg-boss";
-import { sseHub } from "./sse-hub.js";
 import { DOMAIN_EVENTS_QUEUE } from "./pgboss.js";
 import type { NatsFanoutHandle } from "./nats-fanout.js";
+import { startReconnectingListenClient, type ListenClientHandle } from "./listen-client.js";
 
-const { Client } = pg;
 type Pool = pg.Pool;
 
 const POLL_INTERVAL_MS = 1000; // air-gap-proof fallback (DESIGN.md §8) when NOTIFY is missed
 const BATCH_SIZE = 100;
+
+/** The channel events/sse-bridge.ts LISTENs on — never imported from each other (they can run in
+ *  different processes), so this is the shared literal, not a shared constant. */
+const SSE_NOTIFY_CHANNEL = "scp_sse_events";
+/** Postgres's NOTIFY payload cap is ~8000 bytes (proposal §7.1 item 1); keep headroom under it. A
+ *  row whose serialized `RelayedEvent` exceeds this goes out as a small marker instead, and the
+ *  bridge fetches the row by id. */
+const SSE_NOTIFY_MAX_PAYLOAD_BYTES = 7000;
 
 export interface OutboxRelayHandle {
   stop(): Promise<void>;
@@ -27,9 +34,20 @@ interface OutboxRow {
 /**
  * Worker-side half of the transactional outbox (DESIGN.md §8): claims unprocessed rows with
  * `FOR UPDATE SKIP LOCKED` (safe under multiple worker replicas), relays each to the pg-boss
- * `domain-events` queue and to any connected SSE clients for that org, then marks it processed —
+ * `domain-events` queue and issues a `scp_sse_events` NOTIFY for it, then marks it processed —
  * all in one transaction per batch. Wakes immediately on the `scp_outbox_insert` NOTIFY
  * (drizzle/0002_rls_rbac_seed.sql's trigger fires post-commit) with a 1s poll as the fallback.
+ *
+ * SINCE M26.1 (proposal multi-region-instance-resilience.md §7.1 item 1, closing §4-A1): this no
+ * longer calls `sseHub.publish` directly. The relay and the SSE-serving process are two disjoint
+ * process sets under the default chart topology (api×N + worker×N) — an in-process `EventEmitter`
+ * cannot cross that boundary. `pg_notify` can: it is issued from INSIDE the same transaction as
+ * the batch, so delivery is atomic with the COMMIT, and events/sse-bridge.ts (started in every
+ * process that serves `GET /events/stream`) is what actually feeds each process's local `sseHub`.
+ * This is now the ONLY delivery path in every topology, including a single `role=all` process
+ * where the relay and the SSE route already share one process — no separate direct-publish
+ * shortcut, so there is exactly one way an event reaches `sseHub` rather than two that could
+ * double-deliver it.
  *
  * The relay legitimately needs cross-org visibility (it fans out every org's events), but gets
  * it through the narrowest possible mechanism (PR #4 security review, CRITICAL 3): it runs on
@@ -145,7 +163,16 @@ export function startOutboxRelay(
           data: row.data,
           createdAt: row.created_at.toISOString()
         };
-        sseHub.publish(relayedEvent);
+        // SSE fan-out (M26.1 §7.1 item 1): NOTIFY from INSIDE this transaction, so delivery is
+        // atomic with the batch COMMIT. Full envelope when it fits Postgres's NOTIFY payload cap;
+        // otherwise a marker events/sse-bridge.ts recognizes and fetches the row for, under the
+        // same `SET LOCAL ROLE scp_relay` escalation this transaction already holds.
+        const serializedEvent = JSON.stringify(relayedEvent);
+        const ssePayload =
+          Buffer.byteLength(serializedEvent, "utf8") <= SSE_NOTIFY_MAX_PAYLOAD_BYTES
+            ? serializedEvent
+            : JSON.stringify({ id: row.id, orgId: row.org_id, oversized: true });
+        await client.query("SELECT pg_notify($1, $2)", [SSE_NOTIFY_CHANNEL, ssePayload]);
         if (eventBusBackend === "nats") {
           // `natsFanout` is guaranteed defined here — asserted at construction above — so this can
           // never silently no-op the way the old `if (natsFanout)` check could.
@@ -190,17 +217,19 @@ export function startOutboxRelay(
     inFlight.add(call);
   }
 
-  const listenClient = new Client({ connectionString: listenConnectionString });
-  listenClient
-    .connect()
-    .then(async () => {
-      await listenClient.query("LISTEN scp_outbox_insert");
-      listenClient.on("notification", () => {
-        trigger();
-      });
-    })
-    .catch((err: unknown) => console.error("[outbox-relay] LISTEN setup failed", err));
-  listenClient.on("error", (err) => console.error("[outbox-relay] LISTEN connection error", err));
+  // The wake LISTEN (§4-A5 fix): now the shared reconnecting client (events/listen-client.ts)
+  // instead of a raw `pg.Client` whose `on('error')` only logged — a Postgres blip used to
+  // silently and permanently demote this relay to the 1s poll fallback with no reconnection ever
+  // attempted. `onReconnect: trigger` is a belt-and-braces catch-up (the poll fallback already
+  // covers a missed NOTIFY, but there is no reason to wait up to 1s for it after a connection that
+  // just came back).
+  const wakeListener: ListenClientHandle = startReconnectingListenClient({
+    connectionString: listenConnectionString,
+    channels: ["scp_outbox_insert"],
+    onNotification: () => trigger(),
+    onReconnect: () => trigger(),
+    onError: (err) => console.error("[outbox-relay] LISTEN connection error", err)
+  });
 
   const timer = setInterval(() => trigger(), POLL_INTERVAL_MS);
   trigger();
@@ -218,7 +247,7 @@ export function startOutboxRelay(
     async stop() {
       stopped = true;
       clearInterval(timer);
-      await listenClient.end().catch(() => undefined);
+      await wakeListener.stop();
       await Promise.allSettled(inFlight);
     }
   };

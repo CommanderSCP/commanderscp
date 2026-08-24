@@ -9,6 +9,7 @@ import {
   federationClientCertsUsable,
   resetFederationCertWarningDedupe,
   FEDERATION_SYNC_QUEUE,
+  FEDERATION_SYNC_STARTUP_SINGLETON_SECONDS,
   FEDERATION_SYNC_SPARSE_INTERVAL_DEFAULT_SECONDS,
   FEDERATION_SYNC_SPARSE_INTERVAL_MAX_SECONDS,
   effectivePullIntervalSeconds,
@@ -352,8 +353,14 @@ describe("M14.4 loop handler — force vs. reschedule are two flags", () => {
     expect(sends).toHaveLength(1);
     expect(sends[0]!.queue).toBe(FEDERATION_SYNC_QUEUE);
     expect(sends[0]!.data).toEqual({ reason: "startup" });
-    // Immediate: no singleton / startAfter, exactly like the poke wake.
-    expect(sends[0]!.options).toBeUndefined();
+    // Immediate (no startAfter), but singleton-keyed on its OWN "startup" key (§4-A4/M26.1) — never
+    // the shared "tick" key, which would let a pending interval tick swallow it (the wake-swallowing
+    // bug wakeFederationSyncNow's own doc warns about) — so N replicas restarting together dedupe
+    // among themselves without touching the interval chain.
+    expect(sends[0]!.options).toEqual({
+      singletonKey: "startup",
+      singletonSeconds: FEDERATION_SYNC_STARTUP_SINGLETON_SECONDS
+    });
     await handle.stop();
   });
 

@@ -1,6 +1,7 @@
 import pg from "pg";
 import type { ServerConfig } from "../config.js";
 import { ProblemError } from "../errors.js";
+import { createPool } from "../db/client.js";
 
 /**
  * M22.9 R3 — THE ONE CONNECTION EVERY INSTANCE-OPERATOR WRITE DOOR OPENS.
@@ -53,7 +54,7 @@ export async function withOperatorDb<T>(
     });
   }
 
-  const pool = new pg.Pool({ connectionString, max: 1 });
+  const pool = createPool(connectionString, { max: 1 });
   try {
     let client: pg.PoolClient;
     try {

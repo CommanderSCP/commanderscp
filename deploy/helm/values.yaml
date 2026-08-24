@@ -107,6 +107,15 @@ migrations:
   enabled: true
   backoffLimit: 3
   activeDeadlineSeconds: 600
+  # B9 guard (multi-region-instance-resilience.md §4-B9, §7.4): the migrations Job's role
+  # provisioning now REFUSES to reset scp_app/scp_pgboss's password when the configured one
+  # doesn't match what's already live — the multi-cluster contract is that
+  # `postgres.existingSecret` is identical across every member cluster, so a mismatch means a
+  # cluster is misconfigured, not that a rotation was intended. Set this `true` only for a
+  # deliberate, operator-initiated password rotation (a single install/upgrade run); leave it
+  # `false` otherwise so a misconfigured second member cluster fails loud instead of clobbering
+  # the first cluster's live credentials.
+  allowPasswordReset: false
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: 500m, memory: 256Mi }

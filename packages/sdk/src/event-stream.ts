@@ -40,6 +40,18 @@ export interface EventStreamOptions {
   maxConsecutiveFailures?: number;
   /** Called once per dropped connection. The stream reconnects regardless; this is for logging. */
   onError?: (error: unknown) => void;
+  /**
+   * Called after every successful `open()` call, before any event is read — INCLUDING the first
+   * connection, not just reconnects. Distinct from `onError`: this fires on success.
+   *
+   * M26.1 (proposal multi-region-instance-resilience.md §7.1 item 1): the server-side bridge
+   * broadcasts a synthetic `scp.sse.resync` frame to already-connected clients on its own
+   * reconnect, but a LOCAL reconnect here can happen without one — a network blip between the
+   * browser and its api pod, say, that never touched the bridge's own LISTEN connection. Both
+   * signals drive the same query-cache invalidation in `apps/web/src/lib/use-event-stream.ts`;
+   * this is the leg the server-pushed frame cannot cover by itself.
+   */
+  onOpen?: () => void;
   /** Injectable for tests — the production path is `setTimeout`. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -66,6 +78,7 @@ export async function* resilientEventStream(
     maxRetryDelayMs = 30_000,
     maxConsecutiveFailures,
     onError,
+    onOpen,
     sleep = defaultSleep
   } = options;
 
@@ -91,6 +104,7 @@ export async function* resilientEventStream(
           error = e;
         }
       });
+      onOpen?.();
       for await (const event of stream) {
         delivered = true;
         lastEventId = event.id;

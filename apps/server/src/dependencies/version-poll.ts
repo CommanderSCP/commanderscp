@@ -634,7 +634,14 @@ export async function startDependencyVersionPollLoop(
       { startAfter: interval, singletonKey: "tick", singletonSeconds: interval }
     );
   });
-  await boss.send(DEPENDENCY_VERSION_POLL_QUEUE, {});
+  await boss.send(
+    DEPENDENCY_VERSION_POLL_QUEUE,
+    {},
+    {
+      singletonKey: "tick",
+      singletonSeconds: dependencyVersionPollIntervalSeconds()
+    }
+  );
   return {
     async stop() {
       stopped = true;

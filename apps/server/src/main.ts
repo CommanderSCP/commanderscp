@@ -7,6 +7,7 @@ import { ensureBootstrapAdmin } from "./auth/local-auth.js";
 import { startPgBoss } from "./events/pgboss.js";
 import { domainEventRouters } from "./events/domain-event-registry.js";
 import { startOutboxRelay } from "./events/outbox-relay.js";
+import { startSseBridge } from "./events/sse-bridge.js";
 import { connectNatsFanout, type NatsFanoutHandle } from "./events/nats-fanout.js";
 import { loginAndSeedDemoData } from "./seed.js";
 import { startPluginHostForRole } from "./plugin-host/host-bootstrap.js";
@@ -143,6 +144,29 @@ async function main(): Promise<void> {
       await pluginHost.stop();
     });
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // THE SSE BRIDGE — started for EVERY role, same reasoning as the plugin host just above.
+  //
+  // `app.listen()` below is unconditional: every role actually binds an HTTP listener and serves
+  // `GET /events/stream` (routes/events.ts is registered in `buildApp` with no role gate), even a
+  // pure `worker` process the chart's Service never routes real traffic to. Since the outbox relay
+  // no longer calls `sseHub.publish` directly (events/outbox-relay.ts's doc comment — proposal
+  // multi-region-instance-resilience.md §7.1 item 1, closing §4-A1), this bridge is the ONLY thing
+  // that can ever feed a process's local `sseHub`, in every topology — including a single
+  // `role=all` dev/compose process, where the relay and this route already share one process and
+  // it would be tempting to think the direct call was still fine there. It was not: keeping it
+  // would have meant an event reaching `sseHub` twice on `role=all` (once direct, once via this
+  // bridge's own NOTIFY loopback) and zero times on a split api/worker install. One delivery path,
+  // used everywhere, is what makes dev/compose actually exercise the production path.
+  //
+  // Cheap either way: one more reconnecting LISTEN connection (events/listen-client.ts) per
+  // process, idle until an outbox row commits.
+  // ---------------------------------------------------------------------------------------------
+  const sseBridge = startSseBridge(pool, config.runtimeDatabaseUrl);
+  app.addHook("onClose", async () => {
+    await sseBridge.stop();
+  });
 
   // Outbox relay + pg-boss worker skeleton (DESIGN.md §8) — only the roles that own background
   // work run them; `role=api` stays a pure request server for everything EXCEPT request-scoped

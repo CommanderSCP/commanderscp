@@ -588,11 +588,17 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
 
     // 31 minutes of no progress — the `executing` SLA is 30. `opts.now` is the established
     // clock-injection seam (coupling.integration.test.ts's `waiting` watchdog case uses the same).
-    const flags = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      runWatchdogSweep(tx, org.orgId, host, server.deps.config.secretsMasterKey, {
+    // `runWatchdogSweep` manages its own per-row short transactions (§7.1 item 3) — no outer
+    // `withTenantTx` wraps it any more.
+    const flags = await runWatchdogSweep(
+      server.deps.db,
+      org.orgId,
+      host,
+      server.deps.config.secretsMasterKey,
+      {
         requestId: "stagedep-watchdog-test",
         now: new Date(Date.now() + 31 * 60_000)
-      })
+      }
     );
     const flagged = flags.find((f) => f.changeObjectId === change.id);
     expect(flagged).toBeDefined();
@@ -645,11 +651,15 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     await tick(3);
     expect(await stateOf(change.id)).toBe("executing");
 
-    const flags = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      runWatchdogSweep(tx, org.orgId, host, server.deps.config.secretsMasterKey, {
+    const flags = await runWatchdogSweep(
+      server.deps.db,
+      org.orgId,
+      host,
+      server.deps.config.secretsMasterKey,
+      {
         requestId: "stagedep-watchdog-plain",
         now: new Date(Date.now() + 31 * 60_000)
-      })
+      }
     );
     const flagged = flags.find((f) => f.changeObjectId === change.id);
     expect(flagged).toBeDefined();

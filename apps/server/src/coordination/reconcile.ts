@@ -2204,7 +2204,14 @@ export async function startReconcileLoop(
       }
     );
   });
-  await boss.send(RECONCILE_QUEUE, {});
+  await boss.send(
+    RECONCILE_QUEUE,
+    {},
+    {
+      singletonKey: "tick",
+      singletonSeconds: RECONCILE_TICK_INTERVAL_SECONDS
+    }
+  );
   return {
     async stop() {
       stopped = true;

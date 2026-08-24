@@ -891,7 +891,14 @@ export async function startInboxLoop(
       }
     );
   });
-  await boss.send(INBOX_QUEUE, {});
+  await boss.send(
+    INBOX_QUEUE,
+    {},
+    {
+      singletonKey: "tick",
+      singletonSeconds: INBOX_TICK_INTERVAL_SECONDS
+    }
+  );
   return {
     async stop() {
       stopped = true;

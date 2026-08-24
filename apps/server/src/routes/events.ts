@@ -5,8 +5,11 @@ import { requireAuth } from "../auth/require-auth.js";
 import { sseHub, type RelayedEvent } from "../events/sse-hub.js";
 
 /**
- * `GET /events/stream` (DESIGN.md §6, §8) — Server-Sent Events fed from the outbox relay
- * (events/outbox-relay.ts) via the in-process `sseHub`, scoped to the caller's org.
+ * `GET /events/stream` (DESIGN.md §6, §8) — Server-Sent Events fed from this process's in-process
+ * `sseHub`, scoped to the caller's org. Since M26.1 (proposal multi-region-instance-resilience.md
+ * §7.1 item 1), `sseHub` is fed by events/sse-bridge.ts's LISTEN on `scp_sse_events`, not directly
+ * by the outbox relay (events/outbox-relay.ts) — the relay and this route can run in different
+ * pods under the default chart topology, so only a Postgres NOTIFY can cross that boundary.
  *
  * DECLARED IN THE CONTRACT, like everything else. The frames are not a JSON request/response pair,
  * so the 200 cannot be a Fastify response schema (nothing for Fastify to serialize — the handler

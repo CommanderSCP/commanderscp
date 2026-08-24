@@ -2,7 +2,7 @@ import { and, eq, isNull, lt } from "drizzle-orm";
 import type PgBoss from "pg-boss";
 import type { ChangeStageDependencyTarget, ChangeState } from "@scp/schemas";
 import type { Db } from "../db/client.js";
-import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
+import { withTenantTx } from "../db/tenant-tx.js";
 import { changes, objects, orgs } from "../db/schema.js";
 import { insertDecision } from "./decisions-repo.js";
 import { requiresOf } from "./changes-repo.js";
@@ -58,11 +58,22 @@ export const WATCHDOG_SYSTEM_ACTOR_ID = SYSTEM_ACTOR_ID;
 
 /**
  * One sweep pass over one org: finds changes past their per-state SLA that haven't already been
- * flagged since entering this state, writes a Decision + escalation audit event for each, and
- * returns what it flagged. The notification seam (DESIGN §9.4 "escalates via notifications") now
- * dispatches for real (`notify/dispatch.ts`, M7) to every configured `notification_bindings`
- * channel meeting its own severity threshold — best-effort, never able to fail this sweep; the
- * Decision record remains the durable, queryable artifact regardless of delivery outcome.
+ * flagged since entering this state, and for each one races to CLAIM it before writing anything.
+ * Returns what THIS call actually flagged — a losing claim never appears here. The notification
+ * seam (DESIGN §9.4 "escalates via notifications") dispatches for real (`notify/dispatch.ts`, M7)
+ * to every configured `notification_bindings` channel meeting its own severity threshold —
+ * best-effort, never able to fail this sweep; the Decision record remains the durable, queryable
+ * artifact regardless of delivery outcome.
+ *
+ * TRANSACTION SHAPE (§7.1 item 3 restructure — was one long `withTenantTx` for the ENTIRE per-org
+ * sweep; mirrors `reconcile.ts`'s per-row pattern now): candidates are read cheaply, one short
+ * transaction per SLA state below; each candidate then gets its OWN short transaction
+ * (`claimAndFlagStall`) that claims the row and, ONLY on a winning claim, writes that change's
+ * Decision + audit event in the SAME transaction, with the escalation notification dispatched
+ * strictly after that transaction commits. The bug this replaces: the old sweep built the Decision
+ * FIRST and ran a guarded UPDATE afterward whose affected-row count it never checked, so two
+ * overlapping sweeps hitting the same row both committed their own full Decision + audit event —
+ * the guard ordered statements inside an uncommitted transaction, which guards nothing.
  *
  * Idempotent per state-entry: `watchdog_flagged_at IS NULL` (cleared by `transitionChange` on
  * every legal transition, since a transition IS progress) is the guard against re-flagging the
@@ -70,7 +81,7 @@ export const WATCHDOG_SYSTEM_ACTOR_ID = SYSTEM_ACTOR_ID;
  * either it progresses (clearing the flag) or an operator re-runs a manual check.
  */
 export async function runWatchdogSweep(
-  tx: TenantTx,
+  db: Db,
   orgId: string,
   host: PluginHost,
   masterKey: Buffer,
@@ -83,200 +94,250 @@ export async function runWatchdogSweep(
     const slaMs = WATCHDOG_SLA_MS[state];
     const deadline = new Date(now.getTime() - slaMs);
 
-    const stalled = await tx
-      .select()
-      .from(changes)
-      .where(
-        and(
-          eq(changes.orgId, orgId),
-          eq(changes.state, state),
-          lt(changes.stateEnteredAt, deadline),
-          isNull(changes.watchdogFlaggedAt)
-        )
-      );
-
-    for (const change of stalled) {
-      const stalledForMs = now.getTime() - change.stateEnteredAt.getTime();
-      // M12 P4B (coupled-pipelines.md §3.6 — explainability): a `waiting` warn that says only
-      // "stalled in waiting for 24h" is strictly worse than the state badge. Name the actual
-      // unsatisfied `{key, at}` pairs (re-read LIVE at flag time via the same predicate the sweep
-      // uses) — and any malformed (unsatisfiable, fail-closed) entries — so the notification alone
-      // tells the operator what the change is waiting FOR.
-      let waitingDetail: { waitingOn: string; unsatisfied?: unknown; malformed?: unknown } | null =
-        null;
-      if (state === "waiting") {
-        // `org_id` alongside the id, like every other query in this file. RLS would scope this on
-        // its own — the tenant tx sets `app.org_id` and the policy on `objects` enforces it — but a
-        // predicate that leans on RLS ALONE is one `withSystemTx`, one maintenance script or one
-        // policy regression away from reading another tenant's row, and this is a defence in depth
-        // the rest of the codebase already pays for everywhere. Both of this file's `objects`
-        // lookups were missing it (census, not one instance).
-        const objRows = await tx
-          .select({ properties: objects.properties })
-          .from(objects)
-          .where(and(eq(objects.orgId, orgId), eq(objects.id, change.objectId)))
-          .limit(1);
-        const { requirements, malformed } = requiresOf(
-          (objRows[0]?.properties ?? {}) as Record<string, unknown>
-        );
-        const unmet = await unsatisfiedRequirements(tx, orgId, change.objectId, requirements);
-        const parts: string[] = [];
-        if (unmet.length > 0) {
-          parts.push(`unsatisfied cross-change prerequisite(s): ${describeRequirements(unmet)}`);
-        }
-        if (malformed.length > 0) {
-          parts.push(
-            `${malformed.length} malformed (unsatisfiable) \`requires\` entr${malformed.length === 1 ? "y" : "ies"} — fail-closed, will never release; see \`scp change explain\``
-          );
-        }
-        waitingDetail = {
-          waitingOn:
-            parts.length > 0
-              ? parts.join("; ")
-              : "cross-change prerequisites (all currently satisfied — release expected next tick)",
-          ...(unmet.length > 0 ? { unsatisfied: unmet } : {}),
-          ...(malformed.length > 0 ? { malformed } : {})
-        };
-      }
-      // ADR-0028 increment 4 — the `executing` arm. A stall notice that says only "wave target
-      // executor status to report success/failure" is actively misleading for a change whose
-      // trigger was never issued: nothing is going to report, because nothing was ever handed to an
-      // executor. Name the dependency and the place instead, from the SAME live resolver `explain`
-      // uses (`stage-dependency-status.ts`) — one predicate, not two — re-read at flag time exactly
-      // as the `waiting` arm above re-reads its requirements.
-      //
-      // COSTS NOTHING PER TICK, and that is structural rather than a matter of restraint. This
-      // block is inside the `stalled` loop, which selects on `watchdog_flagged_at IS NULL`; the
-      // UPDATE below sets that column and only `transitionChange` clears it. A held change does not
-      // transition, so it is flagged exactly ONCE per state entry — the sweep interval (60 s) and
-      // the reconcile tick (1 s) never re-enter this. `resolveStageDependencyStatus` is itself
-      // read-only and returns null before touching the plan for an uncoupled change.
-      //
-      // WHAT THIS DOES NOT DO IS RE-RULE THE SLA. `executing` keeps its 30-minute stall SLA, so a
-      // legitimately-coupled release held past half an hour still gets a `severity: "warning"`
-      // notification saying "stalled". That is a real design question — the `waiting` arm was given
-      // 24 h for exactly this shape, "an expected long wait, not a stall" — and it is NOT settled
-      // by naming the coupling. Naming it is the floor: the operator at least learns from the notice
-      // itself that the change is waiting on a declared dependency rather than on a silent executor.
-      // Lengthening the SLA would need a per-change "is held" state to hang it off, which is
-      // precisely the persisted flag ADR-0024 forbids writing per tick.
-      let heldDetail: { waitingOn: string; held: unknown } | null = null;
-      if (state === "executing") {
-        const objRows = await tx
-          .select({ properties: objects.properties })
-          .from(objects)
-          .where(and(eq(objects.orgId, orgId), eq(objects.id, change.objectId)))
-          .limit(1);
-        const stageStatus = await resolveStageDependencyStatus(tx, orgId, {
-          objectId: change.objectId,
-          properties: (objRows[0]?.properties ?? {}) as Record<string, unknown>
-        });
-        const described = stageStatus ? describeStageDependencyStatus(stageStatus) : null;
-        if (stageStatus && described) {
-          heldDetail = {
-            waitingOn: described,
-            held: stageStatus.targets.filter((target) => target.held).map(withoutDisplayNames)
-          };
-        }
-      }
-      const decision = await insertDecision(tx, {
-        orgId,
-        kind: "watchdog",
-        subjectId: change.objectId,
-        verdict: "warn",
-        inputContext: {
-          state,
-          stateEnteredAt: change.stateEnteredAt.toISOString(),
-          slaMs,
-          stalledForMs,
-          checkedAt: now.toISOString(),
-          ...(waitingDetail?.unsatisfied
-            ? { unsatisfiedRequirements: waitingDetail.unsatisfied }
-            : {}),
-          ...(waitingDetail?.malformed ? { malformedRequires: waitingDetail.malformed } : {}),
-          // The held targets — IDS ONLY (`withoutDisplayNames`) — so `scp decision get` answers
-          // "which dependency, where" without a second call, in terms that cannot be rewritten by
-          // a later rename. Absent, not an empty array, when no coupling is involved, so every
-          // pre-increment-4 watchdog Decision keeps exactly the shape it had.
-          ...(heldDetail ? { heldStageDependencies: heldDetail.held } : {})
-        },
-        reasonTree: {
-          summary: `change has shown no progress in state '${state}' for ${Math.round(
-            stalledForMs / 1000
-          )}s (SLA ${Math.round(slaMs / 1000)}s)`,
-          waitingOn:
-            state === "waiting" && waitingDetail
-              ? waitingDetail.waitingOn
-              : state === "executing"
-                ? // A HELD target was never handed to an executor, so "waiting for executor status"
-                  // is not merely vague there, it names a report that is never coming. When a
-                  // coupling is what is withholding it, say so and name it.
-                  (heldDetail?.waitingOn ??
-                  "wave target executor status to report success/failure, or an operator to cancel/rollback")
-                : state === "validating"
-                  ? "an operator to run `scp change accept` (or cancel/rollback)"
-                  : "the reconciliation loop's next tick to advance this change, or an operator to investigate"
-        }
-      });
-
-      // MINOR #9 fix (PR #7 review): guarded on `state` + `watchdog_flagged_at IS NULL` — without
-      // this, a change that progressed (clearing the flag and moving to a new state via
-      // `transitionChange`) in the window between the SELECT above and this UPDATE would have its
-      // flag stomped back on by a sweep that already decided (based on now-stale data) that it was
-      // stalled, re-flagging a change that just made real progress.
-      await tx
-        .update(changes)
-        .set({ watchdogFlaggedAt: now })
+    // Cheap read, its own short transaction — nothing is claimed here, so this never holds a lock
+    // any longer than the SELECT itself takes.
+    const stalled = await withTenantTx(db, orgId, (tx) =>
+      tx
+        .select({ objectId: changes.objectId, stateEnteredAt: changes.stateEnteredAt })
+        .from(changes)
         .where(
           and(
             eq(changes.orgId, orgId),
-            eq(changes.objectId, change.objectId),
             eq(changes.state, state),
+            lt(changes.stateEnteredAt, deadline),
             isNull(changes.watchdogFlaggedAt)
           )
-        );
+        )
+    );
 
-      await appendAuditEvent(tx, {
+    for (const candidate of stalled) {
+      const flag = await claimAndFlagStall(
+        db,
         orgId,
-        actorId: WATCHDOG_SYSTEM_ACTOR_ID,
-        action: "change.watchdog.flagged",
-        subjectId: change.objectId,
-        reason: `stalled in '${state}' for ${Math.round(stalledForMs / 1000)}s`,
-        decisionId: decision.id,
-        requestId: opts.requestId
-      });
-
-      // Escalation seam (DESIGN §9.4) — real NotificationPlugin dispatch (M7). console.warn stays
-      // as the durable, always-present signal (an operator/log-aggregator sees it even with zero
-      // channels configured); dispatchNotification is the best-effort, never-throwing fan-out on
-      // top of it.
-      console.warn(
-        `[watchdog] change ${change.objectId} stalled in '${state}' for ${Math.round(stalledForMs / 1000)}s — decision ${decision.id}`
+        state,
+        candidate.objectId,
+        candidate.stateEnteredAt,
+        now,
+        slaMs,
+        host,
+        masterKey,
+        opts.requestId
       );
-      await dispatchNotification(tx, host, orgId, masterKey, {
-        subject: `Change stalled in '${state}'`,
-        body: `Change ${change.objectId} has shown no progress in state '${state}' for ${Math.round(
-          stalledForMs / 1000
-        )}s (SLA ${Math.round(WATCHDOG_SLA_MS[state] / 1000)}s). Decision ${decision.id}.${
-          // The coupling in the notification itself, not only in the Decision: the whole point of
-          // naming it is that the operator learns WHAT the change is waiting for from the message
-          // that woke them, without having to know to go and look (ADR-0028 increment 4).
-          heldDetail ? ` Held by ${heldDetail.waitingOn}` : ""
-        }`,
-        severity: "warning",
-        context: { changeObjectId: change.objectId, state, decisionId: decision.id }
-      });
-
-      flags.push({
-        changeObjectId: change.objectId,
-        state: state as ChangeState,
-        stalledForMs,
-        decisionId: decision.id
-      });
+      if (flag) flags.push(flag);
     }
   }
 
   return flags;
+}
+
+/**
+ * Claims exactly one stalled change and, only on a winning claim, writes its Decision + audit
+ * event in the SAME short transaction as the claim, then dispatches the escalation notification
+ * in a SEPARATE transaction strictly after that one commits. Returns `null` on a lost race — see
+ * `runWatchdogSweep`'s doc comment; that is the ordinary multi-replica outcome, not an error.
+ */
+async function claimAndFlagStall(
+  db: Db,
+  orgId: string,
+  state: (typeof NON_TERMINAL_STATES)[number],
+  changeObjectId: string,
+  stateEnteredAt: Date,
+  now: Date,
+  slaMs: number,
+  host: PluginHost,
+  masterKey: Buffer,
+  requestId: string
+): Promise<WatchdogFlag | null> {
+  const won = await withTenantTx(db, orgId, async (tx) => {
+    // THE CLAIM, first, before any of the per-state detail work below — this ordering (and
+    // actually checking `.returning()`'s row count) is the fix: a losing claim now costs nothing
+    // beyond the UPDATE itself, rather than a full Decision + audit event committed on stale
+    // information. Guarded on `state` too (not just the flag), so a change that progressed out of
+    // this state in the window between the candidate read and this claim also loses cleanly.
+    const claim = await tx
+      .update(changes)
+      .set({ watchdogFlaggedAt: now })
+      .where(
+        and(
+          eq(changes.orgId, orgId),
+          eq(changes.objectId, changeObjectId),
+          eq(changes.state, state),
+          isNull(changes.watchdogFlaggedAt)
+        )
+      )
+      .returning({ objectId: changes.objectId });
+    if (claim.length === 0) return null;
+
+    const stalledForMs = now.getTime() - stateEnteredAt.getTime();
+
+    // M12 P4B (coupled-pipelines.md §3.6 — explainability): a `waiting` warn that says only
+    // "stalled in waiting for 24h" is strictly worse than the state badge. Name the actual
+    // unsatisfied `{key, at}` pairs (re-read LIVE at flag time via the same predicate the sweep
+    // uses) — and any malformed (unsatisfiable, fail-closed) entries — so the notification alone
+    // tells the operator what the change is waiting FOR.
+    let waitingDetail: { waitingOn: string; unsatisfied?: unknown; malformed?: unknown } | null =
+      null;
+    if (state === "waiting") {
+      // `org_id` alongside the id, like every other query in this file. RLS would scope this on
+      // its own — the tenant tx sets `app.org_id` and the policy on `objects` enforces it — but a
+      // predicate that leans on RLS ALONE is one `withSystemTx`, one maintenance script or one
+      // policy regression away from reading another tenant's row, and this is a defence in depth
+      // the rest of the codebase already pays for everywhere.
+      const objRows = await tx
+        .select({ properties: objects.properties })
+        .from(objects)
+        .where(and(eq(objects.orgId, orgId), eq(objects.id, changeObjectId)))
+        .limit(1);
+      const { requirements, malformed } = requiresOf(
+        (objRows[0]?.properties ?? {}) as Record<string, unknown>
+      );
+      const unmet = await unsatisfiedRequirements(tx, orgId, changeObjectId, requirements);
+      const parts: string[] = [];
+      if (unmet.length > 0) {
+        parts.push(`unsatisfied cross-change prerequisite(s): ${describeRequirements(unmet)}`);
+      }
+      if (malformed.length > 0) {
+        parts.push(
+          `${malformed.length} malformed (unsatisfiable) \`requires\` entr${malformed.length === 1 ? "y" : "ies"} — fail-closed, will never release; see \`scp change explain\``
+        );
+      }
+      waitingDetail = {
+        waitingOn:
+          parts.length > 0
+            ? parts.join("; ")
+            : "cross-change prerequisites (all currently satisfied — release expected next tick)",
+        ...(unmet.length > 0 ? { unsatisfied: unmet } : {}),
+        ...(malformed.length > 0 ? { malformed } : {})
+      };
+    }
+    // ADR-0028 increment 4 — the `executing` arm. A stall notice that says only "wave target
+    // executor status to report success/failure" is actively misleading for a change whose
+    // trigger was never issued: nothing is going to report, because nothing was ever handed to an
+    // executor. Name the dependency and the place instead, from the SAME live resolver `explain`
+    // uses (`stage-dependency-status.ts`) — one predicate, not two — re-read at flag time exactly
+    // as the `waiting` arm above re-reads its requirements. Reached only on a winning claim, so
+    // this still costs nothing per tick for every OTHER sweep that loses the race on this row.
+    let heldDetail: { waitingOn: string; held: unknown } | null = null;
+    if (state === "executing") {
+      const objRows = await tx
+        .select({ properties: objects.properties })
+        .from(objects)
+        .where(and(eq(objects.orgId, orgId), eq(objects.id, changeObjectId)))
+        .limit(1);
+      const stageStatus = await resolveStageDependencyStatus(tx, orgId, {
+        objectId: changeObjectId,
+        properties: (objRows[0]?.properties ?? {}) as Record<string, unknown>
+      });
+      const described = stageStatus ? describeStageDependencyStatus(stageStatus) : null;
+      if (stageStatus && described) {
+        heldDetail = {
+          waitingOn: described,
+          held: stageStatus.targets.filter((target) => target.held).map(withoutDisplayNames)
+        };
+      }
+    }
+
+    const decision = await insertDecision(tx, {
+      orgId,
+      kind: "watchdog",
+      subjectId: changeObjectId,
+      verdict: "warn",
+      inputContext: {
+        state,
+        stateEnteredAt: stateEnteredAt.toISOString(),
+        slaMs,
+        stalledForMs,
+        checkedAt: now.toISOString(),
+        ...(waitingDetail?.unsatisfied
+          ? { unsatisfiedRequirements: waitingDetail.unsatisfied }
+          : {}),
+        ...(waitingDetail?.malformed ? { malformedRequires: waitingDetail.malformed } : {}),
+        // The held targets — IDS ONLY (`withoutDisplayNames`) — so `scp decision get` answers
+        // "which dependency, where" without a second call, in terms that cannot be rewritten by
+        // a later rename. Absent, not an empty array, when no coupling is involved, so every
+        // pre-increment-4 watchdog Decision keeps exactly the shape it had.
+        ...(heldDetail ? { heldStageDependencies: heldDetail.held } : {})
+      },
+      reasonTree: {
+        summary: `change has shown no progress in state '${state}' for ${Math.round(
+          stalledForMs / 1000
+        )}s (SLA ${Math.round(slaMs / 1000)}s)`,
+        waitingOn:
+          state === "waiting" && waitingDetail
+            ? waitingDetail.waitingOn
+            : state === "executing"
+              ? // A HELD target was never handed to an executor, so "waiting for executor status"
+                // is not merely vague there, it names a report that is never coming. When a
+                // coupling is what is withholding it, say so and name it.
+                (heldDetail?.waitingOn ??
+                "wave target executor status to report success/failure, or an operator to cancel/rollback")
+              : state === "validating"
+                ? "an operator to run `scp change accept` (or cancel/rollback)"
+                : "the reconciliation loop's next tick to advance this change, or an operator to investigate"
+      }
+    });
+
+    await appendAuditEvent(tx, {
+      orgId,
+      actorId: WATCHDOG_SYSTEM_ACTOR_ID,
+      action: "change.watchdog.flagged",
+      subjectId: changeObjectId,
+      reason: `stalled in '${state}' for ${Math.round(stalledForMs / 1000)}s`,
+      decisionId: decision.id,
+      requestId
+    });
+
+    // console.warn stays as the durable, always-present signal (an operator/log-aggregator sees
+    // it even with zero notification channels configured) — written here, inside the winning
+    // transaction, so it fires exactly once per claimed stall, same as the Decision and the audit
+    // event.
+    console.warn(
+      `[watchdog] change ${changeObjectId} stalled in '${state}' for ${Math.round(stalledForMs / 1000)}s — decision ${decision.id}`
+    );
+
+    return { decision, heldDetail, stalledForMs };
+  });
+
+  if (!won) return null;
+
+  // ESCALATION, STRICTLY AFTER COMMIT (§7.1 item 3): the flag, the Decision and the audit event
+  // are already durable by the time this runs, in a brand-new transaction — a delivery failure
+  // here must never roll any of that back. `dispatchNotification` is already best-effort PER
+  // CHANNEL (notify/dispatch.ts's doc comment: a channel's own misconfiguration or downstream
+  // failure is caught and logged, never allowed to propagate); the try/catch below covers the one
+  // thing that isn't per-channel — `listNotificationBindings` itself throwing (e.g. a dropped
+  // connection) — with the same "log it, don't propagate" contract external dispatch has
+  // everywhere else in this codebase: at-least-once, never transactional with the write that
+  // triggered it.
+  try {
+    await withTenantTx(db, orgId, (tx) =>
+      dispatchNotification(tx, host, orgId, masterKey, {
+        subject: `Change stalled in '${state}'`,
+        body: `Change ${changeObjectId} has shown no progress in state '${state}' for ${Math.round(
+          won.stalledForMs / 1000
+        )}s (SLA ${Math.round(slaMs / 1000)}s). Decision ${won.decision.id}.${
+          // The coupling in the notification itself, not only in the Decision: the whole point of
+          // naming it is that the operator learns WHAT the change is waiting for from the message
+          // that woke them, without having to know to go and look (ADR-0028 increment 4).
+          won.heldDetail ? ` Held by ${won.heldDetail.waitingOn}` : ""
+        }`,
+        severity: "warning",
+        context: { changeObjectId, state, decisionId: won.decision.id }
+      })
+    );
+  } catch (err) {
+    console.error(
+      `[watchdog] org ${orgId} change ${changeObjectId} notification dispatch failed (flag/Decision/audit already committed):`,
+      err
+    );
+  }
+
+  return {
+    changeObjectId,
+    state: state as ChangeState,
+    stalledForMs: won.stalledForMs,
+    decisionId: won.decision.id
+  };
 }
 
 /**
@@ -334,9 +395,9 @@ export async function runWatchdogSweepForAllOrgs(
   const orgRows = await db.select({ id: orgs.id }).from(orgs);
   for (const org of orgRows) {
     try {
-      await withTenantTx(db, org.id, (tx) =>
-        runWatchdogSweep(tx, org.id, host, masterKey, { requestId: "watchdog-sweep" })
-      );
+      // `runWatchdogSweep` now manages its own per-row short transactions (§7.1 item 3) — no
+      // outer `withTenantTx` wrapping the whole org's sweep any more.
+      await runWatchdogSweep(db, org.id, host, masterKey, { requestId: "watchdog-sweep" });
     } catch (err) {
       console.error(`[watchdog] org ${org.id} sweep failed:`, err);
     }
@@ -379,7 +440,11 @@ export async function startWatchdogLoop(
       { startAfter: intervalSeconds, singletonKey: "tick", singletonSeconds: intervalSeconds }
     );
   });
-  await boss.send(WATCHDOG_QUEUE, {});
+  // A4 fix: the initial send now carries the SAME singleton params as the reschedule send above
+  // (only `startAfter` differs — the reschedule delays, the initial send fires immediately) — see
+  // reconcile.ts's `startReconcileLoop` for the identical shape. Without this, N replicas starting
+  // together each queue their own unkeyed first job and all N fire the very first sweep.
+  await boss.send(WATCHDOG_QUEUE, {}, { singletonKey: "tick", singletonSeconds: intervalSeconds });
   return {
     async stop() {
       stopped = true;
