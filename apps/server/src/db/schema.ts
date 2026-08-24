@@ -1447,6 +1447,18 @@ export const syncCursors = pgTable(
      *  leaves this peer at `full` with an anchorless cursor. NOTHING a peer sends can set it: no
      *  import/relay/poke path writes this column. */
     reanchorFromSeq: bigint("reanchor_from_seq", { mode: "number" }),
+    /** RAIL 4 — EXPORTER TAIL ATTESTATION HIGH-WATER MARK (drizzle/0090, M26.2 §7.2 rail 4).
+     *  A monotonic per-`(org, peer, origin)` record of the highest journal tail this side has ever
+     *  seen the exporter *attest and sign* (`SyncBundle.tailAttestation`), independent of what this
+     *  receiver's scope let it actually apply. This is what makes B1 (a lost/rolled-back tail after
+     *  an async-replication failover) detectable for a NARROW-scope peer, where rails 1–3 are silent
+     *  because that peer never holds a real anchor. NULL until the first signed attestation is seen.
+     *  Verify-and-advance only: a later attestation whose `tailSequence` regresses, or whose
+     *  `tailRowHash` differs at the SAME height, is a `journal_divergence` refusal — never a
+     *  regression of these columns. Nothing a peer sends other than a validly-signed attestation may
+     *  move them. Read/written only by `cursors-repo.ts`'s tail-attestation path. */
+    attestedTailSeq: bigint("attested_tail_seq", { mode: "number" }),
+    attestedTailRowHash: text("attested_tail_row_hash"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
