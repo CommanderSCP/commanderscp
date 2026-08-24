@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight } from "lucide-react";
-import type { Change, ChangeState } from "@scp/sdk";
+import type { Change, ChangeState, ChangeStageDependencyTarget } from "@scp/sdk";
 // M4 governance types: @scp/schemas, not @scp/sdk — @scp/sdk's index.ts only re-exports the M3
 // (and earlier) wire types; M4 never added ApprovalRequest/Freeze/etc. there. Importing
 // @scp/schemas directly here is within bounds (eslint.config.mjs's own restricted-imports rule:
@@ -153,7 +153,8 @@ export function ChangeDetailPage(): React.JSX.Element {
     return <QueryErrorNotice error={explainQuery.error ?? "Not found"} what="this change" />;
   }
 
-  const { change, plan, decisions, controlRuns, waitStatus } = explainQuery.data;
+  const { change, plan, decisions, controlRuns, waitStatus, stageDependencyStatus } =
+    explainQuery.data;
   // These three gate ONLY on change STATE — whether the button is offered AT ALL for this lifecycle
   // state.
   //
@@ -179,6 +180,18 @@ export function ChangeDetailPage(): React.JSX.Element {
   // Provenance badge only — never a gate (see above).
   const foreign = isForeignOriginObject(change.originDomainId, ownDomainId);
   const waves = plan?.waves ?? [];
+  // ADR-0028 increment 4 — mirrors `change-pipeline.tsx`'s `holdFor` exactly (M25.UI review minor
+  // finding 1). Without this, `heldTargetCount`'s badge here (composed from BOTH the freeze and
+  // stage-dependency halves — routes/changes.ts) told an operator "see each target's own hold
+  // line for which" while no stage-dependency hold line existed on this page at all: `explain`
+  // was already loaded, `stageDependencyStatus` was already sitting on the response, and the only
+  // thing missing was threading it through.
+  function holdFor(target: { targetObjectId: string }): ChangeStageDependencyTarget | null {
+    const found = stageDependencyStatus?.targets.find(
+      (entry) => entry.targetObjectId === target.targetObjectId
+    );
+    return found?.held ? found : null;
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -354,6 +367,7 @@ export function ChangeDetailPage(): React.JSX.Element {
                       waveNumber={index + 1}
                       testIdPrefix="wave"
                       nameOf={(tid) => targetNames.get(tid)?.name}
+                      holdFor={holdFor}
                     />
                     {promo && <PromotionArrow state={promo.state} label={promo.label} />}
                   </div>

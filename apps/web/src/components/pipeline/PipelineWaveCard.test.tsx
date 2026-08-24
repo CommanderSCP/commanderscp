@@ -298,14 +298,18 @@ describe("PipelineWaveCard: the freeze-hold field (ChangeWaveTargetSchema.hold, 
     expect(html).not.toContain('data-testid="pipeline-wave-target-hold"');
   });
 
-  it("an instance-wide (platform-tier) freeze's null scope renders the honest fallback label", () => {
+  it("a platform-tier freeze's null scope renders the server's summary alone — no invented scope label (M25.UI review minor finding 2)", () => {
     const html = renderCard({
       ...BASE_TARGET,
       status: "pending",
       hold: { freezes: [{ ...FREEZE_ENTRY, scope: null }] }
     });
 
-    expect(html).toContain("instance-wide");
+    // The server's own sentence (which states the tier and the coordinate it matched) is what
+    // renders — never a client-composed "instance-wide" label, which claims a scope a platform
+    // freeze scoped to one region does not have.
+    expect(html).toContain(FREEZE_ENTRY.summary);
+    expect(html).not.toContain("instance-wide");
   });
 
   it("a target held by BOTH kinds at once lists both lines under the one badge", () => {

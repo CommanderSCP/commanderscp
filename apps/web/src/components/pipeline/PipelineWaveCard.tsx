@@ -389,6 +389,14 @@ function HeldTargetLine({ held }: { held: ChangeStageDependencyTarget }): React.
  * Amber, not blue: a freeze is a governance instrument (design spec §1.5 `warning` tone —
  * "needs attention, degraded, frozen"), where the stage-dependency line's blue is informational
  * ("this clears itself"). `summary` is rendered VERBATIM — server-composed, no client copy.
+ *
+ * THE BOLD LABEL ONLY APPEARS WHEN THERE IS A REAL NAME TO SHOW (M25.UI review minor finding 2).
+ * `scope: null` means PLATFORM tier (`plan-service.ts`'s `toWaveTargetHold`), not "every org on
+ * this instance" — a platform freeze addresses a stage coordinate (environment/region), which can
+ * be as narrow as one region, and that wire shape carries no `match` to say which. Composing
+ * "instance-wide" here claimed a scope the freeze may not have; `freeze.summary` already states
+ * the tier and the coordinate it matched verbatim ("… (platform tier) …"), so a `scope: null` or
+ * unresolved-name freeze renders that sentence ALONE rather than a client-invented label beside it.
  */
 function FreezeHoldLines({ freezes }: { freezes: WaveTargetFreezeEntry[] }): React.JSX.Element {
   return (
@@ -398,8 +406,14 @@ function FreezeHoldLines({ freezes }: { freezes: WaveTargetFreezeEntry[] }): Rea
     >
       {freezes.map((freeze) => (
         <div key={freeze.freezeId} data-testid="pipeline-wave-target-freeze-hold-line">
-          <span className="font-medium">{freeze.scope?.name ?? "instance-wide"}</span>{" "}
-          <span>— {freeze.summary}</span>
+          {freeze.scope?.name ? (
+            <>
+              <span className="font-medium">{freeze.scope.name}</span>{" "}
+              <span>— {freeze.summary}</span>
+            </>
+          ) : (
+            <span>{freeze.summary}</span>
+          )}
         </div>
       ))}
     </div>
