@@ -720,7 +720,7 @@ describe("the self-domain panel", () => {
 });
 
 /**
- * drizzle/0084 — THE BYTE-RELAY TAG, and the honesty pin that keeps it a READ, never an INFERENCE.
+ * drizzle/0087 — THE BYTE-RELAY TAG, and the honesty pin that keeps it a READ, never an INFERENCE.
  *
  * `channel` is the one place a retrans byte-relay hop is distinguished from an ordinary metadata
  * `.scpbundle` handoff (`BundleTransferSchema`'s doc). The forbidden shortcut is deriving it from

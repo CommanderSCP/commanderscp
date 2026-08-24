@@ -1,5 +1,5 @@
 -- ===========================================================================================
--- 0084 — `bundle_transfers.channel`: make the retrans BYTE-RELAY leg distinguishable from an
+-- 0087 — `bundle_transfers.channel`: make the retrans BYTE-RELAY leg distinguishable from an
 --         ordinary METADATA `.scpbundle` handoff in the ledger.
 --
 -- SINCE M13.1b, EVERY hop `recordBundleTransfer` writes — an ordinary sync/promotion `.scpbundle`
@@ -43,4 +43,4 @@ BEGIN
 END $$;
 
 COMMENT ON COLUMN "bundle_transfers"."channel" IS
-  'Which leg this hop was: ''metadata'' (an ordinary .scpbundle sync/promotion export or import) or ''bytes'' (a retrans byte-relay hop — buildRelayTarball''s submit, validateAndForwardRelayTarball''s confirm+submit, importRelayTarball''s confirm). NULL = not recorded (pre-0084 row, or a writer that genuinely could not determine it) — never inferred from direction/kind/status, which are identical across both channels for a kind=''promotion'' row.';
+  'Which leg this hop was: ''metadata'' (an ordinary .scpbundle sync/promotion export or import) or ''bytes'' (a retrans byte-relay hop — buildRelayTarball''s submit, validateAndForwardRelayTarball''s confirm+submit, importRelayTarball''s confirm). NULL = not recorded (pre-0087 row, or a writer that genuinely could not determine it) — never inferred from direction/kind/status, which are identical across both channels for a kind=''promotion'' row.';

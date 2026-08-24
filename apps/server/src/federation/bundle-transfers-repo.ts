@@ -36,7 +36,7 @@ function toBundleTransfer(row: typeof bundleTransfers.$inferSelect): BundleTrans
     throughSequence: row.throughSequence,
     // M16.1 (I1): the per-change join handle (see `boundary-bundle-ref.ts`). Additive on the wire.
     checksum: row.checksum,
-    // drizzle/0084 — which leg this hop was ('metadata' | 'bytes'); NULL = not recorded. See the
+    // drizzle/0087 — which leg this hop was ('metadata' | 'bytes'); NULL = not recorded. See the
     // migration header and `recordBundleTransfer`'s doc comment.
     channel: row.channel === "metadata" || row.channel === "bytes" ? row.channel : null,
     createdAt: row.createdAt.toISOString(),
@@ -48,7 +48,7 @@ function toBundleTransfer(row: typeof bundleTransfers.$inferSelect): BundleTrans
  *  See drizzle/0041's header for why no pair of stored timestamps can reconstruct it. */
 export type BundleTransport = "live-pull" | "bundle";
 
-/** WHICH LEG a hop was (drizzle/0084) — 'metadata' for an ordinary `.scpbundle` sync/promotion
+/** WHICH LEG a hop was (drizzle/0087) — 'metadata' for an ordinary `.scpbundle` sync/promotion
  *  export or import, 'bytes' for a retrans byte-relay hop (`buildRelayTarball`'s submit,
  *  `validateAndForwardRelayTarball`'s confirm+submit, `importRelayTarball`'s confirm). `null` is a
  *  DELIBERATE, explicit "genuinely cannot determine" — never a stand-in for "not asked". */
@@ -68,7 +68,7 @@ export async function recordBundleTransfer(
     checksum?: string | null;
     transport?: BundleTransport | null;
     /** REQUIRED (not optional) so no future writer can forget to declare it — pass `null` only when
-     *  this call site is genuinely unable to know which leg it is recording (drizzle/0084). */
+     *  this call site is genuinely unable to know which leg it is recording (drizzle/0087). */
     channel: BundleChannel | null;
   }
 ): Promise<BundleTransfer> {

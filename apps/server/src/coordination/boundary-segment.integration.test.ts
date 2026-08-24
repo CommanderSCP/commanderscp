@@ -315,7 +315,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
       direction: "export",
       status: "created",
       checksum: bundle.checksum,
-      // drizzle/0084 — an ordinary `.scpbundle` promotion export, threaded from the ledger row
+      // drizzle/0087 — an ordinary `.scpbundle` promotion export, threaded from the ledger row
       // through `boundary-segment.ts` — never the retrans byte-relay channel.
       channel: "metadata"
     });
@@ -335,7 +335,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
       direction: "import",
       status: "confirmed",
       checksum: bundle.checksum,
-      // drizzle/0084 — the metadata leg, same as the export side of this same bundle.
+      // drizzle/0087 — the metadata leg, same as the export side of this same bundle.
       channel: "metadata"
     });
     // The receiving side observed the arrival itself, so nothing about the transfer is unknown here.

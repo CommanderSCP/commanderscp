@@ -681,7 +681,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     return rows.length;
   }
 
-  /** drizzle/0084 — the CHANNEL every submitted-export row above carries. `buildRelayTarball`
+  /** drizzle/0087 — the CHANNEL every submitted-export row above carries. `buildRelayTarball`
    *  writes the retrans BUILD hop's own submit, which must read 'bytes' — never 'metadata', the
    *  value a plain `.scpbundle` promotion export writes. */
   async function submittedExportChannels(domain: IsolatedDomain): Promise<Array<string | null>> {
@@ -810,7 +810,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     // `submitted` transfer row exists — the byte leg is visible on the same status surface the
     // metadata leg uses, and it is written only after every artifact verified.
     expect(await submittedExportTransfers(retrans)).toBe(submittedBefore + 1);
-    // drizzle/0084 — the byte leg, not the metadata leg: this submit is the retrans BUILD hop's own
+    // drizzle/0087 — the byte leg, not the metadata leg: this submit is the retrans BUILD hop's own
     // onward drop, distinguishable now from an ordinary `.scpbundle` promotion export.
     expect(await submittedExportChannels(retrans)).toEqual(["bytes"]);
 

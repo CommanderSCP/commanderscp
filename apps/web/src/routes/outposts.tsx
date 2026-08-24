@@ -538,9 +538,9 @@ function transferStatusBadge(status: string): React.JSX.Element {
   );
 }
 
-/** drizzle/0084 — the byte-relay tag beside a transfer row, ONLY for `channel === 'bytes'`. A
+/** drizzle/0087 — the byte-relay tag beside a transfer row, ONLY for `channel === 'bytes'`. A
  *  `'metadata'` channel renders nothing extra (an ordinary `.scpbundle` handoff is today's default
- *  reading and needs no callout), and an ABSENT channel (pre-0084 row, or a writer that could not
+ *  reading and needs no callout), and an ABSENT channel (pre-0087 row, or a writer that could not
  *  determine it) renders nothing either — provenance here is READ off the ledger row, never
  *  inferred from `checksum === null` or the peer's role, both of which are true for plenty of
  *  ordinary metadata rows too. */

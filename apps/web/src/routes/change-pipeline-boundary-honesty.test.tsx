@@ -229,7 +229,7 @@ describe("boundary segment: the absent case is stated, not silently green", () =
 });
 
 /**
- * drizzle/0084 — THE HOP-COUNT SPLIT. `transfer.hops[].channel` distinguishes a retrans byte-relay
+ * drizzle/0087 — THE HOP-COUNT SPLIT. `transfer.hops[].channel` distinguishes a retrans byte-relay
  * leg from an ordinary metadata `.scpbundle` hop (`BoundaryTransferHopSchema`'s doc). This strip
  * only ever COUNTS hops (it does not list them), so the honest rendering is a split count — "N
  * bundle hop(s) observed here, of which M byte relay" — and ONLY when at least one hop actually

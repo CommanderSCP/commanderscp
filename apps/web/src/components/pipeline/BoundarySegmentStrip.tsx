@@ -107,9 +107,9 @@ function TransferPhase({ segment }: { segment: BoundarySegment }): React.JSX.Ele
   // a delivery.
   const handoffUnknown = isBoundaryUnknown(segment, "transfer.handoff");
   const hopCount = transfer.hops.length;
-  // drizzle/0084 — `hop.channel` distinguishes an ordinary metadata `.scpbundle` hop from a retrans
+  // drizzle/0087 — `hop.channel` distinguishes an ordinary metadata `.scpbundle` hop from a retrans
   // byte-relay leg (`BoundaryTransferHopSchema`'s doc). The split only fires when at least one hop
-  // actually carries `'bytes'`: a hop with `channel: null`/`undefined` (pre-0084 row, or a writer
+  // actually carries `'bytes'`: a hop with `channel: null`/`undefined` (pre-0087 row, or a writer
   // that could not determine it) is folded back into the plain count rather than counted as "not a
   // byte relay" — that would assert a metadata reading this instance was never told.
   const byteRelayCount = transfer.hops.filter((h) => h.channel === "bytes").length;
