@@ -23,7 +23,12 @@ const verdict = (targetObjectId: string, freezeIds: string[]): FreezeHoldVerdict
   stage: null,
   freezes: freezeIds.map((id) => ({
     id,
+    // M25.3 — the org tier, the arm this projection's sort was written against. The platform arm
+    // carries `scopeObjectId: null` + a `match`, and the sort is deliberately tier-blind: it keys
+    // on `id`, which both arms carry.
+    tier: "org" as const,
     scopeObjectId: `scope-${id}`,
+    match: null,
     name: id,
     endsAt: "2030-01-01T00:00:00.000Z",
     atomic: false

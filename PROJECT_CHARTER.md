@@ -2081,20 +2081,48 @@ Security Freeze
 
 # Freeze Scope
 
+**Amended 2026-08-23** (owner decision). Two changes: the list gains a **platform tier above the
+organization**, and it gains **deployment target** below component — the latter a correction of
+behaviour that has been shipped since 2026-08-02, where the charter had fallen behind the code.
+
 Freeze windows may apply to:
 
+- **Platform (this deployment)** — declared by the deployment's operator; binds every organization
+  hosted here. Addressed by stage coordinate (an environment, and optionally a region within it),
+  never by object id, because object ids do not exist across organizations. Deployment-wide must be
+  stated explicitly; it is not reachable by leaving the environment unset. No tenant role can
+  author, edit, or lift one.
 - Entire Organization
-- Domain
+- Domain (containment domain)
 - Service
 - Component
+- **Deployment target (stage / region)** — a freeze here catches everything deploying at that
+  target. This is how "freeze `amer-prod`" is said, and it is why a wave may proceed to three of
+  four targets when only one is frozen.
+
+A freeze holds **only the targets it covers**, admitting the rest of a wave, unless it is declared
+atomic. It may be **lifted or shortened** before its end time, with a mandatory reason.
 
 ---
 
 # Freeze Exceptions
 
-Authorized users may bypass freezes.
+Authorized users may bypass freezes **at organization tier and below**: the actor must hold
+`freeze:override` at that freeze's own scope, and **every** active freeze covering the target must
+be overridden individually — satisfying one does not satisfy the others.
 
-All overrides must be auditable.
+**A platform-tier freeze is not bypassable by any tenant role, however privileged.** The authoring
+operator may mark one overridable, which admits bypass by an actor holding `freeze:override` at the
+organization root under the same reason requirement; off unless declared. This asymmetry is the
+point of the tier: a freeze that every tenant could lift would not be a platform freeze.
+
+A **rollback** is exempt at a wave boundary — holding one pins a broken release in place for the
+window, which is the opposite of what a freeze is for. The exemption **stops at the platform tier**,
+because the rollback route authorizes far below `freeze:override` and a tier-blind exemption would
+be a cheaper bypass than the override it is contrasted with.
+
+All overrides must be auditable. Every override, lift, and window edit carries a mandatory reason
+and produces an audit event and a Decision.
 
 ---
 

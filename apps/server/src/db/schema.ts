@@ -2468,6 +2468,93 @@ export const governanceMoveInstanceRung = pgTable("governance_move_instance_rung
 });
 
 /**
+ * M25.3 — THE INSTANCE-SCOPED (PLATFORM) FREEZE TIER, above org (drizzle/0086,
+ * docs/proposals/campaigns-rework.md §2 — owner decision D1, 2026-08-23).
+ *
+ * ONE ROW BINDS EVERY ORG ON THE DEPLOYMENT. No `org_id` — the DESIGN §4.2 exception 0029/0035/
+ * 0036/0062/0074/0083 already take, for the same reason: this is an operator statement about the
+ * deployment, not tenant data. Tenant-READ (charter principle 6 — a blocked change must be able
+ * to name what blocked it), operator-WRITE only (`SCP_OPERATOR_TOKEN` + the `scp_operator`
+ * connection; `scp_app` holds SELECT and has no write policy in any verb).
+ *
+ * ADDRESSES A STAGE COORDINATE, NOT AN OBJECT. `freezes.scopeObjectId` names a graph object and
+ * the containment walk decides coverage; that is unavailable here, because object ids are per-org
+ * rows and `containmentChain` is org-filtered — no id names anything in a second tenant. So a
+ * platform freeze matches on the M15.6 / ADR-0017 §3 coordinate a `deployment-target` DECLARES:
+ * `properties.environment` (+ optional `properties.region`), read by
+ * `coordination/regional-executors.ts`'s `readStageCoordinate` (the one reader of that
+ * convention) INCLUDING the placement -> deployment-target hop.
+ *
+ * {@link instanceFreezes.matchAllEnvironments} is the EXPLICIT deployment-wide form. An absent
+ * `matchEnvironment` is NOT deployment-wide (the proposal said it was; 0086's header states why
+ * that was changed) — the widest tightening this table can express must be said out loud, not
+ * reached by omitting a field.
+ *
+ * MERGE IS UNION, NOT MIN. ADR-0016's scan floors take a per-severity MIN because a threshold is
+ * a number; a freeze is a PREDICATE and the merge is an OR. An instance freeze blocks even when
+ * the org declared nothing, and nothing an org can author subtracts from it — the "floor"
+ * property lives entirely in {@link instanceFreezes.overridable}, never in the merge.
+ *
+ * DOES NOT FEDERATE and structurally cannot: `SyncJournalEntrySchema.orgId` is a required uuid
+ * and every layer below it is org-scoped. Hence no `origin` column (0086's header) — a field with
+ * no possible writer lies. Distribution to a fleet is deployment tooling, the same path that
+ * distributes `SCP_OPERATOR_TOKEN`.
+ *
+ * EMPTY IS THE SHIPPED STATE, and empty is byte-identical to pre-M25.3 behaviour everywhere.
+ */
+export const instanceFreezes = pgTable(
+  "instance_freezes",
+  {
+    /** A REAL uuid (uuidv7, stamped by the route), because this id travels into
+     *  `ServiceBoardFreezeSchema.id` — published as `z.string().uuid()` in `openapi.v1.json`. A
+     *  synthetic `platform:<key>` identity would either violate that shipped response contract or
+     *  force widening it. Stable across a `PUT` upsert of the same key. */
+    id: uuid("id").primaryKey(),
+    /** The operator slug: the `PUT`/`DELETE` path segment. UNIQUE, not the PK. */
+    key: text("key").notNull().unique(),
+    name: text("name"),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    reason: text("reason").notNull(),
+    /** The explicit deployment-wide form — covers every target including one that declares no
+     *  stage coordinate at all. Mutually exclusive with `matchEnvironment` (DB CHECK). */
+    matchAllEnvironments: boolean("match_all_environments").notNull().default(false),
+    /** Matches every stage whose deployment-target declares this `properties.environment`. */
+    matchEnvironment: text("match_environment"),
+    /** Narrows `matchEnvironment` to one `properties.region`. Null = every region of it. */
+    matchRegion: text("match_region"),
+    /** Owner decision D5, the same semantics as `freezes.atomic` (0084) one tier up: `true` parks
+     *  EVERY target of a wave once it covers any one of them. Read in both places the org-tier
+     *  column is read — `gate-orchestrator.ts`'s `partiallyFrozen` and
+     *  `coordination/freeze-hold.ts` — because the wave gate fires exactly once. */
+    atomic: boolean("atomic").notNull().default(false),
+    /** Proposal §2.2 — WHETHER ANY TENANT ROLE MAY OVERRIDE THIS FREEZE AT ALL.
+     *
+     *  `false` (the default): none can, however privileged — not an org-root Owner holding
+     *  `freeze:override`. `hasPermission` builds `scopeExpandCte(orgId, scopeObjectId)` and joins
+     *  `role_bindings` filtered `rb.org_id = orgId`, so every id in that query is org-scoped and a
+     *  platform freeze has no id in it; the three natural fakes are all wrong (an org-root scope
+     *  hands every org Administrator the lift, a synthetic sentinel makes it un-overridable BY
+     *  ACCIDENT, and an operator token on the request is impossible for the case that matters
+     *  because wave-boundary gates run under `SYSTEM_ACTOR_ID` with no HTTP request in scope).
+     *
+     *  `true`: the OPERATOR has admitted tenant override for THIS freeze, and an actor holding
+     *  `freeze:override` AT THE ORG ROOT may override it with the same mandatory non-empty reason
+     *  every other override needs. Two independent authorities, both required. */
+    overridable: boolean("overridable").notNull().default(false),
+    note: text("note"),
+    /** SOFT retraction (`DELETE /v1/instance/freezes/{key}`) — 0085's ruling one tier up, for the
+     *  same reason: the freeze-block Decision carries this id forever and a hard delete would make
+     *  `scp change explain` name an id that resolves to nothing. Filtered in exactly ONE place,
+     *  `governance/instance-freezes-repo.ts`'s `activeInstanceFreezesInWindow`. */
+    liftedAt: timestamp("lifted_at", { withTimezone: true }),
+    liftReason: text("lift_reason"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [index("instance_freezes_window").on(table.startsAt, table.endsAt)]
+);
+
+/**
  * M22.1b (ADR-0033 §7/§7a, migration 0073) — the per-finding projection of ONE scan verdict.
  *
  * A scan verdict was four integers until M22.1a; every rule in ADR-0033 is a rule ABOUT A FINDING,

@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
@@ -14,7 +13,7 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { forbidden, badRequest } from "../errors.js";
-import { withOperatorDb } from "./operator-db.js";
+import { operatorTokenMatches, withOperatorDb } from "./operator-db.js";
 import { managedScanServerSettings } from "../coordination/executor-bindings-repo.js";
 import {
   loadScanDbBlob,
@@ -22,30 +21,6 @@ import {
   readScanDbStatus,
   refreshScanDbConnected
 } from "../governance/scan-db.js";
-
-/**
- * M13.3b-ii — the OFFLINE SCANNER-DB CACHE's API surface (ADR-0020, proposal §13.3b), API-first per
- * charter principle 3 (API -> SDK -> CLI). The DELIBERATE TWIN of `routes/instance-scan-floors.ts`
- * and `routes/scanner-assignments.ts`: same two-audiences / two-credentials shape.
- *
- *  - **READ is tenant-facing** — the DB status + the active staleness policy. A promotion a tenant
- *    cannot explain (blocked because the commander's DB was stale) is not explainable (principle 6),
- *    so the status + thresholds are readable. Neither read exposes per-tenant data (the cache is
- *    instance-wide operational config).
- *
- *  - **WRITE is operator-only** (`SCP_OPERATOR_TOKEN` as `x-scp-operator-token`): the staleness
- *    policy PUT (it binds every org), the connected refresh, and the air-gap operator-load. None is
- *    an RBAC permission — no tenant role may keep the deployment's ONE managed-scan DB. Unset token ⇒
- *    the write surface is CLOSED (403).
- */
-
-function operatorTokenMatches(presented: unknown, configured: string | undefined): boolean {
-  if (!configured || typeof presented !== "string" || presented.length === 0) return false;
-  const a = Buffer.from(presented, "utf8");
-  const b = Buffer.from(configured, "utf8");
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
 
 function requireOperator(deps: AppDeps, request: FastifyRequest): void {
   if (!deps.config.operatorToken) {

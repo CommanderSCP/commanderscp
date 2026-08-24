@@ -13,11 +13,16 @@ import {
 import { ensureControlRuns, readExistingControlOutcomes } from "./control-runner.js";
 import { scanExclusionSetChangedForGate } from "./scan-exclusion-actuator.js";
 import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
-import type { FreezeRow } from "./freezes-repo.js";
-import { freezesByTarget, unionFreezes, type TargetFreezes } from "./freeze-scope.js";
+import {
+  freezesByTarget,
+  rollbackExemptible,
+  unionFreezes,
+  type EffectiveFreeze,
+  type TargetFreezes
+} from "./freeze-scope.js";
 import { hasPermission } from "../authz/resolve.js";
 import { containmentChain, nearestAncestorOfKind } from "../graph/containment.js";
-import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { getObjectByIdOrUrnAnyType, getOrgRootObjectId } from "../graph/objects-repo.js";
 import { getChangeRow } from "../coordination/changes-repo.js";
 import { ociDigestsOfSourceRef } from "../coordination/artifact-facts.js";
 import {
@@ -115,7 +120,7 @@ async function checkFreeze(
   byTarget: TargetFreezes[]
 ): Promise<
   | { blocked: null; overrides: FreezeOverride[] }
-  | { blocked: { freeze: FreezeRow; reason: string }; overrides: null }
+  | { blocked: { freeze: EffectiveFreeze; reason: string }; overrides: null }
 > {
   // M25.2: `unionFreezes(byTarget)` REPLACES `activeFreezesForScopes(containmentScopeIds(...))`,
   // and the two are set-equal by construction — `containmentScopeIds` IS the union of the
@@ -137,8 +142,44 @@ async function checkFreeze(
   if (active.length === 0) return { blocked: null, overrides: [] };
 
   const overrides: FreezeOverride[] = [];
+  // Resolved AT MOST ONCE, and only if an overridable platform freeze is actually reached — see
+  // `overrideScopeOf`. `getOrgRootObjectId` throws for an org with no root object, which must not
+  // become an error on a path that would otherwise have simply blocked.
+  let orgRootObjectId: string | null = null;
+
   for (const freeze of active) {
-    const label = freeze.name ?? freeze.id;
+    const label = freezeLabel(freeze);
+
+    // ==========================================================================================
+    // M25.3 — THE PLATFORM TIER'S OVERRIDE RULING (proposal §2.2, owner decision D1)
+    // ==========================================================================================
+    // AN INSTANCE-TIER FREEZE IS NOT OVERRIDABLE BY ANY TENANT ROLE, HOWEVER PRIVILEGED — not by
+    // an org-root Owner, not by anyone. It was declared by this deployment's OPERATOR, about the
+    // deployment, binding every org on it; the whole authority argument for the operator door
+    // (ADR-0033 §7a: "no RBAC permission can grant this") collapses if a tenant admin can step
+    // past it.
+    //
+    // This branch is INSIDE the universal quantifier rather than a pass ahead of it, and that is
+    // the point: CRITICAL #2 is "EVERY active freeze individually satisfied", and `active` is now
+    // the UNION OF BOTH TIERS. A change covered by an org freeze AND a platform freeze must
+    // satisfy both, and neither tier can short-circuit the other, because there is only one loop
+    // and it returns on the first freeze it cannot satisfy. A separate "platform pass first" —
+    // which is what the proposal sketched — would have re-created the `active[0]` shape the loop
+    // exists to make inexpressible, one tier up.
+    if (freeze.tier === "platform" && !freeze.overridable) {
+      return {
+        blocked: {
+          freeze,
+          reason:
+            `active platform freeze '${label}' (${freeze.reason}) — declared by this deployment's ` +
+            `operator and binding every organization on it; no tenant role can override it, ` +
+            `however privileged. Lift or shorten it with DELETE or PUT ` +
+            `/v1/instance/freezes/${freeze.key}, which requires the deployment operator token`
+        },
+        overrides: null
+      };
+    }
+
     if (!ctx.overrideFreeze) {
       return {
         blocked: { freeze, reason: `active freeze '${label}' (${freeze.reason})` },
@@ -151,17 +192,31 @@ async function checkFreeze(
         overrides: null
       };
     }
+    // WHERE `freeze:override` IS CHECKED. Org tier: the freeze's OWN scope, unchanged since
+    // CRITICAL #2 — a narrow-scope holder must not slip a change past a broader freeze. Platform
+    // tier, and only once the operator has set `overridable`: the ORG ROOT, the widest scope a
+    // tenant has, because the freeze binds the whole org and there is no narrower object it could
+    // honestly be checked at. Note the two authorities stay independent and BOTH are required —
+    // the operator admits the override by setting the bit, the tenant must still hold the
+    // permission at its root and still must supply a reason.
+    if (freeze.tier === "platform" && orgRootObjectId === null) {
+      orgRootObjectId = await getOrgRootObjectId(tx, ctx.orgId);
+    }
+    const scopeObjectId = freeze.tier === "platform" ? orgRootObjectId! : freeze.scopeObjectId;
     const authorized = await hasPermission(tx, {
       orgId: ctx.orgId,
       subjectObjectId: ctx.actorObjectId,
       permission: "freeze:override",
-      scopeObjectId: freeze.scopeObjectId
+      scopeObjectId
     });
     if (!authorized) {
       return {
         blocked: {
           freeze,
-          reason: `subject '${ctx.actorObjectId}' lacks 'freeze:override' at scope '${freeze.scopeObjectId}' — cannot override freeze '${label}'`
+          reason:
+            freeze.tier === "platform"
+              ? `subject '${ctx.actorObjectId}' lacks 'freeze:override' at the org root '${scopeObjectId}' — cannot override the operator-admitted platform freeze '${label}'`
+              : `subject '${ctx.actorObjectId}' lacks 'freeze:override' at scope '${scopeObjectId}' — cannot override freeze '${label}'`
         },
         overrides: null
       };
@@ -169,10 +224,37 @@ async function checkFreeze(
     overrides.push({
       freezeId: freeze.id,
       reason: ctx.overrideFreeze.reason,
-      scopeObjectId: freeze.scopeObjectId
+      scopeObjectId
     });
   }
   return { blocked: null, overrides };
+}
+
+/** The operator-facing name of a freeze from either tier. An org freeze falls back to its uuid
+ *  when unnamed; a platform freeze always has a `key` (its `PUT`/`DELETE` path segment), which is
+ *  what an operator recognises and what the remedy sentence has to quote. */
+function freezeLabel(freeze: EffectiveFreeze): string {
+  return freeze.tier === "platform" ? (freeze.name ?? freeze.key) : (freeze.name ?? freeze.id);
+}
+
+/** The scope a freeze was DECLARED at, for the block Decision and reason tree. `null` at the
+ *  platform tier and that null is the honest answer: object ids do not exist across orgs, which is
+ *  precisely why that tier addresses a stage coordinate instead (`freezeMatchOf`). */
+function freezeScopeOf(freeze: EffectiveFreeze): string | null {
+  return freeze.tier === "platform" ? null : freeze.scopeObjectId;
+}
+
+/** WHAT a platform freeze matched, for the block Decision — the replacement for `scopeObjectId` at
+ *  a tier that has none. `null` for an org freeze, whose scope IS its address. */
+function freezeMatchOf(
+  freeze: EffectiveFreeze
+): { allEnvironments: boolean; environment: string | null; region: string | null } | null {
+  if (freeze.tier !== "platform") return null;
+  return {
+    allEnvironments: freeze.matchAllEnvironments,
+    environment: freeze.matchEnvironment,
+    region: freeze.matchRegion
+  };
 }
 
 /**
@@ -902,7 +984,19 @@ export async function evaluateGovernanceGate(
   // lifecycle path would silently lift the freeze at `validating -> accepted` AND on
   // `POST /policy-evaluate`. `lifecycle_edge` keeps any-target-frozen => block by design (there is
   // no such thing as accepting three quarters of a change), and D7 is a WAVE-boundary decision.
-  const freezeExemptRollback = ctx.gateKind === "wave_boundary" && ctx.isRollback === true;
+  //
+  // AND TIER-AWARE (M25.3 review finding 1). `rollbackExemptible` is the ONE definition of "may D7
+  // stand this covering set aside", shared verbatim with `reconcile.ts`'s per-target seam: a
+  // PLATFORM freeze is never stood aside for a rollback. Shipped tier-blind, this conjunct handed
+  // any principal holding `object:write` (all `POST /v1/changes/{id}/rollback` requires — no
+  // `freeze:override`, no reason, no operator token) a route past the freeze `checkFreeze`'s block
+  // sentence promises "no tenant role can override, however privileged", and a CHEAPER one than the
+  // override it was contrasted with. The full reasoning, including why `overridable` is deliberately
+  // NOT consulted and what this narrows, is on `rollbackExemptible`.
+  const freezeExemptRollback =
+    ctx.gateKind === "wave_boundary" &&
+    ctx.isRollback === true &&
+    rollbackExemptible(byTarget.flatMap((e) => e.freezes));
   const freezeCheck = await checkFreeze(tx, ctx, byTarget);
   if (freezeCheck.blocked && !partiallyFrozen && !freezeExemptRollback) {
     // Both a plain freeze block and a REJECTED override (missing reason / unauthorized for some
@@ -913,9 +1007,22 @@ export async function evaluateGovernanceGate(
       verdict: "block",
       ...(ctx.gateKind === "wave_boundary" ? { frozenTargets: byTarget } : {}),
       inputContext: {
+        // M25.3: `tier` and `match` ARE ADDITIVE and both are load-bearing for principle 6.
+        // `scopeObjectId` is null for a platform freeze because that tier has no object id in any
+        // org's containment chain — `match` carries what it actually matched instead, and `tier`
+        // tells a reader WHICH SURFACE resolves `id`: `GET /v1/freezes/{id}` for `org`,
+        // `GET /v1/instance/freezes` for `platform`. Without `tier` the id in this record would
+        // resolve to a 404 on the only surface a reader would think to try.
+        //
+        // NOTHING HERE IS DERIVED FROM A CLOCK — `endsAt` is read straight off the row, exactly as
+        // before, so a re-evaluated block is byte-identical on every tick and
+        // `insertDecisionIfChanged` suppresses it. That is ADR-0024's 1.44 GB/day contract and it
+        // survives this change unchanged.
         freeze: {
           id: freeze.id,
-          scopeObjectId: freeze.scopeObjectId,
+          tier: freeze.tier,
+          scopeObjectId: freezeScopeOf(freeze),
+          match: freezeMatchOf(freeze),
           endsAt: freeze.endsAt.toISOString()
         },
         ...(ctx.overrideFreeze ? { overrideRejected: reason } : {})
@@ -926,8 +1033,10 @@ export async function evaluateGovernanceGate(
           : `blocked by ${reason}`,
         freeze: {
           id: freeze.id,
+          tier: freeze.tier,
           name: freeze.name,
-          scopeObjectId: freeze.scopeObjectId,
+          scopeObjectId: freezeScopeOf(freeze),
+          match: freezeMatchOf(freeze),
           reason: freeze.reason
         }
       }
@@ -951,7 +1060,7 @@ export async function evaluateGovernanceGate(
   // permit that leaves no trace is indistinguishable from a freeze that never matched.
   const freezeNote =
     freezeExemptRollback && freezeCheck.blocked
-      ? `rollback exempt from ${frozenIds.length} frozen target(s): ${freezeCheck.blocked.reason} (DESIGN §9.4 / owner decision D7 — holding a rollback pins a broken release in place for the whole window)`
+      ? `rollback exempt from ${frozenIds.length} ORG-tier frozen target(s): ${freezeCheck.blocked.reason} (DESIGN §9.4 / owner decision D7 — holding a rollback pins a broken release in place for the whole window; a PLATFORM freeze is never stood aside this way, see rollbackExemptible)`
       : undefined;
 
   let emergencyNote: string | undefined;

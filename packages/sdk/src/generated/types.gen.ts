@@ -15767,6 +15767,265 @@ export type PutInstanceScanFloorResponses = {
 
 export type PutInstanceScanFloorResponse = PutInstanceScanFloorResponses[keyof PutInstanceScanFloorResponses];
 
+export type ListInstanceFreezesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/freezes';
+};
+
+export type ListInstanceFreezesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListInstanceFreezesError = ListInstanceFreezesErrors[keyof ListInstanceFreezesErrors];
+
+export type ListInstanceFreezesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            key: string;
+            name: string | null;
+            startsAt: string;
+            endsAt: string;
+            reason: string;
+            match: {
+                allEnvironments: boolean;
+                environment: string | null;
+                region: string | null;
+            };
+            atomic: boolean;
+            overridable: boolean;
+            note: string | null;
+            liftedAt: string | null;
+            liftReason: string | null;
+            updatedAt: string;
+        }>;
+    };
+};
+
+export type ListInstanceFreezesResponse = ListInstanceFreezesResponses[keyof ListInstanceFreezesResponses];
+
+export type LiftInstanceFreezeData = {
+    body: {
+        reason: string;
+    };
+    path: {
+        key: string;
+    };
+    query?: never;
+    url: '/instance/freezes/{key}';
+};
+
+export type LiftInstanceFreezeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type LiftInstanceFreezeError = LiftInstanceFreezeErrors[keyof LiftInstanceFreezeErrors];
+
+export type LiftInstanceFreezeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        key: string;
+        name: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        match: {
+            allEnvironments: boolean;
+            environment: string | null;
+            region: string | null;
+        };
+        atomic: boolean;
+        overridable: boolean;
+        note: string | null;
+        liftedAt: string | null;
+        liftReason: string | null;
+        updatedAt: string;
+    };
+};
+
+export type LiftInstanceFreezeResponse = LiftInstanceFreezeResponses[keyof LiftInstanceFreezeResponses];
+
+export type PutInstanceFreezeData = {
+    body: {
+        name?: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        match: {
+            allEnvironments?: boolean;
+            environment?: string;
+            region?: string;
+        };
+        atomic?: boolean;
+        overridable?: boolean;
+        note?: string | null;
+    };
+    path: {
+        key: string;
+    };
+    query?: never;
+    url: '/instance/freezes/{key}';
+};
+
+export type PutInstanceFreezeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutInstanceFreezeError = PutInstanceFreezeErrors[keyof PutInstanceFreezeErrors];
+
+export type PutInstanceFreezeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        key: string;
+        name: string | null;
+        startsAt: string;
+        endsAt: string;
+        reason: string;
+        match: {
+            allEnvironments: boolean;
+            environment: string | null;
+            region: string | null;
+        };
+        atomic: boolean;
+        overridable: boolean;
+        note: string | null;
+        liftedAt: string | null;
+        liftReason: string | null;
+        updatedAt: string;
+    };
+};
+
+export type PutInstanceFreezeResponse = PutInstanceFreezeResponses[keyof PutInstanceFreezeResponses];
+
 export type ListInstanceScanExclusionAdmissionsData = {
     body?: never;
     path?: never;

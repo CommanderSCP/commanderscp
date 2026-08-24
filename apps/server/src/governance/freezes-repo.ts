@@ -1,4 +1,5 @@
-import { and, eq, gt, isNull, lte } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, type SQL } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { freezes } from "../db/schema.js";
@@ -197,12 +198,40 @@ export async function activeFreezesInWindow(
     .where(
       and(
         eq(freezes.orgId, orgId),
-        lte(freezes.startsAt, at),
-        gt(freezes.endsAt, at),
-        isNull(freezes.liftedAt)
+        freezeWindowCovers(freezes.startsAt, freezes.endsAt, freezes.liftedAt, at)
       )
     );
   return rows as FreezeRow[];
+}
+
+/**
+ * ============================================================================================
+ * M25.3 — THE WINDOW PREDICATE ITSELF, COLUMN-GENERIC, SO TWO TABLES CAN SHARE ONE COPY
+ * ============================================================================================
+ * `starts_at <= at < ends_at AND lifted_at IS NULL`, half-open on purpose: a freeze whose
+ * `ends_at` is exactly `at` is over.
+ *
+ * The instance-scoped tier (drizzle/0086, `instance-freezes-repo.ts`) is a SECOND TABLE, and a
+ * second table cannot share the first's `where` clause. It could only have shared the RULE, and
+ * the choices were to write the comparison out again there or to factor it here. Everything
+ * `activeFreezesInWindow`'s docblock says about a second copy applies verbatim — the half-open
+ * boundary is exactly the detail two copies stop agreeing about, in either direction, silently,
+ * and `service-board.ts` has already hand-rolled this comparison once. So the claim above
+ * ("THE ONLY PLACE THAT KNOWS THE WINDOW PREDICATE") stays TRUE and simply moved one level down:
+ * both tiers' reads are built from this fragment, and neither spells `lte`/`gt`/`isNull` itself.
+ *
+ * Deliberately NOT parameterised on the org filter: the org tier has one and the instance tier
+ * structurally cannot (no `org_id` column — the DESIGN §4.2 exception). Folding an optional org
+ * predicate in here would let a caller omit it by passing `undefined`, which at the ORG tier is a
+ * cross-tenant read. The caller `and()`s its own tenancy filter, where forgetting it is visible.
+ */
+export function freezeWindowCovers(
+  startsAt: PgColumn,
+  endsAt: PgColumn,
+  liftedAt: PgColumn,
+  at: Date
+): SQL | undefined {
+  return and(lte(startsAt, at), gt(endsAt, at), isNull(liftedAt));
 }
 
 /**
@@ -216,7 +245,10 @@ export async function activeFreezesInWindow(
  * service-scoped freeze failed OPEN — the incident `graph/containment.ts` exists to have ended. If
  * you give this function ids from anywhere else, walk every route first.
  */
-export function filterFreezesByScopes(rows: FreezeRow[], scopeObjectIds: string[]): FreezeRow[] {
+export function filterFreezesByScopes<T extends Pick<FreezeRow, "scopeObjectId">>(
+  rows: T[],
+  scopeObjectIds: string[]
+): T[] {
   if (scopeObjectIds.length === 0) return [];
   const scopes = new Set(scopeObjectIds);
   return rows.filter((f) => scopes.has(f.scopeObjectId));

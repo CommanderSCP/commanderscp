@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
@@ -24,6 +23,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
 import { authorize } from "../authz/resolve.js";
+import { operatorTokenMatches } from "./operator-db.js";
 import { badRequest, conflict, forbidden } from "../errors.js";
 import { getObjectByIdOrUrn } from "../graph/objects-repo.js";
 import { listSourceMappingsForComponents } from "../coordination/source-mappings-repo.js";
@@ -177,17 +177,6 @@ import { findIngestionStampByComponent } from "../dependencies/ingestion-stamp-r
  * CLI answer, the inventory page's per-row `subscription` and the M21.4 ingestion work-list cannot
  * disagree.
  */
-
-/** Constant-time comparison of the presented operator token against the configured one — a
- *  length-leaking `===` on a shared secret is exactly the kind of thing a security review flags.
- *  Byte-for-byte the `instance-scan-floors.ts` / `scan-db.ts` helper. */
-function operatorTokenMatches(presented: unknown, configured: string | undefined): boolean {
-  if (!configured || typeof presented !== "string" || presented.length === 0) return false;
-  const a = Buffer.from(presented, "utf8");
-  const b = Buffer.from(configured, "utf8");
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
 
 function requireOperator(deps: AppDeps, request: FastifyRequest): void {
   if (!deps.config.operatorToken) {
