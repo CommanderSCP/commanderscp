@@ -3,11 +3,7 @@ import {
   COMPONENT_CRATE_PATHS,
   SERVICE_GUIDON_PATHS
 } from "../components/icons/catalog-marks";
-import {
-  COMMANDER_STAR_PATHS,
-  OUTPOST_FORT_PATHS,
-  RETRANS_MAST_PATHS
-} from "../components/icons/federation-roles";
+import { COMMANDER_STAR_PATHS, OUTPOST_FORT_PATHS } from "../components/icons/federation-roles";
 
 /**
  * Cytoscape node GLYPHS — the same hand-drawn marks the rest of the UI wears (catalog-marks.tsx,
@@ -36,8 +32,12 @@ const TYPE_MARK_PATHS: Record<string, IconNodeLike> = {
   assembly: ASSEMBLY_STACK_PATHS,
   component: COMPONENT_CRATE_PATHS,
   organization: COMMANDER_STAR_PATHS,
-  outpost: OUTPOST_FORT_PATHS,
-  "retrans-relay": RETRANS_MAST_PATHS
+  outpost: OUTPOST_FORT_PATHS
+  // No `retrans-relay` entry: census (grep -rna 'retrans-relay' across the whole repo) found the
+  // string only as the filename `retrans-relay.ts` and its `retrans-relay-*` Decision kinds — no
+  // server code ever creates a graph-object typeId `retrans-relay` (`outpost-binding.ts` mints only
+  // `outpost`, and refuses to bind one to a retrans subject at all). A mark with nothing to draw for
+  // is dead code, not an honest absence.
 };
 
 function serializeNode(node: IconNodeLike): string {

@@ -396,6 +396,26 @@ export function declaredTierOf(selectValue: string): OutpostTrustTier | undefine
  *  which must be `commander` — an outpost's own record is commander-declared and arrives replicated,
  *  and the server 400s the self shape on any other role (MEASURED —
  *  `outpost-config-sync.integration.test.ts`, before and after the replica arrives). */
+/**
+ * THE REFUSAL `POST /federation/outposts` MIRRORS, SHARED. `outpost-binding.ts`'s
+ * `REQUIRED_PEER_ROLE` refuses (400) to bind an `outpost` config object to any peer whose role is
+ * not `outpost` — on CREATE (`DeclareConfigCard`, below) and, unchanged, on UPDATE of an existing
+ * object (`assertOutpostPeerBinding` runs on both doors). So the same sentence covers two distinct
+ * moments: no config object exists yet for a non-outpost peer, AND a config object exists but its
+ * peer's role no longer is one (e.g. changed post-declare) — a stray row the edit door will 400 on
+ * confusingly if offered a live Save button. One refusal, read from the same measured 400
+ * (`outpost-object.integration.test.ts`; ADR-0004), rendered wherever that door would fire.
+ */
+export function ConfigRoleNotOutpostNotice({ role }: { role: string }): React.JSX.Element {
+  return (
+    <p className="text-sm text-slate-600" data-testid="config-role-not-outpost">
+      Commander-declared configuration binds only to a peer whose federation role is{" "}
+      <code>outpost</code>. This peer&apos;s role is <code>{role}</code>, so it has no config object
+      and none can be declared for it.
+    </p>
+  );
+}
+
 export function DeclareConfigCard({
   peer,
   coLocated = false,
@@ -417,13 +437,7 @@ export function DeclareConfigCard({
 }): React.JSX.Element {
   const [tier, setTier] = useState<string>("");
   if (!coLocated && peer && peer.role !== "outpost") {
-    return (
-      <p className="text-sm text-slate-600" data-testid="config-role-not-outpost">
-        Commander-declared configuration binds only to a peer whose federation role is{" "}
-        <code>outpost</code>. This peer&apos;s role is <code>{peer.role}</code>, so it has no config
-        object and none can be declared for it.
-      </p>
-    );
+    return <ConfigRoleNotOutpostNotice role={peer.role} />;
   }
   if (coLocated && selfRole !== "commander") {
     return (
@@ -533,6 +547,10 @@ export function PokeModeCard({
   onToggle: (next: boolean) => void;
 }): React.JSX.Element {
   const enabled = status.peer.pokeMode === true;
+  // THE NOUN, ROLE-AWARE — poke-mode is genuinely both-sides consent for a retrans peer too (ADR-0009
+  // does not scope it to `outpost`; a retrans polls or is poked exactly like an outpost), so only the
+  // word naming the other side was wrong.
+  const peerNoun = status.peer.role === "retrans" ? "retrans peer" : "outpost";
   return (
     <div className="flex flex-col gap-3" data-testid="poke-mode-card">
       <div className="flex items-center gap-2">
@@ -550,19 +568,19 @@ export function PokeModeCard({
         data-testid="poke-mode-both-sides-note"
         title={
           "This flag is local to this instance: it licenses this side to send a contentless wake " +
-          "signal to the outpost. It does not set the outpost's own flag — the outpost decides at " +
-          "the outpost whether it accepts a poke and stops polling. Poke-mode is both-sides " +
-          "consent, and this toggle is only this side's half."
+          `signal to the ${peerNoun}. It does not set the ${peerNoun}'s own flag — the ${peerNoun} ` +
+          `decides at the ${peerNoun} whether it accepts a poke and stops polling. Poke-mode is ` +
+          "both-sides consent, and this toggle is only this side's half."
         }
       >
-        Local to this side only — does not set the outpost&apos;s own flag.
+        Local to this side only — does not set the {peerNoun}&apos;s own flag.
       </p>
       {isUnilateralSparse(status) && (
         <Alert tone="warning" data-testid="poke-mode-unilateral-sparse">
           This side is opted in to poke-mode but <strong>no poke has ever been received</strong>{" "}
           from this peer — the named unilateral-sparse misconfiguration. The scheduler is still
           polling (effective cadence <code>{status.effectiveCadence ?? "unreported"}</code>). Either
-          enable poke-mode at the outpost too, or turn it off here.
+          enable poke-mode at the {peerNoun} too, or turn it off here.
         </Alert>
       )}
       {saveError !== undefined && saveError !== null && (
@@ -951,6 +969,16 @@ export function OutpostConfigurationSection({
   const claimants = claimantsForPeer(configsQuery.data, peerDomainId);
   const conflict = claimants.length > 1;
   const config = claimants[0];
+  /**
+   * HAZARD, CLOSED — the tier editor used to be gated only on a config OBJECT existing, never on the
+   * PEER's own role. `assertOutpostPeerBinding` refuses (400) an UPDATE against a peer whose role is
+   * not `outpost` exactly as it refuses a CREATE (`outpost-binding.ts`, ADR-0004) — so a STRAY
+   * config object bound to a retrans peer (role changed post-declare; nothing deletes the row when
+   * that happens) rendered a live, clickable Save button the server would refuse confusingly. The
+   * self/HQ path (`status` absent) carries no peer role at all and is untouched — this guards only
+   * the peer path, on the SAME role the create door already checks.
+   */
+  const peerConfigRoleOk = status === undefined || status.peer.role === "outpost";
 
   const invalidate = async (): Promise<void> => {
     await queryClient.invalidateQueries({ queryKey: outpostConfigListKey() });
@@ -1049,11 +1077,20 @@ export function OutpostConfigurationSection({
         <CardTitle>Configuration</CardTitle>
         <CardDescription>
           {status ? (
-            <>
-              Commander-declared configuration for this outpost. It is an ordinary graph object, so
-              it rides the sync journal down and lands at the outpost as a read-only replica.
-              Poke-mode below is a peer-row flag and is <strong>this side only</strong>.
-            </>
+            status.peer.role === "retrans" ? (
+              <>
+                A <strong>retrans</strong> peer holds no commander-declared outpost configuration:
+                an <code>outpost</code> config object binds only to a peer whose federation role is{" "}
+                <code>outpost</code> (400 otherwise — ADR-0004). Only poke-mode below applies to it,
+                and is <strong>this side only</strong>.
+              </>
+            ) : (
+              <>
+                Commander-declared configuration for this outpost. It is an ordinary graph object,
+                so it rides the sync journal down and lands at the outpost as a read-only replica.
+                Poke-mode below is a peer-row flag and is <strong>this side only</strong>.
+              </>
+            )
           ) : (
             <>
               Commander-declared configuration for the <strong>HQ outpost</strong> — this
@@ -1078,7 +1115,7 @@ export function OutpostConfigurationSection({
           />
         )}
 
-        {!conflict && config && (
+        {!conflict && config && peerConfigRoleOk && (
           <TrustTierCard
             key={`${config.objectId}:${config.version}`}
             config={config}
@@ -1088,6 +1125,14 @@ export function OutpostConfigurationSection({
             onSave={(tier) => tierMutation.mutate({ tier, expectedVersion: config.version })}
             onReconcile={() => reconcileMutation.mutate(undefined)}
           />
+        )}
+        {/* The MEASURED refusal (`assertOutpostPeerBinding`, ADR-0004) for a stray config object
+            whose peer's role is no longer `outpost` — rendered instead of an editor the server would
+            400. `status` is defined whenever `peerConfigRoleOk` is false (it is the only source of a
+            non-`outpost` role), so this branch and `peerConfigRoleOk` can never disagree about which
+            role to show. */}
+        {!conflict && config && !peerConfigRoleOk && status && (
+          <ConfigRoleNotOutpostNotice role={status.peer.role} />
         )}
         {!conflict && config && reconcileMutation.data && (
           <ReconcileOutcome result={reconcileMutation.data} />
@@ -1126,8 +1171,17 @@ export function OutpostConfigurationSection({
           </>
         )}
 
-        <hr className="border-slate-200" />
-        <ManagedElsewhereNotes />
+        {/* Freeze windows, the outpost-local Gitea/registry, and bundled backends are OUTPOST
+            concepts — none of the three exists at a CDS-boundary retrans, which runs no local
+            Gitea/registry, no executor coordination and no deploy machinery (M13.1). Shown for an
+            outpost row and the self/HQ outpost (both real outposts); withheld for a retrans peer
+            rather than rendered as if it applied. */}
+        {(!status || status.peer.role !== "retrans") && (
+          <>
+            <hr className="border-slate-200" />
+            <ManagedElsewhereNotes />
+          </>
+        )}
       </CardContent>
     </Card>
   );

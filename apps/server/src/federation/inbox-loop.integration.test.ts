@@ -562,10 +562,17 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
   async function confirmedTransferWithChecksum(
     domain: IsolatedDomain,
     checksum: string
-  ): Promise<{ direction: string; status: string }[]> {
+  ): Promise<{ direction: string; status: string; channel: string | null }[]> {
     const rows = await withTenantTx(domain.db, domain.orgId, (tx) =>
       tx
-        .select({ direction: bundleTransfers.direction, status: bundleTransfers.status })
+        .select({
+          direction: bundleTransfers.direction,
+          status: bundleTransfers.status,
+          // drizzle/0087 — every row this checksum resolves to in these tests is a TARBALL hop
+          // (the sha256 of a relay tarball, never a `.scpbundle` Ed25519 checksum), so it must
+          // carry the byte channel, distinguishable now from an ordinary promotion .scpbundle row.
+          channel: bundleTransfers.channel
+        })
         .from(bundleTransfers)
         .where(and(eq(bundleTransfers.orgId, domain.orgId), eq(bundleTransfers.checksum, checksum)))
     );
@@ -645,7 +652,12 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     // inside the verify path so CLI and loop stay identical).
     const tarballSha = await sha256File(tarball1Path);
     const transfers = await confirmedTransferWithChecksum(outpost, tarballSha);
-    expect(transfers).toContainEqual({ direction: "import", status: "confirmed" });
+    // drizzle/0087 — the byte leg: a relay-tarball import, never a `.scpbundle` metadata one.
+    expect(transfers).toContainEqual({
+      direction: "import",
+      status: "confirmed",
+      channel: "bytes"
+    });
   }, 300_000);
 
   // ---------------------------------------------------------------------------------------------
@@ -723,7 +735,12 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     // D4 validate-gated confirm: the tarball hop's transfer row is CONFIRMED.
     const tarballSha = await sha256File(tarball2Path);
     const transfers = await confirmedTransferWithChecksum(outpost, tarballSha);
-    expect(transfers).toContainEqual({ direction: "import", status: "confirmed" });
+    // drizzle/0087 — the byte leg: a relay-tarball import, never a `.scpbundle` metadata one.
+    expect(transfers).toContainEqual({
+      direction: "import",
+      status: "confirmed",
+      channel: "bytes"
+    });
 
     // The unattended trail: inbox audit events + ledger rows exist.
     const actions = await auditActions(outpost);
@@ -811,8 +828,17 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     expect(actions).toContain("federation.relay.forwarded");
     expect(actions).toContain("federation.inbox.forwarded");
     const transfers = await confirmedTransferWithChecksum(retrans, originalSha);
-    expect(transfers).toContainEqual({ direction: "import", status: "confirmed" });
-    expect(transfers).toContainEqual({ direction: "export", status: "submitted" });
+    // drizzle/0087 — the validate-and-forward hop's both rows are the byte leg, never metadata.
+    expect(transfers).toContainEqual({
+      direction: "import",
+      status: "confirmed",
+      channel: "bytes"
+    });
+    expect(transfers).toContainEqual({
+      direction: "export",
+      status: "submitted",
+      channel: "bytes"
+    });
   }, 240_000);
 
   // ---------------------------------------------------------------------------------------------

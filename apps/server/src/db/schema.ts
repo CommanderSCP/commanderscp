@@ -1504,6 +1504,13 @@ export const bundleTransfers = pgTable(
      *  because that is the only moment the transport is known — no pair of stored timestamps can
      *  reconstruct it (see the migration header). */
     transport: text("transport"),
+    /** drizzle/0087 — WHICH LEG this hop was: 'metadata' (an ordinary `.scpbundle` sync/promotion
+     *  export or import) or 'bytes' (a retrans byte-relay hop). NULL on rows written before 0087 or
+     *  by a writer that genuinely could not determine it — never inferred from
+     *  direction/kind/status, which are identical across both channels for a `kind:'promotion'`
+     *  row. See `bundle-transfers-repo.ts::recordBundleTransfer` (required-at-callsite) and
+     *  0087's migration header. */
+    channel: text("channel"), // 'metadata' | 'bytes' | null
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true })
   },

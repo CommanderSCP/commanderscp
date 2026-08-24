@@ -66,7 +66,9 @@ export async function exportSyncBundle(
     status: "created",
     sinceSequence: since,
     throughSequence,
-    checksum
+    checksum,
+    // An ordinary `.scpbundle` sync export — the metadata leg, never bytes.
+    channel: "metadata"
   });
 
   // `tail` is read for symmetry/observability (a future `scp federation status` widening can

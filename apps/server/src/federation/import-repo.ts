@@ -827,7 +827,9 @@ export async function importSyncBundle(
     sinceSequence: bundle.header.sinceSequence,
     throughSequence: bundle.header.throughSequence,
     checksum: bundle.checksum,
-    transport
+    transport,
+    // An ordinary `.scpbundle` sync import — the metadata leg, never bytes.
+    channel: "metadata"
   });
 
   return {

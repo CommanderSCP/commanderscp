@@ -220,6 +220,38 @@ export async function listOpenBumpAuthorshipsForCoordinate(
 }
 
 /**
+ * Every bump SCP has opened a pull request for and not yet merged — the work-list of
+ * `bump-freeze-redrive.ts`'s per-minute sweep.
+ *
+ * THE TWO PREDICATES ARE THE TWO HALVES OF "THERE IS STILL A MERGE TO MAKE", and both are needed:
+ * `merged_at IS NULL` is what "open" means everywhere else in this file, and
+ * `pull_request_number IS NOT NULL` is the gate's own `no_recorded_pull_request` refusal — a bump
+ * with no recorded pull request can never merge, so re-driving its gate would only re-record that
+ * refusal once a minute.
+ *
+ * BOUNDED BY REVIEW THROUGHPUT, NOT BY HISTORY. Merged rows accumulate for ever and are excluded in
+ * SQL; what is returned is the set of dependency pull requests currently awaiting a merge, which is
+ * a small number on any real estate. READ-ONLY, like every other list here.
+ */
+export async function listOpenBumpAuthorshipsAwaitingMerge(
+  tx: TenantTx,
+  orgId: string
+): Promise<BumpAuthorship[]> {
+  const rows = await tx
+    .select()
+    .from(dependencyBumpAuthorships)
+    .where(
+      and(
+        eq(dependencyBumpAuthorships.orgId, orgId),
+        sql`${dependencyBumpAuthorships.mergedAt} is null`,
+        isNotNull(dependencyBumpAuthorships.pullRequestNumber)
+      )
+    )
+    .orderBy(dependencyBumpAuthorships.changeObjectId);
+  return rows.map(toAuthorship);
+}
+
+/**
  * The bump whose OWN branch head is `commit` in `repo`, or `undefined` — the CI-conclusion
  * correlation route (GitHub's `workflow_run` names a commit and no ref).
  *

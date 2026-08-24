@@ -134,6 +134,33 @@ describe("OutpostStatusCard: unknowns stay unknown on the detail page too", () =
   });
 });
 
+describe("OutpostStatusCard: the peer-noun labels are role-aware", () => {
+  /** The concepts (a last sync in, an applied-at reading, a last-applied sequence) are real for a
+   *  retrans peer too — it imports this side's signed bundles — so only the noun naming it was
+   *  wrong. Outpost copy must stay byte-identical; retrans must say so distinctly. */
+  it("keeps the outpost noun verbatim for an outpost peer", () => {
+    const html = renderToStaticMarkup(<OutpostStatusCard status={basePeer()} />);
+    const text = html.replace(/<[^>]*>/g, " ");
+
+    expect(text).toContain("Last sync in (from this outpost)");
+    expect(text).toContain("Applied at outpost");
+    expect(text).toContain("Last applied sequence (from this outpost)");
+  });
+
+  it("names a retrans peer distinctly, never as 'outpost'", () => {
+    const html = renderToStaticMarkup(
+      <OutpostStatusCard status={basePeer({ peer: { ...basePeer().peer, role: "retrans" } })} />
+    );
+    const text = html.replace(/<[^>]*>/g, " ");
+
+    expect(text).toContain("Last sync in (from this retrans peer)");
+    expect(text).toContain("Applied at retrans peer");
+    expect(text).toContain("Last applied sequence (from this retrans peer)");
+    expect(text).not.toContain("this outpost)");
+    expect(text).not.toContain("Applied at outpost");
+  });
+});
+
 describe("findPeerStatus", () => {
   it("returns null rather than a neighbouring peer when the id matches nothing", () => {
     expect(findPeerStatus([basePeer()], "not-a-peer")).toBeNull();
