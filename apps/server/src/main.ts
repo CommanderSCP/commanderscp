@@ -14,29 +14,17 @@ import { startPluginHostForRole } from "./plugin-host/host-bootstrap.js";
 import { runsBackgroundWork, startBackgroundLoops } from "./background-work.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
 import { runSecretsDecryptCanary } from "./secrets/decrypt-canary.js";
+import { assertProductionSecretsOrThrow } from "./boot-checks.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import type { AppDeps } from "./types.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  // D6 (§7.3) — a PRODUCTION instance must not boot on ephemeral generated secrets: an ephemeral
-  // SCP_SECRETS_MASTER_KEY orphans every stored credential on restart, and an ephemeral
-  // SCP_COOKIE_SECRET invalidates every session on restart. Fail-closed here, before anything else.
-  // `evaluation` (compose-eval, `pnpm dev`) keeps the zero-required-env boot with only a warning.
-  if (config.deploymentMode === "production") {
-    const ephemeral: string[] = [];
-    if (config.secretsMasterKeyWasGenerated) ephemeral.push("SCP_SECRETS_MASTER_KEY");
-    if (config.cookieSecretWasGenerated) ephemeral.push("SCP_COOKIE_SECRET");
-    if (ephemeral.length > 0) {
-      throw new Error(
-        `[scpd] refusing to boot in production mode with EPHEMERAL generated ${ephemeral.join(" and ")} ` +
-          "— an ephemeral key silently orphans stored secrets / invalidates sessions on the next restart " +
-          "and cannot survive a failover. Provide them via appSecrets.existingSecret (identical across " +
-          "member clusters), or set SCP_DEPLOYMENT_MODE=evaluation for a dev/eval stack."
-      );
-    }
-  } else if (config.secretsMasterKeyWasGenerated) {
+  // D6 (§7.3) — a PRODUCTION instance must not boot on ephemeral generated secrets (fail-closed,
+  // before anything else). Extracted to boot-checks.ts so it is directly testable.
+  assertProductionSecretsOrThrow(config);
+  if (config.deploymentMode !== "production" && config.secretsMasterKeyWasGenerated) {
     // M7 (secrets/crypto.ts) — evaluation mode keeps the loud-not-fatal warning.
     console.warn(
       "[scpd] SCP_SECRETS_MASTER_KEY is unset — generated an EPHEMERAL secrets master key for this process only. " +
