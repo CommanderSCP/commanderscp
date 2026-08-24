@@ -34,6 +34,7 @@ import {
   stageDependenciesOf
 } from "../coordination/changes-repo.js";
 import { enforceLocalChangeAuthority } from "../coordination/transition.js";
+import { resolveChangeRecipe } from "../coordination/campaign-recipe.js";
 import { materializeApprovalRequest, castApprovalVote } from "../governance/approvals-repo.js";
 import { insertControlRun } from "../governance/controls-repo.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
@@ -897,6 +898,25 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
   });
 });
 
+/**
+ * M25.4 — the campaign recipe a promoted change carries (ADR-0041 §2). Nested `inputs` on purpose:
+ * a shallow bag would survive a naive `{...props}` copy that a deep-strip bug still breaks, so the
+ * fixture asks the harder question. The keys are `github`-shaped because the recipe crosses the
+ * boundary VERBATIM — no cross-provider translation happens on the promotion path either.
+ */
+const PROMOTED_RECIPE = {
+  version: 1,
+  trigger: {
+    kind: "workflow_dispatch",
+    parameters: {
+      workflowId: "migrate-py3.yml",
+      ref: "main",
+      inputs: { fromVersion: "2.7", toVersion: "3.12", dryRun: false }
+    }
+  },
+  guidance: { title: "python2 -> python3", docsUrl: "https://intranet.example/py3" }
+} as const;
+
 describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   let domainA: IsolatedDomain;
   let domainB: IsolatedDomain;
@@ -936,6 +956,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
        *  `dependsOn` is refused for anything else at propose time, since only a component can be
        *  placed and therefore only a component can ever be held against. */
       stageCoupling?: boolean;
+      /** M25.4 (ADR-0041 §2): propose the change carrying a campaign RECIPE in `properties`, to
+       *  exercise the other side of the same strip — the keys promotion must NOT remove. */
+      recipe?: boolean;
     } = {}
   ): Promise<{
     changeId: string;
@@ -990,7 +1013,8 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
           : {}),
         ...(opts.stageCoupling
           ? { stageDependencies: [{ dependsOn: stageDependsOn.id, minWeight: 25 }] }
-          : {})
+          : {}),
+        ...(opts.recipe ? { properties: { recipe: PROMOTED_RECIPE } } : {})
       })
     );
     await withTenantTx(domainA.db, domainA.orgId, async (tx) => {
@@ -1256,6 +1280,58 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       tx.select().from(changes).where(eq(changes.objectId, result.localChangeObjectId))
     );
     expect(importedRow[0]!.state).toBe("proposed");
+  });
+
+  /**
+   * M25.4 / ADR-0041 §2 — THE OTHER SIDE OF THE STRIP: the keys promotion must NOT remove.
+   *
+   * The two cases above pin what promotion DOES strip. Nothing pinned the complement, and the
+   * complement is where a campaign recipe lives. `promotion-repo.ts` destructures exactly
+   * `requires` and `stageDependencies` off `bundle.change.properties` and spreads the rest through;
+   * a future THIRD key added to that destructuring would silently take the recipe with it if it
+   * were ever mis-typed, or a refactor to an allowlist ("copy these keys") would drop it outright.
+   *
+   * THE FAILURE IS SILENT AND GREEN, which is why it earns a test rather than a comment. The
+   * outpost's reconcile would find no recipe on the imported change, fall back to `kind: "sync"`
+   * with no parameters, dispatch each target's DEFAULT pipeline, watch every run succeed, and mark
+   * the wave `succeeded`. The commander would report a migration that reached the outpost and never
+   * happened there. There is no error anywhere on that path.
+   *
+   * Deliberately asserted through the SAME reader the actuator uses (`resolveChangeRecipe`) and not
+   * only against the raw key — the lesson the `stageDependencies` case above records: a strip that
+   * left the value somewhere the reader no longer finds would pass a key check and fail here.
+   */
+  it("M25.4 round-trip: promotion PRESERVES `properties.recipe` byte-for-byte — pinning the strip list against a future third key", async () => {
+    const { changeId } = await proposeApprovedChangeInA(undefined, { recipe: true });
+
+    const bundle = await exportBundleA(changeId);
+    // The bundle carries it verbatim — which is what makes the import-side assertion a real one
+    // rather than a vacuous absence on both ends.
+    const bundleProps = bundle.change.properties as Record<string, unknown>;
+    expect(bundleProps.recipe).toEqual(PROMOTED_RECIPE);
+
+    const result = await importPromotionBundle(domainB.db, domainB.orgId, bundle);
+
+    const imported = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      getObjectByIdOrUrnAnyType(tx, domainB.orgId, result.localChangeObjectId)
+    );
+    const importedProps = imported.properties as Record<string, unknown>;
+    expect(importedProps.recipe).toEqual(PROMOTED_RECIPE);
+
+    // Through the actuator's own reader: the outpost must resolve a USABLE recipe, not merely a
+    // present key. `parameters` is what reaches `TriggerIntent.parameters` at the outpost, so its
+    // survival is the whole point of the federation reach argument in ADR-0041 §2.
+    const resolved = resolveChangeRecipe(importedProps);
+    expect(resolved.outcome).toBe("recipe");
+    if (resolved.outcome !== "recipe") throw new Error("unreachable");
+    expect(resolved.recipe.trigger.kind).toBe("workflow_dispatch");
+    expect(resolved.recipe.trigger.parameters).toEqual(PROMOTED_RECIPE.trigger.parameters);
+
+    // AND the strip list really did run on this same document — otherwise this case would also pass
+    // against a promotion path that strips nothing at all, which is a different bug with the same
+    // green. `requires`/`stageDependencies` were not declared here, so their absence proves nothing;
+    // what proves it is that the recipe survived a path the two cases above show IS stripping.
+    expect(importedProps.stageDependencies).toBeUndefined();
   });
 
   it("ADR-0028 round-trip: promotion STRIPS `stageDependencies`, and records WHY rather than losing the coupling silently", async () => {

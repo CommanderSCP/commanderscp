@@ -1,11 +1,13 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type {
   Campaign,
+  CampaignRecipe,
   CampaignStatus,
   ContainmentDomainId,
   ExecutorType,
   TrustDomainId
 } from "@scp/schemas";
+import { CAMPAIGN_RECIPE_PROPERTY_KEY } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import {
   campaignPlans,
@@ -22,6 +24,7 @@ import { insertDecision } from "./decisions-repo.js";
 import { computeCampaignStatus, type CampaignWaveStatusInput } from "./campaign-status.js";
 import { evaluateFreezeHolds } from "./freeze-hold.js";
 import { getLatestCampaignPlan } from "./campaign-plan-service.js";
+import { resolveChangeRecipe } from "./campaign-recipe.js";
 
 export type ObjectRow = typeof objects.$inferSelect;
 /** The minimal object shape `toCampaignShape` actually reads — satisfied by both a raw
@@ -36,6 +39,16 @@ type ObjectLike = Pick<ObjectRow, "id" | "orgId" | "urn" | "name"> & {
 
 function isoOf(value: Date | string): string {
   return typeof value === "string" ? value : value.toISOString();
+}
+
+/** M25.4 — the campaign's recipe as the READ surface sees it. `resolveChangeRecipe` is the same
+ *  parse; it is reached through this thin wrapper here because the campaign's own `properties` is
+ *  the AUTHORING copy and the change's is the fanned-out one, and only one of the two is on the
+ *  trigger path. Both parse with `CampaignRecipeSchema` — one schema, two readers, never two
+ *  schemas. */
+function recipeOf(properties: Record<string, unknown>): CampaignRecipe | undefined {
+  const resolved = resolveChangeRecipe(properties);
+  return resolved.outcome === "recipe" ? resolved.recipe : undefined;
 }
 
 export function toCampaignShape(object: ObjectLike, status: CampaignStatus): Campaign {
@@ -53,6 +66,12 @@ export function toCampaignShape(object: ObjectLike, status: CampaignStatus): Cam
     topologyObjectId: (properties.topologyObjectId as string | undefined) ?? null,
     topologyVersion: (properties.topologyVersion as number | undefined) ?? null,
     status,
+    // M25.4 — re-parsed through the SAME schema the write door uses rather than cast, so a row
+    // planted by a door that predates the guard cannot make a `Campaign` response fail its own
+    // wire schema. A recipe that no longer parses reads as absent HERE (a display surface, where
+    // absence is honest); at the ACTUATOR the same document is a loud refusal, never an absence —
+    // see `campaign-recipe.ts`.
+    ...(recipeOf(properties) !== undefined ? { recipe: recipeOf(properties) } : {}),
     createdAt: isoOf(object.createdAt),
     updatedAt: isoOf(object.updatedAt)
   };
@@ -73,6 +92,11 @@ export interface ProposeCampaignInput {
   /** WHICH pipeline every fanned-out change rolls (M12 P4A) — the routing Type (ADR-0007).
    *  Omitted => 'configuration' (the server default). */
   type?: ExecutorType;
+  /** M25.4 (D3) — the coordination lever: ONE trigger intent fanned across every target. Written
+   *  verbatim to `properties.recipe`; the shape refusal lives at the `objects-repo` choke point
+   *  (`governance/campaign-recipe-guard.ts`), not here, because two other doors reach that property
+   *  without passing through this function. */
+  recipe?: CampaignRecipe;
   /** Object ids or URNs this campaign fans out to — one member Change per target, per wave. */
   targets: string[];
 }
@@ -137,6 +161,10 @@ export async function proposeCampaign(
       // fans out (M12 P4A / ADR-0007). Always written — a campaign object that omitted it would read
       // as 'configuration' anyway, and persisting it explicitly keeps the campaign self-describing.
       type: input.type ?? "configuration",
+      // M25.4 — ONLY written when the author declared one, so a campaign without a recipe is
+      // byte-identical to a pre-M25.4 campaign and every reader's fast path stays a pure absence
+      // check (`resolveChangeRecipe` returns before parsing anything).
+      ...(input.recipe !== undefined ? { [CAMPAIGN_RECIPE_PROPERTY_KEY]: input.recipe } : {}),
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(topologyObjectId !== undefined ? { topologyObjectId, topologyVersion } : {})
     },

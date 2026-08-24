@@ -6696,6 +6696,22 @@ export const zListCampaignsResponse = z.object({
             'partially_rolled_back',
             'rolled_back'
         ]),
+        recipe: z.object({
+            version: z.literal(1),
+            trigger: z.object({
+                kind: z.enum([
+                    'sync',
+                    'workflow_dispatch',
+                    'custom'
+                ]),
+                parameters: z.record(z.string(), z.unknown()).optional()
+            }),
+            guidance: z.object({
+                title: z.string().min(1).max(200),
+                summary: z.string().min(1).max(2000).optional(),
+                docsUrl: z.string().min(1).max(2000).optional()
+            }).optional()
+        }).optional(),
         createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
         updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
     })),
@@ -6723,6 +6739,22 @@ export const zProposeCampaignResponse = z.object({
         'partially_rolled_back',
         'rolled_back'
     ]),
+    recipe: z.object({
+        version: z.literal(1),
+        trigger: z.object({
+            kind: z.enum([
+                'sync',
+                'workflow_dispatch',
+                'custom'
+            ]),
+            parameters: z.record(z.string(), z.unknown()).optional()
+        }),
+        guidance: z.object({
+            title: z.string().min(1).max(200),
+            summary: z.string().min(1).max(2000).optional(),
+            docsUrl: z.string().min(1).max(2000).optional()
+        }).optional()
+    }).optional(),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
     updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
 });
@@ -6748,6 +6780,22 @@ export const zGetCampaignResponse = z.object({
         'partially_rolled_back',
         'rolled_back'
     ]),
+    recipe: z.object({
+        version: z.literal(1),
+        trigger: z.object({
+            kind: z.enum([
+                'sync',
+                'workflow_dispatch',
+                'custom'
+            ]),
+            parameters: z.record(z.string(), z.unknown()).optional()
+        }),
+        guidance: z.object({
+            title: z.string().min(1).max(200),
+            summary: z.string().min(1).max(2000).optional(),
+            docsUrl: z.string().min(1).max(2000).optional()
+        }).optional()
+    }).optional(),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
     updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
 });
@@ -6774,6 +6822,22 @@ export const zExplainCampaignResponse = z.object({
             'partially_rolled_back',
             'rolled_back'
         ]),
+        recipe: z.object({
+            version: z.literal(1),
+            trigger: z.object({
+                kind: z.enum([
+                    'sync',
+                    'workflow_dispatch',
+                    'custom'
+                ]),
+                parameters: z.record(z.string(), z.unknown()).optional()
+            }),
+            guidance: z.object({
+                title: z.string().min(1).max(200),
+                summary: z.string().min(1).max(2000).optional(),
+                docsUrl: z.string().min(1).max(2000).optional()
+            }).optional()
+        }).optional(),
         createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
         updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
     }),

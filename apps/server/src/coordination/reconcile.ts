@@ -1,5 +1,5 @@
 import type PgBoss from "pg-boss";
-import type { TriggerIntent } from "@scp/plugin-api";
+import type { ExecutorCapabilities, TriggerIntent } from "@scp/plugin-api";
 import { boundDetail } from "@scp/runner-launcher";
 import type { ExecutorType, TrustDomainId } from "@scp/schemas";
 import type { Db } from "../db/client.js";
@@ -47,6 +47,8 @@ import {
 import {
   claimWaveTargetForTriggering,
   findLatestSucceededExecution,
+  isRefusedWaveTargetStatus,
+  type RefusedWaveTargetStatus,
   findOriginalWaveTarget,
   getWaveStatus,
   markWaveRunning,
@@ -68,6 +70,19 @@ import {
 } from "./target-liveness.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
+import {
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION,
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
+  WAVE_TARGET_RECIPE_UNREADABLE_AUDIT_ACTION,
+  WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
+  WAVE_TARGET_RECIPE_UNSUPPORTED_AUDIT_ACTION,
+  WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS,
+  executorSupportsTriggerKind,
+  isRecipeForbiddenExecutorModule,
+  recipeTriggerParameters,
+  resolveChangeRecipe,
+  type RecipeResolution
+} from "./campaign-recipe.js";
 import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
 import {
@@ -78,6 +93,7 @@ import {
 import { describeError } from "../errors.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
+import type { PluginModule } from "../plugin-host/contract.js";
 import { resolveExecutorPluginInstance, DEFAULT_BINDING_TYPE } from "./executor-bindings-repo.js";
 import {
   listVisibleBindingsForTarget,
@@ -921,6 +937,19 @@ async function reconcileExecutingChange(
   const declared = stageDependenciesOf(changeProperties);
 
   /**
+   * M25.4 — THE CAMPAIGN RECIPE (owner decision D3), resolved ONCE per change per tick, in memory,
+   * beside the stage-dependency declarations and for the same reasons: this loop runs on every tick
+   * of every executing change on the instance, and a change without a recipe must pay a single
+   * key-absence check and nothing else (`resolveChangeRecipe` returns before parsing anything).
+   *
+   * It is read off the CHANGE, not off the campaign that fanned it out. `campaign-reconcile.ts`
+   * copies the recipe by value onto each member change's `properties` at fan-out (see that call
+   * site), which is what makes this path campaign-agnostic: a promoted change carrying a recipe
+   * through a federation bundle, or a directly authored one, drives exactly the same code.
+   */
+  const recipe = resolveChangeRecipe(changeProperties);
+
+  /**
    * THE OTHER HALF OF THE HOLD'S DEPENDENCY SET (ADR-0028 decision 6) — plain `depends_on` edges
    * with BOTH endpoints among this change's own targets. That is the exact set `compileStages` used
    * to refuse a same-wave pair over, and it is `loadDependsOnEdges`, the SAME function the compiler
@@ -1041,18 +1070,20 @@ async function reconcileExecutingChange(
       anyFailed = true;
       continue;
     }
-    if (target.status === "no_executor" || target.status === WAVE_TARGET_TOMBSTONED_STATUS) {
+    if (isRefusedWaveTargetStatus(target.status)) {
       // Terminal + a wave failure — reconcile REFUSED to drive this target and already blocked,
       // audited and parked the change when it terminalized the row: a masking executor-binding gap
-      // (docs/adr/0006) or a tombstoned target object (`target-liveness.ts`). Counts toward
-      // `anyFailed` but is NEVER re-triggered (that would duplicate the block Decision + audit
-      // event).
+      // (docs/adr/0006), a tombstoned target object (`target-liveness.ts`), or M25.4's two recipe
+      // refusals (`campaign-recipe.ts`). Counts toward `anyFailed` but is NEVER re-triggered (that
+      // would duplicate the block Decision + audit event).
       //
-      // BOTH REFUSAL STATUSES ARE NAMED HERE, and this branch is exactly half of a two-place
-      // invariant: `wave-targets-repo.ts`'s TERMINAL_WAVE_TARGET_STATUSES is the same list read the
-      // other way round. A terminal status added to only one of them falls through to the poll arm
-      // below, increments `nonTerminalTargets` forever, and keeps a settled wave alive for the
-      // lifetime of the database while its change holds a BATCH_LIMIT slot. Add to both or neither.
+      // THE SET IS IMPORTED, NOT RESTATED, and that is the M25.4 change to this branch. It used to
+      // name its two statuses as literals, and it is exactly half of a two-place invariant:
+      // `wave-targets-repo.ts`'s TERMINAL_WAVE_TARGET_STATUSES is the same list read the other way
+      // round. A terminal status added to only one of them falls through to the poll arm below,
+      // increments `nonTerminalTargets` forever, and keeps a settled wave alive for the lifetime of
+      // the database while its change holds a BATCH_LIMIT slot. Now both derive from
+      // `REFUSED_WAVE_TARGET_STATUSES`, so they cannot disagree.
       anyFailed = true;
       continue;
     }
@@ -1233,6 +1264,7 @@ async function reconcileExecutingChange(
           // non-default binding triggerable.
           (target.type as ExecutorType | null) ?? DEFAULT_BINDING_TYPE,
           isRollback,
+          recipe,
           host,
           masterKey
         );
@@ -1258,7 +1290,9 @@ async function reconcileExecutingChange(
       continue;
     }
     try {
-      const instanceId = await ensureExecutorInstanceStarted(
+      // `module` is deliberately not destructured — the poll path must not read it (see the helper's
+      // fall-back branch, where a persisted id's module is unknowable).
+      const { instanceId } = await ensureExecutorInstanceStarted(
         db,
         orgId,
         host,
@@ -1806,7 +1840,7 @@ async function blockWaveTarget(
     targetObjectId: string;
     /** The terminal status this refusal earns. Explicit at every call site — see
      *  `terminalizeRefusedWaveTarget` for why it is not a literal in one place. */
-    status: "no_executor" | typeof WAVE_TARGET_TOMBSTONED_STATUS;
+    status: RefusedWaveTargetStatus;
     action: string;
     summary: string;
     remediation: string;
@@ -1845,6 +1879,114 @@ async function blockWaveTarget(
   await markWaveTerminal(tx, args.orgId, args.waveId, "failed");
   await markChangeReconcileBlocked(tx, args.orgId, args.change.objectId);
   return true;
+}
+
+/**
+ * M25.4 — is this target's resolved executor able to honour the change's recipe? Returns the
+ * refusal's whole shape, or `undefined` when there is nothing to refuse.
+ *
+ * TWO CAUSES, TWO STATUSES, ONE REMEDY EACH — `terminalizeRefusedWaveTarget`'s rule (the status is a
+ * parameter "precisely so a second cause could not be smuggled in under the first one's name"):
+ *
+ *   * `recipe_unreadable` — the document does not parse. Fix the document.
+ *   * `recipe_unsupported` — the document is fine; THIS executor has no such verb. Fix the binding,
+ *     or narrow the campaign's targets.
+ *
+ * NEITHER EVER FALLS BACK TO A DEFAULT, and that is the point of the whole function. `github` and
+ * `gitea` resolve `intent.parameters?.workflowId ?? config.defaultWorkflowId`, so a silently-dropped
+ * recipe does not error — it dispatches the target's ORDINARY workflow, that run succeeds, the wave
+ * target goes `succeeded`, and the campaign reports a migration that never happened. A refusal with
+ * a `decision_id` is the only outcome that leaves nobody with a false belief (charter principle 6).
+ *
+ * `describeCapabilities()` is an RPC across the plugin-host seam. It is called ONLY when the change
+ * actually carries a recipe, so a recipe-less instance pays nothing for this. A THROWN call is not a
+ * refusal: it propagates to the caller's per-target catch and the target is retried next tick with
+ * nothing terminalized — the same fail direction `readTargetLiveness` documents, and for the same
+ * reason (a plugin-host blip must never be mistaken for "this executor cannot do that").
+ */
+async function resolveRecipeRefusal(
+  client: { describeCapabilities: () => Promise<ExecutorCapabilities> },
+  recipe: RecipeResolution,
+  /** The plugin module this target's binding resolved to — for the OQ-5 managed-actuator refusal.
+   *  Comes from `ensureExecutorInstanceStarted`'s return so it is the same answer the trigger will
+   *  act on, never a second query. */
+  executorModule: PluginModule
+): Promise<
+  | {
+      status: RefusedWaveTargetStatus;
+      action: string;
+      summary: string;
+      remediation: string;
+      inputContext: Record<string, unknown>;
+    }
+  | undefined
+> {
+  if (recipe.outcome === "none") return undefined;
+  if (recipe.outcome === "malformed") {
+    return {
+      status: WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
+      action: WAVE_TARGET_RECIPE_UNREADABLE_AUDIT_ACTION,
+      summary:
+        `this change carries a 'properties.recipe' that does not parse (${recipe.detail}), so the ` +
+        `trigger it names cannot be performed`,
+      remediation:
+        `fix the recipe on the campaign that fanned this change out (or on the change itself), then ` +
+        `cancel/rollback/re-propose the change. Driving it anyway would trigger the target's ` +
+        `DEFAULT pipeline with no recipe parameters and record a coordination that did not happen`,
+      inputContext: { recipe: { readable: false, detail: recipe.detail } }
+    };
+  }
+  const kind = recipe.recipe.trigger.kind;
+  // =============================================================================================
+  // OQ-5 (UNRULED) — A RECIPE MAY NOT DRIVE ONE OF COMMANDERSCP'S OWN ACTUATORS.
+  // =============================================================================================
+  // CHECKED BEFORE `describeCapabilities()`, and the order is the point: all three managed modules
+  // ANSWER YES to `"custom"` (measured — `managed-dep` and `managed-scan` declare exactly
+  // `["custom"]`, `managed-iac` declares `["sync","rollback","custom"]`), so asking the capability
+  // question first would return `undefined` and the recipe's author-controlled `parameters` would
+  // reach the bump actuator as `{action:"bump", ...}`. The capability check is about what an
+  // executor CAN do; this is about what CommanderSCP MAY ask it to, and only the second one is a
+  // charter question.
+  //
+  // This is a fail-closed default on an unruled question, not a ruling. If OQ-5 later says a
+  // campaign MAY drive a managed actuator, this branch is the single seam that changes.
+  if (isRecipeForbiddenExecutorModule(executorModule)) {
+    return {
+      status: WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
+      action: WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION,
+      summary:
+        `this target is bound to '${executorModule}', one of CommanderSCP's own managed actuators, ` +
+        `and a campaign recipe may not drive those — a recipe coordinates a TENANT's pipeline`,
+      remediation:
+        `remove this target from the campaign, or bind it to the pipeline that actually performs ` +
+        `this migration. CommanderSCP's managed executors act under a narrow charter grant and are ` +
+        `driven by the server (dependency-bump dispatch, promotion scanning), never by an authored ` +
+        `document — letting a recipe supply their parameters would let a campaign author choose ` +
+        `what CommanderSCP writes into a repository`,
+      inputContext: { recipe: { readable: true, kind }, executorModule, managedActuator: true }
+    };
+  }
+  const capabilities = await client.describeCapabilities();
+  if (executorSupportsTriggerKind(capabilities, kind)) return undefined;
+  const supported = Array.isArray(capabilities?.triggerKinds)
+    ? [...capabilities.triggerKinds].sort()
+    : [];
+  return {
+    status: WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS,
+    action: WAVE_TARGET_RECIPE_UNSUPPORTED_AUDIT_ACTION,
+    summary:
+      `the executor bound to this target cannot perform a '${kind}' trigger (it declares ` +
+      `${supported.length > 0 ? supported.map((k) => `'${k}'`).join(", ") : "none"}), so this ` +
+      `change's recipe cannot be honoured here`,
+    remediation:
+      `bind an executor that supports '${kind}' for this target, or remove this target from the ` +
+      `campaign — CommanderSCP will not substitute a different trigger, because the target's ` +
+      `default pipeline would succeed and report a coordination that did not happen`,
+    /** CONTENT-STABLE — the recipe's kind and the executor's own declared set, both sorted, and no
+     *  clock-shaped value anywhere. This Decision is written once (the status guard), but the rule
+     *  is the instance-wide one from the measured 1.44 GB/day incident and it costs nothing to keep. */
+    inputContext: { recipe: { readable: true, kind }, supportedTriggerKinds: supported }
+  };
 }
 
 /**
@@ -1894,6 +2036,9 @@ async function triggerWaveTarget(
   targetObjectId: string,
   type: ExecutorType,
   isRollback: boolean,
+  /** M25.4 — what the change's `properties.recipe` says, already parsed. See the capability refusal
+   *  below and `campaign-recipe.ts`. */
+  recipe: RecipeResolution,
   host: PluginHost,
   masterKey: Buffer
 ): Promise<void> {
@@ -2100,7 +2245,7 @@ async function triggerWaveTarget(
     // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
     // Component/DeploymentTarget with no binding configured falls back to the shared default
     // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).
-    const instanceId = await ensureExecutorInstanceStarted(
+    const { instanceId, module: executorModule } = await ensureExecutorInstanceStarted(
       db,
       orgId,
       host,
@@ -2114,9 +2259,78 @@ async function triggerWaveTarget(
     // row's own id already satisfies "IDENTICAL across retries of the same target."
     const idempotencyKey = waveTargetId;
 
+    // =============================================================================================
+    // M25.4 — THE RECIPE, AND THE TWO REFUSALS THAT COME WITH IT (owner decision D3, ADR-0041)
+    // =============================================================================================
+    // A recipe is one authored trigger intent fanned across N targets. Here is where it becomes a
+    // real call to a real executor — and here is where it must STOP if this particular target cannot
+    // honour it, because everything downstream of this point is a side effect in someone's estate.
+    //
+    // A ROLLBACK IGNORES THE RECIPE ENTIRELY — kind AND parameters. `kind` is decided from the
+    // CHANGE below (`isRollback` -> "rollback"), and passing the recipe's migration parameters to a
+    // restore would re-run the migration under the name of undoing it: `github` would resolve the
+    // recipe's `workflowId` and dispatch the python3 workflow again while the operator believed they
+    // were reverting. The recipe schema already refuses `kind: "rollback"` at the door; this is the
+    // other direction of the same rule, and it is the reason the whole block sits behind
+    // `!isRollback` rather than only the kind assignment.
+    //
+    // PLACED AFTER `ensureExecutorInstanceStarted`, NOT BEFORE: the question is not "can any executor
+    // serve this kind" but "can the executor THIS TARGET resolved to serve it", and that instance is
+    // not known until the binding has been resolved. It is a genuinely per-target question — the
+    // measured `triggerKinds` sets of `argocd` (sync, rollback) and `github` (workflow_dispatch,
+    // custom) are DISJOINT, so a single campaign across a mixed estate is answered differently at
+    // each target and could not have been settled once at authoring time.
+    //
+    // AND BEFORE `claimWaveTargetForTriggering`: `blockWaveTarget` terminalizes the row itself, and
+    // claiming it first would move it to `triggering` — outside the `('pending','triggering')` guard
+    // is not the risk (it covers both), but the claim is a statement that this target is being
+    // handed to an executor, which is exactly what is NOT about to happen.
+    const recipeRefusal = !isRollback
+      ? await resolveRecipeRefusal(client, recipe, executorModule)
+      : undefined;
+    if (recipeRefusal) {
+      const refused = await withTenantTx(db, orgId, (tx) =>
+        blockWaveTarget(tx, {
+          orgId,
+          change,
+          waveId,
+          waveTargetId,
+          targetObjectId,
+          status: recipeRefusal.status,
+          action: recipeRefusal.action,
+          summary: recipeRefusal.summary,
+          remediation: recipeRefusal.remediation,
+          reason: recipeRefusal.summary,
+          inputContext: {
+            waveId,
+            targetObjectId,
+            requestedType: type,
+            executorPluginId: instanceId,
+            ...recipeRefusal.inputContext
+          }
+        })
+      );
+      // `refused` is true whether this tick wrote the records or a prior one already had. Either way
+      // this target is terminal and `trigger()` is NEVER called — the assertion the DoD names.
+      if (refused) return;
+    }
+
     const claim = await withTenantTx(db, orgId, async (tx) => {
       let kind: TriggerIntent["kind"];
       let priorStateRef: unknown = null;
+      /**
+       * M25.4 — what rides on `TriggerIntent.parameters`. VERBATIM from the recipe; SCP performs no
+       * cross-provider translation (`recipeTriggerParameters`).
+       *
+       * `undefined` for a rollback and for every recipe-less change, which keeps the intent
+       * BYTE-IDENTICAL to a pre-M25.4 one: `parameters` stays absent rather than becoming `{}`.
+       * `pipeline-generic` passes this bag straight through to a tenant's own HTTP endpoint, so a
+       * new empty object appearing on every trigger on the instance is a wire change, not a no-op.
+       */
+      const parameters =
+        !isRollback && recipe.outcome === "recipe"
+          ? recipeTriggerParameters(recipe.recipe)
+          : undefined;
 
       // The executor-specific target id (e.g. an Argo CD Application name) this object maps to.
       // Falls back to the object id for legacy bindings — so a binding whose object id already IS
@@ -2189,7 +2403,10 @@ async function triggerWaveTarget(
         );
         priorStateRef = originalTarget?.priorStateRef ?? null;
       } else {
-        kind = "sync";
+        // M25.4 — the recipe's kind, when it has one and the capability check above passed. `"sync"`
+        // stays the default for every change that carries no recipe, so this line is byte-identical
+        // to pre-M25.4 behaviour in the overwhelming majority of cases.
+        kind = recipe.outcome === "recipe" ? recipe.recipe.trigger.kind : "sync";
         // Snapshot the target's CURRENT executor-side state (via a fresh status() call against its
         // last successful run, not just whatever a previous poll happened to observe) before this
         // trigger supersedes it — this is the "prior known-good state" a later rollback restores.
@@ -2213,7 +2430,7 @@ async function triggerWaveTarget(
       }
 
       const claimed = await claimWaveTargetForTriggering(tx, orgId, waveTargetId);
-      return claimed ? { kind, priorStateRef, externalRef } : null;
+      return claimed ? { kind, priorStateRef, externalRef, parameters } : null;
     });
 
     if (!claim) return; // no longer pending/triggering — another tick already handled it.
@@ -2225,7 +2442,14 @@ async function triggerWaveTarget(
         kind: claim.kind,
         targetRef: claim.externalRef ?? targetObjectId,
         priorStateRef: claim.priorStateRef,
-        idempotencyKey
+        idempotencyKey,
+        // M25.4 — THE CHANNEL THAT WAS NEVER WIRED. `TriggerIntent.parameters` has been on the
+        // plugin interface since M3 and every adapter reads it, but until now the only server call
+        // sites that populated it were `bump-dispatch.ts`, `bump-gate.ts` and
+        // `promotion-scan-step.ts` — the generic release path constructed
+        // `{kind, targetRef, priorStateRef, idempotencyKey}` and nothing else. Spread conditionally
+        // so a change with no recipe produces the exact same object it did before.
+        ...(claim.parameters !== undefined ? { parameters: claim.parameters } : {})
       });
     } catch (err) {
       // Step 3' — the executor REACHED and REFUSED this trigger. Record it so the retry backs off
@@ -2279,7 +2503,18 @@ async function ensureExecutorInstanceStarted(
   type: ExecutorType,
   persistedExecutorPluginId: string | null,
   masterKey: Buffer
-): Promise<string> {
+  /**
+   * M25.4 — returns the resolved MODULE alongside the instance id.
+   *
+   * The recipe's managed-executor refusal (`RECIPE_FORBIDDEN_EXECUTOR_MODULES`) has to know which
+   * plugin module this target actually resolved to, and it must be the SAME answer this function
+   * acted on. Re-querying the binding at the refusal site would make two readers of one fact that
+   * can disagree — a binding edited between the two reads, or the `persistedExecutorPluginId`
+   * fall-back branch below (which returns a persisted id whose module is deliberately NOT the
+   * currently-configured one) — and the refusal would then be reasoning about a module that is not
+   * the one about to be triggered.
+   */
+): Promise<{ instanceId: string; module: PluginModule }> {
   // MUST resolve the SAME routing Type the trigger will use (M12 P4A / ADR-0007). Resolving without
   // it would start one Type's plugin instance and then trigger against a different Type's binding — a
   // mismatch that would silently drive the wrong pipeline.
@@ -2312,7 +2547,7 @@ async function ensureExecutorInstanceStarted(
     (!persistedExecutorPluginId || persistedExecutorPluginId === resolved.instanceConfig.id)
   ) {
     await host.start([resolved.instanceConfig]);
-    return resolved.instanceConfig.id;
+    return { instanceId: resolved.instanceConfig.id, module: resolved.instanceConfig.module };
   }
 
   // Either no binding is configured, or a persisted id from an earlier trigger no longer matches
@@ -2328,7 +2563,19 @@ async function ensureExecutorInstanceStarted(
       config: {}
     }
   ]);
-  return persistedExecutorPluginId ?? DEFAULT_EXECUTOR_INSTANCE_ID;
+  // `module` describes what was actually started HERE: the default instance. That is exactly right
+  // for the TRIGGER caller, which is the only one that reads `module` and which always passes
+  // `persistedExecutorPluginId: null` — so it reaches this branch only when the target has no
+  // binding at all, and the default module is genuinely what it is about to trigger.
+  //
+  // The STATUS-POLL caller can reach this branch with a persisted id whose module is unknowable
+  // here (that is the whole point of the branch: the binding has since changed). It ignores
+  // `module`, and must keep ignoring it — a future reader wanting the module on the poll path has
+  // to resolve it from the persisted id, not trust this value.
+  return {
+    instanceId: persistedExecutorPluginId ?? DEFAULT_EXECUTOR_INSTANCE_ID,
+    module: DEFAULT_EXECUTOR_MODULE
+  };
 }
 
 /** All waves of `change`'s plan have succeeded — advance past `executing`. Forward changes stop
