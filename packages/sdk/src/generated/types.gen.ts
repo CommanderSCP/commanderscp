@@ -19095,6 +19095,78 @@ export type ImportRelayTarballResponses = {
 
 export type ImportRelayTarballResponse = ImportRelayTarballResponses[keyof ImportRelayTarballResponses];
 
+export type ListFederationRelayBuildsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        status?: 'pending' | 'built' | 'forwarded' | 'exhausted';
+        limit?: number;
+    };
+    url: '/federation/relay-builds';
+};
+
+export type ListFederationRelayBuildsErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListFederationRelayBuildsError = ListFederationRelayBuildsErrors[keyof ListFederationRelayBuildsErrors];
+
+export type ListFederationRelayBuildsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            changeObjectId: string;
+            sourceChangeObjectId: string | null;
+            status: 'pending' | 'built' | 'forwarded' | 'exhausted';
+            attempts: number;
+            failedAttempts: number;
+            nextAttemptAt: string;
+            claimedUntil: string | null;
+            lastReason: string | null;
+            lastDecisionId: string | null;
+            tarballPath: string | null;
+            createdAt: string;
+            updatedAt: string;
+        }>;
+    };
+};
+
+export type ListFederationRelayBuildsResponse = ListFederationRelayBuildsResponses[keyof ListFederationRelayBuildsResponses];
+
 export type FederationPokeData = {
     body?: never;
     path?: never;

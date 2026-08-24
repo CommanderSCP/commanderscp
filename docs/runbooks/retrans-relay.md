@@ -173,6 +173,15 @@ scp federation relay --change <changeObjectId>
 A successful manual build both delivers the bytes and **clears the ledger row** — `exhausted` is
 never a state that needs database surgery to leave.
 
+**Seeing queue depth and exhausted rows without database surgery.** `GET
+/api/v1/federation/relay-builds` (operator CLI/API only — a retrans never serves the SPA, M16.3 P3)
+lists the ledger for the org, newest-activity-first (`updatedAt DESC`), with an optional `status`
+filter and a bounded `limit` (default 100, max 500). It is role-agnostic by construction: the ledger
+is populated only on a `role: retrans` instance, so the same call against a commander or outpost
+returns an honestly empty list rather than a 409. `lastDecisionId` on each row is the operator's Why
+handle — it joins to `GET /decisions/{id}` for the persisted verdict behind `lastReason`. The `scp
+federation relay-builds` CLI wraps this route once it lands.
+
 **Multi-replica safety.** The claim is a single conditional `UPDATE … RETURNING` that also takes the
 lease, and **every release is fenced on the attempt number that claim returned**. A lease can lapse
 while a multi-GB pull is still running, so two workers can legitimately hold one change in sequence;

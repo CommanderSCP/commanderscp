@@ -46,6 +46,9 @@ import type {
   FederationPeer,
   FederationStatusResponse,
   ImportBundleRequest,
+  // M13.1b — the auto-relay build ledger's operator read surface (owner ask).
+  RelayBuild,
+  RelayBuildStatus,
   // M13.2/M13.3b — the two scan surfaces whose table rows are now exported formatters (Y2).
   InstanceScanFloor,
   InstanceScanExclusionAdmission,
@@ -490,6 +493,33 @@ export function outpostConfigRow(o: OutpostConfig): Record<string, string> {
     revision: String(o.revision),
     version: String(o.version),
     notObservable: (o.unknownFields ?? []).join(", ") || "-"
+  };
+}
+
+/**
+ * One auto-relay build ledger row as a table row (`scp federation relay-builds`, M13.1b operator
+ * read surface) — exported for the same reason as `peerRow`/`outpostConfigRow`: a guard no test can
+ * invoke is a guard nothing holds in place.
+ *
+ * `sourceChangeObjectId`, `claimedUntil`, `lastReason` and `lastDecisionId` are ALL genuinely
+ * nullable on the wire (relay-builds-repo.ts's `RelayBuildLedgerRow` doc: no source id was
+ * recorded / unclaimed / no verdict yet / no verdict Decision yet) — `null` there is a real fact,
+ * not an omission an older server would produce, but `isAbsent` still guards it the same way every
+ * other nullable column in this file does, so an older/newer server that omits the key outright
+ * prints `-` instead of the literal `undefined`. `attempts`/`failedAttempts` are printed EXACTLY AS
+ * THE RESPONSE STATES — it carries no verdict cap, so this row never computes or implies one.
+ */
+export function relayBuildRow(row: RelayBuild): Record<string, string> {
+  return {
+    change: row.changeObjectId,
+    sourceChange: isAbsent(row.sourceChangeObjectId) ? "-" : row.sourceChangeObjectId,
+    status: row.status,
+    attempts: String(row.attempts),
+    failedAttempts: String(row.failedAttempts),
+    nextAttempt: row.nextAttemptAt,
+    claimedUntil: isAbsent(row.claimedUntil) ? "-" : row.claimedUntil,
+    lastReason: isAbsent(row.lastReason) ? "-" : row.lastReason,
+    decisionId: isAbsent(row.lastDecisionId) ? "-" : row.lastDecisionId
   };
 }
 
@@ -5554,6 +5584,31 @@ export function buildProgram(): Command {
       console.log(
         "The receiving M17.4(a)+(b) gates still verify everything before any deploy (zero trust in the relay)."
       );
+    });
+
+  // M13.1b — the auto-relay build ledger's OPERATOR READ SURFACE (owner ask): see queue depth and
+  // exhausted rows without DB surgery. ROLE-AGNOSTIC BY CONSTRUCTION (relay-builds-repo.ts's
+  // `listRelayBuilds` doc): rows exist only on a `role: retrans` instance, seeded at promotion
+  // import there; on any other role the table is honestly empty, so this never 409s on role — an
+  // empty table is the truth, matching every other read surface in this codebase. Mirrors
+  // docs/runbooks/retrans-relay.md's "Seeing queue depth and exhausted rows without database
+  // surgery" section, including its exit from `exhausted`.
+  federationCmd
+    .command("relay-builds")
+    .description(
+      "Operator triage: the auto-relay build ledger's queue depth and exhausted rows (populated only on role:retrans instances — seeded at promotion import there; honestly empty on a commander/outpost, never a 409). Exit an `exhausted` row with `scp federation relay --change <id>`"
+    )
+    .option("--status <status>", "pending|built|forwarded|exhausted")
+    .option("--limit <n>", "max rows (server-bounded: default 100, max 500)")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { status?: RelayBuildStatus; limit?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const rows = await client.federation.listRelayBuilds({
+        ...(opts.status !== undefined ? { status: opts.status } : {}),
+        ...(opts.limit !== undefined ? { limit: Number(opts.limit) } : {})
+      });
+      printResult(rows, opts.output, (raw) => relayBuildRow(raw as RelayBuild));
     });
 
   federationCmd

@@ -1018,6 +1018,64 @@ export const RelayImportResponseSchema = z.object({
 });
 export type RelayImportResponse = z.infer<typeof RelayImportResponseSchema>;
 
+// ===========================================================================================
+// M13.1b — the AUTO-RELAY BUILD LEDGER's OPERATOR READ SURFACE (owner ask): `GET
+// /federation/relay-builds` so an operator (CLI/API, on the retrans box — a retrans never serves
+// the SPA, M16.3 P3) can see queue depth and exhausted rows without DB surgery. Populated only on
+// a `role: retrans` instance (seeded at promotion import there); on any other role the ledger is
+// honestly empty, so this list is ROLE-AGNOSTIC like every other read in this codebase (empty is
+// the truth, never a 409). Data access: `federation/relay-builds-repo.ts`'s `listRelayBuilds`.
+// ===========================================================================================
+
+export const RelayBuildStatusSchema = z.enum(["pending", "built", "forwarded", "exhausted"]);
+export type RelayBuildStatus = z.infer<typeof RelayBuildStatusSchema>;
+
+/** One ledger row, in full. */
+export const RelayBuildSchema = z.object({
+  /** The LOCAL imported change this obligation is for. */
+  changeObjectId: z.string().uuid(),
+  /** The EXPORTER's change id — `text` (drizzle/0047), not `uuid`: it's authored by a foreign
+   *  domain and this instance never validates its shape. */
+  sourceChangeObjectId: z.string().nullable(),
+  status: RelayBuildStatusSchema,
+  /** CLAIMS taken; also the fence token every release is guarded on. */
+  attempts: z.number().int(),
+  /** Attempts that produced a VERDICT and failed — what the operator-configured cap is measured
+   *  against (an evicted worker's claim does not spend it). */
+  failedAttempts: z.number().int(),
+  /** The retry gate: a 'pending' row is workable only at/after this instant. */
+  nextAttemptAt: z.string().datetime(),
+  /** The claiming worker's lease, or `null` when unclaimed. */
+  claimedUntil: z.string().datetime().nullable(),
+  lastReason: z.string().nullable(),
+  /** THE OPERATOR'S WHY HANDLE: joins to `GET /decisions/{id}` for the persisted verdict behind
+   *  `lastReason` (principle 6 — every verdict is a Decision with its inputs). */
+  lastDecisionId: z.string().uuid().nullable(),
+  tarballPath: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type RelayBuild = z.infer<typeof RelayBuildSchema>;
+
+/**
+ * `GET /federation/relay-builds` response — WRAPPED in `{ items }`, not a bare array.
+ *
+ * Precedent survey before choosing: the OLDEST federation list routes (`listFederationPeers`,
+ * `listOutpostConfigs`, both this file) return a bare `z.array(...)`. Every NEWER non-cursor list
+ * response in this codebase wraps instead — `ExecutorBindingListResponseSchema` /
+ * `ScannerAssignmentListResponseSchema` / `PluginManifestListResponseSchema` (executors.ts),
+ * `InstanceScanFloorListResponseSchema` (supply-chain.ts) — all a plain `z.object({ items:
+ * z.array(...) })`. This route takes a `status` filter + a bounded `limit` with NO cursor (a
+ * triage read, not paged enumeration), so `cursorPageResponseSchema` (which additionally promises
+ * `nextCursor`) doesn't fit either. `{ items }` is therefore the closest actual precedent, and it
+ * keeps the door open to add a count/cursor later without a breaking response-shape change — the
+ * thing a bare array can never do additively.
+ */
+export const RelayBuildListResponseSchema = z.object({
+  items: z.array(RelayBuildSchema)
+});
+export type RelayBuildListResponse = z.infer<typeof RelayBuildListResponseSchema>;
+
 /** `POST /federation/imports` accepts either bundle kind — the importer sniffs `header.kind`. */
 export const ImportBundleRequestSchema = z.union([SyncBundleSchema, PromotionBundleSchema]);
 export type ImportBundleRequest = z.infer<typeof ImportBundleRequestSchema>;
