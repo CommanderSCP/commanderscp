@@ -11,6 +11,7 @@ import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
 import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
 import { proposeChange, typeOf } from "./changes-repo.js";
+import { tryAcquireCampaignCoordinationLock } from "./campaign-coordination-lock.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
@@ -81,7 +82,32 @@ function logCampaignError(
   );
 }
 
+/**
+ * A2 (§4-A2) — the LOCK-ACQUIRING wrapper. One worker reconciles a given campaign at a time; a
+ * competing overlapping tick from another replica backs off immediately (a clean no-op, retried next
+ * tick) rather than racing. This is what stops two ticks from BOTH compiling+persisting a plan for
+ * the same campaign (a duplicate `campaign_waves`/`campaign_wave_targets` set) or both admitting
+ * waves — the exact bug the change path's coordination lock closes, never ported to campaigns until
+ * now. The plan read at the top of `reconcileOneCampaignUnderLock` runs AFTER this lock is held, so
+ * it is the IN-LOCK re-read: a plan another tick just compiled is seen and never duplicated.
+ */
 async function reconcileOneCampaign(
+  db: Db,
+  orgId: string,
+  campaignObject: ObjectRow,
+  host: PluginHost,
+  sandbox: CelSandbox
+): Promise<void> {
+  const lock = await tryAcquireCampaignCoordinationLock(db, campaignObject.id);
+  if (!lock) return;
+  try {
+    await reconcileOneCampaignUnderLock(db, orgId, campaignObject, host, sandbox);
+  } finally {
+    await lock.release();
+  }
+}
+
+async function reconcileOneCampaignUnderLock(
   db: Db,
   orgId: string,
   campaignObject: ObjectRow,
