@@ -50,7 +50,9 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
   beforeAll(async () => {
     domainA = await createIsolatedDomain("resync-a");
     domainB = await createIsolatedDomain("resync-b");
-    selfA = await withTenantTx(domainA.db, domainA.orgId, (tx) => ensureFederationSelf(tx, domainA.orgId));
+    selfA = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      ensureFederationSelf(tx, domainA.orgId)
+    );
     await pair(domainA, domainB, "outpost"); // A knows B as an outpost it exports to
     await pair(domainB, domainA, "commander"); // B knows A as its commander
     const peerA = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -80,7 +82,9 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
     const firstBundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       exportSyncBundle(tx, domainA.orgId, domainB.orgName)
     );
-    await withTenantTx(domainB.db, domainB.orgId, (tx) => importSyncBundle(tx, domainB.orgId, firstBundle));
+    await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      importSyncBundle(tx, domainB.orgId, firstBundle)
+    );
 
     // DIVERGE B: bump B's replica to a HIGHER revision with DIFFERENT content (simulating the state a
     // lost-tail leaves behind). A normal re-import of A's rev-1 entry would now no-op (1 <= 99) — the
@@ -137,7 +141,13 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
     expect(authorized.exporterGeneration).toBeGreaterThan(0);
 
     const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      applyResyncBundle(tx, domainB.orgId, peerAIdInB, authorized.bundle, authorized.exporterGeneration)
+      applyResyncBundle(
+        tx,
+        domainB.orgId,
+        peerAIdInB,
+        authorized.bundle,
+        authorized.exporterGeneration
+      )
     );
     expect(result.appliedEntries).toBeGreaterThan(0);
     expect(result.generation).toBeGreaterThan(0);
@@ -170,7 +180,12 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
     );
     expect(afterResync).toBe(0);
     const standing = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      latestDecisionForSubjectKind(tx, domainB.orgId, peerAIdInB, FEDERATION_DIVERGENCE_DECISION_KIND)
+      latestDecisionForSubjectKind(
+        tx,
+        domainB.orgId,
+        peerAIdInB,
+        FEDERATION_DIVERGENCE_DECISION_KIND
+      )
     );
     expect(standing?.verdict).toBe("allow"); // superseded the block
   });
@@ -186,6 +201,9 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
           requestSignature: "not-a-valid-signature"
         })
       )
-    ).rejects.toMatchObject({ status: 403, detail: expect.stringMatching(/signature verification failed/i) });
+    ).rejects.toMatchObject({
+      status: 403,
+      detail: expect.stringMatching(/signature verification failed/i)
+    });
   });
 });

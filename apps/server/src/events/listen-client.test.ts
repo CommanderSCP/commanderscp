@@ -57,9 +57,10 @@ describe("listen-client — backoff stability window (SEC-5)", () => {
     // connect, the next retry would again be 250ms. It must instead have grown to 500ms.
     created[1]!.emit("end");
     await vi.advanceTimersByTimeAsync(250);
-    expect(created, "reconnect delay must have grown past the floor, not reset on connect").toHaveLength(
-      2
-    );
+    expect(
+      created,
+      "reconnect delay must have grown past the floor, not reset on connect"
+    ).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(250);
     expect(created).toHaveLength(3);
 

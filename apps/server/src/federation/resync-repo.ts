@@ -84,7 +84,9 @@ export async function authorizeResyncAndReExport(
     subjectId: requester.id,
     verdict: "allow",
     inputContext: { role: "exporter", peerDomainId: requester.id, peerName: requester.name },
-    reasonTree: { summary: `authorized a resync full re-export for peer '${requester.name}' (§7.2.6)` }
+    reasonTree: {
+      summary: `authorized a resync full re-export for peer '${requester.name}' (§7.2.6)`
+    }
   });
   await appendAuditEvent(tx, {
     orgId,

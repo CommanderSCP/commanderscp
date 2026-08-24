@@ -20,9 +20,9 @@ describe("assertNoVersionSkewOrThrow (§7.4)", () => {
   });
 
   it("REFUSES when a live member cluster reports an older version (skew)", () => {
-    expect(() =>
-      assertNoVersionSkewOrThrow([hb("a", "1.2.0"), hb("b", "1.1.0")], "1.2.0")
-    ).toThrow(/CONTRACT-phase migration.*1\.1\.0/s);
+    expect(() => assertNoVersionSkewOrThrow([hb("a", "1.2.0"), hb("b", "1.1.0")], "1.2.0")).toThrow(
+      /CONTRACT-phase migration.*1\.1\.0/s
+    );
   });
 
   it("REFUSES when a live member cluster reports a NEWER version too (any difference blocks)", () => {

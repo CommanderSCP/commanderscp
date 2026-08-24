@@ -1,8 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  recordMemberClusterHeartbeat,
-  listLiveMemberHeartbeats
-} from "./member-heartbeat-repo.js";
+import { recordMemberClusterHeartbeat, listLiveMemberHeartbeats } from "./member-heartbeat-repo.js";
 import { buildTestServer, type TestServer } from "../test-support/harness.js";
 
 /**

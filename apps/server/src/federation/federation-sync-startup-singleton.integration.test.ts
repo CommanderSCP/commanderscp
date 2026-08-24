@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import type PgBoss from "pg-boss";
 import { startPgBoss } from "../events/pgboss.js";
-import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
+import { createIsolatedDomain } from "./test-support/isolated-domain.js";
 import {
   FEDERATION_SYNC_QUEUE,
   FEDERATION_SYNC_STARTUP_REASON,

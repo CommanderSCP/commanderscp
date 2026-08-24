@@ -155,9 +155,10 @@ describe("SSE bridge: relay -> pg_notify(scp_sse_events) -> bridge -> sseHub", (
         );
 
       const before = await findListenerPid();
-      expect(before.rows, "exactly one backend should be holding this bridge's LISTEN").toHaveLength(
-        1
-      );
+      expect(
+        before.rows,
+        "exactly one backend should be holding this bridge's LISTEN"
+      ).toHaveLength(1);
       await adminClient.query(`SELECT pg_terminate_backend($1)`, [before.rows[0]!.pid]);
 
       // Reconnection is observed as a `scp.sse.resync` frame arriving on this ALREADY-connected
@@ -165,7 +166,8 @@ describe("SSE bridge: relay -> pg_notify(scp_sse_events) -> bridge -> sseHub", (
       // re-issue succeeded (events/listen-client.ts), so seeing this frame IS the direct observation
       // of "reconnected and re-LISTENed" — not an inference from a timeout.
       await waitUntil(async () => received.find((e) => e.type === "scp.sse.resync"), {
-        describe: "the bridge to reconnect and publish a resync event after its LISTEN connection was killed",
+        describe:
+          "the bridge to reconnect and publish a resync event after its LISTEN connection was killed",
         timeoutMs: 15_000
       });
 
@@ -190,7 +192,8 @@ describe("SSE bridge: relay -> pg_notify(scp_sse_events) -> bridge -> sseHub", (
       await waitUntil(
         async () => received.find((e) => e.subject === "sse-bridge-post-reconnect-probe"),
         {
-          describe: "a post-reconnect outbox event to be delivered through the re-established LISTEN",
+          describe:
+            "a post-reconnect outbox event to be delivered through the re-established LISTEN",
           timeoutMs: 15_000
         }
       );

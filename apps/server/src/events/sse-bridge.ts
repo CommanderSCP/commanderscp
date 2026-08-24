@@ -195,7 +195,9 @@ export function startSseBridge(pool: pg.Pool, listenConnectionString: string): S
         // simply having nothing to deliver) or, in principle, a row this process cannot see. No
         // retry: ADR-0025's contract is "no replay" — the resync/cache-invalidation path recovers
         // a genuine miss. `pointer.id` is UUID-validated, so this interpolation is injection-safe.
-        console.warn(`[sse-bridge] NOTIFY pointer ${pointer.id} resolves to no outbox row — dropped`);
+        console.warn(
+          `[sse-bridge] NOTIFY pointer ${pointer.id} resolves to no outbox row — dropped`
+        );
         return;
       }
       // `event` is built exclusively from the fetched row: org routing, type, and body all come

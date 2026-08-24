@@ -617,7 +617,8 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     config: {
       openapi: {
         operationId: "federationResyncAuthorize",
-        summary: "Authorize + re-export for a peer's resync (the exporter half of the §7.2.6 handshake)",
+        summary:
+          "Authorize + re-export for a peer's resync (the exporter half of the §7.2.6 handshake)",
         tags: ["federation"]
       }
     },
@@ -657,7 +658,8 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     config: {
       openapi: {
         operationId: "federationResyncPeer",
-        summary: "Resync this domain's replica with a peer after a journal divergence (importer half)",
+        summary:
+          "Resync this domain's replica with a peer after a journal divergence (importer half)",
         tags: ["federation"]
       }
     },

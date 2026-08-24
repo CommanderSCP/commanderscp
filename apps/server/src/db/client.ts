@@ -17,10 +17,7 @@ export type Db = ReturnType<typeof createDb>;
  * single-connection pools) pass `options` to override or extend the defaults, never construct
  * their own `pg.Pool`.
  */
-export function createPool(
-  connectionString: string,
-  options?: Partial<pg.PoolConfig>
-): pg.Pool {
+export function createPool(connectionString: string, options?: Partial<pg.PoolConfig>): pg.Pool {
   const pool = new pg.Pool({
     connectionString,
     connectionTimeoutMillis: 5000,

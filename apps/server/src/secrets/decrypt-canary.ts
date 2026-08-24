@@ -36,7 +36,11 @@ export async function runSecretsDecryptCanary(
   for (const { id: orgId } of orgRows) {
     await withTenantTx(db, orgId, async (tx) => {
       const rows = await tx
-        .select({ ciphertext: secrets.ciphertext, nonce: secrets.nonce, keyVersion: secrets.keyVersion })
+        .select({
+          ciphertext: secrets.ciphertext,
+          nonce: secrets.nonce,
+          keyVersion: secrets.keyVersion
+        })
         .from(secrets)
         .limit(1);
       const row = rows[0];

@@ -886,7 +886,10 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     // no audit event, no journal entry, no version bump. RESYNC (§7.2.6) bypasses this: under a
     // mutually-authorized permit a stale revision still OVERWRITES, so a lost-tail restore
     // re-converges instead of silently no-op'ing. The single-writer check above is NEVER bypassed.
-    if (input.federationImport.revision <= existing.revision && !input.federationImport.forceOverwrite) {
+    if (
+      input.federationImport.revision <= existing.revision &&
+      !input.federationImport.forceOverwrite
+    ) {
       return toGraphObject(existing);
     }
   } else {
@@ -1575,7 +1578,10 @@ export async function deleteObject(
     }
     // Stale replay → no-op, EXCEPT under a resync force-overwrite permit (§7.2.6), which must
     // re-apply the tombstone even at a stale revision so a lost-tail restore re-converges deletions.
-    if (input.federationImport.revision <= existing.revision && !input.federationImport.forceOverwrite)
+    if (
+      input.federationImport.revision <= existing.revision &&
+      !input.federationImport.forceOverwrite
+    )
       return;
   } else {
     const self = await ensureFederationSelf(tx, input.orgId);

@@ -1,4 +1,3 @@
-import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DeliveryResult, NotificationMessage } from "@scp/plugin-api";
 import {
@@ -8,10 +7,8 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { auditEvents, decisions } from "../db/schema.js";
 import { proposeChange } from "./changes-repo.js";
 import { runWatchdogSweep } from "./watchdog.js";
-import { upsertNotificationBinding } from "../notify/notification-bindings-repo.js";
 import type {
   ControlPluginClient,
   DependencyIndexPluginClient,
@@ -123,10 +120,8 @@ describe("coordination engine: watchdog claim is single-flight under real multi-
         flags.filter((f) => f.changeObjectId === target.id)
       );
       counts.push(winningFlags.length);
-      // eslint-disable-next-line no-console
       console.log(`iter ${iter}: winners=${winningFlags.length}`);
     }
-    // eslint-disable-next-line no-console
     console.log("ALL COUNTS:", counts);
     expect(counts.every((c) => c === 1)).toBe(true);
   }, 120_000);

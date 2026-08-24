@@ -30,7 +30,6 @@ import {
  */
 describe("SSE bridge — NOTIFY payload authenticity", () => {
   let server: TestServer;
-  let orgA: TestOrg;
   let orgB: TestOrg;
   let bridgePool: pg.Pool;
   let bridge: SseBridgeHandle;
@@ -38,7 +37,9 @@ describe("SSE bridge — NOTIFY payload authenticity", () => {
 
   beforeAll(async () => {
     server = await buildTestServer();
-    orgA = await createTestOrg(server, "authn-a");
+    // A second org exists on the instance (the realistic multi-tenant setting the forgery targets
+    // across) — created, deliberately not referenced: every assertion below is about org B.
+    await createTestOrg(server, "authn-a");
     orgB = await createTestOrg(server, "authn-b");
     bridgePool = createPool(testRuntimeDatabaseUrl());
     bridge = startSseBridge(bridgePool, server.deps.config.runtimeDatabaseUrl);

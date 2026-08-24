@@ -45,8 +45,12 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
   beforeAll(async () => {
     domainA = await createIsolatedDomain("rails-a");
     domainB = await createIsolatedDomain("rails-b");
-    selfA = await withTenantTx(domainA.db, domainA.orgId, (tx) => ensureFederationSelf(tx, domainA.orgId));
-    keyA = await withTenantTx(domainA.db, domainA.orgId, (tx) => ensureInstanceKey(tx, domainA.orgId));
+    selfA = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      ensureFederationSelf(tx, domainA.orgId)
+    );
+    keyA = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      ensureInstanceKey(tx, domainA.orgId)
+    );
     await pair(domainA, domainB, "outpost");
     await pair(domainB, domainA, "commander");
     // Some journal on A to export.
@@ -73,7 +77,10 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
     await domainB.close();
   });
 
-  async function exportFromA(sinceSequence?: number, lastAppliedRowHash?: string): Promise<SyncBundle> {
+  async function exportFromA(
+    sinceSequence?: number,
+    lastAppliedRowHash?: string
+  ): Promise<SyncBundle> {
     return withTenantTx(domainA.db, domainA.orgId, (tx) =>
       exportSyncBundle(tx, domainA.orgId, domainB.orgName, sinceSequence, lastAppliedRowHash)
     );
@@ -84,7 +91,9 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
     expect(bundle.tailAttestation).toBeDefined();
     expect(bundle.tailAttestation!.tailSequence).toBeGreaterThan(0);
 
-    await withTenantTx(domainB.db, domainB.orgId, (tx) => importSyncBundle(tx, domainB.orgId, bundle));
+    await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      importSyncBundle(tx, domainB.orgId, bundle)
+    );
 
     const attested = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       tx
@@ -100,7 +109,11 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
   /** Re-sign a bundle's tail attestation at a chosen (sequence, rowHash) with A's REAL key — models
    *  the exporter itself attesting a rolled-back/forked tail (a bug or a compromised/rolled-back
    *  exporter), the exact B1 threat rail 4 exists to catch. */
-  function withAttestation(bundle: SyncBundle, tailSequence: number, tailRowHash: string): SyncBundle {
+  function withAttestation(
+    bundle: SyncBundle,
+    tailSequence: number,
+    tailRowHash: string
+  ): SyncBundle {
     const signature = signBundleChecksum(
       keyA.privateKey,
       computeBundleChecksum({
@@ -138,7 +151,11 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
     // attestation is honestly older. This must be a no-op, not a false regression.
     const recorded = await highWaterSeq();
     const bundle = await exportFromA();
-    const older = withAttestation(bundle, Math.max(0, recorded - 1), bundle.tailAttestation!.tailRowHash);
+    const older = withAttestation(
+      bundle,
+      Math.max(0, recorded - 1),
+      bundle.tailAttestation!.tailRowHash
+    );
     const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       importSyncBundle(tx, domainB.orgId, older)
     );
@@ -162,7 +179,9 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
     const fresh = await exportFromA(); // throughSequence now beyond B's cursor
     const regressed = withAttestation(fresh, recorded - 1, "deadbeef".repeat(8));
     await expect(
-      withTenantTx(domainB.db, domainB.orgId, (tx) => importSyncBundle(tx, domainB.orgId, regressed))
+      withTenantTx(domainB.db, domainB.orgId, (tx) =>
+        importSyncBundle(tx, domainB.orgId, regressed)
+      )
     ).rejects.toMatchObject({ type: "urn:scp:federation:journal_divergence" });
   });
 

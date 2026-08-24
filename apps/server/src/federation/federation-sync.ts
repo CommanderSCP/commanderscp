@@ -515,10 +515,7 @@ export async function pullFromCommanderPeer(
       const decisionId = await recordSyncBlock(db, { orgId, peer, reason: err.message });
       return { peerDomainId: peer.id, outcome: "refused", detail: err.message, decisionId };
     }
-    if (
-      err instanceof FederationExportRefused &&
-      err.type === JOURNAL_DIVERGENCE_PROBLEM_TYPE
-    ) {
+    if (err instanceof FederationExportRefused && err.type === JOURNAL_DIVERGENCE_PROBLEM_TYPE) {
       // RAILS 1/2 (§7.2), the puller's half of "both sides record": the exporter verified a
       // fork/rollback and refused. This is a STANDING condition (the puller's cursor cannot advance
       // until a resync), not a transient failure — persist-on-change block under the DIVERGENCE kind

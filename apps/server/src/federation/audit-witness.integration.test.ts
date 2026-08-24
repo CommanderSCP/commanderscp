@@ -40,7 +40,9 @@ describe("federation audit witness: import persists a peer's audit-chain head, n
   beforeAll(async () => {
     domainA = await createIsolatedDomain("witness-a");
     domainB = await createIsolatedDomain("witness-b");
-    selfA = await withTenantTx(domainA.db, domainA.orgId, (tx) => ensureFederationSelf(tx, domainA.orgId));
+    selfA = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      ensureFederationSelf(tx, domainA.orgId)
+    );
     originA = asTrustDomainId(selfA.domainId);
     await pair(domainA, domainB, "outpost");
     await pair(domainB, domainA, "commander");
@@ -95,7 +97,9 @@ describe("federation audit witness: import persists a peer's audit-chain head, n
     const bundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       exportSyncBundle(tx, domainA.orgId, domainB.orgName)
     );
-    await withTenantTx(domainB.db, domainB.orgId, (tx) => importSyncBundle(tx, domainB.orgId, bundle));
+    await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      importSyncBundle(tx, domainB.orgId, bundle)
+    );
     const after = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       listAuditWitnessesForOrigin(tx, domainB.orgId, originA)
     );

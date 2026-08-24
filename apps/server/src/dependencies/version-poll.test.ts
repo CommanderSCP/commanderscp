@@ -203,10 +203,14 @@ describe("startDependencyVersionPollLoop", () => {
     expect(boss.work).toHaveBeenCalledTimes(1);
     // §4-A4/M26.1: the initial send now carries the SAME singletonKey/singletonSeconds as the
     // reschedule send, so N replicas restarting together don't N-fire the first tick.
-    expect(boss.send).toHaveBeenCalledWith(DEPENDENCY_VERSION_POLL_QUEUE, {}, {
-      singletonKey: "tick",
-      singletonSeconds: dependencyVersionPollIntervalSeconds()
-    });
+    expect(boss.send).toHaveBeenCalledWith(
+      DEPENDENCY_VERSION_POLL_QUEUE,
+      {},
+      {
+        singletonKey: "tick",
+        singletonSeconds: dependencyVersionPollIntervalSeconds()
+      }
+    );
   });
 });
 

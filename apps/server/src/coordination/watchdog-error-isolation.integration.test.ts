@@ -40,7 +40,10 @@ vi.mock("./decisions-repo.js", async (importOriginal) => {
   return {
     ...actual,
     insertDecision: vi.fn(
-      async (tx: Parameters<typeof actual.insertDecision>[0], input: Parameters<typeof actual.insertDecision>[1]) => {
+      async (
+        tx: Parameters<typeof actual.insertDecision>[0],
+        input: Parameters<typeof actual.insertDecision>[1]
+      ) => {
         if (inject.poisonSubjectId && input.subjectId === inject.poisonSubjectId) {
           throw new Error("injected: watchdog Decision write failed for the poisoned change");
         }
@@ -64,7 +67,8 @@ function createNotifyCountingHost(): PluginHost {
     executor: (): ExecutorPluginClient => notWired("ExecutorPlugin"),
     control: (): ControlPluginClient => notWired("ControlPlugin"),
     discovery: (): DiscoveryPluginClient => notWired("DiscoveryPlugin"),
-    federationTransport: (): FederationTransportPluginClient => notWired("FederationTransportPlugin"),
+    federationTransport: (): FederationTransportPluginClient =>
+      notWired("FederationTransportPlugin"),
     dependencyIndex: (): DependencyIndexPluginClient => notWired("DependencyIndexPlugin"),
     gitFileRead: (): GitFileReadPluginClient => notWired("git-provider readFileAtRef"),
     notification: (): NotificationPluginClient => ({

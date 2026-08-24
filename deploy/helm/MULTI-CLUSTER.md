@@ -18,9 +18,9 @@ A **member cluster** is one Kubernetes cluster running some of the instance's `a
 compute (proposal §2, GLOSSARY.md's amended `instance` entry). One of them may be designated the
 **XO** (proposal §5-I3/§11 D3) — the standby member cluster holding the synchronous Postgres
 replica, warm compute, and the pre-provisioned fallback dial entry peers use. The XO is a
-*designation*, not a second commander: exactly one Postgres primary exists for the whole instance
-at any moment (I1), and every member cluster's release, XO or not, is the *identical* chart with
-the *identical* database-facing values.
+_designation_, not a second commander: exactly one Postgres primary exists for the whole instance
+at any moment (I1), and every member cluster's release, XO or not, is the _identical_ chart with
+the _identical_ database-facing values.
 
 ## The contract, checklist form
 
@@ -38,8 +38,7 @@ single release's render can check, because Helm never sees another cluster's val
    [**enforced** when `multiCluster.enabled: true`, see below] Leaving `postgres.existingSecret`
    unset makes the chart GENERATE a Secret with random `scp_app`/`scp_pgboss` passwords — fine for
    one cluster, actively dangerous for two: a second cluster's install mints its OWN random
-   passwords, and its migrations Job (if you also left `migrations.enabled: true` there — see item
-   4) tries to reset the shared database's live roles to them. This is B9 in the proposal, and it
+   passwords, and its migrations Job (if you also left `migrations.enabled: true` there — see item 4) tries to reset the shared database's live roles to them. This is B9 in the proposal, and it
    was proven against a real cluster: `ALTER ROLE ... WITH PASSWORD` from the second install
    **clobbers** the first cluster's working credentials mid-flight. Create the Secret once, and
    set the identical `postgres.existingSecret` name (and content) on every release.
@@ -97,7 +96,7 @@ single release's render can check, because Helm never sees another cluster's val
    set `federation.relay.s3.endpoints` (S3-compatible delivery, `delivery-s3.ts` — a self-hosted
    MinIO in the enclave keeps this air-gap-legal) and leave `federation.relay.volumes.type: none`.
    The `pvc` volume type is only for spreading replicas of ONE retrans release across nodes
-   *within* one cluster. See `federation.relay`'s values.yaml comment for the full reasoning, and
+   _within_ one cluster. See `federation.relay`'s values.yaml comment for the full reasoning, and
    note there is deliberately **no `hostPath` option** at all — this chart's own `helm-verify`
    gate refuses any `hostPath:` volume anywhere in it (the same container-escape-risk reasoning
    that already refuses to mount a Docker socket).
@@ -111,9 +110,9 @@ multiCluster:
 
 Set this on every member cluster's release. What it changes: **nothing at runtime.** What it
 enforces at render time: this release will not proceed with an empty `postgres.existingSecret` or
-`appSecrets.existingSecret` (items 2/3 above) — the two cases that are *always* wrong once more
+`appSecrets.existingSecret` (items 2/3 above) — the two cases that are _always_ wrong once more
 than one cluster is involved, because the chart-generated Secrets it would otherwise fall back to
-are single-cluster-only by construction. It **cannot** check that the Secret's *content* is
+are single-cluster-only by construction. It **cannot** check that the Secret's _content_ is
 identical across clusters, or that exactly one release has `migrations.enabled: true`, or that mTLS
 material is actually replicated — those are operator disciplines this doc exists to name, not facts
 one `helm template` invocation can observe about another cluster's release.
@@ -177,7 +176,7 @@ and content stay identical). Only `migrations.enabled` and each cluster's own ne
 - **Version skew across member clusters (§7.4, now built)**: each release heartbeats its
   `(SCP_CLUSTER_ID, SCP_APP_VERSION)`; the migrations Job refuses a **contract-phase** deploy
   (`migrations.phase: contract`) while any live member cluster still reports an older version. Roll
-  every member cluster to the new version, *then* deploy with `migrations.phase: contract`. `N` and
+  every member cluster to the new version, _then_ deploy with `migrations.phase: contract`. `N` and
   `N+1` only. `GET /doctor/instance` surfaces skew as a `member-cluster-version-skew` check.
 - **Object storage across member clusters (C3, resolved 2026-08-24)**: there is **no bespoke S3
   object-storage backend** — multi-cluster object storage is served by the already-built S3 delivery

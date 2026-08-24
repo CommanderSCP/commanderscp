@@ -612,7 +612,10 @@ export async function deleteRelationship(
     }
     // Stale replay → no-op, EXCEPT under a resync force-overwrite permit (§7.2.6), which re-applies
     // even a stale-revision edge so a lost-tail restore re-converges relationships too.
-    if (input.federationImport.revision <= existing.revision && !input.federationImport.forceOverwrite)
+    if (
+      input.federationImport.revision <= existing.revision &&
+      !input.federationImport.forceOverwrite
+    )
       return;
   } else {
     const self = await ensureFederationSelf(tx, input.orgId);

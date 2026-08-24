@@ -49,7 +49,10 @@ describe("B9: provisionRuntimeRole / provisionPgBossRole password-clobber guard"
     const url = new URL(adminUrl);
     url.username = encodeURIComponent(user);
     url.password = encodeURIComponent(password);
-    const client = new pg.Client({ connectionString: url.toString(), connectionTimeoutMillis: 5000 });
+    const client = new pg.Client({
+      connectionString: url.toString(),
+      connectionTimeoutMillis: 5000
+    });
     try {
       await client.connect();
       return true;
@@ -202,9 +205,7 @@ describe("B9: provisionRuntimeRole / provisionPgBossRole password-clobber guard"
         ]);
 
         const fulfilled = results.filter((r) => r.status === "fulfilled");
-        const rejected = results.filter(
-          (r): r is PromiseRejectedResult => r.status === "rejected"
-        );
+        const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
         // One blind winner; the loser MUST have been forced onto verify-or-refuse, not its own blind
         // ALTER. (Without the lock, BOTH fulfill — the silent clobber — which fails here.)
         expect(fulfilled, `iteration ${i}: exactly one provisioning should win`).toHaveLength(1);

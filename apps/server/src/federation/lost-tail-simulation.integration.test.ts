@@ -10,11 +10,7 @@ import { exportSyncBundle, JournalDivergenceDetected } from "./export-repo.js";
 import { importSyncBundle } from "./import-repo.js";
 import { ownJournalTail } from "./journal-repo.js";
 import { getCursor } from "./cursors-repo.js";
-import {
-  signResyncRequest,
-  authorizeResyncAndReExport,
-  applyResyncBundle
-} from "./resync-repo.js";
+import { signResyncRequest, authorizeResyncAndReExport, applyResyncBundle } from "./resync-repo.js";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
 
 /**
@@ -48,7 +44,9 @@ describe("§7.5 lost-tail simulation: a rolled-back exporter tail refuses a pull
   beforeAll(async () => {
     domainA = await createIsolatedDomain("losttail-a");
     domainB = await createIsolatedDomain("losttail-b");
-    selfA = await withTenantTx(domainA.db, domainA.orgId, (tx) => ensureFederationSelf(tx, domainA.orgId));
+    selfA = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      ensureFederationSelf(tx, domainA.orgId)
+    );
     await pair(domainA, domainB, "outpost");
     await pair(domainB, domainA, "commander");
     const peerA = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -79,11 +77,15 @@ describe("§7.5 lost-tail simulation: a rolled-back exporter tail refuses a pull
     const full = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       exportSyncBundle(tx, domainA.orgId, domainB.orgName)
     );
-    await withTenantTx(domainB.db, domainB.orgId, (tx) => importSyncBundle(tx, domainB.orgId, full));
+    await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      importSyncBundle(tx, domainB.orgId, full)
+    );
     const cursorBefore = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       getCursor(tx, domainB.orgId, peerAIdInB, peerAIdInB)
     );
-    const tailN = await withTenantTx(domainA.db, domainA.orgId, (tx) => ownJournalTail(tx, domainA.orgId));
+    const tailN = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      ownJournalTail(tx, domainA.orgId)
+    );
     expect(cursorBefore.sequence).toBe(tailN.sequence);
 
     // THE LOST TAIL: A's async replica was restored to an earlier point — rewind its journal below B's
@@ -102,7 +104,9 @@ describe("§7.5 lost-tail simulation: a rolled-back exporter tail refuses a pull
     } finally {
       await adminA.end();
     }
-    const tailAfter = await withTenantTx(domainA.db, domainA.orgId, (tx) => ownJournalTail(tx, domainA.orgId));
+    const tailAfter = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      ownJournalTail(tx, domainA.orgId)
+    );
     expect(tailAfter.sequence).toBe(rewindTo);
 
     // A normal forward pull now has sinceSequence (B's cursor, N) BEYOND A's rewound tail → RAIL 1.
@@ -124,7 +128,13 @@ describe("§7.5 lost-tail simulation: a rolled-back exporter tail refuses a pull
       })
     );
     await withTenantTx(domainB.db, domainB.orgId, (tx) =>
-      applyResyncBundle(tx, domainB.orgId, peerAIdInB, authorized.bundle, authorized.exporterGeneration)
+      applyResyncBundle(
+        tx,
+        domainB.orgId,
+        peerAIdInB,
+        authorized.bundle,
+        authorized.exporterGeneration
+      )
     );
 
     const cursorAfter = await withTenantTx(domainB.db, domainB.orgId, (tx) =>

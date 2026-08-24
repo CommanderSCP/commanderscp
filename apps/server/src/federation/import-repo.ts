@@ -248,7 +248,11 @@ async function applyEntry(
           actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
           requestId,
           idOrUrn,
-          federationImport: { originDomainId: exporterDomainId, revision: entry.sequence, forceOverwrite }
+          federationImport: {
+            originDomainId: exporterDomainId,
+            revision: entry.sequence,
+            forceOverwrite
+          }
         });
       } catch (err) {
         if (isNotFound(err)) return; // never replicated locally — nothing to tombstone
@@ -304,7 +308,11 @@ async function applyEntry(
           actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
           requestId,
           id: String(payload.id),
-          federationImport: { originDomainId: exporterDomainId, revision: entry.sequence, forceOverwrite }
+          federationImport: {
+            originDomainId: exporterDomainId,
+            revision: entry.sequence,
+            forceOverwrite
+          }
         });
       } catch (err) {
         if (isNotFound(err)) return;
