@@ -400,6 +400,22 @@ Today the same information is carried by **env-suffixed component pairs** — `a
 
 ---
 
+### coordination lever
+
+**Definition.** A campaign **recipe**: *one* authored trigger intent, fanned across N components, wave-ordered, gated, with per-component binding resolution, explainability and rollback. It is what "1-click migration" means here.
+
+**It is not an authoring lever, and that is the whole distinction.** **CommanderSCP never writes the patch.** The recipe *triggers*; the tenant's own workflow performs the edit. A tenant with no such workflow has nothing to trigger, and the honest outcome is a refusal rather than a managed migration. No charter amendment was sought for it, because none is needed — this is charter principle 1 unchanged (owner decision D3, 2026-08-23).
+
+**What crosses to the executor.** The recipe's `trigger.parameters` bag, **verbatim**, through `TriggerIntent.parameters` — a channel that was already on the executor interface and already read by every adapter, and which the generic release path had simply never populated. There is **no cross-provider translation**: a recipe written in `github` keys is never guessed into `gitlab` shape, because a wrong guess does not fail — it triggers the *wrong automation* in the tenant's own repository.
+
+**Three refusals, and `trigger()` is never called on any of them:** the bound executor cannot serve the recipe's kind; the recipe does not parse (a malformed recipe is a **refusal, never an absence** — degrading to "no recipe" would roll a bare sync at every target and report a migration that never happened); or the target is bound to one of CommanderSCP's **own** managed actuators, which a recipe may not drive while OQ-5 is unruled.
+
+**Not to be confused with:** a **campaign deadline lock** (a per-target admission gate, not a trigger); the dependency-subscription actuator (which *does* write to tenant repositories, under a separate and narrower charter grant).
+
+**In the code.** `campaign.properties.recipe`; `packages/schemas/src/campaigns.ts`; `coordination/campaign-recipe.ts` (the read side); `governance/campaign-recipe-guard.ts` (the author's door, installed at the `graph/objects-repo.ts` choke point so it covers all three write doors, not just the typed route). [ADR-0041](adr/0041-campaign-recipes.md).
+
+---
+
 ### wave
 
 **Definition.** One ordered step of a **compiled plan**: **the set of one-or-more stages advanced at once**, and the targets within them. Wave order is computed from graph `depends_on` edges (topological sort with cycle rejection) plus explicit coordination rules such as "infrastructure before application". Waves sharing an index run in parallel (fan-out); a fan-in gate requires every target of the previous wave to have succeeded.
