@@ -462,6 +462,13 @@ export async function runBumpGateJob(
   // bump refused here has been proven safe and is held by the calendar, which is a different sentence
   // from `not_evidenced` and resolves by a different act.
   //
+  // AND "THE NEXT ATTEMPT" IS A THING SOMETHING PRODUCES (M25.8b). This job is enqueued by
+  // `observedBumpRouter` off a PROVIDER WEBHOOK about the bump's branch, and a freeze expiring,
+  // being lifted or being shortened touches no repository — so for one release the refusal below
+  // promised a retry nothing scheduled, and every bump refused inside a window was stranded for
+  // ever. `dependencies/bump-freeze-redrive.ts` is the producer: a 60s sweep that re-asks
+  // `checkBumpMergeFreeze` for exactly the bumps this refusal named and re-enqueues them here.
+  //
   // It is asked AFTER the binding check for the complementary reason: a component with no git
   // binding can never merge, freeze or no freeze, and reporting `frozen` for it would promise an
   // outcome at `endsAt` that will not arrive.

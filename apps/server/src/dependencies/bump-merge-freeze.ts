@@ -28,6 +28,18 @@ import { freezesByTarget, unionFreezes, type EffectiveFreeze } from "../governan
  * subscription — and merging it into the tenant's default branch is refused, with a Decision. Pull
  * requests accumulate during the window and merge when it closes.
  *
+ * "AND MERGE WHEN IT CLOSES" NAMES A PRODUCER, and it has to, because for one release it did not.
+ * The only thing that enqueues an auto-merge gate job is `observedBumpRouter`, driven by a PROVIDER
+ * WEBHOOK about the bump's branch — and a freeze expiring, being lifted or being shortened touches
+ * no repository and therefore produces no such event. So the sentence above was, briefly, an
+ * assurance with nothing behind it: a bump refused here stayed refused for ever, silently, with the
+ * pull request stranded and its latest Decision promising the opposite. What makes it true is
+ * `dependencies/bump-freeze-redrive.ts` — a per-minute sweep that re-asks
+ * {@link checkBumpMergeFreeze} for exactly the bumps this file's refusal named and re-drives the
+ * gate for the ones nothing covers any more. It is a SWEEP rather than a job scheduled at `endsAt`
+ * on purpose: a lift and a shortening both happen BEFORE `endsAt`, and a shortening can move
+ * `endsAt` later.
+ *
  * So this module is consulted at BOTH of the actuator's two `trigger()` calls, and it does two
  * different things at them, because they are two different acts:
  *
@@ -68,7 +80,10 @@ import { freezesByTarget, unionFreezes, type EffectiveFreeze } from "../governan
  * `SYSTEM_ACTOR_ID` on a background queue with no HTTP request in scope, so an override could only
  * ever be a constant in this file — which is a freeze that overrides itself. The operator's remedy is
  * the shipped one: lift or shorten the freeze (`DELETE`/`PATCH /v1/freezes/{id}`, or
- * `DELETE`/`PUT /v1/instance/freezes/{key}` for the platform tier) and the next attempt merges.
+ * `DELETE`/`PUT /v1/instance/freezes/{key}` for the platform tier) — and the next attempt, which
+ * `bump-freeze-redrive.ts` schedules within a minute of the freeze releasing, merges. That producer
+ * is named because "the next attempt" was for one release a thing nothing produced; see the header
+ * above.
  *
  * NO `atomic`. That bit restores whole-wave semantics by making a freeze over ANY target of a set
  * cover EVERY target of it. A bump has exactly one target — the component — so the union of one
@@ -162,7 +177,9 @@ export async function checkBumpMergeFreeze(
       `${componentObjectId} — ` +
       freezes.map(describeOneFreeze).join("; ") +
       `. The pull request is open and stays open; merging into the default branch is what the ` +
-      `freeze refuses, and the next attempt after the window closes merges it`
+      `freeze refuses. No further provider event is needed: a background sweep re-checks every ` +
+      `withheld bump on this instance once a minute and merges this one within about that long of ` +
+      `the freeze releasing — whether it expires, is lifted or is shortened`
   };
 }
 

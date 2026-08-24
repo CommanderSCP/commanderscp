@@ -269,11 +269,14 @@ const QUEUE_PER_LOOP: Readonly<Record<string, string>> = {
   "internal release detection": "dependency-internal-release",
   "dependency-inventory ingestion": "dependency-inventory-ingestion",
   "bump dispatch": "dependency-bump",
-  "auto-merge gate": "dependency-bump-gate"
+  "auto-merge gate": "dependency-bump-gate",
+  // M25.8b. Its OWN tick queue, deliberately NOT `dependency-bump-gate`: it SENDS to that queue,
+  // and a second `boss.work()` on it would be a competing consumer stealing the jobs it produces.
+  "bump freeze redrive": "dependency-bump-freeze-redrive"
 };
 
 describe("every registered loop actually starts, against the real registry", () => {
-  it("creates EXACTLY the queue set the eleven loops own, on a declared commander worker", async () => {
+  it("creates EXACTLY the queue set the twelve loops own, on a declared commander worker", async () => {
     enableOptInLoops();
     const { boss, queues } = recordingBoss();
 
@@ -331,7 +334,7 @@ describe("every registered loop actually starts, against the real registry", () 
 // -------------------------------------------------------------------------------------------
 
 describe("startBackgroundLoops — the runner", () => {
-  /** A synthetic table, so the RUNNER's contract is pinned independently of the eleven real loops:
+  /** A synthetic table, so the RUNNER's contract is pinned independently of the twelve real loops:
    *  with the real table, "stopped everything" is invisible (a real handle's `stop()` has no
    *  observable here). This is the layer that catches a runner that starts eleven and stops ten. */
   function fakeLoops(count: number): {

@@ -56,6 +56,7 @@ import {
   DEPENDENCY_BUMP_DECISION_KIND,
   type BumpDispatchLoopHandle
 } from "./bump-dispatch.js";
+import { runBumpFreezeRedriveSweep } from "./bump-freeze-redrive.js";
 import { DEPENDENCY_DELEGATION_DECISION_KIND } from "./delegation-detection.js";
 import { BUMP_SOURCE_KIND } from "./bump-actuator.js";
 import { readBumpAuthorship } from "./bump-authorship-repo.js";
@@ -1862,9 +1863,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
           // (3) D8's OTHER HALF: the pull request is open, still carries the number and URL the
           //     provider returned, and is NOT stamped merged. The work stays visible and queued,
           //     which is the value of the subscription the freeze must not destroy.
-          const authorship = await inOrg((tx) =>
-            readBumpAuthorship(tx, org.orgId, changeObjectId)
-          );
+          const authorship = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId));
           expect(authorship?.pullRequestNumber).toBe(opened!.number);
           expect(authorship?.pullRequestUrl).toBe(
             `https://gitea.dc1.internal/${fixture.repo}/pulls/${opened!.number}`
@@ -2040,12 +2039,11 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         // no evidence and resolves to `pull_request` for reasons that have nothing to do with a
         // freeze, and the assertion below would pass against no freeze check at all.
         expect((await runGate(changeObjectId)).refusal).toBe("frozen");
-        const runs = await inOrg((tx) =>
-          listControlRunsForChange(tx, org.orgId, changeObjectId)
-        );
-        expect(runs.map((r) => r.status), "the gate must have deposited passing evidence").toContain(
-          "pass"
-        );
+        const runs = await inOrg((tx) => listControlRunsForChange(tx, org.orgId, changeObjectId));
+        expect(
+          runs.map((r) => r.status),
+          "the gate must have deposited passing evidence"
+        ).toContain("pass");
 
         // A REDELIVERED HEAD ADVANCE — the same at-least-once redelivery pinned elsewhere in this
         // file, now landing on a bump that HAS evidence and HAS a recorded head commit.
@@ -2078,6 +2076,118 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         const whenClear = bumpIntents()[2]!.intent.parameters as Record<string, unknown>;
         expect(whenClear.delivery).toBe("auto_merge");
         expect(whenClear.expectedHeadCommit).toBe(BUMP_COMMIT);
+      }, 240_000);
+
+      // -----------------------------------------------------------------------------------------
+      // M25.8b — THE PRODUCER OF "THE NEXT ATTEMPT"
+      //
+      // Every case above drives the gate by CALLING `runGate` — including "when the freeze is
+      // LIFTED, the very next attempt MERGES", which is why that case, though correct, is
+      // structurally incapable of seeing the defect these three close: it PERFORMS BY HAND the
+      // attempt production never scheduled. The only producer of gate jobs is `observedBumpRouter`,
+      // driven by a provider webhook about the bump's branch; a freeze expiring, being lifted or
+      // being shortened touches no repository and produces no such event; and `runBumpGateJob`
+      // returns normally on a `frozen` refusal, so pg-boss never retries it. The three cases below
+      // therefore go through `runBumpFreezeRedriveSweep` — the thing that did not exist — and never
+      // through `runGate`.
+      // -----------------------------------------------------------------------------------------
+
+      it("the LIFT alone MERGES it: the SWEEP schedules the attempt no provider event would", async () => {
+        const { changeObjectId } = await greenBump();
+        const rootId = await inOrg((tx) => getOrgRootObjectId(tx, org.orgId));
+        const freeze = await orgFreeze(rootId, "m25-8-redrive");
+        let lifted = false;
+        try {
+          // The refusal production would take when CI concludes inside the window — and ALSO what
+          // makes this bump a candidate at all, since the sweep is keyed on the latest Decision.
+          expect((await runGate(changeObjectId)).refusal).toBe("frozen");
+          expect(mergeIntentsFor(changeObjectId)).toHaveLength(0);
+
+          // THE OPERATOR LIFTS IT, AND THAT IS THE ONLY THING THAT HAPPENS. No push, no
+          // `workflow_run`, no relayed outbox row — asserted rather than assumed, because "the next
+          // attempt merges it" is only a promise if something other than the provider produces one.
+          await lift(freeze.id);
+          lifted = true;
+          expect(
+            await pendingObservedBumps(changeObjectId),
+            "lifting a freeze must emit no provider event — if it did, this case would be proving " +
+              "the pre-existing webhook path rather than the sweep"
+          ).toHaveLength(0);
+
+          const outcome = await runBumpFreezeRedriveSweep(boss!, server.deps.db);
+          expect(
+            outcome.candidates,
+            "the sweep must recognise a bump whose latest verdict is a `frozen` refusal"
+          ).toContain(changeObjectId);
+          expect(outcome.enqueued).toContain(changeObjectId);
+
+          // AND THE ENQUEUE IS REAL WORK, NOT A RETURN VALUE. The job lands on the same
+          // `dependency-bump-gate` queue `observedBumpRouter` uses and is drained by the REAL
+          // `startBumpGateLoop` worker this file started in `beforeAll` — so what is asserted here
+          // is the merge itself, reached with no test in the path between the sweep and the
+          // provider. `merged_at` is the engine's own durable write (`markBumpMerged`), polled for
+          // rather than slept on.
+          const merged = await waitUntil(
+            async () => {
+              const row = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId));
+              return row?.mergedAt ? row : undefined;
+            },
+            {
+              describe:
+                "the swept bump to reach the gate worker and be stamped merged — the whole point " +
+                "of M25.8b: with no producer, a freeze-withheld bump is stranded for ever",
+              timeoutMs: 90_000,
+              intervalMs: 250
+            }
+          );
+          expect(merged.mergedAt).toBeTruthy();
+          // …and it reached the PROVIDER: one merge intent, addressed to this change.
+          expect(mergeIntentsFor(changeObjectId)).toHaveLength(1);
+          // …and the latest word on the bump says so, rather than the refusal outliving the merge.
+          const rows = await mergeDecisions(changeObjectId);
+          expect(rows.map((r) => r.verdict)).toContain("merged");
+        } finally {
+          if (!lifted) await lift(freeze.id);
+        }
+      }, 240_000);
+
+      it("THE CONTROL: while the freeze still STANDS, the sweep enqueues nothing for that bump", async () => {
+        // Without this case the one above is satisfied by a sweep that enqueues every candidate
+        // unconditionally — which would re-enter the gate, and therefore RUN THE COMPONENT'S
+        // GOVERNED CONTROLS against a real provider, once a minute for the whole length of every
+        // freeze window on the instance.
+        const { changeObjectId } = await greenBump();
+        const rootId = await inOrg((tx) => getOrgRootObjectId(tx, org.orgId));
+        const freeze = await orgFreeze(rootId, "m25-8-redrive-control");
+        try {
+          expect((await runGate(changeObjectId)).refusal).toBe("frozen");
+
+          const outcome = await runBumpFreezeRedriveSweep(boss!, server.deps.db);
+
+          // It IS on the work-list — the sweep looked at it and ASKED the question…
+          expect(outcome.candidates).toContain(changeObjectId);
+          // …and got `null` back from nothing, because the freeze is still in force.
+          expect(outcome.enqueued).not.toContain(changeObjectId);
+          expect(mergeIntentsFor(changeObjectId)).toHaveLength(0);
+        } finally {
+          await lift(freeze.id);
+        }
+      }, 240_000);
+
+      it("a bump refused for a NON-freeze reason is never re-driven — the key is `frozen`, not `open`", async () => {
+        // No `requireOwnChecks`, so the governed gate names no control for this component and grants
+        // nothing: `not_evidenced`. The bump is open, has a recorded pull request, and NO freeze
+        // stands over it — so the ONLY thing keeping it off the work-list is the refusal it carries.
+        // A sweep keyed on "open bump" instead would re-drive every dependency pull request anybody
+        // has left waiting on CI, and the gate's PHASE 2 deposits `control_runs` rows each time.
+        const { changeObjectId } = await authoredAndPushed();
+        expect((await runGate(changeObjectId)).refusal).toBe("not_evidenced");
+
+        const outcome = await runBumpFreezeRedriveSweep(boss!, server.deps.db);
+
+        expect(outcome.candidates).not.toContain(changeObjectId);
+        expect(outcome.enqueued).not.toContain(changeObjectId);
+        expect(mergeIntentsFor(changeObjectId)).toHaveLength(0);
       }, 240_000);
     });
   });
