@@ -362,6 +362,43 @@ export const ChangeWaveTargetSchema = z.object({
     })
     .nullable()
     .optional(),
+  /** THE WAVE-TARGET FREEZE-HOLD PROJECTION (M25.UI, ADR-0039:173, campaigns-rework.md's closing
+   *  "wave-target hold projection" section, fixed by reading `PipelineWaveCard` rather than from
+   *  memory — see that doc for the four properties this shape satisfies).
+   *
+   *  ADDITIVE-OPTIONAL AND COMPOSED AT READ TIME, never persisted: the `freeze_admission` Decision
+   *  has no clearing counterpart (`freeze-hold.ts`'s own module doc), so a hold field fed from that
+   *  row would still say "held" long after a lift — the exact permanent-marker trap ADR-0028's
+   *  stage-dependency status module states at length and this field must not reproduce. Present
+   *  ONLY while the target is genuinely held; a lifted freeze is simply absent on the next read.
+   *
+   *  CARRIES THE COVERING FREEZES THEMSELVES, NEVER A BOOLEAN (property 1) — a `frozen: true` flag
+   *  would force the client to join back to something to say anything useful. Each entry's
+   *  `summary` is a SERVER-COMPOSED sentence (property 2, charter principle 6 — the UI composes no
+   *  copy from raw fields), the same idiom `describeStageDependencyHold` already uses for the
+   *  stage-dependency hold. `scope` is enriched to `{objectId, name}` server-side (property 3) —
+   *  `null` means instance-wide/platform-tier, which has no object id in any org's containment
+   *  chain. `endsAt` is carried and `now` is never (property 4) — the client's own clock
+   *  contextualizes it, and pushing `now` into a read response is exactly what produced ADR-0024's
+   *  measured 1.44 GB/day when it was done to a WRITE path instead.
+   *
+   *  THE RAW `status` STAYS BESIDE THIS FIELD, UNCHANGED. A held target's `status` is still
+   *  `pending` — `hold` explains that status, it does not replace it (same rule ADR-0028's
+   *  stage-dependency hold follows on this same schema). */
+  hold: z
+    .object({
+      freezes: z.array(
+        z.object({
+          freezeId: z.string().uuid(),
+          /** `null` for a platform-tier freeze — that tier addresses a stage coordinate, not an
+           *  object id (see `InstanceFreezeMatchSchema`). */
+          scope: z.object({ objectId: z.string().uuid(), name: z.string().nullable() }).nullable(),
+          summary: z.string(),
+          endsAt: z.string().datetime()
+        })
+      )
+    })
+    .optional(),
   status: z.string(),
   attempt: z.number().int(),
   lastObservedAt: z.string().datetime().nullable(),
@@ -380,6 +417,14 @@ export const ChangeWaveSchema = z.object({
   createdAt: z.string().datetime(),
   startedAt: z.string().datetime().nullable(),
   completedAt: z.string().datetime().nullable(),
+  /** SERVER-COMPUTED COUNT of this wave's currently-held targets — freeze-held
+   *  (`targets[].hold`) plus stage-dependency-held (ADR-0028, carried separately via
+   *  `ChangeExplainResponse.stageDependencyStatus` for the reason given on that field). ADDITIVE-
+   *  OPTIONAL for oasdiff, but ALWAYS EMITTED by every read path that populates `hold` at all —
+   *  clients must never recompute this from `targets[].hold`, because a caller with no
+   *  `stageDependencyStatus` in hand (e.g. `service-board.ts`) would undercount it. Absent means
+   *  "this read path did not compute it", not "zero held". */
+  heldTargetCount: z.number().int().nonnegative().optional(),
   targets: z.array(ChangeWaveTargetSchema)
 });
 export type ChangeWave = z.infer<typeof ChangeWaveSchema>;

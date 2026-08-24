@@ -336,6 +336,21 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
             // change that never crossed a domain boundary.
             buildBoundarySegment(tx, auth.orgId, change)
           ]);
+        // `ChangeWaveSchema.heldTargetCount`'s SECOND HALF: `plan` already carries the freeze-held
+        // count (`getLatestPlanForChange` computes that half unconditionally). This handler is the
+        // one caller that ALSO computes `stageDependencyStatus`, so it is the one place that can
+        // add the stage-dependency-held count without a second evaluation of that predicate. Only
+        // `stageDependencyStatus.waveIndex` can carry any (that status only ever evaluates the
+        // active wave), so every other wave's count is freeze-only, unaffected.
+        if (plan && stageDependencyStatus) {
+          const activeWave = plan.waves.find(
+            (w) => w.waveIndex === stageDependencyStatus.waveIndex
+          );
+          if (activeWave) {
+            const stageHeldCount = stageDependencyStatus.targets.filter((t) => t.held).length;
+            activeWave.heldTargetCount = (activeWave.heldTargetCount ?? 0) + stageHeldCount;
+          }
+        }
         return {
           change,
           plan,

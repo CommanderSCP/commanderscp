@@ -12020,6 +12020,7 @@ export type ExplainChangeResponses = {
                 createdAt: string;
                 startedAt: string | null;
                 completedAt: string | null;
+                heldTargetCount?: number;
                 targets: Array<{
                     id: string;
                     waveId: string;
@@ -12050,6 +12051,17 @@ export type ExplainChangeResponses = {
                             };
                         };
                     } | null;
+                    hold?: {
+                        freezes: Array<{
+                            freezeId: string;
+                            scope: {
+                                objectId: string;
+                                name: string | null;
+                            } | null;
+                            summary: string;
+                            endsAt: string;
+                        }>;
+                    };
                     status: string;
                     attempt: number;
                     lastObservedAt: string | null;
