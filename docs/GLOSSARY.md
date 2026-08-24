@@ -52,8 +52,11 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **field outpost** | Any outpost in **another** trust domain — every paired outpost peer that is not the HQ one, whatever its connectivity | SCP-SPECIFIC |
 | **federation** | Hash-chained, signed journal exchange between SCP instances | QUALIFIED-STANDARD |
 | **org / tenant** | The top-level tenancy unit; one org is one federation identity | SCP-SPECIFIC |
-| **instance** | One running deployment of the SCP binary; multi-tenant | SCP-SPECIFIC |
-| **region** | A geographic locality *within* a security domain | INDUSTRY-STANDARD |
+| **instance** | One running deployment of the SCP binary around one Postgres; multi-tenant; compute may span member clusters | SCP-SPECIFIC |
+| **member cluster** | One compute cluster running some of an instance's api/worker — never a separate instance | SCP-SPECIFIC |
+| **XO** | The designated standby member cluster: sync standby, warm compute, pre-provisioned fallback dial entry | SCP-SPECIFIC |
+| **region** | A geographic locality *within* a security domain — a property of the tenant's deployment targets | INDUSTRY-STANDARD |
+| **infrastructure region** | An operator's cloud/geo region hosting SCP's own compute — distinct from tenant-facing "region"; "region" alone is never reused for it | QUALIFIED-STANDARD |
 | **executor** | A plugin implementing the observe/trigger/status/abort verbs against an execution system | SCP-SPECIFIC |
 | **execution system** | The registered external system an executor talks to (an Argo CD, a GitHub) | SCP-SPECIFIC |
 | **coordination, not execution** | The charter invariant: SCP triggers/observes/gates; it does not build, test, scan or deploy | SCP-SPECIFIC |
@@ -656,25 +659,63 @@ This list is the set known at time of writing; treat "every table carries `orgId
 
 ### instance
 
-**Definition.** One running deployment of the SCP binary — API process plus worker, one Postgres. **One binary, roles not products:** an instance becomes a commander, an outpost or a retrans purely by configuration (`scp federation init --role …`). Same image, same Helm chart, same upgrade path.
+**Definition.** One running deployment of the SCP platform around **one PostgreSQL database** — API process plus worker, one Postgres. **One binary, roles not products:** an instance becomes a commander, an outpost or a retrans purely by configuration (`scp federation init --role …`). Same image, same Helm chart, same upgrade path.
 
-An instance is **multi-tenant** (many orgs) and lives in exactly **one** security domain.
+An instance is **multi-tenant** (many orgs) and lives in exactly **one** security domain. **Its compute may span several member clusters** — one instance is not one Kubernetes cluster — but **its one Postgres primary stays load-bearing**: every correctness guarantee in the system (advisory locks, `SKIP LOCKED` claims, sequence uniqueness) is per-database, so a second Postgres is a second instance, never a wider one. This is an owner amendment to the entry (D1, [ADR-0042](adr/0042-multi-region-instance-resilience.md)); the pre-M26 definition — "one Postgres" as shorthand for "one everything" — is what the amendment makes precise.
 
-**Industry-standard?** No — ordinary English, but worth pinning because "instance", "domain", "outpost" and "org" get used interchangeably in conversation and they are four different things.
+**Industry-standard?** No — ordinary English, but worth pinning because "instance", "domain", "outpost" and "org" get used interchangeably in conversation, and now that compute and database are no longer assumed to be the same machine, so does "member cluster".
 
-**Not to be confused with:** an *org* (a tenant inside an instance), a *security domain* (the tier the instance sits in), a role name (`commander` is what an instance *does*, not what it *is*).
+**Not to be confused with:** an *org* (a tenant inside an instance), a *security domain* (the tier the instance sits in), a role name (`commander` is what an instance *does*, not what it *is*), a **member cluster** (one of possibly several compute clusters an instance's api/worker run in — see below, a part of an instance, never a synonym for one), and an **XO** (a *member cluster's* designation, never a second instance, however much it looks like one from an outpost's side).
+
+**In the code.** `federation_self` keyed by `orgId` ([schema.ts:1256](../../apps/server/src/db/schema.ts)) is the per-org identity that makes "instance" and "commander"/"outpost" distinct axes. `apps/server/src/db/provision.ts`'s role-credential guard (B9) is the first code to say "member cluster" in so many words — it exists because a second Helm release pointed at the same database is a second member cluster of the *same* instance, not a new one.
+
+---
+
+### member cluster
+
+**Definition.** One compute cluster — a Kubernetes cluster, a compose site, a VM — running some of one **instance's** api/worker processes. An instance **spans** one or more member clusters, and every one of them reads and writes the **same** Postgres primary (invariant I2, [ADR-0042](adr/0042-multi-region-instance-resilience.md)). Multi-cluster is a property of *one instance*, never a multiplication of instances: three member clusters in two infrastructure regions are still one database and one per-org journal set.
+
+**Industry-standard?** No — SCP-specific. It borrows "cluster" in its ordinary Kubernetes sense but qualifies it, because a bare "cluster" here would otherwise most naturally mean the *tenant's* Kubernetes cluster — the thing a `deployment target` or an Argo CD execution system points at, an entirely different axis (where a coordinated workload runs, never where SCP itself runs).
+
+**Not to be confused with:** an *instance* (the unit member clusters compose — the database, not the compute, is what an instance names), a `deployment target`'s cluster (the tenant's Kubernetes cluster SCP coordinates), an **XO** (the *designation* one particular member cluster carries, not a third kind of thing), and an **infrastructure region** (the locality a member cluster sits in — see below; the cluster is the compute, the region is the place).
+
+**In the code — partially built.** `apps/server/src/db/provision.ts`'s credential-reset guard (B9) already reasons in these terms: a second Helm release against the shared database is "a second member cluster," and it refuses to clobber the first cluster's role passwords rather than assuming it *is* the first cluster. The ordered dial-URL list, the `XO`-labeled peer entry, and `scp doctor`'s per-member-cluster checks are **proposed, not yet built** — [ADR-0042](adr/0042-multi-region-instance-resilience.md) records the design; the milestone sketch targets M26.3.
+
+---
+
+### XO
+
+**Definition.** The **designation** a member cluster carries when it is the pre-provisioned standby: a synchronous Postgres standby, warm api/worker capacity, and a pre-provisioned fallback entry in a peer's ordered dial-URL list (invariants I3/I4, decision D3). "The XO takes command" is the promotion runbook's own name for a failover. The military metaphor is deliberate: an XO is not a second captain — same chain of command, one designated successor — which is exactly why it is a **member-cluster designation** and not a second instance.
+
+**Industry-standard?** No — SCP-specific coinage (owner-named, D3), borrowing naval/military "executive officer" vocabulary rather than a delivery-engineering term.
+
+**Not to be confused with:** a **standby instance** (a second database, considered and rejected — see [ADR-0042](adr/0042-multi-region-instance-resilience.md)'s alternatives) and a **second commander** (the reading the owner explicitly considered and rejected when naming it, D3 — an XO is always a member cluster of the *same* commander instance).
+
+**In the code — proposed, not yet built.** No dial-URL list, no `XO` label, and no `scp doctor` readiness check exist in the schema or CLI at time of writing; [ADR-0042](adr/0042-multi-region-instance-resilience.md) records the design, targeted at M26.3.
 
 ---
 
 ### region
 
-**Definition.** A geographic locality **within** a security domain — `amer`, `apac`, `emea`. Regions are a deployment/locality axis, entirely orthogonal to trust: `commercial-amer` and `commercial-apac` are two regions of one security domain.
+**Definition.** A geographic locality **within** a security domain — `amer`, `apac`, `emea` — a property of the **tenant's** deployment targets. Regions are a deployment/locality axis, entirely orthogonal to trust: `commercial-amer` and `commercial-apac` are two regions of one security domain. This describes where a *coordinated workload* runs — never where SCP itself runs; for that, see **infrastructure region** below.
 
 **Industry-standard?** Yes — the cloud-provider sense (AWS/Azure/GCP regions), which is exactly how it is used here.
 
-**Not to be confused with:** a *security domain* (a policy/authority boundary; regions do not cross it) or a *partition* (which in AWS terms is the *domain* analogue, not the region analogue — `aws-us-gov` is a partition; `us-gov-west-1` is a region inside it).
+**Not to be confused with:** a *security domain* (a policy/authority boundary; regions do not cross it), a *partition* (which in AWS terms is the *domain* analogue, not the region analogue — `aws-us-gov` is a partition; `us-gov-west-1` is a region inside it), or an **infrastructure region** (SCP's own placement axis, deliberately a different word so this entry's "region" never has to carry both meanings).
 
 **In the code.** Regions are not a table; they appear as deployment-target attributes and executor bindings. One outpost owns Argo CD per region for a prod environment ([ADR-0017](adr/0017-ownership-refinement.md) §3; `apps/server/src/coordination/multiregion-argocd.integration.test.ts`).
+
+---
+
+### infrastructure region
+
+**Definition.** An operator's own cloud or geographic region — where an instance's **member clusters** physically run. Deliberately a different word from the `region` entry above, which names a property of the **tenant's** deployment targets: the two axes describe different things (where SCP itself is placed, versus where a coordinated workload is placed) and can disagree freely — a commander's member clusters in `us-east`/`us-west` coordinate tenant deployment targets tagged `amer`/`apac`/`emea` with no relationship between the two sets. Bare "region" is never reused for this; the qualifier is mandatory every time ([ADR-0042](adr/0042-multi-region-instance-resilience.md), whose D1 settles the vocabulary; the rule is stated first in [docs/proposals/multi-region-instance-resilience.md](proposals/multi-region-instance-resilience.md) §2).
+
+**Industry-standard?** Qualified. "Region" is the industry-standard cloud-provider word for exactly this concept (AWS/Azure/GCP regions) — the *concept* is borrowed straight from there. The qualifier is ours, for the same reason "cross-domain promotion" must always be written in full: SCP had already spent the bare word on a different, tenant-facing sense, and a second meaning riding the same three syllables is precisely the ambiguity this glossary exists to prevent.
+
+**Not to be confused with:** *region* (the tenant deployment-target property, above), a *security domain* (a policy/authority boundary; infrastructure regions do not cross it any more than tenant regions do), and a **member cluster** (the compute unit that sits *within* one infrastructure region — the region is the locality, the cluster is the thing running there).
+
+**In the code.** Not a stored value anywhere — it is documentation/runbook vocabulary for wherever an operator chooses to place a member cluster. See `docs/runbooks/resilience.md` (once built, [ADR-0042](adr/0042-multi-region-instance-resilience.md) D7) for per-role placement guidance.
 
 ---
 

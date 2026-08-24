@@ -6,6 +6,12 @@ One chart (DESIGN.md §16, BUILD_AND_TEST.md §8 M8): the single `scpd` image, t
 by default; a plain in-cluster `postgres:16` is available for evaluation only (no Bitnami
 subchart, no bundled operator).
 
+**Spanning more than one Kubernetes cluster?** This is still the one chart to install — once per
+member cluster, every release pointed at the same PostgreSQL database. See
+[MULTI-CLUSTER.md](MULTI-CLUSTER.md) for the full values recipe (identical secrets, the single
+migrations-owning release, mTLS SAN coverage, cross-cluster NetworkPolicy egress) — it implements
+[`docs/proposals/multi-region-instance-resilience.md`](../../docs/proposals/multi-region-instance-resilience.md) §7.4.
+
 ## Quick start (evaluation, in-cluster Postgres)
 
 ```bash
@@ -166,6 +172,17 @@ reconcile ticks cannot both fire the same real deployment. See that module's doc
 `coordination.integration.test.ts`'s "multi-replica trigger claim is single-flight" suite for the
 concurrent-replica proof.
 
+**Surviving routine cluster operations, not just scaling** (M26.3, C1 —
+[multi-region-instance-resilience.md](../../docs/proposals/multi-region-instance-resilience.md)
+§7.4): `api.pdb`/`worker.pdb` render a `PodDisruptionBudget` (`minAvailable: 1`, ON by default —
+sane at this chart's own default replica count) so a voluntary node drain/eviction/cluster-
+autoscaler consolidation cannot take every replica of a role down at once. `api.
+topologySpreadConstraints`/`worker.topologySpreadConstraints` default to a **soft** (`ScheduleAnyway`)
+spread across `kubernetes.io/hostname` and `topology.kubernetes.io/zone` — genuinely spreads
+replicas on a real multi-node/multi-zone cluster, and is a no-op rather than a stuck Pending pod on
+a single-node dev cluster. Both are within-one-cluster guarantees; spreading compute across member
+clusters entirely is the multi-cluster recipe in [MULTI-CLUSTER.md](MULTI-CLUSTER.md).
+
 ## Managed execution on Kubernetes — what runs, and what still does not
 
 **REWRITTEN 2026-08-20 (M23.4). This section used to be headed "Managed-IaC (Mode 2) — known gap"
@@ -303,18 +320,28 @@ present and correct when enabled) so the next one cannot be forgotten silently.
 | `managedDep.*`                 | `SCP_MANAGED_DEP_RUNNER_IMAGE` / `_WORKSPACE_ROOT`                        | M21.5 dependency-bump actuator. Empty image (default) = OFF, fail-closed at dispatch.                                      |
 | `managedRunners.*`             | `SCP_MANAGED_RUNNER_LAUNCHER` / `_K8S_*`                                  | M23.2. `docker` (default) = today's behaviour; `kubernetes` launches each run as a Job.                                    |
 
-**Still NOT settable, and why.** The retrans **byte plumbing** — `SCP_RELAY_OUT_DIR` / `IN_DIR` /
-`BLOB_OUT_DIR`, `SCP_RELAY_SOURCE_REPO` / `DEST_REPO` / `CERT_DIR`, and the `SCP_DELIVERY_ROOTS`
-that must bound them — has no values key yet. This is deliberate rather than overlooked: a CDS drop
-directory is polled by a **third-party intake watcher**, so it needs a volume shape (RWX PVC,
-`existingClaim`, hostPath, CSI) that is a deployment-topology decision, and `readOnlyRootFilesystem:
-true` forbids improvising one. A retrans can therefore be _switched on_ here but not yet _given
-somewhere to drop_; both loops resolve no target and defer with a named problem, consuming no
-attempt. Same for the managed-scan runner (`SCP_MANAGED_SCAN_RUNNER_IMAGE`) — note the chart
-currently provisions the scan-DB PVC (`scanDbCache`) for a scanner it cannot start. (The
-managed-DEP runner is NOT in that list: `managedDep.runnerImage` reaches
-`SCP_MANAGED_DEP_RUNNER_IMAGE`, because a class that cannot be switched on by any shipped
-deployment is a class whose charter clauses are enforced by nothing — ADR-0032 §8e.)
+**Corrected 2026-08-24 (M26.3, C4).** This entry used to say the retrans byte plumbing — the
+drop-directory env vars and the volume they need — had no values key at all. `federation.relay.volumes`
+now gives `SCP_RELAY_OUT_DIR`/`IN_DIR`/`BLOB_OUT_DIR` (and the `SCP_DELIVERY_ROOTS` that bounds any
+per-peer override of them) a mountable volume — `emptyDir` for a single-replica dev/eval retrans,
+or an existing ReadWriteMany PVC (`volumes.type: pvc`) for a multi-replica one — and
+`federation.relay.s3.endpoints` wires `SCP_DELIVERY_S3_ENDPOINTS`, the recommended posture for any
+retrans whose replicas span more than one member cluster (an RWX volume essentially never does).
+The chart refuses to render a multi-replica retrans with a pod-local `emptyDir` and no shared
+volume rather than let it silently miss its own builds. See `federation.relay`'s values.yaml
+comment for the full recipe, and note there is **no `hostPath` option** — this chart's own
+`helm-verify` gate refuses any `hostPath:` volume anywhere in it. **Still genuinely open**: a real
+third-party CDS intake watcher polling that same directory from OUTSIDE this pod is an out-of-band
+arrangement this chart does not (and cannot) provide — it mounts a volume, not a watcher — and
+`SCP_RELAY_SOURCE_REPO`/`DEST_REPO`/`CERT_DIR` (registry-mirroring config, not volumes) remain
+unreachable from Helm, deliberately out of this pass's scope.
+
+**Still NOT settable, and why (everything else).** Note the chart provisions the scan-DB PVC
+(`scanDbCache`) independently of whether `managedScan.runnerImage` is actually set — an operator
+who enables the cache without the runner image gets a PVC for a scanner that never starts. (The
+managed-DEP runner is different: `managedDep.runnerImage` reaches `SCP_MANAGED_DEP_RUNNER_IMAGE`,
+because a class that cannot be switched on by any shipped deployment is a class whose charter
+clauses are enforced by nothing — ADR-0032 §8e.)
 
 **Corrected 2026-08-17 (M21.7), and SUPERSEDED IN PART 2026-08-20 (M23.2) — read both.** The 2026-08-17
 correction said: "Reaches the env var" is not "can run", and **no managed-execution runner — iac,

@@ -52,7 +52,10 @@ spec:
         # practice against a real external Postgres that hiccups during a rolling upgrade. Same
         # image, a plain TCP-connect retry loop (no extra tooling — `pg_isready` isn't in this
         # image, DESIGN §16's "the scpd image carries no [extra toolchain]" principle extends
-        # here too); the outer Job's `activeDeadlineSeconds` is the overall backstop.
+        # here too); the outer Job's `activeDeadlineSeconds` is the overall backstop. Single-host
+        # `new URL()` parse, deliberately (D5, M26.3) — same DSN contract as
+        # `commanderscp.waitForPostgresInitContainer`'s doc comment; see values.yaml's
+        # `postgres.host`.
         - name: wait-for-postgres
           image: {{ include "commanderscp.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
