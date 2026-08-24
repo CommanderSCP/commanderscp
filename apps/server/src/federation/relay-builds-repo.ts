@@ -27,7 +27,7 @@
  *    relay — moves a row out of `exhausted`, which is what keeps the operator's existing
  *    `POST /api/v1/federation/relay` the documented, sufficient exit from a boundary stall.
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { federationRelayBuilds } from "../db/schema.js";
@@ -360,4 +360,72 @@ export async function getRelayBuild(
     lastDecisionId: row.lastDecisionId,
     tarballPath: row.tarballPath
   };
+}
+
+/**
+ * The FULL row — every column {@link RelayBuildRow} omits (the two scheduling columns
+ * `nextAttemptAt`/`claimedUntil` and the two audit timestamps) PLUS everything `RelayBuildRow`
+ * already carries. A deliberately SEPARATE interface rather than a widened `RelayBuildRow`: the
+ * loop/claim/release functions above only ever needed the narrower shape, and widening it would
+ * have every one of those call sites start carrying scheduling columns whose exposure was never
+ * reviewed for them. This is the OPERATOR TRIAGE projection — {@link listRelayBuilds} below is its
+ * only producer.
+ */
+export interface RelayBuildLedgerRow {
+  changeObjectId: string;
+  sourceChangeObjectId: string | null;
+  status: RelayBuildStatus;
+  attempts: number;
+  failedAttempts: number;
+  /** ISO-8601 — the retry gate: a 'pending' row is workable only at/after this instant. */
+  nextAttemptAt: string;
+  /** ISO-8601, or `null` when unclaimed. */
+  claimedUntil: string | null;
+  lastReason: string | null;
+  lastDecisionId: string | null;
+  tarballPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * OPERATOR READ SURFACE (M13.1b, owner ask) — `GET /api/v1/federation/relay-builds`: see queue
+ * depth and exhausted rows without DB surgery. Every row for this org, optionally filtered by
+ * `status`, ordered by `updated_at DESC` (most recent activity first) — this is TRIAGE, not the
+ * work queue, so the ordering is deliberately NOT `listDueRelayBuilds`'s `created_at,
+ * change_object_id` (that function and its predicate are untouched by this one).
+ *
+ * ROLE-AGNOSTIC BY CONSTRUCTION: rows exist only on a `role: retrans` instance (seeded at
+ * promotion import there, `promotion-repo.ts`); on any other role the table is honestly empty, so
+ * this list returns an empty array rather than a 409 — matching how every other read in this
+ * codebase treats "nothing here" versus "not entitled to look".
+ */
+export async function listRelayBuilds(
+  tx: TenantTx,
+  orgId: string,
+  opts: { status?: RelayBuildStatus; limit: number }
+): Promise<RelayBuildLedgerRow[]> {
+  const conditions = [eq(federationRelayBuilds.orgId, orgId)];
+  if (opts.status) conditions.push(eq(federationRelayBuilds.status, opts.status));
+
+  const rows = await tx
+    .select()
+    .from(federationRelayBuilds)
+    .where(and(...conditions))
+    .orderBy(desc(federationRelayBuilds.updatedAt))
+    .limit(opts.limit);
+  return rows.map((row) => ({
+    changeObjectId: row.changeObjectId,
+    sourceChangeObjectId: row.sourceChangeObjectId,
+    status: row.status as RelayBuildStatus,
+    attempts: row.attempts,
+    failedAttempts: row.failedAttempts,
+    nextAttemptAt: row.nextAttemptAt.toISOString(),
+    claimedUntil: row.claimedUntil?.toISOString() ?? null,
+    lastReason: row.lastReason,
+    lastDecisionId: row.lastDecisionId,
+    tarballPath: row.tarballPath,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  }));
 }

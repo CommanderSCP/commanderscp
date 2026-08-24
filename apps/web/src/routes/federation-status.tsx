@@ -306,6 +306,20 @@ function FederationInitForm(): React.JSX.Element {
           Initialize
         </Button>
       </form>
+      {/* API-first parity (charter principle 3) is why `retrans` stays a real choice here — this
+          form does not shrink the API's own role enum. But a real DEPLOYMENT running as a retrans
+          never serves this UI at all: `app.ts` gates SPA registration on
+          `federationRole !== "retrans"` (`SCP_FEDERATION_ROLE`, the M16.3 P3 owner decision —
+          `retrans-no-spa.integration.test.ts`), so an operator who actually reaches this page is, by
+          construction, not on that deployment. Naming that here — only while `retrans` is the
+          selection under consideration — keeps the choice honest without removing it. */}
+      {role === "retrans" && (
+        <p className="text-xs text-slate-500" data-testid="federation-init-retrans-hint">
+          A <code>retrans</code> deployment withholds this UI entirely (
+          <code>SCP_FEDERATION_ROLE=retrans</code>); its relay work is driven via CLI/API.
+          Initializing an org as retrans here is for API-parity and development use.
+        </p>
+      )}
       {initMutation.isError && (
         <Notice tone="danger">
           {initMutation.error instanceof Error

@@ -257,6 +257,8 @@ import {
   // M15.5(c) — the retrans validate-then-relay (ADR-0019 §2).
   buildRelayTarball as buildRelayTarballRequest,
   importRelayTarball as importRelayTarballRequest,
+  // M13.1b — the auto-relay build ledger's operator read surface (owner ask).
+  listFederationRelayBuilds as listFederationRelayBuildsRequest,
   createOverlay as createOverlayRequest,
   getMergedOverlayView as getMergedOverlayViewRequest,
   handFillObject as handFillObjectRequest,
@@ -436,6 +438,9 @@ import type {
   RelayBuildResponse,
   RelayImportRequest,
   RelayImportResponse,
+  // M13.1b — the auto-relay build ledger's operator read surface (owner ask).
+  RelayBuild,
+  RelayBuildStatus,
   // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN §11/§12).
   CreateWebhookSecretRequest,
   WebhookSecretConfiguredResponse,
@@ -2440,6 +2445,25 @@ export class ScpClient {
     relayImport: async (req: RelayImportRequest): Promise<RelayImportResponse> => {
       const result = await importRelayTarballRequest({ client: this.client, body: req });
       return unwrap(result);
+    },
+    /** M13.1b operator read surface (owner ask) — the auto-relay build ledger's queue depth and
+     *  exhausted rows, `GET /federation/relay-builds`. ROLE-AGNOSTIC: rows exist only on a
+     *  `role: retrans` instance (seeded at promotion import there — `relay-builds-repo.ts`'s
+     *  `listRelayBuilds` doc); on any other role this returns an empty array rather than a 409,
+     *  matching every other read in this codebase. `opts.status` narrows to one bucket; `opts.limit`
+     *  is server-bounded (default 100, max 500) — both omitted apply the server defaults. */
+    listRelayBuilds: async (
+      opts: { status?: RelayBuildStatus; limit?: number } = {}
+    ): Promise<RelayBuild[]> => {
+      const query = {
+        ...(opts.status !== undefined ? { status: opts.status } : {}),
+        ...(opts.limit !== undefined ? { limit: opts.limit } : {})
+      };
+      const result = await listFederationRelayBuildsRequest({
+        client: this.client,
+        ...(Object.keys(query).length > 0 ? { query } : {})
+      });
+      return unwrap(result).items;
     },
     createOverlay: async (req: {
       base: string;

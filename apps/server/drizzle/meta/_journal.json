@@ -610,6 +610,13 @@
       "when": 1788144000000,
       "tag": "0086_instance_freezes",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1788145000000,
+      "tag": "0087_bundle_transfers_channel",
+      "breakpoints": true
     }
   ]
 }
