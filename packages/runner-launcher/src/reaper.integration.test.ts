@@ -492,16 +492,41 @@ describe("MEDIUM-4: a real SIGKILL mid-`create` leaks the `--env-file`, and reap
     return binary;
   }
 
-  /** Polls `dir` for a file carrying `prefix` — the same "observe the real adapter's real state"
-   *  technique `reaper.integration.test.ts`'s own `waitUntil` uses for a container's `docker
-   *  inspect` state, applied to a filename instead. */
-  async function waitForFile(dir: string, prefix: string, timeoutMs: number): Promise<string> {
+  /** Polls `dir` for a file carrying `prefix` WHOSE CONTENT equals `expected` — the same "observe
+   *  the real adapter's real state" technique `reaper.integration.test.ts`'s own `waitUntil` uses
+   *  for a container's `docker inspect` state, applied to a file instead.
+   *
+   *  NAME-VISIBILITY IS NOT CONTENT-VISIBILITY. `writeSecretEnvFile` writes with a single
+   *  `writeFile(path, …, { flag: "wx" })` — open, then write, then close, three separate syscalls —
+   *  so the name is in `readdir` before the bytes are in the file. A waiter that returns on the
+   *  name and reads once caught the gap on a loaded CI runner (2026-08-24, PR #271 shard 1:
+   *  `expected '' to be 'AWS_SECRET_ACCESS_KEY=…'` — an EMPTY read, not ENOENT, which is this
+   *  race's exact signature and rules out anything sweeping the file). Waiting for the CONTENT
+   *  collapses both causes of emptiness (mid-write vs never-written) into one loud timeout. */
+  async function waitForFileContent(
+    dir: string,
+    prefix: string,
+    expected: string,
+    timeoutMs: number
+  ): Promise<string> {
     const deadline = Date.now() + timeoutMs;
+    let lastSeen: string | undefined;
     for (;;) {
       const found = (await readdir(dir).catch(() => [])).find((name) => name.startsWith(prefix));
-      if (found) return join(dir, found);
+      if (found) {
+        // ENOENT here would mean the file vanished between readdir and readFile — keep polling;
+        // the deadline, not this read, is the arbiter of "never appeared".
+        const content = await readFile(join(dir, found), "utf8").catch(() => undefined);
+        if (content === expected) return join(dir, found);
+        lastSeen = content;
+      }
       if (Date.now() >= deadline) {
-        throw new Error(`waitForFile: no '${prefix}*' ever appeared in ${dir}`);
+        throw new Error(
+          `waitForFileContent: no '${prefix}*' in ${dir} ever carried the expected content — ` +
+            (lastSeen === undefined
+              ? "no such file ever appeared"
+              : `last read was ${JSON.stringify(lastSeen)}`)
+        );
       }
       await new Promise((r) => setTimeout(r, 10));
     }
@@ -524,12 +549,19 @@ describe("MEDIUM-4: a real SIGKILL mid-`create` leaks the `--env-file`, and reap
 
       let leakedPath: string;
       try {
-        // WAIT FOR THE REAL ADAPTER, IN THE REAL CHILD PROCESS, TO HAVE ACTUALLY WRITTEN THE FILE —
-        // not merely for the process to have started. `create`'s stub sleeps 3s, so this window is
-        // wide open the entire time the file legitimately exists.
-        leakedPath = await waitForFile(secretEnvDir, "scp-secret-env-", 5_000);
+        // WAIT FOR THE REAL ADAPTER, IN THE REAL CHILD PROCESS, TO HAVE ACTUALLY WRITTEN THE FILE'S
+        // CONTENT — not merely for the process to have started, and not merely for the NAME to be in
+        // readdir (see waitForFileContent's doc for the CI red that distinction cost). `create`'s
+        // stub sleeps 3s, so this window is wide open the entire time the file legitimately exists.
+        leakedPath = await waitForFileContent(
+          secretEnvDir,
+          "scp-secret-env-",
+          "AWS_SECRET_ACCESS_KEY=CANARY-LEAKED-ON-DISK-7X\n",
+          5_000
+        );
 
         // MEASURED, not assumed: the file really does carry the credential, unredacted, on disk.
+        // Race-free now — the wait above already saw this exact content, and nothing rewrites it.
         const content = await readFile(leakedPath, "utf8");
         expect(content).toBe("AWS_SECRET_ACCESS_KEY=CANARY-LEAKED-ON-DISK-7X\n");
 
