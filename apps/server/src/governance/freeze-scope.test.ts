@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { filterFreezesByScopes, type FreezeRow } from "./freezes-repo.js";
-import { instanceFreezeCovers, type InstanceFreezeRow } from "./instance-freezes-repo.js";
+import { filterFreezesByScopes } from "./freezes-repo.js";
+import { type InstanceFreezeRow } from "./instance-freezes-repo.js";
 import {
   freezesByTarget,
   rollbackExemptible,

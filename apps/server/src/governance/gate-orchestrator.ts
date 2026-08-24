@@ -13,7 +13,6 @@ import {
 import { ensureControlRuns, readExistingControlOutcomes } from "./control-runner.js";
 import { scanExclusionSetChangedForGate } from "./scan-exclusion-actuator.js";
 import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
-import type { FreezeRow } from "./freezes-repo.js";
 import {
   freezesByTarget,
   rollbackExemptible,
