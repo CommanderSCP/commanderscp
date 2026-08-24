@@ -28,7 +28,7 @@ import {
 import type { AppDeps } from "../types.js";
 import type { GateDeps } from "../coordination/gates.js";
 import { requireAuth } from "../auth/require-auth.js";
-import { withTenantTx } from "../db/tenant-tx.js";
+import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { badRequest, notFound } from "../errors.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
@@ -54,6 +54,8 @@ import {
   updateFreezeWindow,
   type FreezeRow
 } from "../governance/freezes-repo.js";
+import { attachFreezeObject, syncFreezeObject } from "../governance/freeze-object.js";
+import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 
 /**
  * ONE wire projection of a freeze row, shared by all five freeze routes.
@@ -79,8 +81,54 @@ function freezeResponse(f: FreezeRow) {
     // gettable by id, because a `gate`/`freeze_admission` Decision cites `freeze.id` forever.
     liftedAt: f.liftedAt?.toISOString() ?? null,
     liftedByActorId: f.liftedByActorId,
-    liftReason: f.liftReason
+    liftReason: f.liftReason,
+    // M25.7 — READ from the row, never inferred from whether a peer exists or from who is asking.
+    // A label computed from something other than the thing it names goes silently false.
+    objectId: f.objectId
   };
+}
+
+/**
+ * ============================================================================================
+ * M25.7 — `federation:write` IS DEMANDED ON EVERY VERB THAT PUBLISHES, NOT ONLY ON CREATE
+ * ============================================================================================
+ * The create route gates `federate: true` on `federation:write` because declaring a freeze that
+ * binds ANOTHER security domain is a categorically different act from describing your own estate
+ * (ADR-0043 §3). Both write verbs re-publish — `syncFreezeObject` re-snapshots the object after a
+ * lift and after a window edit, and that snapshot rides the next bundle — so gating only the
+ * create leaves the same reach reachable with strictly less authority:
+ *
+ *   a `freeze:write`-only actor could take a federating freeze whose window ends tonight and
+ *   `PATCH` its `endsAt` a year out, extending a release-stopping block across a boundary they
+ *   hold no federation authority over. The lift direction is the mirror image: retracting a
+ *   commander's protection at every downstream instance.
+ *
+ * Keyed on `objectId !== null` — i.e. on whether `syncFreezeObject` will ACTUALLY publish, read
+ * from the row rather than inferred from anything else. A non-federating freeze (the default, and
+ * the whole pre-M25.7 estate) never reaches the check, so every existing caller is unchanged.
+ *
+ * Checked at the freeze's OWN scope, matching the `freeze:write` check it sits beside and the
+ * create route's, so the permission's reach and the freeze's reach stay the same bounded thing.
+ *
+ * ADDED, NEVER SUBSTITUTED: `freeze:write` is already authorized by the time this runs.
+ *
+ * It is deliberately NOT the replica guard. `freezes-repo.ts`'s `lockFreezeRow` refuses a write to
+ * a freeze another DOMAIN owns (409); this refuses a write by an actor without federation
+ * authority to a freeze THIS domain owns (403). Neither subsumes the other, and only one of them
+ * fires for a commander operator editing a commander freeze.
+ */
+async function assertMayEditFederatingFreeze(
+  tx: TenantTx,
+  auth: { orgId: string; subjectObjectId: string },
+  existing: FreezeRow
+): Promise<void> {
+  if (existing.objectId === null) return;
+  await authorize(tx, {
+    orgId: auth.orgId,
+    subjectObjectId: auth.subjectObjectId,
+    permission: "federation:write",
+    scopeObjectId: existing.scopeObjectId
+  });
 }
 
 /**
@@ -504,6 +552,48 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           permission: "freeze:write",
           scopeObjectId: scopeObject.id
         });
+        // =====================================================================================
+        // M25.7 / OWNER DECISION D6 — THE FEDERATING FORM IS A SECOND, HIGHER GATE
+        // =====================================================================================
+        // `freeze:write` above is the permission for freezing YOUR OWN estate, and it is still
+        // required — this is ADDED, never substituted. `federation:write` is demanded on top
+        // because `federate: true` declares a freeze that BINDS ANOTHER SECURITY DOMAIN: the object
+        // rides `object_upsert` to every peer at a scope that carries it, and
+        // `governance/freeze-object.ts`'s projection rebuild makes it BLOCK there. That is
+        // categorically different from describing your own estate, and it is the exact line
+        // ADR-0022 drew for commander-authored outpost config, in the same direction.
+        //
+        // Checked at the SCOPE OBJECT, not at the org root, so the permission's reach and the
+        // freeze's reach are the same bounded thing — the property `freeze:write` already has here
+        // and that the lift route's docblock spells out at length.
+        //
+        // ASYMMETRIC ON PURPOSE, exactly like `assertMayDeclareDomainLocal`: only `true` is gated.
+        // An ordinary `POST /freezes` is unchanged for every existing caller.
+        if (request.body.federate === true) {
+          await authorize(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            permission: "federation:write",
+            scopeObjectId: scopeObject.id
+          });
+        }
+        // ADR-0031's own door, for the outpost-declared case. It refuses anything but `true`, so
+        // this is a no-op on every ordinary create.
+        await assertMayDeclareDomainLocal(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          scopeObjectId: scopeObject.id,
+          requested: request.body.domainLocal
+        });
+        // A locality declaration with nothing to withhold is a field that lies. Without an object
+        // there is no journal entry to filter, so `domainLocal: true` alone would be accepted,
+        // recorded nowhere, and read back as absent — refuse it instead of silently dropping it.
+        if (request.body.domainLocal === true && request.body.federate !== true) {
+          throw badRequest(
+            "domainLocal is a property of a freeze's GRAPH OBJECT and requires federate: true — " +
+              "a freeze without federate has no object and already never leaves this domain"
+          );
+        }
         const startsAt = new Date(request.body.startsAt);
         const endsAt = new Date(request.body.endsAt);
         // M25.3: was an inline `endsAt <= startsAt` comparison — a THIRD copy of the invariant
@@ -512,7 +602,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         // about"). `createFreeze` calls it defensively a line later anyway, so the only thing the
         // inline copy contributed was a second message that could drift from the real one.
         assertWindowOrdered(startsAt, endsAt);
-        return createFreeze(tx, {
+        const created = await createFreeze(tx, {
           orgId: auth.orgId,
           scopeObjectId: scopeObject.id,
           name: request.body.name,
@@ -526,6 +616,18 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           // "component built, never installed" shape applied to the one mitigation D5's loosening
           // was approved on. Absent => `false` in `createFreeze`, so an old client is unchanged.
           atomic: request.body.atomic
+        });
+        // M25.7 — ROW FIRST, THEN OBJECT, both in this transaction. The object's
+        // `properties.freezeId` IS the row's primary key: that identity is what makes the rebuild
+        // at the far end idempotent on a replay, and what keeps a `freeze_admission` Decision
+        // written at an outpost resolvable against `GET /v1/freezes/{id}` here.
+        if (request.body.federate !== true) return created;
+        return attachFreezeObject(tx, {
+          orgId: auth.orgId,
+          freeze: created,
+          actorObjectId: auth.subjectObjectId,
+          requestId: String(request.id),
+          domainLocal: request.body.domainLocal
         });
       });
       reply.status(201).send(freezeResponse(freeze));
@@ -697,6 +799,9 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           permission: "freeze:write",
           scopeObjectId: before.scopeObjectId
         });
+        // M25.7 — a lift of a FEDERATING freeze retracts a block in another security domain
+        // (`syncFreezeObject` below re-snapshots the object). See the helper's docblock.
+        await assertMayEditFederatingFreeze(tx, auth, before);
         const row = await liftFreeze(tx, {
           orgId: auth.orgId,
           id: request.params.id,
@@ -739,6 +844,17 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           decisionId: decision.id,
           requestId: request.id
         });
+        // M25.7 — THE LIFT MUST REACH DOWNSTREAM TOO. A no-op for a non-federating freeze. Without
+        // it a commander could declare a freeze that blocks at an outpost and never retract it
+        // there: M25.1's "a surface with an entrance and no exit" defect rebuilt one boundary over,
+        // and strictly worse, because `lockFreezeRow`'s replica guard deliberately denies the
+        // outpost a local exit. The re-snapshot rides the next bundle like any other object edit.
+        await syncFreezeObject(tx, {
+          orgId: auth.orgId,
+          freeze: row,
+          actorObjectId: auth.subjectObjectId,
+          requestId: String(request.id)
+        });
         return row;
       });
       reply.status(200).send(freezeResponse(lifted));
@@ -777,6 +893,9 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           permission: "freeze:write",
           scopeObjectId: existing.scopeObjectId
         });
+        // M25.7 — the sharper half of the pair: EXTENDING a federating freeze's window pushes a
+        // release-stopping block further into another security domain. See the helper's docblock.
+        await assertMayEditFederatingFreeze(tx, auth, existing);
         const { before, after, direction } = await updateFreezeWindow(tx, {
           orgId: auth.orgId,
           id: request.params.id,
@@ -824,6 +943,15 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           reason: request.body.reason,
           decisionId: decision.id,
           requestId: request.id
+        });
+        // M25.7 — the second write verb, the same re-snapshot. A shortening that stopped at this
+        // instance would leave a peer enforcing a window its declaring domain has already ended,
+        // which is the same one-way door the lift route's note is about, only quieter.
+        await syncFreezeObject(tx, {
+          orgId: auth.orgId,
+          freeze: after,
+          actorObjectId: auth.subjectObjectId,
+          requestId: String(request.id)
         });
         return after;
       });

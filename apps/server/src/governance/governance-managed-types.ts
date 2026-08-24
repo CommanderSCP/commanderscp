@@ -54,9 +54,112 @@ export const GOVERNANCE_MANAGED_OBJECT_TYPE_IDS: ReadonlySet<string> = new Set([
    * split the permission the way D3 requires — `object:write` at the component to RAISE a request,
    * `policy:write` at the named tier object to APPROVE, deny or revoke one.
    */
-  "scan_override_grant"
+  "scan_override_grant",
+  /**
+   * M25.7 (owner decision D6, ADR-0043) — a `freeze` object is the WIRE FORM of a freeze window: it
+   * rides `object_upsert` to this org's peers, and `federation/import-repo.ts` rebuilds a `freezes`
+   * projection row from it at every receiving instance, which is what makes it BLOCK there.
+   *
+   * So a caller who can mint one through a door that takes a free-form `typeId` can stop releases
+   * in ANOTHER SECURITY DOMAIN — and, without this entry, could do it holding nothing but plain
+   * `object:write` at their own domain. That is a wider blast radius than the `policy` hole this
+   * set was created for, and it arrives with the same shape: authority carried in `properties`
+   * (`scopeObjectId`, the window, `atomic`) that no generic write door inspects.
+   *
+   * The typed door is `POST /api/v1/freezes`, which demands `freeze:write` at the freeze's own
+   * scope and, for the federating form, `federation:write` on top — and which is also the only
+   * place that writes the object and its projection row together, so a `freeze` object minted
+   * anywhere else would federate a freeze that does not exist locally.
+   *
+   * MEMBERSHIP HERE IS NECESSARY AND NOT SUFFICIENT, and the first version of this entry claimed
+   * otherwise ("closes all five doors at once"). It does not: of the five doors, only TWO refuse
+   * the type ({POST,PATCH,PUT,DELETE} `/objects/{type}` and `POST /discovery/accept`). The other
+   * three — `POST /plans`+apply, `POST /federation/overlays`, `POST /federation/hand-fill` — take
+   * membership as an instruction to demand `policy:write` INSTEAD of `object:write`, which is a
+   * permission UPGRADE, not a refusal. See {@link PROJECTION_BOUND_OBJECT_TYPE_IDS}, which is the
+   * set those three consult, and which is what actually closes them for `freeze`.
+   *
+   * FEDERATION JOURNAL REPLAY IS STILL NOT A DOOR, for the structural reason recorded above:
+   * `import-repo.ts` is where a freeze object is SUPPOSED to arrive.
+   */
+  "freeze"
 ]);
 
 export function isGovernanceManagedObjectType(typeId: string): boolean {
   return GOVERNANCE_MANAGED_OBJECT_TYPE_IDS.has(typeId);
+}
+
+/**
+ * ==============================================================================================
+ * TYPES WHOSE GRAPH OBJECT IS ONLY HALF THE RECORD — refused outright at every door that takes a
+ * caller-supplied `typeId`, the way {@link import("../graph/pair-bound-types.js")} refuses
+ * `placement`.
+ * ==============================================================================================
+ *
+ * WHY A SECOND SET AND NOT A SECOND MEANING FOR THE FIRST. `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS`
+ * answers "which permission?"; three of the five doors answer it with `policy:write` and then
+ * WRITE THE ROW. That is right for `policy` and `control` — DESIGN §13 makes "locally annotate a
+ * commander-distributed global policy" and "an air-gapped operator keys a commander-origin policy
+ * in by hand" canonical, so refusing the type would delete the feature. It is WRONG for a type
+ * whose object is meaningless on its own.
+ *
+ * THE HOLE THIS CLOSES, MEASURED ON THE M25.7 TREE BEFORE IT EXISTED. An actor holding
+ * `policy:write` at a narrow domain — and `freeze:write` / `federation:write` NOWHERE — could
+ * `POST /plans` a manifest object of `typeId: "freeze"` and apply it. Three things then went
+ * wrong at once, and only the first is a permission problem:
+ *
+ *   1. `iac/plans-repo.ts`'s `writePermissionFor` mapped the type to `policy:write`, which the
+ *      actor held, so the freeze's two REAL gates (`freeze:write` at its scope, `federation:write`
+ *      on top for the federating form) were bypassed entirely — `policy:write` became a complete
+ *      substitute for both.
+ *   2. `prepareApplyChecks` scope-binds a DECLARED `properties.*` to the actor's own authority for
+ *      exactly two types (`policy`, `campaign`). A `freeze`'s declared `properties.scopeObjectId`
+ *      was bound to nothing, so the narrow actor's freeze could name any scope in the org.
+ *   3. The result was UNLIFTABLE AT BOTH ENDS. Only `POST /v1/freezes` writes the object and the
+ *      `freezes` row together, so the authoring instance got an object with no projection row and
+ *      `DELETE /v1/freezes/{id}` 404s there; at the peer the row IS rebuilt, and `lockFreezeRow`
+ *      refuses to lift it because its origin domain is foreign. A block nobody can retract.
+ *
+ * REFUSAL LOSES NOTHING REAL, which is the test this repo applies before refusing a type at a
+ * door (`pair-bound-types.ts`'s "is it called an import path" paragraph). There is no
+ * "annotate a distributed freeze" use case — a freeze carries no strictness lattice for an
+ * overlay to add to — and none of the three doors can write the projection row anyway, so what
+ * they would produce is by construction the broken half-record above.
+ *
+ * BEFORE ADDING A MEMBER, the question is the one that separates this set from the governance
+ * one: does a row of this type require a SECOND write, in another table, that only a typed route
+ * performs? If yes it belongs here, whatever its permission story is. `scan_override_grant` does
+ * NOT — it is wholly an object — which is why it stays governance-managed and permission-gated.
+ *
+ * The doors that consult this set are the three that would otherwise upgrade rather than refuse:
+ *  - `iac/plans-repo.ts`'s `prepareApplyChecks` (per-entry, every non-`noop` action)
+ *  - `federation/overlay-repo.ts`'s `createOverlay`
+ *  - `federation/handfill-repo.ts`'s `assertGovernanceAuthorityForHandFill`
+ * The other two already refuse every governance-managed type, so a member of this set is refused
+ * there by the wider rule; `governance-managed-write-doors.integration.test.ts` drives all five
+ * with an actor holding every permission those doors ask for EXCEPT `freeze:write`, so "refused"
+ * is measured rather than assumed.
+ *
+ * FEDERATION JOURNAL REPLAY IS NOT A DOOR HERE EITHER, and for this set the reason is doubled:
+ * `import-repo.ts`'s `object_upsert` branch is exactly where a `freeze` object is SUPPOSED to
+ * arrive, and it is the branch that then writes the projection row.
+ */
+export const PROJECTION_BOUND_OBJECT_TYPE_IDS: ReadonlySet<string> = new Set(["freeze"]);
+
+export function isProjectionBoundObjectType(typeId: string): boolean {
+  return PROJECTION_BOUND_OBJECT_TYPE_IDS.has(typeId);
+}
+
+/** The one sentence every door's refusal says, so three doors cannot drift into three different
+ *  explanations of one rule. `door` names the caller's own route so the message routes them
+ *  somewhere real. */
+export function projectionBoundRefusalDetail(typeId: string, door: string): string {
+  return (
+    `object type '${typeId}' is projection-backed: its graph object is only the WIRE half of the ` +
+    `record, and ${door} cannot write the enforcement row that goes with it — a '${typeId}' minted ` +
+    `here would federate and block at every peer while not existing at this instance, and could ` +
+    `then be lifted at neither end. Use /api/v1/${typeId}s, which writes both halves in one ` +
+    `transaction and enforces '${typeId}:write' at the declared scope plus 'federation:write' to ` +
+    `federate it.`
+  );
 }

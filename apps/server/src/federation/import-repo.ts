@@ -28,7 +28,14 @@ import {
 import { createRelationship, deleteRelationship } from "../graph/relationships-repo.js";
 import { deleteObject, isUuid, upsertObjectByUrn } from "../graph/objects-repo.js";
 import { updateObject } from "../graph/objects-repo.js";
-import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { findObjectByIdOrUrnAnyType, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import {
+  isFreezeObjectType,
+  liftFreezeProjectionForTombstonedObject,
+  rebuildFreezeProjectionFromObject
+} from "../governance/freeze-object.js";
+import { getObjectType } from "../graph/type-registry-repo.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
 
 /**
  * `scp federation import` — the receiving side of the `.scpbundle` file transport (DESIGN.md
@@ -201,6 +208,48 @@ async function applyEntry(
       const typeId = String(payload.typeId);
       const urn = String(payload.urn);
       const revision = Number(payload.revision ?? entry.sequence);
+      // ==========================================================================================
+      // AN UNREGISTERED TYPE COSTS ONE ENTRY, NEVER THE CHANNEL (M25.7 round 2)
+      // ==========================================================================================
+      // `createObject` calls `requireObjectType`, which 404s on a type this instance has never
+      // registered — and this branch has no try/catch, so that throw aborts the peer's ENTIRE
+      // signed bundle, every unrelated entry in it with it, and `inbox-loop.ts` re-fetches the same
+      // bundle forever. The channel wedges on the first occurrence and never recovers on its own.
+      //
+      // THAT IS NOT HYPOTHETICAL, IT IS WHAT A ROLLING UPGRADE PRODUCES. `object_types` is a
+      // migration seed at both ends, so a NEW builtin type exists at an upgraded commander and not
+      // at an outpost that has not yet run the migration. M25.7's `freeze` (drizzle/0089) is the
+      // first type to make that reachable from an ordinary operator action — declaring a freeze —
+      // rather than from an operator registering a custom type, which is why the tolerance lands
+      // here now. 0043 (`outpost`) and 0051 (`placement`) had the same exposure and were lucky.
+      //
+      // A PRE-CHECK, NOT A `catch`. A caught error is only safe if nothing before the throw issued
+      // failing SQL — Postgres aborts the whole transaction on a failed statement, so a `catch` here
+      // could resume onto a poisoned connection and turn a survivable skip into the abort it was
+      // meant to prevent. `getObjectType` is one PK lookup and asks the question directly.
+      //
+      // SKIP-AND-RECORD, so the loss is visible rather than silent: the drop lands in this org's
+      // own hash-chained audit log (`scp audit list`, `GET /v1/audit-events`), the honesty surface
+      // this codebase already uses when an import discards evidence it received. One entry may be
+      // lost; the channel must not be. The recovery path is a from-genesis re-sync once the peer
+      // has the migration, which replays the entry into a now-registered type.
+      if (!(await getObjectType(tx, typeId))) {
+        await appendAuditEvent(tx, {
+          orgId,
+          actorId: FEDERATION_IMPORT_ACTOR_ID,
+          action: "federation.import.entry_dropped",
+          // `subject_id` is a `uuid` column; a payload id that is not one would poison the
+          // transaction this record exists to save. The urn is in `reason` either way.
+          subjectId: typeof payload.id === "string" && isUuid(payload.id) ? payload.id : null,
+          reason:
+            `dropped ${entry.entryKind} entry ${entry.id} (sequence ${entry.sequence}) from ` +
+            `'${exporterDomainId}': object type '${typeId}' is not registered at this instance ` +
+            `(urn '${urn}'). This instance is behind the peer on migrations; re-sync from genesis ` +
+            `after upgrading to replay it. The rest of the bundle was applied.`,
+          requestId
+        });
+        return;
+      }
       // Authority is the cryptographically-verified signer — NEVER the attacker-controlled
       // `payload.originDomainId` (validated identical to `exporterDomainId` by
       // `assertEntryAuthoredBySigner` before we get here). CRITICAL review fix.
@@ -227,11 +276,45 @@ async function applyEntry(
       // carries the same id; a delete that matches nothing is a no-op. The id comes from the row
       // that ACTUALLY landed, not from `payload.id` (which is optional on the wire).
       await clearUnattachedChangeStatus(tx, orgId, exporterDomainId, upserted.id);
+      // M25.7 (owner decision D6, ADR-0043) — A FREEZE'S PROJECTION ROW IS REBUILT HERE, AND THAT
+      // IS THE WHOLE FEATURE. The object itself is inert: every reader that ENFORCES a freeze
+      // (`activeFreezesInWindow` and, through it, `freezesByTarget`, `checkFreeze`,
+      // `evaluateFreezeHolds` and the service board) queries the `freezes` table, so without this
+      // line a commander-declared freeze would replicate into the graph and still not be a freeze
+      // at the outpost — a replicated row nothing reads.
+      //
+      // NO NEW BRANCH AND NO NEW ENTRY KIND: this rides the `object_upsert` case that already
+      // resolves any registered type through `upsertObjectByUrn` (shared with `policy_upsert`).
+      // Keyed on the type of the row that ACTUALLY LANDED rather than on `payload.typeId`, for the
+      // same reason `clearUnattachedChangeStatus` is keyed on `upserted.id`.
+      //
+      // `rebuildFreezeProjectionFromObject` NEVER THROWS on malformed content, deliberately — this
+      // branch has no try/catch, so a throw aborts the peer's whole signed bundle and wedges the
+      // channel (the rule `governance-managed-types.ts` and ADR-0032 §6a state for this exact
+      // branch). Its docblock records the compensating control, and the round-2 correction that
+      // the FIRST version of that guarantee did not hold: it checked only "is it a non-empty
+      // string", so a non-UUID `freezeId`/`scopeObjectId` reached four `uuid` columns and raised
+      // `22P02`, which poisons the transaction — the abort it was written to prevent.
+      if (isFreezeObjectType(upserted.typeId)) {
+        await rebuildFreezeProjectionFromObject(tx, {
+          orgId,
+          object: upserted,
+          fallbackActorId: FEDERATION_IMPORT_ACTOR_ID
+        });
+      }
       return;
     }
     case "object_tombstone": {
       const typeId = String(payload.typeId);
       const idOrUrn = String(payload.urn ?? payload.id);
+      // M25.7 — RESOLVED BEFORE THE DELETE, because after it the row is soft-deleted and the
+      // ordinary lookup filters `deleted_at IS NULL`. Only for a `freeze`, so every other type pays
+      // nothing. `payload.typeId` is the right key here (unlike the upsert branch, which keys on the
+      // row that landed): there is no landed row to read, and `deleteObject` itself matches on this
+      // same `typeId`, so a mismatch cannot delete anything for this branch to follow up on.
+      const freezeObjectBeingTombstoned = isFreezeObjectType(typeId)
+        ? await findObjectByIdOrUrnAnyType(tx, orgId, idOrUrn)
+        : undefined;
       try {
         await deleteObject(tx, {
           orgId,
@@ -244,6 +327,26 @@ async function applyEntry(
       } catch (err) {
         if (isNotFound(err)) return; // never replicated locally — nothing to tombstone
         throw err;
+      }
+      // ==========================================================================================
+      // A TOMBSTONED FREEZE MUST STOP BLOCKING (M25.7 round 2)
+      // ==========================================================================================
+      // Soft-deleting the `objects` row is the whole job for every type whose object IS the record.
+      // A freeze's enforcement lives in `freezes`, and nothing that reads that table joins to
+      // `objects` — so without this the projection row OUTLIVED its own wire form: still returned by
+      // `activeFreezesInWindow`, still refusing every gate and per-target admission, and
+      // UNLIFTABLE, because `lockFreezeRow` refuses a local lift of a foreign-origin freeze and the
+      // declaring domain has just destroyed the object a re-snapshot would have travelled on. A
+      // commander deleting a freeze object would have frozen its outposts permanently.
+      //
+      // A LIFT, NOT A DELETE — the row stays readable so a `freeze_admission` Decision citing it
+      // keeps resolving (M25.1's ruling for the local verb, charter principle 6).
+      if (freezeObjectBeingTombstoned) {
+        await liftFreezeProjectionForTombstonedObject(tx, {
+          orgId,
+          objectId: freezeObjectBeingTombstoned.id,
+          actorId: FEDERATION_IMPORT_ACTOR_ID
+        });
       }
       return;
     }

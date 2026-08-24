@@ -214,6 +214,10 @@ describe("freezeWindowStatus / activeAndUpcomingFreezes", () => {
       liftReason: null,
       createdByActorId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
       createdAt: "2026-08-12T00:00:00.000Z",
+      // M25.7 — a freeze declared HERE and nowhere else, which is the default. Window status is
+      // computed from `startsAt`/`endsAt` alone and is deliberately blind to federation: an imported
+      // freeze is active in exactly the same window as a locally-declared one.
+      objectId: null,
       ...overrides
     };
   }
@@ -273,7 +277,11 @@ describe("FreezeRow — the lift claim, and the state a lift leaves behind", () 
     atomic: false,
     liftedAt: null,
     liftedByActorId: null,
-    liftReason: null
+    liftReason: null,
+    // M25.7 — a locally-declared, non-federating freeze: the one an operator on THIS instance can
+    // actually lift. (A freeze whose object is a foreign replica is refused with a 409 by
+    // `freezes-repo.ts`'s `lockFreezeRow`; rendering that distinction is the UI session's.)
+    objectId: null
   };
 
   // DELIBERATE INVERSION (M25.1). Until `DELETE /api/v1/freezes/{id}` shipped, these two cases
@@ -412,6 +420,16 @@ describe("DeclareFreezeForm — exactly CreateFreezeRequest's fields, nothing in
     // what makes the form's field set track `CreateFreezeRequestSchema` rather than drift from it.
     // `atomic` is a real key on that schema, so it belongs here; bumping the number is the correct
     // response, and inventing a field that is NOT on the schema still fails.
+    //
+    // M25.7 ADDED TWO SCHEMA KEYS AND THIS COUNT DELIBERATELY DID NOT MOVE — recorded rather than
+    // left to be rediscovered as drift. `federate` and `domainLocal` are gated on `federation:write`
+    // at the freeze's scope, not on the `freeze:write` this page's audience holds, and this form has
+    // no way to know whether the viewer holds it; an inert checkbox that 403s on submit is worse
+    // than no checkbox. Freeze authoring UI is the UI session's surface (coordinated in
+    // docs/proposals/campaigns-rework.md §2.3), and `scp freeze create --federate` is the door until
+    // then. So the invariant this case pins is now "one field per schema key the form OFFERS, and no
+    // field that is not on the schema" — inventing an off-schema field still fails, and adding
+    // `federate` later means bumping this to 6 with a testid above.
     expect((html.match(/<input\b/g) ?? []).length).toBe(5);
     expect((html.match(/<textarea\b/g) ?? []).length).toBe(1);
   });
@@ -472,7 +490,12 @@ describe("FreezeRow — 'Adjust window'", () => {
     atomic: false,
     liftedAt: null,
     liftedByActorId: null,
-    liftReason: null
+    liftReason: null,
+    // M25.7 (D6) — `null` is the HONEST value here, not merely the one that compiles: this fixture
+    // never declared `federate: true`, so no `freeze` graph object exists for it, and `objectId` is
+    // precisely "does a wire form of this freeze exist". The control under test is the WINDOW edit,
+    // which federation does not change.
+    objectId: null
   };
   const NOW = new Date("2026-08-14T00:00:00.000Z");
 

@@ -43,6 +43,20 @@ function idempotencyKey(request: FastifyRequest): string | undefined {
 }
 
 /**
+ * THE MESSAGE NAMES THE TYPED DOOR PER TYPE, NOT `/policies` FOR EVERYTHING. The set is now four
+ * ids across three subsystems (`policy`/`control`, `scan_override_grant`, and M25.7's `freeze`) and
+ * a fixed sentence pointing every one of them at `/api/v1/policies` sends an operator who typed
+ * `POST /objects/freeze` to a route that will 404 them — a refusal that misroutes is barely better
+ * than no refusal. The permission sentence stays type-agnostic because the gate genuinely is.
+ */
+const GOVERNANCE_MANAGED_TYPED_DOOR: Readonly<Record<string, string>> = {
+  policy: "/api/v1/policies",
+  control: "/api/v1/controls",
+  scan_override_grant: "/api/v1/scan-override-grants",
+  freeze: "/api/v1/freezes"
+};
+
+/**
  * Governance-owned object types (`policy`, `control`) are refused here entirely — mirrors
  * `assertNotSystemManagedRelationship` (routes/relationships.ts) blocking `approves` edges from
  * the generic `/relationships` endpoint. Without this, the generic `/objects/{type}` endpoints
@@ -60,8 +74,10 @@ function assertNotGovernanceManagedObjectType(type: string): void {
   if (isGovernanceManagedObjectType(type)) {
     throw forbidden(
       `object type '${type}' is governance-managed and cannot be created, updated, or deleted via ` +
-        `the generic /api/v1/objects/${type} endpoint — use /api/v1/policies or /api/v1/controls, ` +
-        `which enforce 'policy:write' and (for policies) the scope-authority binding`
+        `the generic /api/v1/objects/${type} endpoint — use ` +
+        `${GOVERNANCE_MANAGED_TYPED_DOOR[type] ?? "its typed route"}, which enforces 'policy:write' ` +
+        `(or, for a freeze, 'freeze:write' plus 'federation:write' to federate it) and the ` +
+        `scope-authority binding the generic door cannot check`
     );
   }
 }

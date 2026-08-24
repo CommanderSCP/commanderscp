@@ -14849,6 +14849,7 @@ export type ListFreezesResponses = {
             liftedAt: string | null;
             liftedByActorId: string | null;
             liftReason: string | null;
+            objectId: string | null;
         }>;
         nextCursor: string | null;
     };
@@ -14864,6 +14865,8 @@ export type CreateFreezeData = {
         endsAt: string;
         reason: string;
         atomic?: boolean;
+        federate?: boolean;
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -14925,6 +14928,7 @@ export type CreateFreezeResponses = {
         liftedAt: string | null;
         liftedByActorId: string | null;
         liftReason: string | null;
+        objectId: string | null;
     };
 };
 
@@ -15018,6 +15022,7 @@ export type LiftFreezeResponses = {
         liftedAt: string | null;
         liftedByActorId: string | null;
         liftReason: string | null;
+        objectId: string | null;
     };
 };
 
@@ -15087,6 +15092,7 @@ export type GetFreezeResponses = {
         liftedAt: string | null;
         liftedByActorId: string | null;
         liftReason: string | null;
+        objectId: string | null;
     };
 };
 
@@ -15181,6 +15187,7 @@ export type UpdateFreezeWindowResponses = {
         liftedAt: string | null;
         liftedByActorId: string | null;
         liftReason: string | null;
+        objectId: string | null;
     };
 };
 

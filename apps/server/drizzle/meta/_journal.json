@@ -624,6 +624,13 @@
       "when": 1788146000000,
       "tag": "0088_campaign_deadline_override_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1788147000000,
+      "tag": "0089_freeze_object_type",
+      "breakpoints": true
     }
   ]
 }

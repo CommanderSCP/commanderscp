@@ -3,7 +3,11 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { badRequest, forbidden } from "../errors.js";
 import { hasPermission } from "../authz/resolve.js";
 import { getPeerByIdOrName } from "./peers-repo.js";
-import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
+import {
+  isGovernanceManagedObjectType,
+  isProjectionBoundObjectType,
+  projectionBoundRefusalDetail
+} from "../governance/governance-managed-types.js";
 import { upsertObjectByUrn } from "../graph/objects-repo.js";
 import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
@@ -174,6 +178,24 @@ async function assertGovernanceAuthorityForHandFill(
   tx: TenantTx,
   input: HandFillInput
 ): Promise<void> {
+  // M25.7 — AHEAD OF THE PERMISSION CHECK, BECAUSE FOR THIS TYPE THE PERMISSION IS THE WRONG
+  // REMEDY. A `freeze` object is the wire half of a record whose enforcement half is a `freezes`
+  // row that only `POST /api/v1/freezes` writes. Hand-filling one would federate a freeze that does
+  // not exist at THIS instance and cannot be lifted at either end — here `DELETE /v1/freezes/{id}`
+  // finds no row, and at the peer, which does rebuild the row, `lockFreezeRow` refuses because the
+  // origin domain is foreign. The `policy:write` bar below would have admitted exactly that to any
+  // holder of org-root `policy:write` + `federation:write`, neither of which is `freeze:write`.
+  //
+  // AND HAND-FILL'S OWN REASON FOR EXISTING DOES NOT REACH THIS TYPE. DESIGN §13's case is an
+  // air-gapped outpost keying in a commander-ORIGIN object by hand so a later signed bundle
+  // reconciles over it. A freeze hand-filled that way would be `provenance: 'manual'` with no
+  // projection row until the real bundle arrives — i.e. an inert object where an operator believes
+  // they installed a block — and the reconciling bundle would build the row itself anyway. The same
+  // "nothing an operator keys in here is a shape the next bundle would confirm" argument the
+  // pair-bound refusal above records.
+  if (isProjectionBoundObjectType(input.typeId)) {
+    throw forbidden(projectionBoundRefusalDetail(input.typeId, "a hand-fill"));
+  }
   if (!isGovernanceManagedObjectType(input.typeId)) return;
   const ok = await hasPermission(tx, {
     orgId: input.orgId,

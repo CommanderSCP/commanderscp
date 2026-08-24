@@ -27,7 +27,11 @@ import {
   deleteRelationship,
   listRelationships
 } from "../graph/relationships-repo.js";
-import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
+import {
+  isGovernanceManagedObjectType,
+  isProjectionBoundObjectType,
+  projectionBoundRefusalDetail
+} from "../governance/governance-managed-types.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
 import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
@@ -1009,6 +1013,26 @@ export async function prepareApplyChecks(
           `as a manifest object — an IaC apply cannot resolve or type-check its endpoints, nor ` +
           `write the derived edges that make the pair traversable. Use /api/v1/${entry.typeId}s.`
       );
+    }
+    // M25.7 — A PROJECTION-BOUND type (`freeze`) is refused for the same shape of reason one type
+    // further, and this door is the one where its absence was a live ESCALATION rather than a
+    // malformed row. `writePermissionFor` below maps every governance-managed type to
+    // `policy:write`, so adding `freeze` to that set did not close this door: it OPENED a
+    // substitution, in which `policy:write` at a narrow domain stood in for BOTH of a freeze's real
+    // gates (`freeze:write` at its own scope, `federation:write` on top to federate it), neither of
+    // which this path ever asks for. Worse, the create branch below scope-binds a declared
+    // `properties.*` for exactly `policy` and `campaign`, so the freeze's declared
+    // `scopeObjectId` was bound to nothing at all — a component-scoped actor could name the org
+    // root. And the row it produced was UNLIFTABLE AT BOTH ENDS: only `POST /v1/freezes` writes the
+    // object and its `freezes` row together, so `DELETE /v1/freezes/{id}` 404s here while the peer,
+    // which DOES rebuild the row, refuses to lift it because its origin domain is foreign.
+    //
+    // Refused for every non-noop action, like the pair-bound refusal above and for the same reason:
+    // an update re-snapshots a window that federates, and a delete tombstones the wire form while
+    // leaving every peer's enforcement row standing (`import-repo.ts`'s tombstone branch lifts the
+    // projection, but only for an object this path never should have minted).
+    if (entry.action !== "noop" && isProjectionBoundObjectType(entry.typeId)) {
+      throw forbidden(projectionBoundRefusalDetail(entry.typeId, "an IaC plan apply"));
     }
     if (entry.action === "create") {
       const scopeObjectId = entry.target?.domainId ?? orgId;

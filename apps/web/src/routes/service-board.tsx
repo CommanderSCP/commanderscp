@@ -553,7 +553,9 @@ export function BoardSummary({
  * Strictly Layer A — real data only. Per-wave image versions/digests and component health are Layer
  * B (not modeled yet); they are shown as an explicit placeholder, never fabricated. The same rule
  * governs federation: a change this instance does not DRIVE (`row.driver.drivenHere === false`)
- * arrives as a read-only replica WITHOUT its plan, Decisions, approvals or freezes, so every field
+ * arrives as a read-only replica WITHOUT its plan, Decisions or approvals (and without any freeze
+ * the driving domain declared non-federating — M25.7/D6 made an org-tier freeze able to cross, and a
+ * replicated one is enforced here like a local one), so every field
  * the server named in `row.unknownFields` renders as an explicit "unknown here" marker — visually
  * distinct from both a clean row and the stable count, never a fourth flavour of fine. Freezes are
  * READ-ONLY status here; declaring/lifting one is a controls-phase concern (Phase 5), so the
@@ -632,8 +634,15 @@ export function ServiceBoardPage(): React.JSX.Element {
   const { service, rows, summary, serviceFreeze } = board;
   const componentsBelowAssemblies = board.childAssemblies.reduce((n, a) => n + a.componentCount, 0);
   // BOARD-LEVEL unknowns (as opposed to a row's own): today, freeze visibility on a federated
-  // deployment. Freezes never ride the sync journal in either direction, so on an instance with a
-  // federation peer NO row's "not frozen" — driven here or not — can be read as "no freeze applies".
+  // deployment. A freeze crosses a boundary only when the domain that declared it said so
+  // (`federate: true`, M25.7 / owner decision D6 — it becomes a graph object and is rebuilt into
+  // this instance's own freeze table, where it blocks like any local one), and that DEFAULTS OFF.
+  // So on an instance with a federation peer NO row's "not frozen" — driven here or not — can be
+  // read as "no freeze applies", and nothing on the wire says how much is missing.
+  //
+  // This comment used to say freezes never ride the sync journal in either direction. That was true
+  // and deliberate until D6 retracted it; the conclusion the UI draws is unchanged, the reason is
+  // not, and the server states the same thing at greater length in `service-board.ts`.
   const freezeVisibilityUnknown = freezeVisibilityUnknownOf(board);
   // The other board-level unknown: a peer paired at a sync scope that does not carry change objects
   // (`status_only` sends change STATUS without the change; `policies_only` sends neither) leaves this
@@ -771,7 +780,7 @@ export function ServiceBoardPage(): React.JSX.Element {
           icon={Info}
           className="w-fit"
           data-testid="board-freeze-visibility-unknown"
-          title={`Freeze visibility is limited to this domain: freezes are never replicated between federated instances, so an unfrozen row means "no freeze declared here" — not "no freeze applies".`}
+          title={`Freeze visibility is partial: a freeze reaches this instance only if the domain that declared it chose to federate it, and that is off by default. An unfrozen row therefore means "no freeze visible here" — not "no freeze applies".`}
         >
           Freeze visibility limited
         </Badge>
