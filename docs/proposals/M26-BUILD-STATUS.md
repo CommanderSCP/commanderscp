@@ -2,6 +2,15 @@
 
 **Temporary working document** — delete when M26 lands. This exists to carry cross-session context across a machine move (session scratchpad and `~/.claude` memory do NOT travel via git; this file does). Branch: `multi-region-ha`. Proposal: [multi-region-instance-resilience.md](multi-region-instance-resilience.md) (v0.3, all 7 owner decisions settled in §11).
 
+## ✅ M26 COMPLETE ON BRANCH (2026-08-24)
+
+All of M26.1–M26.4 is built, tested, and pushed on `multi-region-ha` (tip ~`3b035fa`). `pnpm -w typecheck` + eslint clean, gen has no drift, oasdiff additive-only, all M26 integration gates green. **Only remaining obligation:** M26.1's A2 **verify-only gate**, which is externally blocked on M25's campaign-reconcile advisory lock merging to `main` (re-checked 2026-08-24 — still not merged). It reverts to an M26.1 fix if M25 drops it. Delete this doc once M26 merges. Summary of what landed:
+
+- **M26.1 (§7.1)** — review-clean; F1 fixed; 9 review findings cleared (each mutation-proven), incl. a critical B9 clobber race (PV-1) and a leaked mutation marker.
+- **M26.2 (§7.2/§7.3)** — divergence rails 1/2/4/5 (rail 3 already covered), signed tail attestation, audit witness (§7.2.7), the **signed cross-domain resync handshake** (§7.2.6), D6 + decrypt canary + operator-gated instance doctor (§7.3). Migrations 0090–0093.
+- **M26.3 (§7.4)** — chart PDB/spread/multi-cluster values + version-skew heartbeat mechanism (migrations Job contract-phase gate) + C3 object-storage closeout (owner: served by the existing S3 delivery path, no new backend).
+- **M26.4 (§7.5/docs)** — lost-tail simulation gate, failover drill (which caught + fixed a real crash-on-failover: `createPool` had no pool `'error'` handler), two-member compose topology, boot-refusal + credential-clobber gates; runbook, GLOSSARY, DESIGN §17, **ADR-0042**.
+
 ## ▶ Resume here (new session / new machine)
 
 You are continuing multi-region/HA work on CommanderSCP. A prior session's memory and scratchpad did **not** travel here — everything you need is committed in the repo. Read this whole doc plus the proposal and `CLAUDE.md` before acting.
