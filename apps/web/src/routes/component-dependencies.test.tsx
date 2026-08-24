@@ -750,6 +750,34 @@ describe("the enable dialog body", () => {
     expect(html).not.toMatch(/\bsubscribe\b/i);
     expect(html).not.toMatch(/group/i);
   });
+
+  // M25.8 / owner decision D8 — bump-gate.ts's `frozen` refusal kind GRANTS auto-merge and
+  // withholds only the merge itself, re-driven within ~60s of the freeze lifting
+  // (`BUMP_FREEZE_REDRIVE_INTERVAL_SECONDS`); a freeze never blocks the pull request from opening.
+  // The picker must state this rather than leave an operator to discover it from a stuck bump.
+  it("states the freeze caveat: the merge is withheld, the pull request still opens, and it re-drives on its own", () => {
+    const html = renderToStaticMarkup(
+      <EnableDialogBody
+        component={COMPONENT}
+        busy={false}
+        error={null}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />
+    );
+    expect(html).toContain('data-testid="enable-first-bump-note"');
+    expect(html).toContain(
+      "An active change freeze over this component withholds the merge itself"
+    );
+    expect(html).toContain("the pull request still opens");
+    expect(html).toContain("within about a minute of the freeze lifting");
+    // The pre-existing sentences survive verbatim, in the SAME note — this is an addition, not a
+    // replacement.
+    expect(html).toContain("The first bump is always a pull request.");
+    expect(html).toContain(
+      "Auto-merge applies from the second look on, and only when every enabling policy asks for it."
+    );
+  });
 });
 
 describe("the bumps section", () => {
