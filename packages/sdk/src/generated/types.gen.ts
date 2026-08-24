@@ -17951,6 +17951,20 @@ export type ListCampaignsResponses = {
             topologyObjectId: string | null;
             topologyVersion: number | null;
             status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+            recipe?: {
+                version: 1;
+                trigger: {
+                    kind: 'sync' | 'workflow_dispatch' | 'custom';
+                    parameters?: {
+                        [key: string]: unknown;
+                    };
+                };
+                guidance?: {
+                    title: string;
+                    summary?: string;
+                    docsUrl?: string;
+                };
+            };
             createdAt: string;
             updatedAt: string;
         }>;
@@ -17972,6 +17986,20 @@ export type ProposeCampaignData = {
         };
         topology?: string;
         type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        recipe?: {
+            version: 1;
+            trigger: {
+                kind: 'sync' | 'workflow_dispatch' | 'custom';
+                parameters?: {
+                    [key: string]: unknown;
+                };
+            };
+            guidance?: {
+                title: string;
+                summary?: string;
+                docsUrl?: string;
+            };
+        };
         targets: Array<string>;
     };
     path?: never;
@@ -18031,6 +18059,20 @@ export type ProposeCampaignResponses = {
         topologyObjectId: string | null;
         topologyVersion: number | null;
         status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        recipe?: {
+            version: 1;
+            trigger: {
+                kind: 'sync' | 'workflow_dispatch' | 'custom';
+                parameters?: {
+                    [key: string]: unknown;
+                };
+            };
+            guidance?: {
+                title: string;
+                summary?: string;
+                docsUrl?: string;
+            };
+        };
         createdAt: string;
         updatedAt: string;
     };
@@ -18099,6 +18141,20 @@ export type GetCampaignResponses = {
         topologyObjectId: string | null;
         topologyVersion: number | null;
         status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        recipe?: {
+            version: 1;
+            trigger: {
+                kind: 'sync' | 'workflow_dispatch' | 'custom';
+                parameters?: {
+                    [key: string]: unknown;
+                };
+            };
+            guidance?: {
+                title: string;
+                summary?: string;
+                docsUrl?: string;
+            };
+        };
         createdAt: string;
         updatedAt: string;
     };
@@ -18168,6 +18224,20 @@ export type ExplainCampaignResponses = {
             topologyObjectId: string | null;
             topologyVersion: number | null;
             status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+            recipe?: {
+                version: 1;
+                trigger: {
+                    kind: 'sync' | 'workflow_dispatch' | 'custom';
+                    parameters?: {
+                        [key: string]: unknown;
+                    };
+                };
+                guidance?: {
+                    title: string;
+                    summary?: string;
+                    docsUrl?: string;
+                };
+            };
             createdAt: string;
             updatedAt: string;
         };

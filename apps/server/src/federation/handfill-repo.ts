@@ -18,6 +18,7 @@ import {
   assertSelectorKeysAreGovernanceLabels
 } from "../governance/governance-labels.js";
 import { assertValidComponentSecurityDeclarations } from "../governance/component-declaration-guard.js";
+import { assertValidCampaignRecipe } from "../governance/campaign-recipe-guard.js";
 import { assertScanOverrideGrantNotSelfDecided } from "../governance/scan-override-grant-authoring-guard.js";
 
 /**
@@ -230,6 +231,14 @@ export async function handFillObject(tx: TenantTx, input: HandFillInput): Promis
   // refusal is synchronous and reads only the request, while the authority check walks containment in
   // the database. A malformed declaration is rejected without paying for the walk.
   assertValidComponentSecurityDeclarations({
+    typeId: input.typeId,
+    properties: input.properties ?? {}
+  });
+  // M25.4 (ADR-0041) — the same door, the same closing. Hand-fill is the second half of the
+  // `federationImport` two-module census, and it is a LOCAL operator keying a document in by hand:
+  // there is no bundle a 400 could wedge, and exempting it would hand every `federation:write`
+  // holder an unvalidated write to `campaign.properties.recipe`.
+  assertValidCampaignRecipe({
     typeId: input.typeId,
     properties: input.properties ?? {}
   });

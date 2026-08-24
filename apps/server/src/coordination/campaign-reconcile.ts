@@ -1,5 +1,6 @@
 import type { Db } from "../db/client.js";
 import type { TrustDomainId } from "@scp/schemas";
+import { CAMPAIGN_RECIPE_PROPERTY_KEY } from "@scp/schemas";
 import { and, eq } from "drizzle-orm";
 import { objects } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -42,6 +43,7 @@ import {
   markCampaignPlanCompleted
 } from "./campaign-plan-service.js";
 import { tryAcquireCampaignCoordinationLock } from "./campaign-coordination-lock.js";
+import { resolveChangeRecipe } from "./campaign-recipe.js";
 import {
   markCampaignWaveBlocked,
   markCampaignWaveRunning,
@@ -387,6 +389,41 @@ async function reconcileOneCampaign(
         targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
       })
     ));
+  /**
+   * M25.4 — the campaign's own recipe, resolved ONCE per campaign per tick and copied verbatim onto
+   * every member change this wave fans out (see the `proposeChange` call below for why by value).
+   *
+   * `{}` — not `{ recipe: undefined }` — when the campaign declares none, so `proposeChange`'s
+   * property spread is byte-identical to a pre-M25.4 fan-out.
+   *
+   * A MALFORMED RECIPE IS NOT COPIED AND NOT SILENTLY DROPPED. It cannot normally exist — the
+   * authoring guard at `graph/objects-repo.ts` refuses it on all three write doors — but a row
+   * planted before that guard, or by a peer speaking a newer vocabulary, can. `resolveChangeRecipe`
+   * reports `malformed` distinctly from `none`, and copying the raw bytes through would push the
+   * refusal down to N member changes instead of raising it once here. The member changes are still
+   * proposed (the campaign's targets are real work), and each one's own trigger path then finds no
+   * recipe — which is why the warning is loud: it is the one place an operator can see that the
+   * campaign fanned out WITHOUT the lever it was authored to carry.
+   */
+  const campaignRecipe = resolveChangeRecipe(
+    campaignObject.properties as Record<string, unknown> | null
+  );
+  if (campaignRecipe.outcome === "malformed") {
+    logCampaignError(
+      orgId,
+      campaignObjectId,
+      "recipe",
+      new Error(
+        `campaign properties.recipe is unreadable (${campaignRecipe.detail}) — every member change ` +
+          `this campaign fans out will roll its target's DEFAULT pipeline with no recipe parameters`
+      )
+    );
+  }
+  const recipeProperties: Record<string, unknown> =
+    campaignRecipe.outcome === "recipe"
+      ? { [CAMPAIGN_RECIPE_PROPERTY_KEY]: campaignRecipe.recipe }
+      : {};
+
   /** Every target this tick an active freeze covered — one Decision for the campaign, never one per
    *  target (`insertDecisionIfChanged` dedupes on the LATEST row of a `(subject_id, kind)`, so
    *  per-target rows would alternate and suppression would never fire). */
@@ -528,6 +565,31 @@ async function reconcileOneCampaign(
             sourceKind: "campaign",
             sourceRef: { campaignObjectId, waveIndex: activeWave.waveIndex },
             targets: [target.targetObjectId],
+            // ===================================================================================
+            // M25.4 — THE RECIPE, COPIED ONTO THE MEMBER CHANGE. This is the "1-click": the author
+            // configured one trigger intent on the campaign, and every one of N targets now carries
+            // it into its own governed change.
+            // ===================================================================================
+            // COPIED BY VALUE, NOT RESOLVED BY REFERENCE AT TRIGGER TIME, and the difference is
+            // load-bearing three times over:
+            //
+            //   * IMMUTABILITY. Editing the campaign later cannot retroactively re-narrate what an
+            //     already-fanned-out change did — the `control_runs.plugin_module` rule applied to
+            //     the same class of question ("what did this actually run with?").
+            //   * FEDERATION REACH. `promotion-repo.ts` re-proposes a promoted change LOCALLY with
+            //     `properties` carried through, stripping exactly `requires` and `stageDependencies`
+            //     — so a recipe on the CHANGE arrives at an outpost intact and that outpost's own
+            //     reconcile resolves the OUTPOST's binding and triggers through its own local gates.
+            //     A recipe left only on the campaign object would reach the outpost as an inert
+            //     replica (`listActiveCampaignObjectIds` filters foreign-origin campaigns out, and
+            //     that filter is correct — see `foreign-origin-campaign.integration.test.ts`).
+            //   * ONE READER. `reconcile.ts`'s trigger path then needs no campaign lookup, no
+            //     `coordinates`-edge walk and no second code path for "is this a member change" —
+            //     it reads `change.properties` exactly as it already does for `stageDependencies`.
+            //
+            // ONLY WRITTEN WHEN THE CAMPAIGN DECLARES ONE, so a recipe-less campaign fans out a
+            // byte-identical change to a pre-M25.4 one.
+            properties: recipeProperties,
             // Every change a campaign fans out rolls the CAMPAIGN's pipeline (M12 P4A / ADR-0007) —
             // one intent, many targets. Without this an `infrastructure` campaign would trigger each
             // target's `configuration` binding: the wrong pipeline, an actively wrong release.

@@ -21,6 +21,10 @@ import type { ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changes, changeWaveTargets, changeWaves, objects } from "../db/schema.js";
 import { WAVE_TARGET_TOMBSTONED_STATUS } from "./target-liveness.js";
+import {
+  WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
+  WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS
+} from "./campaign-recipe.js";
 
 /**
  * DB access `coordination/reconcile.ts` needs around `change_wave_targets`/`change_waves` beyond
@@ -501,6 +505,35 @@ export function observedStateFrom(
 }
 
 /**
+ * EVERY terminal status that means "reconcile REFUSED to drive this target", as ONE list.
+ *
+ * It exists because the set was previously spelled out by hand in FIVE places — `blockWaveTarget`'s
+ * parameter union, `terminalizeRefusedWaveTarget`'s parameter union, {@link
+ * TERMINAL_WAVE_TARGET_STATUSES}, `reconcile.ts`'s per-target terminal skip and `service-board.ts`'s
+ * `FAILED_STATUSES` — and the two lists nearest each other already carry a comment warning that
+ * "adding a terminal status to only one of them is how a wave gets kept alive forever by a row
+ * nothing will ever come back for". A warning is not a mechanism. This is the mechanism: the union
+ * type makes the compiler refuse a status that is not in the list, and every consumer derives from
+ * the list rather than restating it, so a sixth cause cannot be added to four places out of five.
+ *
+ * `service-board.ts` is the one consumer that must keep its own literal set, because it also
+ * contains `failed`/`aborted` (genuine outcomes, not refusals) — it spreads this list into its own.
+ */
+export const REFUSED_WAVE_TARGET_STATUSES = [
+  "no_executor",
+  WAVE_TARGET_TOMBSTONED_STATUS,
+  WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS,
+  WAVE_TARGET_RECIPE_UNREADABLE_STATUS
+] as const;
+export type RefusedWaveTargetStatus = (typeof REFUSED_WAVE_TARGET_STATUSES)[number];
+
+/** Is this status one reconcile refused to drive? Used by the per-target loop's terminal skip, so
+ *  that branch and the terminalizer can never disagree about the set. */
+export function isRefusedWaveTargetStatus(status: string): status is RefusedWaveTargetStatus {
+  return (REFUSED_WAVE_TARGET_STATUSES as readonly string[]).includes(status);
+}
+
+/**
  * Terminalize a wave target that reconcile REFUSED to drive, on a dedicated per-cause status. A
  * DISTINCT terminal value (never `failed`) so `scp change explain`/the UI can name the actual cause,
  * mirroring `campaign_waves`' purpose-built `blocked`. Two causes exist today, and the status is a
@@ -513,6 +546,14 @@ export function observedStateFrom(
  *    (or the half of a placement's pair it depends on has), so there is nothing live to release to.
  *    Reporting that as a binding gap would be the provenance-label mistake: a label named after the
  *    branch that happened to match rather than after what is true.
+ *  * `recipe_unsupported` (M25.4, `campaign-recipe.ts`) — the target IS bound, for the right Type,
+ *    and the executor it resolved to does not serve the trigger KIND the change's recipe asked for
+ *    (`describeCapabilities().triggerKinds`). `trigger()` is never called: falling back to the
+ *    executor's default verb would run the target's ordinary pipeline and record a migration that
+ *    never happened.
+ *  * `recipe_unreadable` (M25.4) — the change carries a `properties.recipe` that does not parse.
+ *    Driving it anyway would mean triggering with no parameters, which is the same lie by a
+ *    different route.
  *
  * Guarded on `status IN ('pending','triggering')` and RETURNING so the caller emits the block
  * Decision + hash-chained audit event EXACTLY ONCE: a later reconcile tick that finds the target
@@ -524,7 +565,7 @@ export async function terminalizeRefusedWaveTarget(
   tx: TenantTx,
   orgId: string,
   targetId: string,
-  status: "no_executor" | typeof WAVE_TARGET_TOMBSTONED_STATUS
+  status: RefusedWaveTargetStatus
 ): Promise<boolean> {
   const result = await tx
     .update(changeWaveTargets)
@@ -564,8 +605,7 @@ const TERMINAL_WAVE_TARGET_STATUSES: string[] = [
   "succeeded",
   "failed",
   "aborted",
-  "no_executor",
-  WAVE_TARGET_TOMBSTONED_STATUS
+  ...REFUSED_WAVE_TARGET_STATUSES
 ];
 
 /**

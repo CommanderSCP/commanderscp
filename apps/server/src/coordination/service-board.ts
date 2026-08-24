@@ -35,7 +35,7 @@ import { listUnattachedChangeStatusInStates } from "../federation/unattached-cha
 import { limitingUpstreamFreshness } from "../federation/upstream-freshness.js";
 import { sqlIn } from "../graph/sql-helpers.js";
 import { placementComponentParentSql } from "../graph/containment.js";
-import { WAVE_TARGET_TOMBSTONED_STATUS } from "./target-liveness.js";
+import { REFUSED_WAVE_TARGET_STATUSES } from "./wave-targets-repo.js";
 
 /**
  * Layer-A server projection backing `GET /services/:idOrUrn/board`
@@ -119,17 +119,19 @@ import { WAVE_TARGET_TOMBSTONED_STATUS } from "./target-liveness.js";
  * `federation/upstream-freshness.ts`.
  */
 
-/** Terminal statuses that count as a target/wave failure for the "blocked" derivation. Both
- *  fail-closed REFUSALS belong here beside the genuine failures: `no_executor` (ADR-0006 — the target
- *  had bindings but none for the Type this wave rolls) and `target_deleted` (`target-liveness.ts` —
- *  the object the wave target names was tombstoned mid-flight). Omitting either would under-report
- *  `failedTargets` on a wave that reconcile deliberately stopped, which is the one case an operator
- *  most needs the board to show. */
-const FAILED_STATUSES = new Set([
+/** Terminal statuses that count as a target/wave failure for the "blocked" derivation. EVERY
+ *  fail-closed REFUSAL belongs here beside the genuine failures — `no_executor` (ADR-0006),
+ *  `target_deleted` (`target-liveness.ts`), and M25.4's `recipe_unsupported`/`recipe_unreadable`
+ *  (`campaign-recipe.ts`). Omitting one would under-report `failedTargets` on a wave that reconcile
+ *  deliberately stopped, which is the one case an operator most needs the board to show — so the set
+ *  is IMPORTED, not restated. */
+const FAILED_STATUSES = new Set<string>([
   "failed",
   "aborted",
-  "no_executor",
-  WAVE_TARGET_TOMBSTONED_STATUS
+  // M25.4 — spread rather than re-listed. The refusal set now has four members
+  // (`recipe_unsupported`/`recipe_unreadable` joined the two above) and this was one of five places
+  // that used to restate it by hand. See `REFUSED_WAVE_TARGET_STATUSES`.
+  ...REFUSED_WAVE_TARGET_STATUSES
 ]);
 
 /** A component's latest change, plus WHO DRIVES IT. `drivenHere` is false when the change's graph

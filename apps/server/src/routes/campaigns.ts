@@ -82,6 +82,11 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
           labels: body.labels,
           topologyIdOrUrn: body.topology,
           type: body.type,
+          // M25.4 — passed straight through. The SHAPE refusal is not here: it is at
+          // `graph/objects-repo.ts`'s choke point, which this call reaches through `createObject`,
+          // because IaC apply and hand-fill reach `campaign.properties` without passing through
+          // this route at all (`governance/campaign-recipe-guard.ts`).
+          recipe: body.recipe,
           targets: body.targets
         });
       });
