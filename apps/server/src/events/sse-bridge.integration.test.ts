@@ -14,6 +14,7 @@ import {
   testDatabaseUrl,
   testPgBossDatabaseUrl,
   testRuntimeDatabaseUrl,
+  waitForSseBridgeListening,
   waitUntil,
   type TestOrg,
   type TestServer
@@ -52,6 +53,11 @@ describe("SSE bridge: relay -> pg_notify(scp_sse_events) -> bridge -> sseHub", (
       eventBusBackend: "postgres"
     });
     bridge = startSseBridge(bridgePool, server.deps.config.runtimeDatabaseUrl);
+    // The bridge's LISTEN is established ASYNCHRONOUSLY and NOTIFY has no replay, so anything
+    // published before it is up is lost permanently — see the long note at the wiring test's own
+    // barrier below for the CI measurement that proved this. Every test in this describe assumes
+    // delivery works, so the barrier belongs here, once, rather than in each of them.
+    await waitForSseBridgeListening(adminClient);
   }, 60_000);
 
   afterAll(async () => {
@@ -272,6 +278,11 @@ describe("wiring: an api-role process depends ENTIRELY on the bridge for sseHub 
       ).toBeUndefined();
 
       bridge = startSseBridge(bridgePool, apiServer.deps.config.runtimeDatabaseUrl);
+
+      // THE FIX FOR THIS TEST'S CI FAILURE — see `waitForSseBridgeListening`'s doc comment. Without
+      // it, the event below is published into the window before the just-started bridge is listening
+      // and is lost forever, failing the positive half for a reason that is not the wiring.
+      await waitForSseBridgeListening(adminClient);
 
       await withTenantTx(apiServer.deps.db, org.orgId, (tx) =>
         eventBus.publish(tx, {

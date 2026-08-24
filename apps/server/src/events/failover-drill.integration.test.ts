@@ -14,6 +14,7 @@ import {
   testDatabaseUrl,
   testPgBossDatabaseUrl,
   testRuntimeDatabaseUrl,
+  waitForSseBridgeListening,
   waitUntil,
   type TestOrg,
   type TestServer
@@ -54,6 +55,10 @@ describe("§7.5 failover drill: outbox→bridge delivery survives a mid-flight b
       eventBusBackend: "postgres"
     });
     bridge = startSseBridge(bridgePool, server.deps.config.runtimeDatabaseUrl);
+    // NOTIFY has no replay and the bridge's LISTEN comes up asynchronously — publishing before it is
+    // established loses the event permanently. Also load-bearing for the kill below: the drill
+    // asserts it terminated >=2 LISTEN backends, which requires them to exist first.
+    await waitForSseBridgeListening(adminClient);
   }, 60_000);
 
   afterAll(async () => {

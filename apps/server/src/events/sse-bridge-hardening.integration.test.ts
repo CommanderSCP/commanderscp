@@ -9,6 +9,7 @@ import {
   createTestOrg,
   testDatabaseUrl,
   testRuntimeDatabaseUrl,
+  waitForSseBridgeListening,
   waitUntil,
   type TestOrg,
   type TestServer
@@ -85,23 +86,10 @@ describe("SSE bridge — M26.1 hardening", () => {
     return id;
   }
 
-  /**
-   * Wait until a bridge's dedicated LISTEN backend is actually subscribed before notifying — NOTIFY
-   * has no replay, so a frame sent before the LISTEN is established is simply lost, which would make
-   * the SEC-1 "no fetch happened" assertion pass VACUOUSLY (nothing arrived, rather than the
-   * work-gate skipping it). Same pg_stat_activity probe the reconnect test uses.
-   */
+  /** Local alias for the shared barrier (harness.ts's `waitForSseBridgeListening`) — this file was
+   *  where the technique was first needed; it now belongs to every bridge test. */
   async function waitForBridgeListening(): Promise<void> {
-    await waitUntil(
-      async () => {
-        const res = await admin.query(
-          `SELECT 1 FROM pg_stat_activity
-           WHERE datname = current_database() AND query ILIKE 'LISTEN scp_sse_events%'`
-        );
-        return res.rows.length > 0 ? true : undefined;
-      },
-      { describe: "the SSE bridge's LISTEN connection to be established", timeoutMs: 15_000 }
-    );
+    await waitForSseBridgeListening(admin);
   }
 
   it("SEC-1: a NOTIFY for an org with NO locally-connected client does not touch the pool; one for a connected org does", async () => {

@@ -572,6 +572,38 @@ export async function waitUntil<T>(
 }
 
 /**
+ * THE BARRIER EVERY SSE-BRIDGE TEST NEEDS, before it publishes anything it expects to be delivered.
+ *
+ * `startSseBridge` returns synchronously but establishes its `LISTEN scp_sse_events` connection
+ * ASYNCHRONOUSLY, and NOTIFY has NO REPLAY (ADR-0025 D4). An event relayed into that window is lost
+ * permanently — so a test that expected it times out, and (worse) a test making a NEGATIVE assertion
+ * passes VACUOUSLY, because nothing could ever have reached the bridge to be rejected.
+ *
+ * Idle machines win that race and hide it. CI lost it: `sse-bridge.integration.test.ts`'s wiring test
+ * failed with `waitUntil timed out after 15000ms` on a runner where a neighbouring suite's 10k-write
+ * audit test was taking 141s. Postgres retains an idle backend's last query text, so the LISTEN's own
+ * presence in `pg_stat_activity` IS the positive signal that it is established — no fixed sleep, and
+ * exactly as slow as the connection actually is (integration-sleep-census.test.ts's property).
+ *
+ * `admin` must be a client on the ADMIN url (`testDatabaseUrl()`), scoped to this worker's database.
+ */
+export async function waitForSseBridgeListening(admin: pg.Client): Promise<void> {
+  await waitUntil(
+    async () => {
+      const res = await admin.query(
+        `SELECT 1 FROM pg_stat_activity
+         WHERE datname = current_database() AND query ILIKE 'LISTEN scp_sse_events%'`
+      );
+      return res.rows.length > 0 ? true : undefined;
+    },
+    {
+      describe: "the SSE bridge's LISTEN connection to be established (NOTIFY has no replay)",
+      timeoutMs: 15_000
+    }
+  );
+}
+
+/**
  * How long ONE reconcile tick is allowed to take, for the purpose of sizing a test's deadline.
  *
  * ## `RECONCILE_TICK_INTERVAL_SECONDS` is 1, and every deadline written against that number is wrong

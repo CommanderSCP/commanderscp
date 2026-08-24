@@ -10,6 +10,7 @@ import {
   testDatabaseUrl,
   testPgBossDatabaseUrl,
   testRuntimeDatabaseUrl,
+  waitForSseBridgeListening,
   waitUntil,
   type TestOrg,
   type TestServer
@@ -53,6 +54,12 @@ describe("SSE bridge — NOTIFY payload authenticity", () => {
     // Writes the REAL outbox row whose delivery is this test's positive signal (see below).
     admin = new pg.Client({ connectionString: testDatabaseUrl() });
     await admin.connect();
+    // The bridge's LISTEN is established asynchronously and NOTIFY has no replay. That matters
+    // DOUBLY here: a forged frame sent before the LISTEN is up would never reach the bridge at all,
+    // so "nothing was delivered" would be true for the wrong reason and this security test would
+    // pass VACUOUSLY. Wait for the LISTEN first, so the forgery is genuinely seen and genuinely
+    // dropped. (Shared helper — see sse-bridge.integration.test.ts.)
+    await waitForSseBridgeListening(admin);
   }, 90_000);
 
   afterAll(async () => {
