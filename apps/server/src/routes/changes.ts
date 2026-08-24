@@ -336,6 +336,36 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
             // change that never crossed a domain boundary.
             buildBoundarySegment(tx, auth.orgId, change)
           ]);
+        // `ChangeWaveSchema.heldTargetCount`'s SECOND HALF: `plan` already carries the freeze-held
+        // count (`getLatestPlanForChange` computes that half unconditionally). This handler is the
+        // one caller that ALSO computes `stageDependencyStatus`, so it is the one place that can
+        // add the stage-dependency-held count without a second evaluation of that predicate. Only
+        // `stageDependencyStatus.waveIndex` can carry any (that status only ever evaluates the
+        // active wave), so every other wave's count is freeze-only, unaffected.
+        //
+        // NOT DISJOINT BY DEFAULT — the two halves are computed by two independent predicates
+        // (`resolveWaveTargetFreezeHolds` and `evaluateStageDependencies`) over the SAME candidate
+        // set (the active wave's `pending`/`triggering` targets), unlike `reconcile.ts`'s admission
+        // loop, where only one `continue` can fire per target per tick, making the two hold sets
+        // disjoint BY CONSTRUCTION (reconcile.ts's invariant 4 on the freeze-hold `continue`). A
+        // target that is simultaneously frozen and dependency-held would otherwise be counted in
+        // BOTH halves — a one-target wave reporting `heldTargetCount: 2`. Exclude any target this
+        // wave's freeze half already counted (`activeWave.targets[i].hold` is set for exactly
+        // those) before adding the stage-dependency half.
+        if (plan && stageDependencyStatus) {
+          const activeWave = plan.waves.find(
+            (w) => w.waveIndex === stageDependencyStatus.waveIndex
+          );
+          if (activeWave) {
+            const freezeHeldTargetIds = new Set(
+              activeWave.targets.filter((t) => t.hold).map((t) => t.targetObjectId)
+            );
+            const stageHeldCount = stageDependencyStatus.targets.filter(
+              (t) => t.held && !freezeHeldTargetIds.has(t.targetObjectId)
+            ).length;
+            activeWave.heldTargetCount = (activeWave.heldTargetCount ?? 0) + stageHeldCount;
+          }
+        }
         return {
           change,
           plan,

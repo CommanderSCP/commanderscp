@@ -454,8 +454,14 @@ export function ComponentGateLine({
 /**
  * The enable dialog's CONTENT, portal-free — exported for the test. Collects granularity and
  * delivery; the confirm is the ONLY thing that fires the write. States plainly that the first bump
- * is always a pull request whatever the delivery, and that auto-merge needs every enabling policy
- * to agree — both are the server's rules, repeated so the picker does not misrepresent them.
+ * is always a pull request whatever the delivery, that auto-merge needs every enabling policy to
+ * agree, and (M25.8 / owner decision D8) that an active change freeze over the component withholds
+ * only the merge itself — never the pull request, and never permanently: `bump-gate.ts`'s `frozen`
+ * refusal kind still GRANTS auto-merge and every capability is in place, and
+ * `bump-freeze-redrive.ts` re-asks every open `frozen` bump roughly once a minute
+ * (`BUMP_FREEZE_REDRIVE_INTERVAL_SECONDS`), so the merge lands on its own within about a minute of
+ * the freeze lifting — all three are the server's rules, repeated so the picker does not
+ * misrepresent them.
  */
 export function EnableDialogBody({
   component,
@@ -532,7 +538,9 @@ export function EnableDialogBody({
         </fieldset>
         <p className="text-xs text-slate-500" data-testid="enable-first-bump-note">
           The first bump is always a pull request. Auto-merge applies from the second look on, and
-          only when every enabling policy asks for it.
+          only when every enabling policy asks for it. An active change freeze over this component
+          withholds the merge itself — the pull request still opens, and the merge lands on its own
+          within about a minute of the freeze lifting.
         </p>
         {refusal ? (
           <Alert tone="danger" data-testid="enable-error">

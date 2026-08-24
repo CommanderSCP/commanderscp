@@ -49,16 +49,23 @@ import { operatorTokenMatches, withOperatorDb } from "./operator-db.js";
  *    by this increment.
  *
  * ============================================================================================
- * NO IaC AND NO UI REPRESENTATION, THE SAME AS ITS TWO SIBLINGS, AND THAT IS THE DECISION
+ * NO IaC, AND NO WRITE CONTROL IN THE UI — THE SAME AS ITS TWO SIBLINGS, AND THAT IS THE DECISION
  * ============================================================================================
  * M22.9's commit message states it for the admissions door and it applies here for the same
  * reason: `scp-iac` plans and applies TENANT graph state under a tenant credential, and the UI is
  * a tenant surface. An instance-scoped resource authored with a deployment-level secret belongs to
- * neither — putting it in an IaC file would put a deployment secret into a tenant's plan, and
- * putting it in the UI would advertise a button no tenant principal can ever press. The
+ * neither — putting it in an IaC file would put a deployment secret into a tenant's plan, and a
+ * PRESSABLE WRITE button in the UI would advertise one no tenant principal can ever use. The
  * distribution path for a multi-site operator is the same deployment tooling (Ansible/Helm) that
  * distributes `SCP_OPERATOR_TOKEN`, PUTting the same freeze to each instance — a platform freeze
  * does not and cannot federate (0086's header).
+ *
+ * A READ-ONLY CARD DOES EXIST (M25.UI increment 3, `apps/web/src/routes/setup.tsx`'s "Platform
+ * freezes" card) — the rationale above is about the WRITE side only, unchanged since M25.3: READ
+ * is tenant-facing (this file's own doc, above) precisely so a tenant blocked by one is not left
+ * to guess, and a browser session is exactly where that tenant is looking. The card renders every
+ * field and points at the operator's real door (the raw route + `x-scp-operator-token`) rather
+ * than a button it cannot make work.
  *
  * ============================================================================================
  * NO DECISION AND NO AUDIT EVENT ARE WRITTEN HERE, AND THAT IS NOT AN OVERSIGHT
