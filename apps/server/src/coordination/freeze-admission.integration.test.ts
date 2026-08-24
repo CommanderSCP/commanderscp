@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { GraphObject } from "@scp/schemas";
+import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import {
   auditEvents,
@@ -86,6 +87,28 @@ const executorConfig: {
   autoSucceedAfterMs: 10 * 60_000,
   forcePhase: {}
 };
+
+/**
+ * Resolves once some backend in this database is waiting on a lock — the positive signal that
+ * replaces a fixed sleep in the overlapping-edit case below. Polls fast (25ms) because the state it
+ * is waiting for is local and near-instant; the generous deadline exists only so a pathologically
+ * loaded CI box fails with THIS message rather than an inscrutable assertion 20 lines later.
+ */
+async function waitForBlockedBackend(db: Db, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const rows = await db.execute(
+      sql`select 1 from pg_stat_activity where wait_event_type = 'Lock' limit 1`
+    );
+    if (rows.rows.length > 0) return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        "no backend ever blocked on a lock — the overlapping-edit case raced nothing, so its verdict is meaningless"
+      );
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
 
 describe("freeze admission: per-target holds, whole-wave blocks, and what is exempt (M25.2)", () => {
   let server: ListeningTestServer;
@@ -1721,9 +1744,15 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
           actorObjectId: org.orgId
         })
       );
-      // Long enough for tx2 to reach its read; tx1 does not commit until this resolves, so the
-      // window tx2 must land inside is bounded below by this sleep and not by scheduler luck.
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      // POSITIVE SIGNAL, not a sleep (`test-support/integration-sleep-census.test.ts`): wait until
+      // tx2 is DEMONSTRABLY blocked on tx1's row lock, by asking Postgres. A fixed sleep here is
+      // wrong in both directions — too short on a loaded box and tx2 has not reached its read, so
+      // the test passes vacuously having raced nothing; too long and it is dead time in every run.
+      // `pg_stat_activity.wait_event_type = 'Lock'` is exactly the state this test needs to exist:
+      // tx2 has issued its `SELECT ... FOR UPDATE` and is parked behind tx1. Polling it makes the
+      // wait as long as the lock actually takes and no longer, and — the part that matters — makes
+      // it IMPOSSIBLE for this case to be green without the contention it claims to create.
+      await waitForBlockedBackend(server.deps.db);
     });
     const result = await second;
 
