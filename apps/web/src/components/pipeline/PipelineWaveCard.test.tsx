@@ -289,6 +289,10 @@ describe("PipelineWaveCard: the freeze-hold field (ChangeWaveTargetSchema.hold, 
     expect(html).toContain('data-testid="pipeline-wave-target-held-badge"');
     expect(html).toContain('data-testid="pipeline-wave-target-freeze-hold"');
     expect(html).toContain('data-testid="pipeline-wave-target-freeze-hold-line"');
+    // The line carries the freeze window's end as a LOCAL-clock tooltip (the wire's `endsAt`,
+    // which exists exactly so the client's clock can contextualize it) — renderToStaticMarkup
+    // includes title attributes, the established honesty-copy channel.
+    expect(html).toMatch(/title="freeze window ends [^"]+"/);
     // The scope name, then the server-composed summary verbatim — "{scope.name} — {summary}".
     expect(html).toContain("amer");
     expect(html).toContain(FREEZE_ENTRY.summary);

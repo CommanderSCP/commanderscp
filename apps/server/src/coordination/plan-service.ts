@@ -345,9 +345,20 @@ function toChangeWaveTargetShape(
  * only ever compiled on the `evaluated -> coordinated` edge — the change cannot be `executing`
  * yet, so `resolveWaveTargetFreezeHolds`'s own gate would return an empty map regardless, and
  * skipping the call there skips a query that could only ever come back empty. `getLatestPlanForChange`
- * (the GET read path) always computes and passes it, which is what makes `heldTargetCount`
- * "always emitted" on every response that matters (`ChangeWaveSchema.heldTargetCount`'s doc).
+ * (the GET read path) always computes and passes it. `heldTargetCount` is then emitted ONLY for
+ * the wave admission currently governs (`activeWaveOf` — the same selector the evaluation itself
+ * uses, so "which wave was evaluated" and "which wave carries the count" cannot drift): the
+ * evaluation never looks at any other wave, and emitting `0` for an unevaluated future wave would
+ * claim "evaluated, nothing held" about targets a standing freeze may well cover when their turn
+ * comes (`ChangeWaveSchema.heldTargetCount`'s absent-vs-zero rule; M25.UI review minor finding 4).
  */
+/** THE ONE WAVE ADMISSION CURRENTLY GOVERNS — first wave not yet terminal. Shared by
+ *  `resolveWaveTargetFreezeHolds` (which only ever evaluates THIS wave's targets) and
+ *  `toChangePlanShape`'s `heldTargetCount` emission, so the two cannot disagree about which wave
+ *  that is. */
+function activeWaveOf<W extends { status: string }>(waves: W[]): W | undefined {
+  return waves.find((w) => w.status !== "succeeded" && w.status !== "skipped");
+}
 function toChangePlanShape(
   plan: typeof changePlans.$inferSelect,
   waves: (typeof changeWaves.$inferSelect)[],
@@ -362,35 +373,41 @@ function toChangePlanShape(
     topologyVersion: plan.topologyVersion,
     status: plan.status,
     createdAt: plan.createdAt.toISOString(),
-    waves: waves
-      .sort((a, b) => a.waveIndex - b.waveIndex)
-      .map((w) => {
-        const waveTargets = targets.filter((t) => t.waveId === w.id);
-        // Freeze-held count only, here — the stage-dependency half of `heldTargetCount` is added
-        // by `routes/changes.ts`'s explain handler, which is the one caller that also computes
-        // `stageDependencyStatus` (see that field's doc for why the two halves live apart).
-        const heldTargetCount = freezeHolds
-          ? waveTargets.filter((t) => freezeHolds.has(t.targetObjectId)).length
-          : undefined;
-        return {
-          id: w.id,
-          planId: w.planId,
-          waveIndex: w.waveIndex,
-          name: w.name,
-          requiresFanIn: w.requiresFanIn,
-          status: w.status,
-          createdAt: w.createdAt.toISOString(),
-          startedAt: w.startedAt?.toISOString() ?? null,
-          completedAt: w.completedAt?.toISOString() ?? null,
-          ...(heldTargetCount !== undefined ? { heldTargetCount } : {}),
-          targets: waveTargets.map((t) =>
-            toChangeWaveTargetShape(
-              t,
-              toWaveTargetHold(freezeHolds?.get(t.targetObjectId), scopeNames ?? new Map())
+    waves: (() => {
+      const activeWaveId = freezeHolds !== undefined ? activeWaveOf(waves)?.id : undefined;
+      return waves
+        .sort((a, b) => a.waveIndex - b.waveIndex)
+        .map((w) => {
+          const waveTargets = targets.filter((t) => t.waveId === w.id);
+          // Freeze-held count only, here — the stage-dependency half of `heldTargetCount` is added
+          // by `routes/changes.ts`'s explain handler, which is the one caller that also computes
+          // `stageDependencyStatus` (see that field's doc for why the two halves live apart).
+          // ACTIVE WAVE ONLY: the evaluation never looks at any other wave, so any other wave's
+          // count would be a fabricated zero (absent = not evaluated; see the schema doc).
+          const heldTargetCount =
+            freezeHolds !== undefined && w.id === activeWaveId
+              ? waveTargets.filter((t) => freezeHolds.has(t.targetObjectId)).length
+              : undefined;
+          return {
+            id: w.id,
+            planId: w.planId,
+            waveIndex: w.waveIndex,
+            name: w.name,
+            requiresFanIn: w.requiresFanIn,
+            status: w.status,
+            createdAt: w.createdAt.toISOString(),
+            startedAt: w.startedAt?.toISOString() ?? null,
+            completedAt: w.completedAt?.toISOString() ?? null,
+            ...(heldTargetCount !== undefined ? { heldTargetCount } : {}),
+            targets: waveTargets.map((t) =>
+              toChangeWaveTargetShape(
+                t,
+                toWaveTargetHold(freezeHolds?.get(t.targetObjectId), scopeNames ?? new Map())
+              )
             )
-          )
-        };
-      })
+          };
+        });
+    })()
   };
 }
 
@@ -433,7 +450,7 @@ async function resolveWaveTargetFreezeHolds(
     .limit(1);
   if (changeRow?.state !== "executing") return new Map();
 
-  const activeWave = waves.find((w) => w.status !== "succeeded" && w.status !== "skipped");
+  const activeWave = activeWaveOf(waves);
   if (!activeWave) return new Map();
 
   const activeWaveTargets = targets.filter((t) => t.waveId === activeWave.id);

@@ -405,7 +405,16 @@ function FreezeHoldLines({ freezes }: { freezes: WaveTargetFreezeEntry[] }): Rea
       data-testid="pipeline-wave-target-freeze-hold"
     >
       {freezes.map((freeze) => (
-        <div key={freeze.freezeId} data-testid="pipeline-wave-target-freeze-hold-line">
+        // `endsAt` is on the wire precisely so the CLIENT's clock can contextualize it (the
+        // schema's stated reason for carrying it; the server summary states the same instant in
+        // raw UTC). A title tooltip keeps the verbatim-summary rule: no client-composed prose in
+        // the rendered line itself, local time on hover (§ structural conventions — title is the
+        // honesty channel tests can see).
+        <div
+          key={freeze.freezeId}
+          data-testid="pipeline-wave-target-freeze-hold-line"
+          title={`freeze window ends ${new Date(freeze.endsAt).toLocaleString()}`}
+        >
           {freeze.scope?.name ? (
             <>
               <span className="font-medium">{freeze.scope.name}</span>{" "}

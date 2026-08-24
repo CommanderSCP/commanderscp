@@ -420,10 +420,12 @@ export const ChangeWaveSchema = z.object({
   /** SERVER-COMPUTED COUNT of this wave's currently-held targets — freeze-held
    *  (`targets[].hold`) plus stage-dependency-held (ADR-0028, carried separately via
    *  `ChangeExplainResponse.stageDependencyStatus` for the reason given on that field). ADDITIVE-
-   *  OPTIONAL for oasdiff, but ALWAYS EMITTED by every read path that populates `hold` at all —
-   *  clients must never recompute this from `targets[].hold`, because a caller with no
-   *  `stageDependencyStatus` in hand (e.g. `service-board.ts`) would undercount it. Absent means
-   *  "this read path did not compute it", not "zero held". */
+   *  OPTIONAL for oasdiff, and emitted ONLY for the wave admission currently governs (the active
+   *  wave — the one wave the freeze evaluation ever looks at). Absent means "not evaluated" (a
+   *  future wave's targets may sit under a standing freeze that will hold them at their turn —
+   *  a zero there would be fabricated), never "zero by omission"; `0` means evaluated with
+   *  nothing held. Clients must never recompute this from `targets[].hold` — a caller with no
+   *  `stageDependencyStatus` in hand (e.g. `service-board.ts`) would undercount it. */
   heldTargetCount: z.number().int().nonnegative().optional(),
   targets: z.array(ChangeWaveTargetSchema)
 });

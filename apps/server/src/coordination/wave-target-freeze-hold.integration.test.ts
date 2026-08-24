@@ -114,6 +114,41 @@ describe("wave-target hold projection: ChangeWaveTargetSchema.hold / ChangeWaveS
       reason: `${name}: integration fixture`
     });
 
+  it("emits heldTargetCount ONLY for the active wave — a future wave under a standing freeze reads ABSENT, never a fabricated zero", async () => {
+    // Two waves: amer first, apac second. The freeze covers APAC — the FUTURE wave's target.
+    // The evaluation only ever looks at the active wave (activeWaveOf), so wave 2 was never
+    // evaluated: a `0` there would claim "evaluated, nothing held" about a target this very
+    // freeze WILL hold when its turn comes. Absent is the only honest value (schema doc's
+    // absent-vs-zero rule; M25.UI review minor finding 4).
+    const twoWaveTopology = await admin.object("release-topology").create({
+      name: `staged-${randomUUID().slice(0, 8)}`,
+      properties: {
+        waves: [
+          { name: "amer-first", mode: "parallel", targets: [amer.id] },
+          { name: "apac-second", mode: "parallel", targets: [apac.id] }
+        ]
+      }
+    });
+    const app = await componentAt("staged", [amer, apac]);
+    const change = await admin.changes.propose({
+      name: `staged-${randomUUID().slice(0, 8)}`,
+      targets: [app.id],
+      topology: twoWaveTopology.id
+    });
+    await freezeAt(apac.id, "apac-standing-freeze");
+
+    await tick(3);
+
+    const explained = await admin.changes.explain(change.id);
+    const [waveOne, waveTwo] = explained.plan!.waves;
+    // Wave 1 is the active wave and WAS evaluated: the apac freeze does not cover amer, so an
+    // honest evaluated-and-clear zero.
+    expect(waveOne!.heldTargetCount).toBe(0);
+    expect(waveOne!.targets.every((t) => t.hold === undefined)).toBe(true);
+    // Wave 2 was never evaluated — count ABSENT, not 0, though its target sits under the freeze.
+    expect(waveTwo!.heldTargetCount).toBeUndefined();
+  });
+
   it("carries the covering freeze's summary/scope/endsAt on the held target, leaves its unheld sibling untouched, and counts it on the wave — mixed wave", async () => {
     const app = await componentAt("mixed", [amer, apac]);
     const change = await release("mixed", [app.id]);
