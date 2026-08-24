@@ -87,9 +87,15 @@ export const CAMPAIGN_RECIPE_PARAMETERS_MAX_DEPTH = 6;
  * one of 47 changes. Secrets belong in `executor_bindings.secret_refs`, which the plugin host
  * resolves per instance and never puts on the graph.
  *
- * A SUBSTRING rather than a prefix match, deliberately: `githubToken`, `deploy_password` and
- * `x-api-key` are the shapes people actually write, and a prefix rule catches none of them. The
- * false-positive cost is one 400 naming the key and the remedy; the false-negative cost is a
+ * MATCHED AGAINST A NORMALIZED KEY — lowercased with every non-alphanumeric character removed —
+ * and a SUBSTRING rather than a prefix. Both halves were chosen after the first draft failed its own
+ * test: it listed `apikey` and `api_key` as separate entries and let `x-api-key` through, which is
+ * the "enumerate the symptoms" mistake in miniature. Normalizing collapses `api_key`, `api-key`,
+ * `x-api-key` and `apiKey` into one rule, so the list names CONCEPTS and the separator vocabulary
+ * cannot grow a hole. `githubToken`, `deploy_password` and `AWS_SECRET_ACCESS_KEY` are the shapes
+ * people actually write, and a prefix rule catches none of them.
+ *
+ * The false-positive cost is one 400 naming the key and the remedy; the false-negative cost is a
  * credential in a federated, `object:read`-visible document that no later fix can un-publish.
  */
 export const CAMPAIGN_RECIPE_BANNED_KEY_SUBSTRINGS: readonly string[] = [
@@ -99,10 +105,14 @@ export const CAMPAIGN_RECIPE_BANNED_KEY_SUBSTRINGS: readonly string[] = [
   "passwd",
   "credential",
   "apikey",
-  "api_key",
   "privatekey",
-  "private_key"
+  "accesskey"
 ];
+
+/** Lowercase, alphanumerics only — see {@link CAMPAIGN_RECIPE_BANNED_KEY_SUBSTRINGS}. */
+function normalizeParameterKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
 
 /** Walks a parsed parameter bag: JSON-value-ness, depth, and the banned-key rule in ONE pass, so
  *  the three can never disagree about what they visited. Returns the first violation's message. */
@@ -123,8 +133,8 @@ function inspectRecipeParameters(value: unknown, depth: number, path: string): s
   }
   if (typeof value === "object") {
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      const lowered = key.toLowerCase();
-      const banned = CAMPAIGN_RECIPE_BANNED_KEY_SUBSTRINGS.find((s) => lowered.includes(s));
+      const normalized = normalizeParameterKey(key);
+      const banned = CAMPAIGN_RECIPE_BANNED_KEY_SUBSTRINGS.find((s) => normalized.includes(s));
       if (banned !== undefined) {
         return (
           `${path}.${key}: parameter keys may not contain '${banned}' — a recipe is copied onto ` +
