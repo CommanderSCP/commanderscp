@@ -100,7 +100,7 @@ describe("SSE bridge: relay -> pg_notify(scp_sse_events) -> bridge -> sseHub", (
     }
   }, 30_000);
 
-  it("an oversized event round-trips via the marker + SET LOCAL ROLE scp_relay fetch path", async () => {
+  it("an event far larger than the NOTIFY payload cap round-trips whole via the pointer + SET LOCAL ROLE scp_relay fetch path", async () => {
     await adminClient.query(`UPDATE outbox SET processed_at = now() WHERE processed_at IS NULL`);
 
     const received: RelayedEvent[] = [];
@@ -109,8 +109,9 @@ describe("SSE bridge: relay -> pg_notify(scp_sse_events) -> bridge -> sseHub", (
     };
     sseHub.on(org.orgId, onEvent);
     try {
-      // Comfortably over outbox-relay.ts's SSE_NOTIFY_MAX_PAYLOAD_BYTES (7000) once wrapped in the
-      // full RelayedEvent envelope, so the relay is forced onto the marker path.
+      // Comfortably over Postgres's ~8000-byte NOTIFY payload cap once wrapped in the full
+      // RelayedEvent envelope. Since F1 the payload is always a tiny {id, orgId} pointer and the
+      // bridge always fetches the row, so event size cannot hit the cap — this pins exactly that.
       const bigBlob = "x".repeat(8_000);
       await withTenantTx(server.deps.db, org.orgId, (tx) =>
         eventBus.publish(tx, {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
-import { RelayedEventSchema, type RelayedEvent } from "@scp/schemas";
+import { type RelayedEvent } from "@scp/schemas";
 import { sseHub } from "./sse-hub.js";
 import { startReconnectingListenClient, type ListenClientHandle } from "./listen-client.js";
 
@@ -23,16 +23,15 @@ interface OutboxRow {
   created_at: Date;
 }
 
-interface OversizedMarker {
-  id: string;
-  orgId: string;
-  oversized: true;
-}
-
-function isOversizedMarker(value: unknown): value is OversizedMarker {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return v.oversized === true && typeof v.id === "string" && typeof v.orgId === "string";
+/** The NOTIFY payload is a POINTER (review finding F1, M26-BUILD-STATUS.md): only `id` is read,
+ *  and only to look up the authoritative `outbox` row. Anything else in the payload — including
+ *  the relay's `orgId` observability hint — is untrusted and never used for delivery, because
+ *  NOTIFY is not channel-access-controlled: any DB login (even `scp_pgboss`, which has zero
+ *  `outbox` grants by design) can inject arbitrary frames on this channel. */
+function extractPointerId(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const id = (value as Record<string, unknown>).id;
+  return typeof id === "string" ? id : undefined;
 }
 
 /** A schema-valid `RelayedEvent` (ADR-0023's per-frame validation must pass unchanged) carrying no
@@ -50,15 +49,17 @@ function makeResyncEvent(orgId: string): RelayedEvent {
 }
 
 /**
- * Fetches one oversized outbox row by id, under the SAME narrowly-scoped `SET LOCAL ROLE
- * scp_relay` escalation the outbox relay itself uses (events/outbox-relay.ts's module doc — PR #4
- * security review, CRITICAL 3). Extending that reviewed escalation to every SSE-serving process is
- * deliberate, not incidental (proposal §7.1 item 1): `scp_relay` is NOBYPASSRLS and granted ONLY
- * SELECT+UPDATE on `outbox` (drizzle/0003_runtime_roles.sql), so a process running this gains
- * nothing beyond re-reading a row it could already have received whole over the same NOTIFY
- * channel had it merely been small enough — the escalation's blast radius does not widen.
+ * Fetches one outbox row by id — the ONLY way an event ever enters this bridge (F1: the row is the
+ * authority). Outbox rows are retained (ADR-0024: nothing deleted) and committed before the NOTIFY
+ * is delivered, so a legitimate pointer always resolves; an id that resolves to no row is a
+ * forgery and is dropped. Runs under the SAME narrowly-scoped `SET LOCAL ROLE scp_relay` escalation
+ * the outbox relay itself uses (events/outbox-relay.ts's module doc — PR #4 security review,
+ * CRITICAL 3). Extending that reviewed escalation to every SSE-serving process is deliberate, not
+ * incidental (proposal §7.1 item 1): `scp_relay` is NOBYPASSRLS and granted ONLY SELECT+UPDATE on
+ * `outbox` (drizzle/0003_runtime_roles.sql), so a process running this gains nothing beyond
+ * reading rows the relay already fans out to it — the escalation's blast radius does not widen.
  */
-async function fetchOversizedEvent(pool: pg.Pool, id: string): Promise<RelayedEvent | undefined> {
+async function fetchOutboxEvent(pool: pg.Pool, id: string): Promise<RelayedEvent | undefined> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -115,31 +116,28 @@ export function startSseBridge(pool: pg.Pool, listenConnectionString: string): S
       return;
     }
 
-    if (isOversizedMarker(parsed)) {
-      try {
-        const event = await fetchOversizedEvent(pool, parsed.id);
-        if (!event) {
-          // Best-effort, no retry (ADR-0025's contract is "no replay" — the resync/cache-
-          // invalidation path is what actually recovers a miss like this one).
-          console.warn(`[sse-bridge] oversized outbox row ${parsed.id} not found — dropped`);
-          return;
-        }
-        sseHub.publish(event);
-      } catch (err) {
-        console.error(`[sse-bridge] failed to fetch oversized outbox row ${parsed.id}`, err);
-      }
+    const id = extractPointerId(parsed);
+    if (id === undefined) {
+      console.error("[sse-bridge] NOTIFY payload carried no id — dropped");
       return;
     }
 
-    const result = RelayedEventSchema.safeParse(parsed);
-    if (!result.success) {
-      console.error(
-        "[sse-bridge] NOTIFY payload failed RelayedEventSchema validation — dropped",
-        result.error
-      );
-      return;
+    try {
+      const event = await fetchOutboxEvent(pool, id);
+      if (!event) {
+        // Either a forged pointer (no outbox row ever existed — the F1 attack, neutralized here by
+        // simply having nothing to deliver) or, in principle, a row this process cannot see. No
+        // retry: ADR-0025's contract is "no replay" — the resync/cache-invalidation path is what
+        // recovers a genuine miss.
+        console.warn(`[sse-bridge] NOTIFY pointer ${id} resolves to no outbox row — dropped`);
+        return;
+      }
+      // `event` is built exclusively from the fetched row: org routing, type, and body all come
+      // from the authoritative outbox, never from the NOTIFY payload (F1).
+      sseHub.publish(event);
+    } catch (err) {
+      console.error(`[sse-bridge] failed to fetch outbox row ${id}`, err);
     }
-    sseHub.publish(result.data);
   }
 
   const listenClient: ListenClientHandle = startReconnectingListenClient({

@@ -12,10 +12,6 @@ const BATCH_SIZE = 100;
 /** The channel events/sse-bridge.ts LISTENs on — never imported from each other (they can run in
  *  different processes), so this is the shared literal, not a shared constant. */
 const SSE_NOTIFY_CHANNEL = "scp_sse_events";
-/** Postgres's NOTIFY payload cap is ~8000 bytes (proposal §7.1 item 1); keep headroom under it. A
- *  row whose serialized `RelayedEvent` exceeds this goes out as a small marker instead, and the
- *  bridge fetches the row by id. */
-const SSE_NOTIFY_MAX_PAYLOAD_BYTES = 7000;
 
 export interface OutboxRelayHandle {
   stop(): Promise<void>;
@@ -163,16 +159,17 @@ export function startOutboxRelay(
           data: row.data,
           createdAt: row.created_at.toISOString()
         };
-        // SSE fan-out (M26.1 §7.1 item 1): NOTIFY from INSIDE this transaction, so delivery is
-        // atomic with the batch COMMIT. Full envelope when it fits Postgres's NOTIFY payload cap;
-        // otherwise a marker events/sse-bridge.ts recognizes and fetches the row for, under the
-        // same `SET LOCAL ROLE scp_relay` escalation this transaction already holds.
-        const serializedEvent = JSON.stringify(relayedEvent);
-        const ssePayload =
-          Buffer.byteLength(serializedEvent, "utf8") <= SSE_NOTIFY_MAX_PAYLOAD_BYTES
-            ? serializedEvent
-            : JSON.stringify({ id: row.id, orgId: row.org_id, oversized: true });
-        await client.query("SELECT pg_notify($1, $2)", [SSE_NOTIFY_CHANNEL, ssePayload]);
+        // SSE fan-out (M26.1 §7.1 item 1, revised by review finding F1): NOTIFY from INSIDE this
+        // transaction, so delivery is atomic with the batch COMMIT. The payload is a POINTER, never
+        // the event itself: NOTIFY is not channel-access-controlled, so any DB login can inject a
+        // frame on this channel — the bridge therefore re-derives every event from the
+        // authoritative `outbox` row by id and treats nothing in the payload as authority. `orgId`
+        // rides along strictly as a non-authoritative observability hint. This also makes payload
+        // size independent of event size (no ~8000-byte NOTIFY-cap path to split on).
+        await client.query("SELECT pg_notify($1, $2)", [
+          SSE_NOTIFY_CHANNEL,
+          JSON.stringify({ id: row.id, orgId: row.org_id })
+        ]);
         if (eventBusBackend === "nats") {
           // `natsFanout` is guaranteed defined here — asserted at construction above — so this can
           // never silently no-op the way the old `if (natsFanout)` check could.

@@ -14,23 +14,19 @@ import {
 } from "../test-support/harness.js";
 
 /**
- * SECURITY CONTRACT (M26.1 review finding — EXPECTED RED until the bridge stops trusting the
- * NOTIFY payload as authority; see docs/proposals/M26-BUILD-STATUS.md "F1").
+ * SECURITY CONTRACT (M26.1 review finding F1 — fixed; this test is the standing gate).
  *
- * `startSseBridge`'s full-envelope fast path (`sse-bridge.ts` — `RelayedEventSchema.safeParse` then
- * `sseHub.publish(result.data)`) validates the payload's SHAPE, not its AUTHENTICITY, and keys the
- * publish on the payload's OWN `orgId`. Postgres NOTIFY is not channel-access-controlled: any role
- * that can merely CONNECT can `pg_notify('scp_sse_events', …)`. So any DB login — including
- * `scp_pgboss`, which is deliberately granted NOTHING on `outbox` precisely so a pg-boss compromise
- * cannot read tenant data — can fabricate a whole event with an org id of its choosing and have the
- * bridge inject it into that tenant's live SSE stream. This is a cross-tenant integrity regression
- * introduced by the M26.1 cross-process bridge; before it, the relay read every event straight from
- * `outbox` (authenticated by the row existing), so no attacker-authored envelope path existed.
+ * Postgres NOTIFY is not channel-access-controlled: any role that can merely CONNECT can
+ * `pg_notify('scp_sse_events', …)` — including `scp_pgboss`, which is deliberately granted NOTHING
+ * on `outbox` precisely so a pg-boss compromise cannot read tenant data. The bridge's original
+ * full-envelope fast path validated the payload's SHAPE, not its AUTHENTICITY, and keyed delivery
+ * on the payload's OWN `orgId` — letting any DB login fabricate an event for any tenant's live SSE
+ * stream (a cross-tenant integrity regression the M26.1 cross-process bridge introduced).
  *
- * The fix (F1): the relay NOTIFYs an id (+ orgId as a hint only), and the bridge ALWAYS re-derives
- * the event from the authoritative `outbox` row under `SET LOCAL ROLE scp_relay` — collapsing the
- * small-event and oversized paths into one fetch, so the payload is never the authority. This test
- * pins that contract and flips to green when it lands.
+ * The contract pinned here: the NOTIFY payload is a POINTER, never authority. The relay NOTIFYs an
+ * id (+ orgId as a non-authoritative hint), and the bridge ALWAYS re-derives the event from the
+ * authoritative `outbox` row under `SET LOCAL ROLE scp_relay` — one fetch path for every event, so
+ * a frame no outbox row backs delivers nothing, to anyone.
  */
 describe("SSE bridge — NOTIFY payload authenticity", () => {
   let server: TestServer;
