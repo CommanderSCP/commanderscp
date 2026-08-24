@@ -31,6 +31,7 @@ import { ensureFederationSelf } from "../federation/self-repo.js";
 import { resolveOutpostObjectsByPeer } from "../federation/outposts-repo.js";
 import { federationPeers } from "../db/schema.js";
 import { artifactFactsForComponent } from "./artifact-facts.js";
+import { observedRunForComponent } from "./observed-run-facts.js";
 
 /**
  * A COMPONENT'S PIPELINE — its stages, derived from durable graph state.
@@ -876,6 +877,12 @@ export async function getComponentPipeline(
     (peerDomainId) => peerById.get(peerDomainId)?.name ?? null
   );
 
+  // component-journey-view.md §3 Segment 2 — "upstream build" marker, the observed CI run a
+  // change's `sourceRef` names. Independent of `artifact`/`preferredChangeIds`: it picks the newest
+  // RUN-carrying change of the component at all, not one the stages already show (see
+  // `observed-run-facts.ts`).
+  const observedRun = await observedRunForComponent(tx, orgId, component.id);
+
   return {
     component: {
       id: component.id,
@@ -896,6 +903,7 @@ export async function getComponentPipeline(
     unplacedStages,
     registry,
     artifact,
+    observedRun,
     unknownFields: []
   };
 }

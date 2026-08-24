@@ -683,6 +683,29 @@ export const ComponentPipelineSourceSchema = z.object({
 export type ComponentPipelineSource = z.infer<typeof ComponentPipelineSourceSchema>;
 
 /**
+ * THE OBSERVED CI RUN a change names — component-journey-view.md §3 Segment 2's "upstream build"
+ * case. `sourceKind` is the change's own `source_kind` ("github"/"gitea"/"gitlab" — the only kinds
+ * `observed-run-facts.ts` reads run identity out of today). `repo` and `url` are nullable because the
+ * "carries run identity" predicate accepts either alone (a citable run id plus AT LEAST ONE of
+ * url/repo); `workflowName`/`workflowPath` are nullable because not every provider's writer shape
+ * cites them (gitea's `GiteaActionRun` and gitlab's `GitlabPipeline` name neither). `observedAt` is
+ * the CHANGE's own `created_at` (when SCP recorded it), not a field read out of the run payload —
+ * every writer's `sourceRef` names a run creation time under a different, unpinned key. `changeId`
+ * is the change this was read off, the same way `artifact.changeId` states its pick.
+ */
+export const ComponentPipelineObservedRunSchema = z.object({
+  sourceKind: z.string(),
+  repo: z.string().nullable(),
+  runId: z.string(),
+  workflowName: z.string().nullable(),
+  workflowPath: z.string().nullable(),
+  url: z.string().nullable(),
+  observedAt: z.string().datetime(),
+  changeId: z.string().uuid()
+});
+export type ComponentPipelineObservedRun = z.infer<typeof ComponentPipelineObservedRunSchema>;
+
+/**
  * A component's pipeline: its stages, and where its pipeline definition came from.
  *
  * Derived entirely from durable graph state — the resolved release topology, the component's
@@ -745,6 +768,16 @@ export const ComponentPipelineResponseSchema = z.object({
    *  change of this component carries an artifact digest — "no artifact yet"). Absent = an older
    *  server. */
   artifact: ComponentPipelineArtifactSchema.nullable().optional(),
+  /** THE OBSERVED CI RUN — component-journey-view.md §3 Segment 2's "upstream build" marker: "the
+   *  distinction [coordinated vs upstream] is the whole point of §2, and it must be visible … it
+   *  reads 'GitHub Actions · CI · run 30858160395 ↗', not 'build: unknown'". Composed from the MOST
+   *  RECENT change of this component whose `sourceRef` carries a citable run id AND at least one of
+   *  `url`/`repo` (`coordination/observed-run-facts.ts`) — every provider webhook/observe writer
+   *  shape this instance traces (github/gitea flat-and-nested, gitlab pipeline/webhook) is read
+   *  defensively; an unrecognized or malformed shape counts as absent, never guessed. Optional on the
+   *  wire (additive-only `/v1`); a server that emits it sends an object or `null` (null = no change
+   *  names a run). Absent = an older server. */
+  observedRun: ComponentPipelineObservedRunSchema.nullable().optional(),
   unknownFields: z.array(z.string())
 });
 export type ComponentPipelineResponse = z.infer<typeof ComponentPipelineResponseSchema>;

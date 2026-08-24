@@ -6739,6 +6739,16 @@ export type GetComponentPipelineResponses = {
             };
             unknownFields: Array<string>;
         } | null;
+        observedRun?: {
+            sourceKind: string;
+            repo: string | null;
+            runId: string;
+            workflowName: string | null;
+            workflowPath: string | null;
+            url: string | null;
+            observedAt: string;
+            changeId: string;
+        } | null;
         unknownFields: Array<string>;
     };
 };
