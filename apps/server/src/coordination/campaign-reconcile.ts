@@ -41,6 +41,7 @@ import {
   getLatestCampaignPlan,
   markCampaignPlanCompleted
 } from "./campaign-plan-service.js";
+import { tryAcquireCampaignCoordinationLock } from "./campaign-coordination-lock.js";
 import {
   markCampaignWaveBlocked,
   markCampaignWaveRunning,
@@ -91,15 +92,53 @@ function logCampaignError(
   );
 }
 
+/**
+ * ONE CAMPAIGN'S UNIT OF WORK. THE CALLER HOLDS THIS CAMPAIGN'S ADVISORY LOCK for the whole of
+ * this function — see `campaign-coordination-lock.ts` for the race it closes and why the campaign
+ * side had NO backstop at all (no unique constraint on `campaign_plans.campaign_object_id`, no
+ * transition-guarded state machine, so both racing ticks committed a full duplicate plan silently).
+ *
+ * `staleCampaignObject` IS THE BATCH READ'S SNAPSHOT AND IS DELIBERATELY NOT USED FOR ANYTHING BUT
+ * ITS ID. It was taken by `listActiveCampaignObjectIds` OUTSIDE the lock, which is precisely the
+ * window the lock exists to make survivable, so this function's first act is to re-read the row
+ * fresh — half (b) of the fix. Two things depend on it:
+ *
+ *  - `properties`, which the compile path below both READS (targets, topology) and WRITES BACK
+ *    (the URN-normalisation `updateObject`). A racing tick that already normalised them would be
+ *    undone from a stale snapshot, bumping the object's version and audit trail for a write the
+ *    winner already made.
+ *  - The row still EXISTING and still being ours. A campaign tombstoned (or handed to another
+ *    domain) between the batch read and this lock is a clean no-op, not a plan compiled against a
+ *    deleted campaign. The `origin_domain_id` predicate is the same S10 single-writer condition
+ *    `listActiveCampaignObjectIds` filters on, re-asserted here where it is actually fresh.
+ *
+ * The plan read immediately below is the OTHER fresh re-read, and it is the one that makes "another
+ * tick already compiled this plan" an ordinary drive-path tick rather than a compile failure.
+ */
 async function reconcileOneCampaign(
   db: Db,
   orgId: string,
-  campaignObject: ObjectRow,
+  staleCampaignObject: ObjectRow,
   host: PluginHost,
-  sandbox: CelSandbox
+  sandbox: CelSandbox,
+  selfDomainId: TrustDomainId
 ): Promise<void> {
   const gateDeps: GateDeps = { sandbox, host };
-  const campaignObjectId = campaignObject.id;
+  const campaignObjectId = staleCampaignObject.id;
+
+  const campaignObject = await withTenantTx(db, orgId, (tx) =>
+    tx.query.objects.findFirst({
+      where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+        andOp(
+          eqOp(t.orgId, orgId),
+          eqOp(t.id, campaignObjectId),
+          eqOp(t.typeId, "campaign"),
+          eqOp(t.originDomainId, selfDomainId),
+          isNullOp(t.deletedAt)
+        )
+    })
+  );
+  if (!campaignObject) return;
 
   let plan = await withTenantTx(db, orgId, (tx) =>
     getLatestCampaignPlan(tx, orgId, campaignObjectId)
@@ -691,10 +730,31 @@ export async function reconcileCampaignsOrgTick(
     // and single-writer-clean. Pinned by `foreign-origin-campaign.integration.test.ts`, whose
     // "SKIP, NOT DRIVE and SKIP, NOT PARK" case asserts the replica's `updated_at` never moves.
     if (campaignObject.originDomainId !== selfDomainId) continue;
-    try {
-      await reconcileOneCampaign(db, orgId, campaignObject, host, sandbox);
-    } catch (err) {
-      logCampaignError(orgId, campaignObject.id, "reconcile", err);
+
+    // MULTI-REPLICA SINGLE-FLIGHT (`campaign-coordination-lock.ts` — read its docblock for the
+    // confirmed failure). This whole file had ZERO advisory-lock coverage of the read ->
+    // `compileAndPersistCampaignPlan` -> `updateObject` sequence inside `reconcileOneCampaign`,
+    // while the byte-for-byte identical property on the change side has been locked since M8
+    // (`change-coordination-lock.ts` + `reconcile.ts`'s call sites). The chart default is `worker
+    // replicaCount=2`, so two overlapping ticks reaching the same campaign is the ordinary case,
+    // not an exotic one — and unlike the change side there is no unique constraint and no
+    // `FOR UPDATE`-guarded transition anywhere in the sequence to catch the loser, so BOTH
+    // committed a full duplicate plan silently.
+    //
+    // ACQUIRED HERE, BEFORE `reconcileOneCampaign` IS ENTERED, so a loser never compiles a plan,
+    // never evaluates the wave gate, and never fans out a member Change. It backs off immediately
+    // and retries on a later tick, exactly like `triggerWaveTarget` backing off on a failed
+    // trigger claim. The fresh re-reads that make "the winner already did it" a clean no-op rather
+    // than a failure live at the top of `reconcileOneCampaign`, still under this lock.
+    const lock = await tryAcquireCampaignCoordinationLock(db, campaignObject.id);
+    if (lock) {
+      try {
+        await reconcileOneCampaign(db, orgId, campaignObject, host, sandbox, selfDomainId);
+      } catch (err) {
+        logCampaignError(orgId, campaignObject.id, "reconcile", err);
+      } finally {
+        await lock.release();
+      }
     }
     // ROUND-ROBIN BUMP — the FOURTH instance of the starvation class, found by censusing the
     // PROPERTY ("a batch-limited, `updated_at`-ordered candidate loop that can re-serve a row
@@ -712,6 +772,15 @@ export async function reconcileCampaignsOrgTick(
     // Bumped unconditionally, for every campaign examined, because the requirement is "took its
     // turn", not "made progress". Unlike the change-side loops there is no cheap in-loop signal for
     // which of the two happened, and bumping both is correct for fairness either way.
+    //
+    // "UNCONDITIONALLY" ALSO SURVIVES THE ADVISORY LOCK ADDED ABOVE, and that placement is
+    // deliberate rather than incidental. A tick that FAILS to acquire the lock has examined this
+    // campaign and written nothing — which is this exact property, in a loop that really is
+    // `ORDER BY objects.updated_at ASC LIMIT 25`. Gating the bump on holding the lock would make
+    // the lock-miss path a fresh re-serve-without-writing path: instance 4 of the starvation class,
+    // reopened by the fix for a different bug. The bump is legal on this path for the reason the
+    // S10 skip's is not — the row is locally originated (filtered by the candidate query AND the
+    // guard above), so this is a fairness write on our own row, not a write to a replica.
     //
     // "UNCONDITIONALLY" NOW MEANS "for every campaign THIS DOMAIN OWNS". The candidate query filters
     // foreign-origin campaigns out and the S10 guard above `continue`s before reaching here, so this
