@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import pg from "pg";
