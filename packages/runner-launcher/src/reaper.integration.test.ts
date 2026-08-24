@@ -297,11 +297,22 @@ describe.runIf(await dockerAvailable())(
       for (let attempt = 1; attempt <= REAP_RACE_ATTEMPTS; attempt++) {
         await whenReapSettled(); // drain BEFORE crafting, so the window starts at `create`
         removeMe = `scp-runner-${uniqueRunId("past-foreign")}`;
-        const removeMeId = await craftLabelledContainer({
-          name: removeMe,
-          ownerLabel: foreignOwner,
-          deadlineLabel: past
-        });
+        let removeMeId: string;
+        try {
+          removeMeId = await craftLabelledContainer({
+            name: removeMe,
+            ownerLabel: foreignOwner,
+            deadlineLabel: past
+          });
+        } catch {
+          // The steal this loop already tolerates, one window EARLIER: the fixture is a legitimate
+          // reap candidate from the instant `create` returns, so a peer's `rm -f` landing before
+          // the builder's own `docker start` makes that start throw "No such container". Same
+          // cause, same response — recraft.
+          ownedNames.delete(removeMe);
+          stolen++;
+          continue;
+        }
         removed = await createDockerRunnerLauncher().reap();
 
         // BY ID, NOT BY `expect.any(String)`. The old assertion was satisfied by removing ANY
@@ -315,9 +326,11 @@ describe.runIf(await dockerAvailable())(
           await containerState(removeMe),
           "reap() reported removing none of this fixture AND the past-deadline foreign container is " +
             "STILL RUNNING — that is the predicate under test failing. The cross-process race this " +
-            "loop tolerates leaves the container GONE, never running, so it cannot be the cause here"
-        ).toBeUndefined();
-        ownedNames.delete(removeMe); // a peer's pass already removed it; nothing left to tear down
+            "loop tolerates leaves the container GONE (or mid-`rm`, state 'removing' — an rm only a " +
+            "reap pass issues, and ours settled and reported nothing), never running, so it cannot " +
+            "be the cause here"
+        ).not.toBe("running");
+        ownedNames.delete(removeMe); // a peer's pass took it (or is mid-`rm`); nothing left to tear down
         stolen++;
       }
 
@@ -389,17 +402,50 @@ describe.runIf(await dockerAvailable())(
       async () => {
         const foreignOwner = randomUUID();
         const past = new Date(Date.now() - 60_000).toISOString();
-        const orphan = `scp-runner-${uniqueRunId("wiring-orphan")}`;
-        await craftLabelledContainer({
-          name: orphan,
-          ownerLabel: foreignOwner,
-          deadlineLabel: past
-        });
 
+        // CRAFT A STEALABLE ORPHAN AND OBSERVE IT STANDING — recraft on a peer's steal, bounded.
+        // The orphan is a legitimate reap candidate for EVERY process on this daemon from the
+        // instant `docker create` returns (foreign owner, past deadline), so a concurrent
+        // `@scp/plugin-managed-*` suite's pass can take it before this case's precondition looks
+        // at it: mid-`rm` reads `removing`, a completed steal reads undefined, and a steal inside
+        // the builder itself makes its `docker start` throw. All three are the library working as
+        // designed in ANOTHER process — recraft and try again; only a bounded run of steals is a
+        // failure, and it names the cause. (Observed for real: PR #272 run 32755551605 red exactly
+        // here with `expected 'removing' to be 'running'`.)
+        const WIRING_CRAFT_ATTEMPTS = 5;
+        let orphan = "";
+        let orphanStanding = false;
+        let stolenMidCraft = 0;
+        let lastCraftError: unknown;
+        for (let attempt = 1; attempt <= WIRING_CRAFT_ATTEMPTS; attempt++) {
+          orphan = `scp-runner-${uniqueRunId("wiring-orphan")}`;
+          try {
+            await craftLabelledContainer({
+              name: orphan,
+              ownerLabel: foreignOwner,
+              deadlineLabel: past
+            });
+          } catch (cause) {
+            ownedNames.delete(orphan);
+            stolenMidCraft++;
+            lastCraftError = cause;
+            continue;
+          }
+          if ((await containerState(orphan)) === "running") {
+            orphanStanding = true;
+            break;
+          }
+          ownedNames.delete(orphan); // `removing` or already gone — a peer's pass took it
+          stolenMidCraft++;
+        }
         expect(
-          await containerState(orphan),
-          "the orphan must exist before the wiring is exercised"
-        ).toBe("running");
+          orphanStanding,
+          `the orphan must exist before the wiring is exercised, and no craft survived to the ` +
+            `precondition on any of ${WIRING_CRAFT_ATTEMPTS} attempts (${stolenMidCraft} taken by ` +
+            `a reap pass in ANOTHER process against this daemon` +
+            (lastCraftError ? `; last craft error: ${String(lastCraftError)}` : "") +
+            `)`
+        ).toBe(true);
 
         // An ORDINARY, fast, real run — nothing about this spec asks for a reap. If the reap
         // scheduling is ever removed from the top of `RunnerLauncher.run()` (index.ts), this orphan
@@ -424,20 +470,27 @@ describe.runIf(await dockerAvailable())(
         // there is no pass in flight, `whenReapSettled()` resolves immediately, and the orphan is
         // still there below.
         //
-        // THE SAME CROSS-PROCESS PROPERTY THE PREDICATE CASE ABOVE LOOPS OVER APPLIES HERE, and it
-        // lands the other way round: this orphan is foreign and past its deadline, so a concurrent
-        // `@scp/plugin-managed-*` integration process reaping the same daemon can remove it too. That
-        // cannot RED this gate — it can only mask a genuinely deleted wiring, in the narrow window
-        // where a peer's pass happens to land inside this one run(). Left as an assertion on the
-        // container rather than on `whenReapSettled()`'s id list deliberately: keying the gate on
-        // THIS process's report would trade a rare vacuous pass for a rare flaky red on the one test
-        // whose whole job is to go red when the wiring is gone.
+        // THE SAME CROSS-PROCESS PROPERTY THE PREDICATE CASE ABOVE LOOPS OVER APPLIES HERE, in two
+        // windows with opposite consequences. BEFORE the precondition, a peer's steal CAN red this
+        // case — that window is what the craft loop above absorbs (it did red, once: see the loop's
+        // comment). AFTER the precondition, a steal landing inside this one run() can only mask a
+        // genuinely deleted wiring for that narrow window — provided the final assertion reads the
+        // container's state as the TRI-STATE it is (running / mid-`rm` 'removing' / gone), which is
+        // why it asserts not-"running" rather than gone: a peer's rm still in flight at read time is
+        // a collected orphan, not a standing one. Left as an assertion on the container rather than
+        // on `whenReapSettled()`'s id list deliberately: keying the gate on THIS process's report
+        // would trade that rare vacuous pass for a rare flaky red on the one test whose whole job
+        // is to go red when the wiring is gone.
         await whenReapSettled();
 
+        const orphanFinalState = await containerState(orphan);
         expect(
-          await containerState(orphan),
-          "run()'s own top-of-function reap() must have swept this orphan as a side effect"
-        ).toBeUndefined();
+          orphanFinalState,
+          "run()'s own top-of-function reap() must have swept this orphan as a side effect — gone " +
+            "(undefined) or mid-`rm` ('removing', which only a reap pass issues; ours settled, so a " +
+            "peer's — either way it was collected, never left standing). 'running' here means the " +
+            "wiring is deleted, the one thing this gate exists to red on"
+        ).not.toBe("running");
         ownedNames.delete(orphan);
       },
       30_000
