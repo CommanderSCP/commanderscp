@@ -26,6 +26,7 @@ import {
   type SyncCursor
 } from "./cursors-repo.js";
 import { recordBundleTransfer, type BundleTransport } from "./bundle-transfers-repo.js";
+import { recordAuditWitness } from "./audit-witness-repo.js";
 import { entryMatchesScope } from "./scope-filter.js";
 import {
   clearUnattachedChangeStatus,
@@ -384,8 +385,29 @@ async function applyEntry(
       }
       return;
     }
+    case "audit_segment": {
+      // §7.2.7 — no longer discarded: persist a passive WITNESS of the exporter's audit-chain head
+      // (peer, origin, sequence, auditEventId, contentHash). INFORMATIONAL: never gates the import,
+      // never affects applied/skipped counts — the post-failover runbook reads it to detect a
+      // truncation `scp audit verify` structurally cannot see. The payload is the audit-repo's own
+      // `{auditEventId, ...}` shape; `entry.rowHash` is the hash-chain content hash for the entry.
+      const auditEventId =
+        payload && typeof payload === "object" && "auditEventId" in payload
+          ? String((payload as { auditEventId: unknown }).auditEventId)
+          : null;
+      if (auditEventId) {
+        await recordAuditWitness(tx, {
+          orgId,
+          peerDomainId: exporterDomainId,
+          originDomainId: asTrustDomainId(entry.originDomainId),
+          sequence: entry.sequence,
+          auditEventId,
+          contentHash: entry.rowHash
+        });
+      }
+      return;
+    }
     case "approval_evidence":
-    case "audit_segment":
     case "key_rotation":
       // Informational-only in a plain sync bundle (v1): already hash-chained/signed on the
       // exporting side (audit-completeness lives there); not separately persisted here. Promotion

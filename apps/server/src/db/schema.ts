@@ -1466,6 +1466,33 @@ export const syncCursors = pgTable(
   ]
 );
 
+/** Federation audit witness (§7.2.7, drizzle/0091) — a passive record of a peer ORIGIN's audit-chain
+ *  head, persisted from the `audit_segment` journal entries importers used to discard. INFORMATIONAL:
+ *  never blocks an import. The post-failover runbook compares a restored local head against peers'
+ *  witnessed `(auditEventId, contentHash)` at each sequence to DETECT truncation — the one thing
+ *  `scp audit verify` cannot see, since any prefix of a valid chain verifies (B2). Peers are
+ *  detectors of truncation here, never sources of the truncated data. */
+export const federationAuditWitness = pgTable(
+  "federation_audit_witness",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    peerDomainId: uuid("peer_domain_id").notNull().$type<TrustDomainId>(), // TRUST sense (ADR-0021 D4)
+    originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(),
+    sequence: bigint("sequence", { mode: "number" }).notNull(),
+    auditEventId: uuid("audit_event_id").notNull(),
+    contentHash: text("content_hash").notNull(),
+    witnessedAt: timestamp("witnessed_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("federation_audit_witness_origin_seq").on(
+      table.orgId,
+      table.originDomainId,
+      table.sequence
+    )
+  ]
+);
+
 /** Bundle-transfer tracking (DESIGN §13). One row per `.scpbundle` this side produced or consumed.
  *  PER-HOP AND INSERT-ONLY — never a lifecycle (doc corrected 2026-07-29, M16.1): `created` is
  *  written by the exporter, `submitted` only by a retrans's onward drop, `confirmed` only by the
