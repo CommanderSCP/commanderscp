@@ -178,9 +178,21 @@ While held, the truthful record is: the frozen target's `status` stays `pending`
 
 ## The standing mutation gate
 
-Per this repo's rule that a claimed property is proven by deleting the wiring and watching a named test die, four mutations must be run deliberately before this decision is treated as kept:
+Per this repo's rule that a claimed property is proven by deleting the wiring and watching a named test die, four mutations must be run deliberately before this decision is treated as kept. **Mutation 4 has been run and its result is recorded below; 1–3 are carried forward from M25.2's own round and are not re-attested here.**
 
 1. Delete the `continue` before `triggerWaveTarget` → the 4-placement case must fail on `amer` acquiring a non-null `executorRef`.
 2. Drop `frozenTargets.length` from the **second** terminalization line → the wave must mark `succeeded` with a target never deployed.
 3. Replace `unionFreezes(byTarget)` with `byTarget[0].freezes` in `checkFreeze` → the per-freeze override case must fail.
-4. Flip `every` → `some` in the freeze override quantifier → **both** the accept-edge test and the wave-path test must go red. **If only one does, the second caller has no coverage — that is the check, not the pass.**
+4. Weaken the freeze override quantifier from "every" to "some" → **both** the accept-edge test and the wave-path test must go red. **If only one does, the second caller has no coverage — that is the check, not the pass.**
+
+   **RUN 2026-08-24, AND IT PASSES ITS OWN CHECK.** Returning `{blocked: null, overrides}` immediately after the first successful `overrides.push` kills **three** cases across **both** suites:
+
+   | suite | case | died on |
+   |---|---|---|
+   | `coordination/freeze-admission.integration.test.ts` (M25.2, wave path) | *H: EVERY active freeze must be overridden at its OWN scope — a universal quantifier, tested with two* | `expected 'allow' to be 'block'` |
+   | `governance/instance-freeze-admission.integration.test.ts` (M25.3, accept edge) | *F: an org freeze AND a platform freeze over one change both have to be satisfied* | `CRITICAL #2 spans the tier boundary … expected [ Array(1) ] to deeply equal [ …(2) ]` |
+   | *(same)* | *I: a rollback wave is exempt from an ORG freeze and is NOT exempt from a platform freeze* | `expected 'block' to be 'allow'` |
+
+   `Tests 3 failed | 44 passed (47)`. **Both** callers went red, which is the property this mutation exists to establish — had only one died, the other call site would have had no coverage and *that* would have been the finding. The third casualty is a bonus: it shows the tier boundary and the D7 exemption both rest on the same quantifier.
+
+   **Note the shape, because the proposal's wording for this one does not survive contact with the code.** campaigns-rework.md says *"flip `every` → `some` in the freeze override quantifier"*, and there is no `every` there to flip: the shipped quantifier is a `for (const freeze of active)` loop (`gate-orchestrator.ts:150`) that `return`s `blocked` on the **first** freeze failing any of its checks. That is universal quantification expressed as early return, and it is the *stronger* form — it is what makes a `byTarget[0]` degradation inexpressible at that call site (§3). The equivalent mutation is therefore to **stop the loop after the first freeze that IS successfully overridden** — i.e. accept the change once *any* one covering freeze has been overridden, which is precisely the `active[0]` bug CRITICAL #2 exists to prevent. (The only literal `every` in that file is `partiallyFrozen`'s `atomic` conjunct, which is a different property and is covered by mutation 3's neighbours.)
