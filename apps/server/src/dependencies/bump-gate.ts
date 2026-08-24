@@ -22,6 +22,7 @@ import { markBumpMerged, readBumpAuthorship } from "./bump-authorship-repo.js";
 import { readStandingDelegationVerdict, delegationRefusalMessage } from "./delegation-detection.js";
 import { listSubscribedComponentLines } from "./subscription-resolution.js";
 import { pickComponentGitBinding, startManagedDepInstance } from "./managed-dep-instance.js";
+import { checkBumpMergeFreeze } from "./bump-merge-freeze.js";
 
 /**
  * M21.5 — THE AUTO-MERGE LINK: what asks the delivery question a SECOND time, and what actuates the
@@ -234,6 +235,13 @@ export type BumpGateRefusal =
   | "not_evidenced"
   /** There is no git-provider binding naming a repository, so no credential may write to one. */
   | "no_git_binding_for_component"
+  /** M25.8 / owner decision D8 — an active change freeze covers this component. The gate GRANTED
+   *  auto-merge and every capability is in place; what is withheld is the merge itself, and only
+   *  until the window closes. Its own cause rather than a reuse of `not_evidenced`, because the two
+   *  are opposite facts: `not_evidenced` says the checks have not proven the bump safe, and this says
+   *  they have and the organization has declared that nothing lands right now. A reason named after a
+   *  branch that covers a second case goes false the moment it does (charter principle 6). */
+  | "frozen"
   /** The merge was dispatched and the provider (or the plugin) refused it. The pull request stands. */
   | "merge_refused"
   /** The dispatch itself threw — the plugin host was unreachable, the runner image is not
@@ -441,6 +449,39 @@ export async function runBumpGateJob(
       "no github/gitea/gitlab executor binding on this component names a repository, so there is no credential that may merge anything",
       true
     );
+  }
+
+  // ---- PHASE 3b (M25.8 — THE FREEZE, owner decision D8) --------------------------------------
+  // THE LAST QUESTION BEFORE THE ONE IRREVERSIBLE ACT, and its position is the argument.
+  //
+  // It is asked AFTER the governed gate rather than with the cheap refusals above, and that costs a
+  // control run during a freeze window on purpose: the gate's `control_runs` rows are the evidence
+  // the grant reads, and depositing them WHILE the window stands is what makes "pull requests
+  // accumulate during the freeze and merge when it closes" true on the NEXT attempt instead of
+  // requiring CI to conclude all over again afterwards. It also keeps the two refusals distinct — a
+  // bump refused here has been proven safe and is held by the calendar, which is a different sentence
+  // from `not_evidenced` and resolves by a different act.
+  //
+  // It is asked AFTER the binding check for the complementary reason: a component with no git
+  // binding can never merge, freeze or no freeze, and reporting `frozen` for it would promise an
+  // outcome at `endsAt` that will not arrive.
+  //
+  // NOT A PAUSE, and the honest boundary is `freeze-hold.ts`'s: `ExecutorPlugin` has no
+  // advance/pause/resume verb (ADR-0008 forbids adding one). A freeze withholds a call SCP has not
+  // made yet; it cannot un-merge one already handed to a provider.
+  const frozen = await withTenantTx(deps.db, orgId, (tx) =>
+    checkBumpMergeFreeze(tx, orgId, componentObjectId)
+  );
+  if (frozen) {
+    return refuse("frozen", frozen.reason, true, {
+      headCommit,
+      pullRequestNumber,
+      controlObjectId: resolution.controlObjectId,
+      // `endsAt` per freeze and NEVER `now` — see `bump-merge-freeze.ts`. This context is what
+      // `insertDecisionIfChanged` compares, and this path re-runs on every provider event about the
+      // bump's branch for the length of the window.
+      freezes: frozen.freezes
+    });
   }
 
   // ---- PHASE 4 (actuate — outside any transaction) -------------------------------------------

@@ -41,6 +41,7 @@ import {
   recordBumpPullRequest,
   type BumpAuthorship
 } from "./bump-authorship-repo.js";
+import { checkBumpMergeFreeze, type BumpMergeFreezeVerdict } from "./bump-merge-freeze.js";
 import {
   delegationProbeFailureDetail,
   delegationProbeIsInconclusive,
@@ -793,12 +794,44 @@ async function dispatchOneBump(
     // it resolves to `pull_request` whatever the subscription asked for. See
     // `resolveEffectiveDelivery`'s "A CONSEQUENCE WORTH STATING". Both narrowing inputs come from
     // the authorship row, so neither can be supplied by a tenant.
-    const delivery: DeliveryResolution = await resolveEffectiveDelivery(tx, orgId, {
+    const granted: DeliveryResolution = await resolveEffectiveDelivery(tx, orgId, {
       changeObjectId,
       requested: candidate.delivery,
       repo: existing?.repo,
       authoredHeadCommit: existing?.headCommit
     });
+
+    // ==========================================================================================
+    // M25.8 — THE FREEZE, AT THE SEAM WHERE THIS PATH CAN MERGE (owner decision D8)
+    // ==========================================================================================
+    // THIS FUNCTION CAN MERGE, and that is the whole reason the check is here rather than only in
+    // `bump-gate.ts`. `buildBumpIntentParameters` attaches `expectedHeadCommit` exactly when the
+    // resolved delivery is `auto_merge`, and `@scp/plugin-managed-dep`'s `publishBump` then takes
+    // its AUTO-MERGE TAIL through the same provider call the standalone merge action uses
+    // (`repo-write.ts`: "Both the publish tail and the standalone merge action reach the provider
+    // through here"). Guarding only the file named `bump-gate.ts` would have guarded ONE of the two
+    // acts named "merge" and left the other open — an instance fixed, not a class.
+    //
+    // A DOWNGRADE, NOT A REFUSAL, and that is D8 stated exactly: "a freeze blocks AUTO-MERGE; it does
+    // NOT block PR authoring". `pull_request` is already this resolver's more restrictive member and
+    // its own documented answer to "this must not merge unattended" — so the trigger below still
+    // fires, the branch is still authored and the pull request is still opened, and only the tail is
+    // withheld. Refusing the dispatch instead would withhold the visible, queued work D8 exists to
+    // preserve, and would ALSO withhold the pull request the component's checks need in order to run
+    // at all.
+    //
+    // REACHABLE, ON THE SECOND DISPATCH AND AFTER. A first dispatch has no authorship row, so no head
+    // commit, so `resolveEffectiveDelivery` has already downgraded and this asks nothing. A
+    // redelivery — or a second advance while the first bump's pull request is open, with a control
+    // that has since passed for its recorded head commit — is the case that grants, and it is the
+    // case that would have merged into a frozen org.
+    let mergeFreeze: BumpMergeFreezeVerdict | null = null;
+    if (granted.delivery === "auto_merge") {
+      mergeFreeze = await checkBumpMergeFreeze(tx, orgId, candidate.componentObjectId);
+    }
+    const delivery: DeliveryResolution = mergeFreeze
+      ? { delivery: "pull_request", reason: mergeFreeze.reason }
+      : granted;
 
     const recordInput = {
       orgId,
@@ -836,7 +869,13 @@ async function dispatchOneBump(
         requestedDelivery: candidate.delivery,
         effectiveDelivery: delivery.delivery,
         granularity: candidate.granularity,
-        reused: existing !== undefined
+        reused: existing !== undefined,
+        // M25.8 — ABSENT when nothing is frozen, so the context of an unfrozen org is byte-identical
+        // to what it was before this increment and no standing Decision is churned by the upgrade.
+        // Each entry carries the freeze's `endsAt` and NEVER `now`: this whole path re-runs on every
+        // head advance for the length of a window, and recording the clock instead of the boundary is
+        // what produced a measured 1.44 GB/day in production (ADR-0024).
+        ...(mergeFreeze ? { mergeDeferredByFreeze: mergeFreeze.freezes } : {})
       },
       reasonTree: {
         summary: `${line.coordinate} ${input.fromVersion} -> ${input.toVersion} in ${declaration.manifestPath}`,
