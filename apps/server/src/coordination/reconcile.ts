@@ -71,11 +71,14 @@ import {
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
 import {
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION,
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
   WAVE_TARGET_RECIPE_UNREADABLE_AUDIT_ACTION,
   WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
   WAVE_TARGET_RECIPE_UNSUPPORTED_AUDIT_ACTION,
   WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS,
   executorSupportsTriggerKind,
+  isRecipeForbiddenExecutorModule,
   recipeTriggerParameters,
   resolveChangeRecipe,
   type RecipeResolution
@@ -90,6 +93,7 @@ import {
 import { describeError } from "../errors.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { DEFAULT_EXECUTOR_INSTANCE_ID, DEFAULT_EXECUTOR_MODULE } from "./executor-config.js";
+import type { PluginModule } from "../plugin-host/contract.js";
 import { resolveExecutorPluginInstance, DEFAULT_BINDING_TYPE } from "./executor-bindings-repo.js";
 import {
   listVisibleBindingsForTarget,
@@ -1286,7 +1290,9 @@ async function reconcileExecutingChange(
       continue;
     }
     try {
-      const instanceId = await ensureExecutorInstanceStarted(
+      // `module` is deliberately not destructured — the poll path must not read it (see the helper's
+      // fall-back branch, where a persisted id's module is unknowable).
+      const { instanceId } = await ensureExecutorInstanceStarted(
         db,
         orgId,
         host,
@@ -1900,7 +1906,11 @@ async function blockWaveTarget(
  */
 async function resolveRecipeRefusal(
   client: { describeCapabilities: () => Promise<ExecutorCapabilities> },
-  recipe: RecipeResolution
+  recipe: RecipeResolution,
+  /** The plugin module this target's binding resolved to — for the OQ-5 managed-actuator refusal.
+   *  Comes from `ensureExecutorInstanceStarted`'s return so it is the same answer the trigger will
+   *  act on, never a second query. */
+  executorModule: PluginModule
 ): Promise<
   | {
       status: RefusedWaveTargetStatus;
@@ -1927,6 +1937,35 @@ async function resolveRecipeRefusal(
     };
   }
   const kind = recipe.recipe.trigger.kind;
+  // =============================================================================================
+  // OQ-5 (UNRULED) — A RECIPE MAY NOT DRIVE ONE OF COMMANDERSCP'S OWN ACTUATORS.
+  // =============================================================================================
+  // CHECKED BEFORE `describeCapabilities()`, and the order is the point: all three managed modules
+  // ANSWER YES to `"custom"` (measured — `managed-dep` and `managed-scan` declare exactly
+  // `["custom"]`, `managed-iac` declares `["sync","rollback","custom"]`), so asking the capability
+  // question first would return `undefined` and the recipe's author-controlled `parameters` would
+  // reach the bump actuator as `{action:"bump", ...}`. The capability check is about what an
+  // executor CAN do; this is about what CommanderSCP MAY ask it to, and only the second one is a
+  // charter question.
+  //
+  // This is a fail-closed default on an unruled question, not a ruling. If OQ-5 later says a
+  // campaign MAY drive a managed actuator, this branch is the single seam that changes.
+  if (isRecipeForbiddenExecutorModule(executorModule)) {
+    return {
+      status: WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
+      action: WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION,
+      summary:
+        `this target is bound to '${executorModule}', one of CommanderSCP's own managed actuators, ` +
+        `and a campaign recipe may not drive those — a recipe coordinates a TENANT's pipeline`,
+      remediation:
+        `remove this target from the campaign, or bind it to the pipeline that actually performs ` +
+        `this migration. CommanderSCP's managed executors act under a narrow charter grant and are ` +
+        `driven by the server (dependency-bump dispatch, promotion scanning), never by an authored ` +
+        `document — letting a recipe supply their parameters would let a campaign author choose ` +
+        `what CommanderSCP writes into a repository`,
+      inputContext: { recipe: { readable: true, kind }, executorModule, managedActuator: true }
+    };
+  }
   const capabilities = await client.describeCapabilities();
   if (executorSupportsTriggerKind(capabilities, kind)) return undefined;
   const supported = Array.isArray(capabilities?.triggerKinds)
@@ -2206,7 +2245,7 @@ async function triggerWaveTarget(
     // M7: resolve targetObjectId's configured executor binding (executor-bindings-repo.ts) — a
     // Component/DeploymentTarget with no binding configured falls back to the shared default
     // fake-executor instance, exactly as every M0-M6 test/demo relies on (executor-config.ts).
-    const instanceId = await ensureExecutorInstanceStarted(
+    const { instanceId, module: executorModule } = await ensureExecutorInstanceStarted(
       db,
       orgId,
       host,
@@ -2246,7 +2285,9 @@ async function triggerWaveTarget(
     // claiming it first would move it to `triggering` — outside the `('pending','triggering')` guard
     // is not the risk (it covers both), but the claim is a statement that this target is being
     // handed to an executor, which is exactly what is NOT about to happen.
-    const recipeRefusal = !isRollback ? await resolveRecipeRefusal(client, recipe) : undefined;
+    const recipeRefusal = !isRollback
+      ? await resolveRecipeRefusal(client, recipe, executorModule)
+      : undefined;
     if (recipeRefusal) {
       const refused = await withTenantTx(db, orgId, (tx) =>
         blockWaveTarget(tx, {
@@ -2462,7 +2503,18 @@ async function ensureExecutorInstanceStarted(
   type: ExecutorType,
   persistedExecutorPluginId: string | null,
   masterKey: Buffer
-): Promise<string> {
+  /**
+   * M25.4 — returns the resolved MODULE alongside the instance id.
+   *
+   * The recipe's managed-executor refusal (`RECIPE_FORBIDDEN_EXECUTOR_MODULES`) has to know which
+   * plugin module this target actually resolved to, and it must be the SAME answer this function
+   * acted on. Re-querying the binding at the refusal site would make two readers of one fact that
+   * can disagree — a binding edited between the two reads, or the `persistedExecutorPluginId`
+   * fall-back branch below (which returns a persisted id whose module is deliberately NOT the
+   * currently-configured one) — and the refusal would then be reasoning about a module that is not
+   * the one about to be triggered.
+   */
+): Promise<{ instanceId: string; module: PluginModule }> {
   // MUST resolve the SAME routing Type the trigger will use (M12 P4A / ADR-0007). Resolving without
   // it would start one Type's plugin instance and then trigger against a different Type's binding — a
   // mismatch that would silently drive the wrong pipeline.
@@ -2495,7 +2547,7 @@ async function ensureExecutorInstanceStarted(
     (!persistedExecutorPluginId || persistedExecutorPluginId === resolved.instanceConfig.id)
   ) {
     await host.start([resolved.instanceConfig]);
-    return resolved.instanceConfig.id;
+    return { instanceId: resolved.instanceConfig.id, module: resolved.instanceConfig.module };
   }
 
   // Either no binding is configured, or a persisted id from an earlier trigger no longer matches
@@ -2511,7 +2563,19 @@ async function ensureExecutorInstanceStarted(
       config: {}
     }
   ]);
-  return persistedExecutorPluginId ?? DEFAULT_EXECUTOR_INSTANCE_ID;
+  // `module` describes what was actually started HERE: the default instance. That is exactly right
+  // for the TRIGGER caller, which is the only one that reads `module` and which always passes
+  // `persistedExecutorPluginId: null` — so it reaches this branch only when the target has no
+  // binding at all, and the default module is genuinely what it is about to trigger.
+  //
+  // The STATUS-POLL caller can reach this branch with a persisted id whose module is unknowable
+  // here (that is the whole point of the branch: the binding has since changed). It ignores
+  // `module`, and must keep ignoring it — a future reader wanting the module on the poll path has
+  // to resolve it from the persisted id, not trust this value.
+  return {
+    instanceId: persistedExecutorPluginId ?? DEFAULT_EXECUTOR_INSTANCE_ID,
+    module: DEFAULT_EXECUTOR_MODULE
+  };
 }
 
 /** All waves of `change`'s plan have succeeded — advance past `executing`. Forward changes stop

@@ -22,6 +22,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changes, changeWaveTargets, changeWaves, objects } from "../db/schema.js";
 import { WAVE_TARGET_TOMBSTONED_STATUS } from "./target-liveness.js";
 import {
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS,
   WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
   WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS
 } from "./campaign-recipe.js";
@@ -523,7 +524,12 @@ export const REFUSED_WAVE_TARGET_STATUSES = [
   "no_executor",
   WAVE_TARGET_TOMBSTONED_STATUS,
   WAVE_TARGET_RECIPE_UNSUPPORTED_STATUS,
-  WAVE_TARGET_RECIPE_UNREADABLE_STATUS
+  WAVE_TARGET_RECIPE_UNREADABLE_STATUS,
+  // M25.4 / OQ-5 — a recipe aimed at one of CommanderSCP's OWN actuators. The mechanism above did
+  // its job on the very next status added: this line is the ONLY edit that was needed, and
+  // `blockWaveTarget`, `terminalizeRefusedWaveTarget`, the per-target terminal skip and
+  // `service-board.ts` all picked it up from the type.
+  WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS
 ] as const;
 export type RefusedWaveTargetStatus = (typeof REFUSED_WAVE_TARGET_STATUSES)[number];
 

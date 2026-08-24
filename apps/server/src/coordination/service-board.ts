@@ -128,9 +128,10 @@ import { REFUSED_WAVE_TARGET_STATUSES } from "./wave-targets-repo.js";
 const FAILED_STATUSES = new Set<string>([
   "failed",
   "aborted",
-  // M25.4 — spread rather than re-listed. The refusal set now has four members
-  // (`recipe_unsupported`/`recipe_unreadable` joined the two above) and this was one of five places
-  // that used to restate it by hand. See `REFUSED_WAVE_TARGET_STATUSES`.
+  // M25.4 — spread rather than re-listed. This was one of five places that used to restate the
+  // refusal set by hand. Deliberately NOT stating the set's size: the count went stale within the
+  // same milestone (`recipe_managed_executor` made it five), which is the miniature of the very
+  // drift the spread exists to prevent. See `REFUSED_WAVE_TARGET_STATUSES`.
   ...REFUSED_WAVE_TARGET_STATUSES
 ]);
 

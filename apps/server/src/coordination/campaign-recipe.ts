@@ -57,6 +57,74 @@ export const WAVE_TARGET_RECIPE_UNREADABLE_STATUS = "recipe_unreadable";
 /** The hash-chained audit action for that refusal. */
 export const WAVE_TARGET_RECIPE_UNREADABLE_AUDIT_ACTION = "change.wave_target.recipe_unreadable";
 
+/**
+ * The terminal wave-target status for "this target is bound to one of CommanderSCP's OWN managed
+ * actuators, and a recipe may not drive those".
+ *
+ * ===========================================================================================
+ * OQ-5 IS UNRULED, AND THE CAPABILITY CHECK ALONE DOES NOT ENFORCE IT
+ * ===========================================================================================
+ * The capability check above asks the executor whether it can serve the recipe's kind. MEASURED at
+ * HEAD, all three managed actuators answer YES to `"custom"`:
+ *
+ *   | module       | triggerKinds                | what `custom` means to it                       |
+ *   |--------------|-----------------------------|-------------------------------------------------|
+ *   | managed-dep  | ["custom"]                  | `parameters.action: "bump" \| "merge"` — WRITES  |
+ *   |              |                             | a commit to a tenant repository                 |
+ *   | managed-scan | ["custom"]                  | `parameters.inputDir/outputDir` — server-owned  |
+ *   | managed-iac  | ["sync","rollback","custom"]| `parameters.sourceFiles` — authored file bodies |
+ *
+ * So a recipe of `{kind:"custom", parameters:{action:"bump", ...}}` PASSES
+ * `executorSupportsTriggerKind` against a `managed-dep` binding, and reconcile would hand those
+ * author-controlled parameters straight to the bump actuator. That is precisely the wiring OQ-5
+ * leaves unruled and this increment was told not to build — reached transitively rather than by a
+ * direct call, which is exactly how an unruled coupling gets built by accident.
+ *
+ * It is not hypothetical reachability. `managed-dep` is on `KNOWN_EXECUTOR_MODULES`, and
+ * `executor-bindings-repo.ts` states plainly that server settings "are still injected below for a
+ * managed-dep binding an operator creates by hand" — so a hand-created binding is a supported shape
+ * that `resolveBindingForTarget` resolves like any other.
+ *
+ * WHAT M25.4 CHANGED. Before this increment the generic release path passed NO `parameters` at all,
+ * so `managed-dep.trigger()` threw on its own missing-`action` check and the path was INERT. Wiring
+ * `parameters` is what makes it live. The refusal restores the inertness deliberately instead of
+ * leaving it as an emergent property of an unwired channel — the "component built, never installed"
+ * failure running in reverse.
+ *
+ * A THIRD STATUS, not a reuse of `recipe_unsupported`, and by this module's own stated rule: the
+ * remedy is different in kind. `recipe_unsupported` is fixed by binding an executor that HAS the
+ * verb; there is no such fix here, because the refusal is a governance boundary rather than a
+ * capability gap. An operator told "this executor cannot perform a 'custom' trigger" would go and
+ * confirm that `managed-dep` declares exactly that verb, and conclude SCP was lying to them.
+ */
+export const WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS = "recipe_managed_executor";
+
+/** The hash-chained audit action for that refusal. */
+export const WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION =
+  "change.wave_target.recipe_managed_executor";
+
+/**
+ * CommanderSCP's OWN actuators — the modules that act under a scoped charter grant rather than
+ * coordinating a tenant's existing pipeline. A recipe may not drive any of them.
+ *
+ * The membership test is "does this module perform work under the Managed Execution Exception",
+ * which is the same test the charter applies, and all three current members are named there
+ * (`scp-managed-iac`, `scp-managed-scan`, `scp-managed-dep`). A fourth managed executor added later
+ * must join this list in the same commit that adds it to `KNOWN_EXECUTOR_MODULES` — see
+ * `campaign-recipe.integration.test.ts`, which pins the two lists against each other so a new
+ * managed module cannot land on only one.
+ */
+export const RECIPE_FORBIDDEN_EXECUTOR_MODULES: readonly string[] = [
+  "managed-dep",
+  "managed-iac",
+  "managed-scan"
+];
+
+/** Is `module` one of CommanderSCP's own actuators? See {@link RECIPE_FORBIDDEN_EXECUTOR_MODULES}. */
+export function isRecipeForbiddenExecutorModule(module: string | null | undefined): boolean {
+  return module !== null && module !== undefined && RECIPE_FORBIDDEN_EXECUTOR_MODULES.includes(module);
+}
+
 export type RecipeResolution =
   | { outcome: "none" }
   | { outcome: "recipe"; recipe: CampaignRecipe }
@@ -100,24 +168,34 @@ export function resolveChangeRecipe(
  * `describeCapabilities().triggerKinds` is the executor's own answer and it is genuinely
  * discriminating — MEASURED across the in-tree adapters at HEAD, not assumed:
  *
- *   | module                       | triggerKinds                              |
- *   |------------------------------|-------------------------------------------|
- *   | github                       | workflow_dispatch, custom                 |
- *   | gitea                        | workflow_dispatch                         |
- *   | gitlab                       | workflow_dispatch                         |
- *   | argocd                       | sync, rollback                            |
- *   | pipeline-generic / terraform | sync, rollback, custom                    |
- *   | managed-dep/-iac/-scan       | (server-driven only — never a recipe)     |
- *   | fake-executor                | sync, workflow_dispatch, rollback, custom |
+ *   | module                       | triggerKinds                              | src line |
+ *   |------------------------------|-------------------------------------------|----------|
+ *   | github                       | workflow_dispatch, custom                 | :652     |
+ *   | gitea                        | workflow_dispatch                         | :542     |
+ *   | gitlab                       | workflow_dispatch                         | :492     |
+ *   | argocd                       | sync, rollback                            | :599     |
+ *   | pipeline-generic / terraform | sync, rollback, custom                    | :222     |
+ *   | managed-iac                  | sync, rollback, custom                    | :632     |
+ *   | managed-dep                  | custom                                    | :1155    |
+ *   | managed-scan                 | custom                                    | :446     |
+ *   | fake-executor                | sync, workflow_dispatch, rollback, custom | :386     |
  *
  * Read from each module's `describeCapabilities()` at HEAD; `terraform` is `pipeline-generic` with
  * TFC-flavoured defaults (`packages/plugins/terraform/src/index.ts` — it re-exports
  * `createPipelineGenericExecutorPlugin()` verbatim), so it is one row, not two.
  *
- * NOT ONE OF THESE SETS IS THE SAME AS ANOTHER, and no adapter serves all four kinds except the
- * fake. `sync` and `workflow_dispatch` are disjoint across `argocd` and `github`/`gitea`/`gitlab` —
- * i.e. a mixed estate cannot be covered by ANY single recipe kind, which is precisely why the
- * refusal has to be explainable per target rather than a global validation at authoring time.
+ * THE MANAGED ROWS ARE REAL SETS, NOT A DASH. An earlier draft of this table wrote them off as
+ * "(server-driven only — never a recipe)", which described the INTENT and not the code: all three
+ * declare `"custom"`, so all three PASS the check below. "Never a recipe" is enforced by
+ * {@link RECIPE_FORBIDDEN_EXECUTOR_MODULES}, not by this function — see that constant for why the
+ * distinction is the whole of OQ-5.
+ *
+ * No adapter serves all four kinds except the fake, and `sync` and `workflow_dispatch` are disjoint
+ * across `argocd` and `github`/`gitea`/`gitlab` — i.e. a mixed estate cannot be covered by ANY
+ * single recipe kind, which is precisely why the refusal has to be explainable per target rather
+ * than a global validation at authoring time. (The sets are NOT all distinct from one another —
+ * `gitea` and `gitlab` are both exactly `["workflow_dispatch"]`, and `managed-iac` matches
+ * `pipeline-generic` — so nothing may infer a module's identity from its capability set.)
  *
  * So a `workflow_dispatch` recipe fanned across an estate that includes even ONE Argo CD-bound
  * component reaches an executor with no such verb. Without this check, `github`'s and `gitea`'s
