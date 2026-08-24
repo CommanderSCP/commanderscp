@@ -39,6 +39,15 @@ import {
  * verdict from `block` to `allow` — the direction that matters, since `allow` is what a silently
  * dead gate looks like.
  *
+ * ONE EXCEPTION, ADDED BY M25.2 (2026-08-23), and it is an exception on purpose. The two FREEZE
+ * cases assert the per-target RESOLVER (`GateOutcome.frozenTargets`) as well as the verdict,
+ * because M25.2 relocated freeze enforcement onto a per-target seam in `coordination/reconcile.ts`
+ * — so a partially frozen wave now correctly ALLOWS, and the verdict alone stopped being a
+ * faithful measure of "did route 3/route 4 reach this placement?". Re-expecting those two to
+ * whatever the new verdict happens to be would have kept the file green while deleting the only
+ * live evidence that either route still works on the freeze path. Both halves are asserted
+ * instead; see the comment on the service-scoped case.
+ *
  * ============================================================================================
  * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
  * ============================================================================================
@@ -189,12 +198,34 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     ).toBe("block");
   });
 
-  it("a SERVICE-scoped freeze blocks a placement wave target instead of failing open", async () => {
+  it("a SERVICE-scoped freeze COVERS a placement wave target instead of failing open — and M25.2 relocated where that coverage is enforced", async () => {
+    // ==========================================================================================
+    // REWRITTEN FOR M25.2, NOT RE-EXPECTED. Read this before touching the assertions.
+    // ==========================================================================================
+    // This case and its route-4 twin below are the only live coverage of containment routes 3 and
+    // 4 ON THE FREEZE PATH. M25.2 moved freeze ENFORCEMENT off the whole-wave verdict and onto a
+    // per-target seam in `coordination/reconcile.ts`'s trigger loop, which means the verdict alone
+    // is no longer a faithful measure of "did the freeze reach this placement?" — a partially
+    // frozen wave now correctly ALLOWS.
+    //
+    // Flipping these two tests' expectations to match whatever the new verdict happens to be would
+    // be the vacuous-test failure in its purest form: the suite would stay green while the only
+    // assertion that route 3 still reaches a placement's SERVICE quietly stopped being made. So
+    // both halves are asserted instead —
+    //
+    //   (a) THE RESOLVER still reports the service as covering this placement (`frozenTargets`,
+    //       which is `governance/freeze-scope.ts`'s per-target answer, and the input BOTH the gate
+    //       and the reconcile-loop actuator consume); and
+    //   (b) THE VERDICT is still `block` when EVERY target is covered, which is the case M25.2
+    //       deliberately kept whole-wave, and `allow` the moment an uncovered sibling joins the
+    //       wave — with (a) still true of the covered one.
+    //
+    // Drop route 3 and (a) goes empty in both shapes, which no verdict assertion could have caught.
     const { service, placement } = await placedComponent("svc-freeze", { service: true });
     const change = await admin.changes.propose({ name: "freeze-change", targets: [placement.id] });
 
     const now = Date.now();
-    await admin.freezes.create({
+    const freeze = await admin.freezes.create({
       scopeObjectId: service!.id,
       name: "placement-freeze",
       startsAt: new Date(now - 60_000).toISOString(),
@@ -203,12 +234,42 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     });
 
     const outcome = await waveGate([placement.id], change.id);
+
+    // (a) THE RESOLVER — route 3 walked from the placement THROUGH its component to its service,
+    // and the freeze declared there was found. This is the half that survives the relocation.
+    expect(outcome.frozenTargets).toEqual([
+      {
+        targetObjectId: placement.id,
+        freezes: [expect.objectContaining({ id: freeze.id, scopeObjectId: service!.id })]
+      }
+    ]);
+
+    // (b) THE VERDICT — every target of this wave is covered, so the whole-wave block stands.
     expect(
       outcome.verdict,
-      "an active freeze over the placement's service must block the wave — failing open here is the exact bug graph/containment.ts was written to end"
+      "an active freeze over the placement's service must still block a wave EVERY target of which it covers — failing open here is the exact bug graph/containment.ts was written to end"
     ).toBe("block");
-    // The freeze, not something else, is what stopped it: the outcome names the frozen scope.
     expect(outcome.inputContext.freeze).toMatchObject({ scopeObjectId: service!.id });
+
+    // ...and the relocation itself: add an uncovered sibling and the WAVE is admitted while the
+    // covered placement is still reported as covered — which is precisely what reconcile's
+    // per-target loop then withholds (`freeze-admission.integration.test.ts` case A).
+    const stranger = await placedComponent("svc-freeze-stranger");
+    const partial = await waveGate([placement.id, stranger.placement.id], change.id);
+    expect(
+      partial.verdict,
+      "M25.2: one covered target among two no longer parks the wave — enforcement moved to the per-target seam"
+    ).toBe("allow");
+    expect(
+      partial.frozenTargets?.map((entry) => ({
+        targetObjectId: entry.targetObjectId,
+        frozen: entry.freezes.length > 0
+      })),
+      "the coverage did not disappear when the block did"
+    ).toEqual([
+      { targetObjectId: placement.id, frozen: true },
+      { targetObjectId: stranger.placement.id, frozen: false }
+    ]);
   });
 
   it("does NOT over-reach: a policy scoped at ANOTHER component leaves the placement ungated", async () => {
@@ -324,7 +385,10 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     ).toBe("allow");
   });
 
-  it("a freeze scoped at a DEPLOYMENT-TARGET blocks what is placed there ('freeze prod', newly expressible)", async () => {
+  it("a freeze scoped at a DEPLOYMENT-TARGET covers what is placed there ('freeze prod'), and M25.2 ships the OTHER regions", async () => {
+    // REWRITTEN FOR M25.2 in the same two halves as the service-scoped case above — read that
+    // comment first. This one is route 4's only live coverage on the freeze path, and it is also
+    // the literal shape the owner asked M25.2 for: freeze one region, ship the rest.
     const frozenPlace = await admin.deploymentTargets.create({ name: "route4-frozen-target" });
     const { placement } = await placedComponent("route4-freeze", { at: frozenPlace });
     const change = await admin.changes.propose({
@@ -333,7 +397,7 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     });
 
     const now = Date.now();
-    await admin.freezes.create({
+    const freeze = await admin.freezes.create({
       scopeObjectId: frozenPlace.id,
       name: "prod-freeze",
       startsAt: new Date(now - 60_000).toISOString(),
@@ -342,12 +406,40 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     });
 
     const outcome = await waveGate([placement.id], change.id);
-    expect(
-      outcome.verdict,
-      "before route 4 a stage-scoped freeze had no expression at all — `containmentScopeIds` never put the deployment-target on a placement's chain, so the freeze matched nothing"
-    ).toBe("block");
-    // And it is THIS freeze that stopped it, not some other rule.
+
+    // (a) THE RESOLVER — route 4 put the DEPLOYMENT-TARGET on the placement's chain. Before it
+    // existed a stage-scoped freeze had no expression at all: the walk never reached the place, so
+    // the freeze matched nothing and the wave sailed through.
+    expect(outcome.frozenTargets).toEqual([
+      {
+        targetObjectId: placement.id,
+        freezes: [expect.objectContaining({ id: freeze.id, scopeObjectId: frozenPlace.id })]
+      }
+    ]);
+
+    // (b) THE VERDICT — this wave's every target is at the frozen place, so it is still blocked
+    // whole.
+    expect(outcome.verdict).toBe("block");
     expect(outcome.inputContext.freeze).toMatchObject({ scopeObjectId: frozenPlace.id });
+
+    // THE OWNER'S ASK, at the gate: a wave spanning the frozen region AND another one is admitted,
+    // with the frozen region still reported as covered so reconcile's per-target loop withholds
+    // exactly it. Before M25.2 this second call returned `block` and all four regions parked.
+    const elsewhere = await placedComponent("route4-freeze-elsewhere"); // at the shared `place`
+    const partial = await waveGate([placement.id, elsewhere.placement.id], change.id);
+    expect(
+      partial.verdict,
+      "freeze one region, ship the others — the wave gate must not park the unfrozen sibling"
+    ).toBe("allow");
+    expect(
+      partial.frozenTargets?.map((entry) => ({
+        targetObjectId: entry.targetObjectId,
+        scopes: entry.freezes.map((f) => f.scopeObjectId)
+      }))
+    ).toEqual([
+      { targetObjectId: placement.id, scopes: [frozenPlace.id] },
+      { targetObjectId: elsewhere.placement.id, scopes: [] }
+    ]);
   });
 
   it("a role bound at a DEPLOYMENT-TARGET reaches placements there, and no others", async () => {

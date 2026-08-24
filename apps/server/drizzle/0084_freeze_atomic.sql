@@ -1,0 +1,77 @@
+-- ===========================================================================================
+-- M25.2 — `freezes.atomic`: WHICH FREEZES STILL PARK A WHOLE WAVE (owner decision D5,
+-- docs/proposals/campaigns-rework.md §1.6)
+--
+-- M25.2 relocates freeze ENFORCEMENT from one whole-wave verdict to a per-target admission seam in
+-- `coordination/reconcile.ts`'s trigger loop. A wave with four placements and a freeze over one of
+-- them ships the other three and holds the fourth, instead of parking all four. That is a change
+-- that newly PERMITS, and it applies RETROACTIVELY to every freeze already authored on the estate.
+--
+-- This column is the escape hatch for the case where half-applied is worse than not-applied — a
+-- schema migration and the service that reads it, coupled targets in one wave, an incident freeze
+-- meaning "stop shipping this service AT ALL". `atomic = true` restores today's byte-identical
+-- all-or-nothing behaviour for that one freeze.
+--
+-- ===========================================================================================
+-- WHY THE DEFAULT IS `false`
+--
+-- Owner decision D5, taken 2026-08-23, option (a): per-target admission is the new DEFAULT and a
+-- freeze that must stop a whole wave declares itself atomic. The alternative (default true, opt in
+-- to per-target) was considered and rejected on the "component built, never installed" risk: an
+-- operator freezes `amer-prod`, does not set the flag, gets today's park-everything, and reports
+-- that the feature does not work.
+--
+-- NOT NULL WITH A DEFAULT, so every pre-existing row is materialised as `false` by this statement
+-- rather than being read as "unset" by a consumer that then has to guess. There is exactly one
+-- reader (`governance/gate-orchestrator.ts`'s `partiallyFrozen` predicate) and it asks
+-- `!f.atomic`; a nullable column would make that expression silently true for a NULL and the
+-- default would be decided by JavaScript's falsiness rather than by this line.
+--
+-- ===========================================================================================
+-- NO NEW GRANTS, NO NEW POLICY
+--
+-- A column inherits its table's grants and RLS. `freezes` is an ordinary TENANT table (0007): it
+-- already carries `org_isolation` with USING + WITH CHECK, ENABLE + FORCE RLS, and the ordinary
+-- `scp_app` grants. This is not one of the operator-write/tenant-read tables 0076 had to repair —
+-- nothing here needs `scp_operator`.
+--
+-- NO NEW WRITE DOOR EITHER, deliberately, and it is worth naming rather than leaving to be
+-- discovered: this increment holds no codegen slot, so `CreateFreezeRequestSchema` is untouched and
+-- `POST /api/v1/freezes` cannot yet SET this column. The authoring surface (route + schema + CLI +
+-- UI affordance) is the next increment's; until it lands the only writer is
+-- `freezes-repo.ts`'s `createFreeze`, whose input gained an optional `atomic`.
+--
+-- ===========================================================================================
+-- WHY 0084, AND THE `when` — AND WHY THIS FILE WAS RENUMBERED ONCE ALREADY
+--
+-- This one is 1788142000000 and `main`'s highest entry is 0083_governance_move_rungs
+-- (`when` 1788141000000) — STRICTLY GREATER, which is the only comparison drizzle makes. It gates
+-- on `when` ALONE and SILENTLY SKIPS an entry whose `when` does not exceed what a database has
+-- already applied: no error, no warning, the failure surfaces later as a missing column. `idx`
+-- orders the array and never gates. See 0061's header for the three-way collision that taught
+-- this, and `db/journal-ordering.test.ts` for the guard.
+--
+-- THIS FILE SHIPPED AS 0077 WITH `when` 1788140000000, authored while `main` topped out at 0076
+-- (1788133004000). Seven migrations landed on `main` while this branch was open, the highest of
+-- them 1788141000000 — ABOVE this file's original `when`. Merging as authored would have made
+-- every instance already carrying 0083 skip `freeze_atomic` PERMANENTLY and SILENTLY, while its
+-- M25.1 sibling (a higher `when`) still applied: `freezes` would have gained `lifted_at` and never
+-- `atomic`, and `routes/governance.ts`'s `freezeResponse` reads both, so every freeze read would
+-- 500 in production. No test here could have caught it — Testcontainers hands out a fresh database
+-- per file, `lastDbMigration` is undefined, and every migration applies regardless of `when`.
+--
+-- The lesson is the standing one and it applies to the NEXT branch too: a `when` is only valid
+-- against the `main` it will actually merge into, so re-derive it at merge time rather than trust
+-- the one authored at branch time.
+--
+-- Hand-authored, same reason as 0002/0005/0007/0010/0011: drizzle-kit's interactive
+-- column-provenance prompt cannot run non-interactively here, and RLS/grants are never expressible
+-- in its schema diffing anyway.
+-- ===========================================================================================
+
+ALTER TABLE "freezes"
+  ADD COLUMN IF NOT EXISTS "atomic" boolean DEFAULT false NOT NULL;
+--> statement-breakpoint
+
+COMMENT ON COLUMN freezes.atomic IS
+  'TRUE = this freeze parks the WHOLE wave the moment it covers any one of its targets (today''s pre-M25.2 behaviour, for coupled targets where half-applied is worse than not-applied). FALSE (the default, owner decision D5) = per-target admission: the covered targets are held in reconcile''s trigger loop and their siblings ship. Read in exactly one place — gate-orchestrator.ts''s `partiallyFrozen` predicate.';

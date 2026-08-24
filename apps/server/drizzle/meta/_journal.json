@@ -591,6 +591,20 @@
       "breakpoints": true
     },
     {
+      "idx": 84,
+      "version": "7",
+      "when": 1788142000000,
+      "tag": "0084_freeze_atomic",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1788143000000,
+      "tag": "0085_freeze_lift",
+      "breakpoints": true
+    },
+    {
       "idx": 87,
       "version": "7",
       "when": 1788145000000,
