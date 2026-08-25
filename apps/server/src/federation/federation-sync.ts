@@ -93,6 +93,7 @@
 import { v7 as uuidv7 } from "uuid";
 import type PgBoss from "pg-boss";
 import type { SyncBundle } from "@scp/schemas";
+import { JOURNAL_DIVERGENCE_PROBLEM_TYPE } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { orgs } from "../db/schema.js";
@@ -106,10 +107,11 @@ import {
   markPeerPullSuccess,
   type FederationPeerRow
 } from "./peers-repo.js";
-import { getCursor } from "./cursors-repo.js";
+import { getCursor, FEDERATION_DIVERGENCE_DECISION_KIND } from "./cursors-repo.js";
 import { importSyncBundle, FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import {
   FederationDialRefused,
+  FederationExportRefused,
   federationClientMtlsConfigured,
   federationPeerRequiresMtls,
   pullSyncBundleFromCommander,
@@ -425,6 +427,40 @@ async function recordSyncBlock(
   });
 }
 
+/**
+ * Records a STANDING importer-side journal divergence with a peer (rails 1/2/4, §7.2), under the
+ * dedicated `federation-divergence` kind so RAIL 5 (`permitCursorReanchor`) can find it precisely.
+ * Same persist-on-change + paired-audit discipline as `recordSyncBlock` (one row per stuck peer, not
+ * one per 60s retry). The block STANDS until the resync operation (§7.2.6) supersedes it — which is
+ * why the reason is kept stable and the live divergence detail rides only on the refusal, not here.
+ */
+async function recordImportDivergence(
+  db: Db,
+  args: { orgId: string; peer: FederationPeerRow; reason: string }
+): Promise<string> {
+  return withTenantTx(db, args.orgId, async (tx) => {
+    const recorded = await insertDecisionIfChanged(tx, {
+      orgId: args.orgId,
+      kind: FEDERATION_DIVERGENCE_DECISION_KIND,
+      subjectId: args.peer.id,
+      verdict: "block",
+      inputContext: { peerDomainId: args.peer.id, peerName: args.peer.name },
+      reasonTree: { summary: "journal divergence standing with this peer — resync required (§7.2)" }
+    });
+    if (!recorded.created) return recorded.decision.id;
+    await appendAuditEvent(tx, {
+      orgId: args.orgId,
+      actorId: FEDERATION_IMPORT_ACTOR_ID,
+      action: "federation.divergence.detected",
+      subjectId: args.peer.id,
+      reason: `journal divergence with peer '${args.peer.name}': ${args.reason}`,
+      decisionId: recorded.decision.id,
+      requestId: `federation-divergence:${args.peer.id}:${uuidv7()}`
+    });
+    return recorded.decision.id;
+  });
+}
+
 /** Pull + import from ONE commander peer. Never throws — every outcome (success, fail-closed refusal,
  *  transient error) is returned so the sweep continues to the next peer/org. */
 export async function pullFromCommanderPeer(
@@ -463,6 +499,12 @@ export async function pullFromCommanderPeer(
       baseUrl: peer.baseUrl,
       selfDomainId,
       sinceSequence: cursor.sequence,
+      // RAIL 2 (§7.2): send the applied-row anchor ONLY as a full-scope receiver holding a real
+      // anchor. A sparse receiver's `cursor.rowHash` is null and it deliberately omits it (it never
+      // held the tail entry's hash), so the exporter runs rail 2 only where an anchor exists.
+      ...(peer.syncScope.mode === "full" && cursor.rowHash !== null
+        ? { lastAppliedRowHash: cursor.rowHash }
+        : {}),
       bearer: ctx.bearer,
       mtls: ctx.mtls
     });
@@ -472,6 +514,18 @@ export async function pullFromCommanderPeer(
       // refuses, record it as a block too (never a silent skip).
       const decisionId = await recordSyncBlock(db, { orgId, peer, reason: err.message });
       return { peerDomainId: peer.id, outcome: "refused", detail: err.message, decisionId };
+    }
+    if (err instanceof FederationExportRefused && err.type === JOURNAL_DIVERGENCE_PROBLEM_TYPE) {
+      // RAILS 1/2 (§7.2), the puller's half of "both sides record": the exporter verified a
+      // fork/rollback and refused. This is a STANDING condition (the puller's cursor cannot advance
+      // until a resync), not a transient failure — persist-on-change block under the DIVERGENCE kind
+      // so rail 5 can key off it, exactly as the exporter recorded on its side.
+      const decisionId = await recordImportDivergence(db, {
+        orgId,
+        peer,
+        reason: `commander refused as journal_divergence: ${err.detail}`
+      });
+      return { peerDomainId: peer.id, outcome: "refused", detail: err.detail, decisionId };
     }
     // A transient dial/HTTP error (commander down, 401, network): NOT a block Decision (nothing was
     // verified-and-rejected) — retried next tick.
@@ -506,7 +560,13 @@ export async function pullFromCommanderPeer(
     // Nothing here may summarise or truncate it.
     if (err instanceof ProblemError && err.status === 409) {
       const reason = err.detail ?? err.message;
-      const decisionId = err.decisionId ?? (await recordSyncBlock(db, { orgId, peer, reason }));
+      // RAIL 4 (§7.2): an import refused for a signed-tail-attestation regression/fork is a STANDING
+      // divergence — record it under the divergence kind (rail 5's signal), not the generic sync
+      // kind. Every OTHER 409 (checksum/signature/chain) stays a plain sync block.
+      const decisionId =
+        err.type === JOURNAL_DIVERGENCE_PROBLEM_TYPE
+          ? await recordImportDivergence(db, { orgId, peer, reason })
+          : (err.decisionId ?? (await recordSyncBlock(db, { orgId, peer, reason })));
       return { peerDomainId: peer.id, outcome: "refused", detail: reason, decisionId };
     }
     // Any other error (transient DB, unpaired peer 404, etc.) — retried next tick, no block.
@@ -680,6 +740,26 @@ export const FEDERATION_SYNC_POKE_REASON = "poke";
  */
 export const FEDERATION_SYNC_STARTUP_REASON = "startup";
 
+/**
+ * RETIRED (M26, §4-A4's second correction) — this used to be `= 10`, the startup send's own singleton
+ * window. It is gone rather than re-tuned, and the reasoning is worth keeping because it was subtle
+ * enough to be got wrong twice:
+ *
+ * The original note correctly established that the chain's `"tick"` key was off limits (a pending
+ * interval tick would swallow a startup send filed under it), and concluded that a DISTINCT key with
+ * a short window was therefore safe. It is not. `job_i4` counts jobs in every state except
+ * `cancelled`, so the slot is held by a COMPLETED job too — which means the thing a restart most
+ * reliably collides with is *its own previous boot*, the one case a "restart storm" window is least
+ * able to distinguish from the storm it was meant to collapse. There is no window size that separates
+ * them: shrink it and simultaneous replicas stop deduping, grow it and restarts get swallowed for
+ * longer.
+ *
+ * The startup send is now UNKEYED (`LOOP_STARTUP_SEND_IS_UNKEYED`, events/pgboss.ts), like every other
+ * loop's. Note that simply dropping `singletonSeconds` while keeping the key would NOT have worked
+ * either — it only makes the key inert (job_i4 requires `singleton_on IS NOT NULL`), leaving code that
+ * reads as if it dedupes while doing nothing at all.
+ */
+
 /** The wake payload a tick carries (see {@link FEDERATION_SYNC_POKE_REASON}). */
 export interface FederationSyncJobData {
   reason?: string;
@@ -785,7 +865,22 @@ export async function startFederationSyncLoop(
     );
   });
   // PULL-ON-(RE)CONNECT: fire the first tick immediately, FORCED (see the constant's doc) — and it
-  // is this tick that bootstraps the self-rescheduling interval chain.
+  // is this tick that bootstraps the self-rescheduling interval chain. SENT UNKEYED, so it ALWAYS
+  // inserts (LOOP_STARTUP_SEND_IS_UNKEYED, events/pgboss.ts).
+  //
+  // This send used to carry its own `"startup"` key with a 10s window, on the reasoning that N
+  // replicas restarting together should dedupe their startup pulls among themselves while staying
+  // off the chain's `"tick"` key. That reasoning was half right — `"tick"` is indeed off limits —
+  // and half fatal: job_i4 counts COMPLETED jobs as holding the slot, so a worker that bounced
+  // inside its own 10s window had its startup send silently dropped and came back with the
+  // pull-on-(re)connect leg missing. Losing that leg is invisible: the loop still ticks on its
+  // interval, so nothing errors and nothing alerts — the outpost is just stale for a whole window,
+  // which is exactly the reliability floor this send exists to hold up.
+  //
+  // The dedupe is deliberately given up rather than re-tuned, because no window size fixes it: any
+  // (key, bucket) pair a restart can share with its own previous boot can swallow it. Redundant
+  // startup pulls are merely wasteful — the tick claims work per peer, and imports advance a
+  // forward-only cursor, so a duplicate pull converges instead of corrupting.
   await boss.send(FEDERATION_SYNC_QUEUE, { reason: FEDERATION_SYNC_STARTUP_REASON });
   return {
     async stop() {

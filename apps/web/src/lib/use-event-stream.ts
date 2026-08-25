@@ -20,6 +20,13 @@ const OBJECT_EVENT_TYPES = new Set([
 // no outbox event) — change-detail.tsx additionally polls via `refetchInterval` to catch that.
 const CHANGE_EVENT_TYPES = new Set(["scp.change.transitioned"]);
 
+// M26.1 (proposal multi-region-instance-resilience.md §7.1 item 1): a synthetic frame the
+// server-side bridge (apps/server/src/events/sse-bridge.ts) pushes to every already-connected
+// client on its own LISTEN (re)connection — the stream is best-effort with no replay (ADR-0025
+// D4), so this is the signal that some window of events may have been missed. Carries no useful
+// payload; the response is a wholesale cache invalidation, same as a local stream reconnect below.
+const RESYNC_EVENT_TYPE = "scp.sse.resync";
+
 // ---------------------------------------------------------------------------------------------
 // Tiny external store (React 18 `useSyncExternalStore`) for the dashboard's "last few SSE
 // events" activity feed (components/ActivityFeed.tsx, BUILD_AND_TEST.md §8 M2 item 2's "small
@@ -95,9 +102,23 @@ export function useEventStream(): void {
       }
     };
 
+    // M26.1 §7.1 item 1: wholesale invalidation on EVERY (re)connection, local or server-signalled
+    // — see `RESYNC_EVENT_TYPE`'s doc comment for why both triggers exist independently. A blanket
+    // `invalidateQueries()` rather than resolving which keys might be stale mirrors `onObjectEvent`
+    // above: list/detail queries are cheap and cached, and simplicity is CLAUDE.md's #1 decision
+    // priority.
+    const resync = (): void => void queryClient.invalidateQueries();
+
     void (async () => {
       try {
-        for await (const event of client.events.stream({ signal: controller.signal })) {
+        for await (const event of client.events.stream({
+          signal: controller.signal,
+          onOpen: resync
+        })) {
+          if (event.type === RESYNC_EVENT_TYPE) {
+            resync();
+            continue;
+          }
           if (!OBJECT_EVENT_TYPES.has(event.type) && !CHANGE_EVENT_TYPES.has(event.type)) continue;
           pushActivityEvent(event);
           if (OBJECT_EVENT_TYPES.has(event.type)) onObjectEvent(event);

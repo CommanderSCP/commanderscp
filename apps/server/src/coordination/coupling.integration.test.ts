@@ -469,17 +469,17 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     // Simulate 25h of no progress (the `waiting` SLA is 24h) — `opts.now` is the established
     // clock-injection seam, same as coordination.integration.test.ts's watchdog tests.
     const farFuture = new Date(Date.now() + 25 * 60 * 60_000);
-    const flags = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      runWatchdogSweep(
-        tx,
-        org.orgId,
-        createInMemoryFakeHost(),
-        server.deps.config.secretsMasterKey,
-        {
-          requestId: "coupling-watchdog-test",
-          now: farFuture
-        }
-      )
+    // `runWatchdogSweep` manages its own per-row short transactions (§7.1 item 3) — no outer
+    // `withTenantTx` wraps it any more.
+    const flags = await runWatchdogSweep(
+      server.deps.db,
+      org.orgId,
+      createInMemoryFakeHost(),
+      server.deps.config.secretsMasterKey,
+      {
+        requestId: "coupling-watchdog-test",
+        now: farFuture
+      }
     );
     const flagged = flags.find((f) => f.changeObjectId === waiter.id);
     expect(flagged).toBeDefined();

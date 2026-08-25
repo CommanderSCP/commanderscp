@@ -1345,7 +1345,20 @@ export const federationSelf = pgTable("federation_self", {
   domainId: uuid("domain_id").notNull().unique().$type<TrustDomainId>(),
   name: text("name").notNull(),
   role: text("role").notNull().default("unset"), // 'unset' | 'commander' | 'outpost' | 'retrans'
+  /** §7.2.6 (drizzle/0092) — a per-org monotonic counter bumped by the resync operation (and the
+   *  promotion runbook). Recorded WITH the resync Decision so a forensic reading can attribute
+   *  entries to before/after a lost-tail event. Never enters the signed journal-entry format. */
+  generation: bigint("generation", { mode: "number" }).notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+});
+
+/** Member-cluster version heartbeat (§7.4, drizzle/0093) — one row per member cluster, upserted on
+ *  boot. INSTANCE-WIDE (no org_id). The migrations Job refuses a contract-phase deploy while any live
+ *  heartbeat reports a version != the deploying one (an old member cluster still up; N and N+1 only). */
+export const memberClusterHeartbeat = pgTable("member_cluster_heartbeat", {
+  clusterId: text("cluster_id").primaryKey(),
+  appVersion: text("app_version").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
 });
 
 /** Known peer domains (DESIGN §13 "peer pairing"), one row per paired remote domain. `syncScope`
@@ -1532,10 +1545,49 @@ export const syncCursors = pgTable(
      *  leaves this peer at `full` with an anchorless cursor. NOTHING a peer sends can set it: no
      *  import/relay/poke path writes this column. */
     reanchorFromSeq: bigint("reanchor_from_seq", { mode: "number" }),
+    /** RAIL 4 — EXPORTER TAIL ATTESTATION HIGH-WATER MARK (drizzle/0090, M26.2 §7.2 rail 4).
+     *  A monotonic per-`(org, peer, origin)` record of the highest journal tail this side has ever
+     *  seen the exporter *attest and sign* (`SyncBundle.tailAttestation`), independent of what this
+     *  receiver's scope let it actually apply. This is what makes B1 (a lost/rolled-back tail after
+     *  an async-replication failover) detectable for a NARROW-scope peer, where rails 1–3 are silent
+     *  because that peer never holds a real anchor. NULL until the first signed attestation is seen.
+     *  Verify-and-advance only: a later attestation whose `tailSequence` regresses, or whose
+     *  `tailRowHash` differs at the SAME height, is a `journal_divergence` refusal — never a
+     *  regression of these columns. Nothing a peer sends other than a validly-signed attestation may
+     *  move them. Read/written only by `cursors-repo.ts`'s tail-attestation path. */
+    attestedTailSeq: bigint("attested_tail_seq", { mode: "number" }),
+    attestedTailRowHash: text("attested_tail_row_hash"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
     uniqueIndex("sync_cursors_pk").on(table.orgId, table.peerDomainId, table.originDomainId)
+  ]
+);
+
+/** Federation audit witness (§7.2.7, drizzle/0091) — a passive record of a peer ORIGIN's audit-chain
+ *  head, persisted from the `audit_segment` journal entries importers used to discard. INFORMATIONAL:
+ *  never blocks an import. The post-failover runbook compares a restored local head against peers'
+ *  witnessed `(auditEventId, contentHash)` at each sequence to DETECT truncation — the one thing
+ *  `scp audit verify` cannot see, since any prefix of a valid chain verifies (B2). Peers are
+ *  detectors of truncation here, never sources of the truncated data. */
+export const federationAuditWitness = pgTable(
+  "federation_audit_witness",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    peerDomainId: uuid("peer_domain_id").notNull().$type<TrustDomainId>(), // TRUST sense (ADR-0021 D4)
+    originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(),
+    sequence: bigint("sequence", { mode: "number" }).notNull(),
+    auditEventId: uuid("audit_event_id").notNull(),
+    contentHash: text("content_hash").notNull(),
+    witnessedAt: timestamp("witnessed_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("federation_audit_witness_origin_seq").on(
+      table.orgId,
+      table.originDomainId,
+      table.sequence
+    )
   ]
 );
 

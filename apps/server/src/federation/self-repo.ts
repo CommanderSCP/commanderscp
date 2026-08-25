@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { asTrustDomainId, type TrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -28,6 +28,8 @@ export interface FederationSelf {
   domainId: TrustDomainId;
   name: string;
   role: "unset" | "commander" | "outpost" | "retrans";
+  /** §7.2.6 — the per-org resync/promotion generation counter (0 until the first resync). */
+  generation: number;
 }
 
 function toFederationSelf(row: typeof federationSelf.$inferSelect): FederationSelf {
@@ -35,8 +37,23 @@ function toFederationSelf(row: typeof federationSelf.$inferSelect): FederationSe
     orgId: row.orgId,
     domainId: row.domainId,
     name: row.name,
-    role: row.role as FederationSelf["role"]
+    role: row.role as FederationSelf["role"],
+    generation: row.generation
   };
+}
+
+/** §7.2.6 — bump this org's monotonic generation counter and return the NEW value, recorded with a
+ *  resync (or promotion) Decision so a forensic reading can attribute entries to before/after a
+ *  lost-tail event. `ensureFederationSelf` first so the row exists even on a never-federated org. */
+export async function bumpFederationGeneration(tx: TenantTx, orgId: string): Promise<number> {
+  await ensureFederationSelf(tx, orgId);
+  const [row] = await tx
+    .update(federationSelf)
+    .set({ generation: sql`${federationSelf.generation} + 1` })
+    .where(eq(federationSelf.orgId, orgId))
+    .returning({ generation: federationSelf.generation });
+  if (!row) throw new Error(`bumpFederationGeneration: no federation_self row for org '${orgId}'`);
+  return row.generation;
 }
 
 /** Race-safe like `governance/attestation.ts`'s `ensureInstanceKey`: a duplicate-insert on

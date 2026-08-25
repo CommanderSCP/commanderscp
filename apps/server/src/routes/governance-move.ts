@@ -1,6 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import pg from "pg";
 import { z } from "zod";
 import {
   GovernanceMoveEnforcementSchema,
@@ -14,6 +13,7 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
+import { createPool } from "../db/client.js";
 import { authorize } from "../authz/resolve.js";
 import { operatorTokenMatches } from "./operator-db.js";
 import { forbidden, notFound } from "../errors.js";
@@ -368,7 +368,7 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
       const auth = await requireAuth(deps, request);
       requireOperator(deps, request);
 
-      const pool = new pg.Pool({ connectionString: deps.config.databaseUrl, max: 1 });
+      const pool = createPool(deps.config.databaseUrl, { max: 1 });
       try {
         await pool.query(
           `INSERT INTO governance_move_instance_rung (id, enabled, updated_at)

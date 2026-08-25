@@ -69,6 +69,18 @@ export interface FederationImportContext {
   originDomainId: TrustDomainId;
   revision: number;
   provenance?: "manual" | null;
+  /**
+   * RESYNC ONLY (§7.2.6 — SECURITY-SENSITIVE). When true, the revision-STALENESS guard is bypassed:
+   * an incoming revision at or below what is already stored still OVERWRITES, instead of no-op'ing as
+   * a stale replay. This is the ONLY way a lost-tail resync re-converges the graph on the exporter's
+   * restored reality — the re-minted entries carry their ORIGINAL (now-stale) revisions, so without
+   * this every one of them would silently no-op against the staleness guard ("converged nothing").
+   *
+   * It bypasses ONLY the staleness guard — NEVER the single-writer authority check (a resync still
+   * cannot forge authorship of a row another domain owns). Set exclusively by the resync import path
+   * under a mutually-authorized permit; no ordinary import or route ever sets it.
+   */
+  forceOverwrite?: boolean;
 }
 
 // NOTE: `change` objects deliberately stay `object_upsert`/`object_tombstone` here, even though
@@ -871,8 +883,13 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     }
     // Idempotent replay / interrupted-transfer resume (DESIGN §13, DoD "double-import is a
     // no-op"): a revision at-or-behind what's already stored is stale — return the row unchanged,
-    // no audit event, no journal entry, no version bump.
-    if (input.federationImport.revision <= existing.revision) {
+    // no audit event, no journal entry, no version bump. RESYNC (§7.2.6) bypasses this: under a
+    // mutually-authorized permit a stale revision still OVERWRITES, so a lost-tail restore
+    // re-converges instead of silently no-op'ing. The single-writer check above is NEVER bypassed.
+    if (
+      input.federationImport.revision <= existing.revision &&
+      !input.federationImport.forceOverwrite
+    ) {
       return toGraphObject(existing);
     }
   } else {
@@ -1559,7 +1576,13 @@ export async function deleteObject(
         `single-writer authority violation: object '${existing.id}' is authoritatively owned by domain '${existing.originDomainId}', not '${input.federationImport.originDomainId}'`
       );
     }
-    if (input.federationImport.revision <= existing.revision) return; // stale replay — no-op
+    // Stale replay → no-op, EXCEPT under a resync force-overwrite permit (§7.2.6), which must
+    // re-apply the tombstone even at a stale revision so a lost-tail restore re-converges deletions.
+    if (
+      input.federationImport.revision <= existing.revision &&
+      !input.federationImport.forceOverwrite
+    )
+      return;
   } else {
     const self = await ensureFederationSelf(tx, input.orgId);
     if (existing.originDomainId !== self.domainId) {

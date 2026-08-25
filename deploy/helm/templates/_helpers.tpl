@@ -128,9 +128,30 @@ itself almost always one of these three ranges, e.g. kind's default/this chart's
 port. An operator with a genuinely public-IP-reachable Postgres/NATS host still sets the CIDR
 value explicitly to scope this precisely (or wider, if truly required — an explicit, visible
 choice, not a silent default).
+
+M26.3: the value may ALSO be a LIST of CIDR strings (needed for a cross-cluster Postgres endpoint
+reachable via more than one advertised route — VPC peering ranges, a Transit Gateway/VPN, …) —
+`kindIs "slice"` picks that branch; a bare string keeps rendering exactly as before, unchanged for
+every existing install/values file.
 */}}
 {{- define "commanderscp.egressToBlock" -}}
+{{- if kindIs "slice" . -}}
 {{- if . -}}
+to:
+  {{- range . }}
+  - ipBlock:
+      cidr: {{ . }}
+  {{- end }}
+{{- else -}}
+to:
+  - ipBlock:
+      cidr: 10.0.0.0/8
+  - ipBlock:
+      cidr: 172.16.0.0/12
+  - ipBlock:
+      cidr: 192.168.0.0/16
+{{- end -}}
+{{- else if . -}}
 to:
   - ipBlock:
       cidr: {{ . }}
@@ -144,6 +165,29 @@ to:
       cidr: 192.168.0.0/16
 {{- end -}}
 {{- end -}}
+
+{{/*
+topologySpreadConstraints for the api/worker pod templates (M26.3, C1). Takes the OPERATOR-FACING
+list from `.Values.api|worker.topologySpreadConstraints` (each entry only names `maxSkew`/
+`topologyKey`/`whenUnsatisfiable` — see values.yaml) and injects the `labelSelector` this chart
+alone knows how to build, so an operator overriding the list never has to restate this
+Deployment's own selector labels correctly. Renders nothing when the list is empty (`[]`).
+*/}}
+{{- define "commanderscp.topologySpreadConstraints" -}}
+{{- $constraints := .constraints -}}
+{{- $selectorLabels := .selectorLabels -}}
+{{- if $constraints }}
+topologySpreadConstraints:
+  {{- range $constraints }}
+  - maxSkew: {{ .maxSkew }}
+    topologyKey: {{ .topologyKey }}
+    whenUnsatisfiable: {{ .whenUnsatisfiable }}
+    labelSelector:
+      matchLabels:
+        {{- $selectorLabels | nindent 8 }}
+  {{- end }}
+{{- end -}}
+{{- end }}
 
 {{/*
 Secret name + key helpers — postgres/appSecrets/oidc all follow the same "existingSecret OR the
@@ -176,6 +220,15 @@ since those three differ between the migrations Job and the api/worker Deploymen
   value: {{ .Values.seedDemo | quote }}
 - name: SCP_FEDERATION_ROLE
   value: {{ include "commanderscp.federationRole" . | quote }}
+{{- /* D6 (§7.3): production is the fail-closed default; an eval Helm install sets deploymentMode: evaluation. */}}
+- name: SCP_DEPLOYMENT_MODE
+  value: {{ .Values.deploymentMode | default "production" | quote }}
+{{- /* §7.4 version-skew heartbeat: this member cluster's identity + running release. clusterId
+       defaults to the release name; appVersion to the chart's appVersion (== the image tag). */}}
+- name: SCP_CLUSTER_ID
+  value: {{ .Values.clusterId | default .Release.Name | quote }}
+- name: SCP_APP_VERSION
+  value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
 - name: SCP_EVENT_BUS_BACKEND
   value: {{ .Values.eventBus.backend | quote }}
 {{- if eq .Values.eventBus.backend "nats" }}
@@ -291,6 +344,32 @@ since those three differ between the migrations Job and the api/worker Deploymen
   value: {{ .Values.federation.relay.autoRelay.maxAttempts | quote }}
 - name: SCP_RETRANS_AUTO_RELAY_LEASE_SECONDS
   value: {{ .Values.federation.relay.autoRelay.leaseSeconds | quote }}
+{{- end }}
+{{- if ne (.Values.federation.relay.volumes.type | default "none") "none" }}
+{{- /* M26.3 (C4) — the byte-channel drop-directory volume vocabulary. Wired ONLY when a volume
+       is actually mounted (workerRoleVolumeMounts/workerRoleVolumes below render the matching
+       "retrans-relay" volume under the identical condition) — with `type: none` these three stay
+       unset, which is today's byte-identical pre-M26.3 behavior (inbox/autoRelay resolve no
+       target and defer harmlessly). */}}
+- name: SCP_RELAY_OUT_DIR
+  value: {{ .Values.federation.relay.volumes.outDir | quote }}
+- name: SCP_RELAY_IN_DIR
+  value: {{ .Values.federation.relay.volumes.inDir | quote }}
+- name: SCP_RELAY_BLOB_OUT_DIR
+  value: {{ .Values.federation.relay.volumes.blobOutDir | quote }}
+{{- end }}
+{{- if .Values.federation.relay.volumes.deliveryRoots }}
+{{- /* ADR-0019 §4 symmetry — required before any PER-PEER filesystem delivery directory (as
+       opposed to the instance-wide fallback dirs above) is honored (fail-closed default). */}}
+- name: SCP_DELIVERY_ROOTS
+  value: {{ join "," .Values.federation.relay.volumes.deliveryRoots | quote }}
+{{- end }}
+{{- if .Values.federation.relay.s3.endpoints }}
+{{- /* S3-first delivery guidance made actionable (M26.3, C4) — the RECOMMENDED posture for any
+       multi-replica/multi-member-cluster retrans (see values.yaml's `federation.relay` comment).
+       Fail-closed when unset, same as the filesystem roots above. */}}
+- name: SCP_DELIVERY_S3_ENDPOINTS
+  value: {{ join "," .Values.federation.relay.s3.endpoints | quote }}
 {{- end }}
 {{- if .Values.internalEgressHosts }}
 {{- /* Operator half of the two-layer internal-egress model (ADR-0003) — same host-level,
@@ -458,6 +537,13 @@ api/worker/migrations resilient to the DB not yet accepting connections when the
 right after `postgres.evalInCluster` first schedules) crashes with a DB-connection error (exit 1),
 restarts, and — for api — can lose the one-time bootstrap-admin password to the churned container
 logs. Reused by all three workloads via `include ... (dict "root" . "dbEnvVar" "<NAME>")`.
+
+DELIBERATELY SINGLE-HOST (owner decision D5, M26.3 — multi-region-instance-resilience.md §7.4/
+§11): this `new URL()` parse is exactly the DSN contract values.yaml's `postgres.host` comment
+describes — ONE stable operator-provided endpoint, never a multi-host connection string. A
+multi-cluster instance still has exactly one Postgres; this container does not grow multi-host
+parsing to "support" more member clusters, because there is nothing about multi-host DSNs to
+support here.
 */}}
 {{- define "commanderscp.waitForPostgresInitContainer" -}}
 {{- $root := .root -}}
@@ -558,6 +644,65 @@ So the message names the requirement explicitly rather than implying the chart v
 */}}
 {{- if and .Values.managedRunners.kubernetes.perRunSecrets (not .Values.managedRunners.kubernetes.namespace) (not .Values.managedRunners.kubernetes.acceptSharedNamespaceSecretDelete) -}}
 {{- fail "managedRunners.kubernetes.perRunSecrets=true with no managedRunners.kubernetes.namespace grants the worker ServiceAccount `delete` on EVERY Secret in THIS RELEASE'S OWN NAMESPACE, this release's database credential included (measured: DELETE .../secrets/<db-secret> -> Success). Set managedRunners.kubernetes.namespace to a dedicated runner namespace (the narrowing this Role's RBAC cannot express any other way — see runner-iac.yaml), set managedRunners.kubernetes.perRunSecrets=false if managed-iac's Kubernetes credentials are not needed, or set managedRunners.kubernetes.acceptSharedNamespaceSecretDelete=true to proceed with this release's own Secrets in the blast radius." -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+MULTI-CLUSTER SELF-CONSISTENCY GUARD (M26.3 — multi-region-instance-resilience.md §5-I2, §7.4,
+B3/B4/B9). `multiCluster.enabled: true` means this release is one member cluster of an instance
+that spans more than one Kubernetes cluster. This render can only see ITS OWN values — it cannot
+compare this cluster's Secret CONTENT against another cluster's (that equality is an operator
+discipline, documented in deploy/helm/MULTI-CLUSTER.md, not a fact Helm can check) — but it CAN
+refuse the one thing that is always wrong under that flag: relying on the chart's OWN generated
+postgres/appSecrets Secrets, which are single-cluster-only by construction. See values.yaml's
+`multiCluster`/`postgres.existingSecret`/`appSecrets.existingSecret` comments for the full B3/B4/B9
+reasoning this failure message summarizes.
+*/}}
+{{- define "commanderscp.assertMultiClusterPrerequisites" -}}
+{{- if .Values.multiCluster.enabled -}}
+{{- if not .Values.postgres.existingSecret -}}
+{{- fail "multiCluster.enabled requires postgres.existingSecret — chart-generated database credentials are single-cluster-only: a second member cluster's install would generate its OWN random scp_app/scp_pgboss passwords, and its migrations Job would try to reset the shared database's live credentials to them (B9). Create the Secret ONCE and set the IDENTICAL postgres.existingSecret name on every member cluster's release. See deploy/helm/MULTI-CLUSTER.md." -}}
+{{- end -}}
+{{- if not .Values.appSecrets.existingSecret -}}
+{{- fail "multiCluster.enabled requires appSecrets.existingSecret — the chart-generated SCP_SECRETS_MASTER_KEY/SCP_COOKIE_SECRET are per-cluster k8s Secrets, not replicated with Postgres. A standby/second cluster promoted without the IDENTICAL key holds every plugin/managed-IaC credential permanently undecryptable, discovered only at first use (B3/B4). Create the Secret ONCE and set the IDENTICAL appSecrets.existingSecret name on every member cluster's release. See deploy/helm/MULTI-CLUSTER.md." -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+RETRANS VOLUME PREREQUISITES (M26.3, C4 — multi-region-instance-resilience.md §6/§7.4/§9.4).
+Refuses a render that pairs an unattended relay loop with either (a) `volumes.type: pvc` and no
+claim name, or (b) a pod-local (`emptyDir`) drop directory shared by MORE THAN ONE replica that
+actually runs the worker role — the same predicate `workerRoleVolumeMounts`/`workerRoleVolumes`
+use (`commanderscp.podRunsWorkerRole`), summed across both Deployments because either one (or
+both, on a mixed `api.role=all` + `worker.replicaCount>0` topology) can run the loops. This is the
+WITHIN-ONE-CLUSTER half of the guard the proposal asks for; the ACROSS-MEMBER-CLUSTERS half (a
+plain RWX volume essentially never spans clusters) is documented guidance only — see
+`federation.relay.volumes`'s values.yaml comment and deploy/helm/MULTI-CLUSTER.md — because no one
+release's render can see another cluster's values at all. NO `hostPath` case here, deliberately:
+this chart offers only `none`/`emptyDir`/`pvc` (values.yaml's `federation.relay.volumes.type`
+comment explains why — the `helm-verify` "socket invariant" gate, M23.6 clause 6, asserts NO
+`hostPath:` volume exists anywhere in this chart).
+*/}}
+{{- define "commanderscp.assertRetransVolumePrerequisites" -}}
+{{- $relay := .Values.federation.relay -}}
+{{- $anyRelayLoop := or $relay.inbox.enabled $relay.autoRelay.enabled -}}
+{{- $volType := $relay.volumes.type | default "none" -}}
+{{- if and $anyRelayLoop (eq $volType "pvc") (not $relay.volumes.pvc.claimName) -}}
+{{- fail "federation.relay.volumes.type=pvc requires federation.relay.volumes.pvc.claimName — an EXISTING ReadWriteMany PersistentVolumeClaim shared by every replica that runs the worker role. This chart does not create it (RWX is a storage-class capability you provision — NFS/CephFS/EFS/Azure Files/…)." -}}
+{{- end -}}
+{{- if and $anyRelayLoop (eq $volType "emptyDir") -}}
+{{- $apiCount := 0 -}}
+{{- if eq (include "commanderscp.podRunsWorkerRole" (dict "root" . "role" "api")) "true" -}}
+{{- $apiCount = int .Values.api.replicaCount -}}
+{{- end -}}
+{{- $workerCount := 0 -}}
+{{- if eq (include "commanderscp.podRunsWorkerRole" (dict "root" . "role" "worker")) "true" -}}
+{{- $workerCount = int .Values.worker.replicaCount -}}
+{{- end -}}
+{{- if gt (add $apiCount $workerCount) 1 -}}
+{{- fail (printf "federation.relay.{inbox,autoRelay}.enabled with more than one worker-role-capable replica (api.role=all -> %d api replica(s); worker -> %d worker replica(s)) and federation.relay.volumes.type=%q: a multi-replica retrans release cannot use a pod-local drop directory (emptyDir) — each replica sees a DIFFERENT filesystem, so a build claimed by one pod's tick and read by another silently misses it, and a crash after commit strands a submitted artifact with no retry (multi-region-instance-resilience.md §9.4). Set federation.relay.volumes.type: pvc with an existing ReadWriteMany claimName (shared across every replica), or prefer S3-compatible delivery (federation.relay.s3.endpoints), which needs no filesystem volume at all. See deploy/helm/MULTI-CLUSTER.md." $apiCount $workerCount $volType) -}}
 {{- end -}}
 {{- end -}}
 {{- end }}
@@ -664,6 +809,15 @@ false
 - name: runner-workspace
   mountPath: {{ $root.Values.managedRunners.kubernetes.workspace.mountPath }}
 {{- end }}
+{{- if ne ($root.Values.federation.relay.volumes.type | default "none") "none" }}
+{{- /* M26.3 (C4) — the retrans byte-channel drop directories. ONE volume at a fixed mount path;
+       SCP_RELAY_OUT_DIR/IN_DIR/BLOB_OUT_DIR (commonEnv above) stay as subdirectories under it —
+       the server itself `mkdir -p`s them on first write, so no init container is needed. Guarded
+       against an unsafe pod-local/multi-replica combination by
+       `commanderscp.assertRetransVolumePrerequisites`. */}}
+- name: retrans-relay
+  mountPath: /var/lib/scp/relay
+{{- end }}
 {{- end -}}
 {{- end }}
 
@@ -687,6 +841,17 @@ false
 - name: runner-workspace
   persistentVolumeClaim:
     claimName: {{ $root.Values.managedRunners.kubernetes.workspace.claimName | quote }}
+{{- end }}
+{{- if ne ($root.Values.federation.relay.volumes.type | default "none") "none" }}
+{{- /* Only "emptyDir" or "pvc" ever reach here — no `hostPath` case: this chart offers no
+       hostPath option at all (see the guard's own doc comment above for why). */}}
+- name: retrans-relay
+  {{- if eq $root.Values.federation.relay.volumes.type "pvc" }}
+  persistentVolumeClaim:
+    claimName: {{ $root.Values.federation.relay.volumes.pvc.claimName | quote }}
+  {{- else }}
+  emptyDir: {}
+  {{- end }}
 {{- end }}
 {{- end -}}
 {{- end }}

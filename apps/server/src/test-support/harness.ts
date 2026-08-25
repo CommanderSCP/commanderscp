@@ -18,6 +18,7 @@ import { createObject } from "../graph/objects-repo.js";
 import { ensureBootstrapAdmin } from "../auth/local-auth.js";
 import { startPgBoss } from "../events/pgboss.js";
 import { startOutboxRelay, type OutboxRelayHandle } from "../events/outbox-relay.js";
+import { startSseBridge, type SseBridgeHandle } from "../events/sse-bridge.js";
 import { connectNatsFanout, type NatsFanoutHandle } from "../events/nats-fanout.js";
 import type PgBoss from "pg-boss";
 import type { AppDeps } from "../types.js";
@@ -140,10 +141,18 @@ export interface ListeningTestServer extends TestServer {
  * `fetch`-based client and the CLI subprocess (test-support/cli-runner.ts).
  *
  * `withEventRelay: true` additionally wires up the outbox relay + pg-boss (main.ts's `role ===
- * "all" || "worker"` branch, unchanged logic) so events written by requests against this server
- * actually reach `sseHub`/`GET /events/stream` — `buildApp` alone never starts either, so SSE
- * stays silent without this. Off by default: most callers of `listenTestServer` don't need a
- * live event pipeline, and pg-boss provisioning its own schema on every boot isn't free.
+ * "all" || "worker"` branch, unchanged logic) AND the SSE bridge (main.ts's unconditional-per-role
+ * branch — events/sse-bridge.ts) so events written by requests against this server actually reach
+ * `sseHub`/`GET /events/stream` — `buildApp` alone never starts any of them, so SSE stays silent
+ * without this. Off by default: most callers of `listenTestServer` don't need a live event
+ * pipeline, and pg-boss provisioning its own schema on every boot isn't free.
+ *
+ * THE BRIDGE IS NOT OPTIONAL HERE (M26.1). Since the relay stopped calling `sseHub.publish`
+ * directly (outbox-relay.ts's doc comment — proposal multi-region-instance-resilience.md §7.1 item
+ * 1), it is the ONLY thing that can feed `sseHub` in this process, in EVERY topology main.ts
+ * starts it in — which, because `app.listen()` there is itself unconditional, is every role. A
+ * test harness that mirrored the OLD, role-gated shape here would silently reproduce exactly the
+ * process-boundary bug (§4-A1) this milestone closes.
  *
  * `natsUrl` mirrors main.ts's `config.eventBus.backend === "nats"` branch: when set (only the
  * NATS-backend half of events/event-bus.integration.test.ts's shared suite passes this), the
@@ -215,6 +224,7 @@ export async function listenTestServer(
 
   let boss: PgBoss | undefined;
   let relay: OutboxRelayHandle | undefined;
+  let sseBridge: SseBridgeHandle | undefined;
   let relayPool: pg.Pool | undefined;
   let natsFanout: NatsFanoutHandle | undefined;
   let pluginHost: SubprocessPluginHost | undefined;
@@ -281,6 +291,11 @@ export async function listenTestServer(
       eventBusBackend: opts.natsUrl ? "nats" : "postgres",
       natsFanout
     });
+    // M26.1: the relay above no longer publishes into `sseHub` itself — this bridge is what does,
+    // mirroring main.ts's unconditional-per-role wiring (see this function's doc comment). Reuses
+    // `relayPool` rather than opening a third pool: both are equally valid `scp_app`-authenticated
+    // pools and a `pg.Pool` supports concurrent checkouts from more than one consumer.
+    sseBridge = startSseBridge(relayPool, server.deps.config.runtimeDatabaseUrl);
 
     if (opts.withReconcileLoop) {
       // The host is started in the block above, which `withReconcileLoop` also triggers. Asserted
@@ -323,6 +338,7 @@ export async function listenTestServer(
       // child is still alive removes nothing durably — that is exactly how the leak this replaced
       // survived a green run.
       if (pluginStateDir) await rm(pluginStateDir, { recursive: true, force: true });
+      await sseBridge?.stop();
       await relay?.stop();
       await boss?.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
       await relayPool?.end();
@@ -553,6 +569,38 @@ export async function waitUntil<T>(
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+}
+
+/**
+ * THE BARRIER EVERY SSE-BRIDGE TEST NEEDS, before it publishes anything it expects to be delivered.
+ *
+ * `startSseBridge` returns synchronously but establishes its `LISTEN scp_sse_events` connection
+ * ASYNCHRONOUSLY, and NOTIFY has NO REPLAY (ADR-0025 D4). An event relayed into that window is lost
+ * permanently — so a test that expected it times out, and (worse) a test making a NEGATIVE assertion
+ * passes VACUOUSLY, because nothing could ever have reached the bridge to be rejected.
+ *
+ * Idle machines win that race and hide it. CI lost it: `sse-bridge.integration.test.ts`'s wiring test
+ * failed with `waitUntil timed out after 15000ms` on a runner where a neighbouring suite's 10k-write
+ * audit test was taking 141s. Postgres retains an idle backend's last query text, so the LISTEN's own
+ * presence in `pg_stat_activity` IS the positive signal that it is established — no fixed sleep, and
+ * exactly as slow as the connection actually is (integration-sleep-census.test.ts's property).
+ *
+ * `admin` must be a client on the ADMIN url (`testDatabaseUrl()`), scoped to this worker's database.
+ */
+export async function waitForSseBridgeListening(admin: pg.Client): Promise<void> {
+  await waitUntil(
+    async () => {
+      const res = await admin.query(
+        `SELECT 1 FROM pg_stat_activity
+         WHERE datname = current_database() AND query ILIKE 'LISTEN scp_sse_events%'`
+      );
+      return res.rows.length > 0 ? true : undefined;
+    },
+    {
+      describe: "the SSE bridge's LISTEN connection to be established (NOTIFY has no replay)",
+      timeoutMs: 15_000
+    }
+  );
 }
 
 /**

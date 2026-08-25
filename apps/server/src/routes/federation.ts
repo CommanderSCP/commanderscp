@@ -14,6 +14,11 @@ import {
   ImportResultSchema,
   InitFederationRequestSchema,
   CreateOutpostConfigRequestSchema,
+  FederationResyncRequestSchema,
+  FederationResyncResponseSchema,
+  FederationResyncResultSchema,
+  JournalDivergenceProblemSchema,
+  JOURNAL_DIVERGENCE_PROBLEM_TYPE,
   OutpostConfigReconcileResultSchema,
   OutpostConfigSchema,
   OutpostIfClaimantQuerySchema,
@@ -38,7 +43,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
-import { badRequest, conflict, unauthorized, tooManyRequests } from "../errors.js";
+import { badRequest, conflict, ProblemError, unauthorized, tooManyRequests } from "../errors.js";
 import { initFederationSelf, ensureFederationSelf } from "../federation/self-repo.js";
 import {
   pairPeer,
@@ -68,8 +73,18 @@ import { getSecretValue } from "../secrets/secrets-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import { getFederationStatus } from "../federation/status-repo.js";
-import { exportSyncBundle } from "../federation/export-repo.js";
+import {
+  exportSyncBundle,
+  recordExportDivergence,
+  JournalDivergenceDetected
+} from "../federation/export-repo.js";
 import { importSyncBundle } from "../federation/import-repo.js";
+import {
+  authorizeResyncAndReExport,
+  applyResyncBundle,
+  signResyncRequest
+} from "../federation/resync-repo.js";
+import { dialResync, resolveFederationClientMtls } from "../federation/federation-outbound.js";
 import { exportPromotionBundle, importPromotionBundle } from "../federation/promotion-repo.js";
 import { createOverlay, getMergedOverlayView } from "../federation/overlay-repo.js";
 import { handFillObject } from "../federation/handfill-repo.js";
@@ -257,7 +272,10 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         201: FederationPeerSchema,
         400: ProblemSchema,
         401: ProblemSchema,
-        403: ProblemSchema
+        403: ProblemSchema,
+        // Rail 5 (§7.2): re-pairing to `full` refuses to re-anchor an anchorless cursor while a
+        // journal_divergence stands for this peer — resync, don't re-anchor.
+        409: JournalDivergenceProblemSchema
       }
     },
     config: {
@@ -359,7 +377,10 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         400: ProblemSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        // Rail 5 (§7.2): declaring scope `full` refuses to re-anchor an anchorless cursor while a
+        // journal_divergence stands for this peer — resync, don't re-anchor.
+        409: JournalDivergenceProblemSchema
       }
     },
     config: {
@@ -486,7 +507,10 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         400: ProblemSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        // Divergence rails 1/2 (§7.2): a pull whose cursor is beyond this domain's own journal tail,
+        // or whose anchor hash mismatches, is refused as a detected fork/rollback.
+        409: JournalDivergenceProblemSchema
       }
     },
     config: {
@@ -504,28 +528,55 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
       // here rather than a Fastify `onRequest` hook.
       await enforceFederationMtls(deps, request);
       const auth = await requireAuth(deps, request);
-      const { bundle, deliverPeer } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
-          orgId: auth.orgId,
-          subjectObjectId: auth.subjectObjectId,
-          permission: "federation:write",
-          scopeObjectId: auth.orgId
-        });
-        // M13.2a (§13.2): `deliver` resolves the peer row FIRST — a delivery with no resolvable
-        // drop target refuses fail-closed BEFORE the export does any work (provider-agnostic —
-        // filesystem dir OR allowlisted s3 endpoint).
-        const deliverPeer = request.body.deliver
-          ? await getPeerByIdOrName(tx, auth.orgId, request.body.peer)
-          : null;
-        if (deliverPeer) assertOutboundDeliverable(resolveDeliveryTarget(deliverPeer));
-        const bundle = await exportSyncBundle(
-          tx,
-          auth.orgId,
-          request.body.peer,
-          request.body.sinceSequence
-        );
-        return { bundle, deliverPeer };
-      });
+      let bundle: Awaited<ReturnType<typeof exportSyncBundle>>;
+      let deliverPeer: Awaited<ReturnType<typeof getPeerByIdOrName>> | null;
+      try {
+        ({ bundle, deliverPeer } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+          await authorize(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            permission: "federation:write",
+            scopeObjectId: auth.orgId
+          });
+          // M13.2a (§13.2): `deliver` resolves the peer row FIRST — a delivery with no resolvable
+          // drop target refuses fail-closed BEFORE the export does any work (provider-agnostic —
+          // filesystem dir OR allowlisted s3 endpoint).
+          const deliverPeer = request.body.deliver
+            ? await getPeerByIdOrName(tx, auth.orgId, request.body.peer)
+            : null;
+          if (deliverPeer) assertOutboundDeliverable(resolveDeliveryTarget(deliverPeer));
+          const bundle = await exportSyncBundle(
+            tx,
+            auth.orgId,
+            request.body.peer,
+            request.body.sinceSequence,
+            request.body.lastAppliedRowHash
+          );
+          return { bundle, deliverPeer };
+        }));
+      } catch (err) {
+        // Divergence rails 1/2 (§7.2): the detection threw and rolled back this read tx, so persist
+        // the standing Decision in a SEPARATE committed tx (persist-on-change — one row per stuck
+        // peer, not one per 60s retry), then answer the `journal_divergence` 409 carrying that
+        // decision_id and the exporter's own tail for a one-round-trip operator view.
+        if (err instanceof JournalDivergenceDetected) {
+          const decisionId = await recordExportDivergence(deps.db, {
+            orgId: auth.orgId,
+            peerIdOrName: request.body.peer,
+            divergence: err
+          });
+          throw new ProblemError(409, "Conflict", {
+            type: JOURNAL_DIVERGENCE_PROBLEM_TYPE,
+            detail: err.message,
+            decisionId,
+            extensions: {
+              exporterTailSequence: err.exporterTailSequence,
+              exporterTailRowHash: err.exporterTailRowHash
+            }
+          });
+        }
+        throw err;
+      }
       if (request.body.deliver && deliverPeer) {
         // The server-side leg of the CDS walk (§13.2 write seam): the SAME bytes the CLI's --out
         // writes (`JSON.stringify(bundle, null, 2)`), dropped through the peer's DeliveryTarget —
@@ -543,6 +594,120 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         );
       }
       reply.status(200).send(bundle);
+    }
+  });
+
+  // §7.2.6 RESYNC — the EXPORTER's consent endpoint: a peer sends a SIGNED request authorizing a
+  // resync of ITS OWN replica; this verifies the signature against that peer's paired key, records a
+  // consent Decision, bumps the exporter's generation, and returns a signed full re-export from
+  // genesis. mTLS + federation:write gate it exactly like `/exports`.
+  typed.route({
+    method: "POST",
+    url: "/api/v1/federation/resync",
+    schema: {
+      body: FederationResyncRequestSchema,
+      response: {
+        200: FederationResyncResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "federationResyncAuthorize",
+        summary:
+          "Authorize + re-export for a peer's resync (the exporter half of the §7.2.6 handshake)",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      await enforceFederationMtls(deps, request);
+      const auth = await requireAuth(deps, request);
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
+        return authorizeResyncAndReExport(tx, auth.orgId, request.body);
+      });
+      reply.status(200).send(result);
+    }
+  });
+
+  // §7.2.6 RESYNC — the IMPORTER's operation: `scp federation resync --peer <exporter>`. Signs a
+  // request, dials the exporter's `/resync`, verifies + FORCE-imports the re-export, resets its
+  // cursor, bumps its generation, and clears the standing divergence (lifting rail 5). This is the
+  // sanctioned recovery the no-anchor error message points at instead of a re-anchor.
+  typed.route({
+    method: "POST",
+    url: "/api/v1/federation/peers/:id/resync",
+    schema: {
+      params: z.object({ id: z.string().min(1) }),
+      response: {
+        200: FederationResyncResultSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "federationResyncPeer",
+        summary:
+          "Resync this domain's replica with a peer after a journal divergence (importer half)",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const { exporterBaseUrl, signed } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: auth.orgId
+        });
+        const peer = await getPeerByIdOrName(tx, auth.orgId, request.params.id);
+        if (!peer.baseUrl) {
+          // Resync is a LIVE two-way handshake — an air-gap peer with no dial URL cannot be resynced
+          // over HTTP (it recovers via the file/bundle path instead). Refuse rather than crash.
+          throw badRequest(
+            `peer '${peer.name}' has no dial URL — resync requires a live connection to the exporter`
+          );
+        }
+        const signed = await signResyncRequest(tx, auth.orgId, peer.id);
+        return { exporterBaseUrl: peer.baseUrl, signed };
+      });
+
+      // Dial the exporter's /resync OUTSIDE the tx (the same bearer/mTLS the sync loop dials with).
+      let mtls;
+      try {
+        mtls = resolveFederationClientMtls(process.env);
+      } catch {
+        mtls = undefined; // half-configured cert material → let the dial's requireMtls gate decide
+      }
+      const response = await dialResync({
+        baseUrl: exporterBaseUrl,
+        body: { peer: signed.importerDomainId, requestSignature: signed.requestSignature },
+        bearer: process.env.SCP_FEDERATION_SYNC_BEARER || undefined,
+        mtls
+      });
+
+      const result = await withTenantTx(deps.db, auth.orgId, (tx) =>
+        applyResyncBundle(
+          tx,
+          auth.orgId,
+          request.params.id,
+          response.bundle,
+          response.exporterGeneration
+        )
+      );
+      reply.status(200).send(result);
     }
   });
 

@@ -1,6 +1,7 @@
 import {
   asContainmentDomainId,
   asTrustDomainId,
+  JOURNAL_DIVERGENCE_PROBLEM_TYPE,
   type ContainmentDomainId,
   type SyncBundle,
   type SyncJournalEntry,
@@ -18,8 +19,14 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { conflict, ProblemError } from "../errors.js";
 import { ensureFederationSelf } from "./self-repo.js";
 import { getPeerByIdOrName, listPeerKeyWindows, verificationKeyForSequence } from "./peers-repo.js";
-import { getCursor, advanceCursor, type SyncCursor } from "./cursors-repo.js";
+import {
+  getCursor,
+  advanceCursor,
+  verifyAndAdvanceTailAttestation,
+  type SyncCursor
+} from "./cursors-repo.js";
 import { recordBundleTransfer, type BundleTransport } from "./bundle-transfers-repo.js";
+import { recordAuditWitness } from "./audit-witness-repo.js";
 import { entryMatchesScope } from "./scope-filter.js";
 import {
   clearUnattachedChangeStatus,
@@ -197,7 +204,9 @@ async function applyEntry(
   tx: TenantTx,
   orgId: string,
   entry: SyncJournalEntry,
-  exporterDomainId: TrustDomainId
+  exporterDomainId: TrustDomainId,
+  /** §7.2.6 — threaded onto every `federationImport` context so a resync overwrites stale revisions. */
+  forceOverwrite = false
 ): Promise<void> {
   const payload = entry.payload;
   const requestId = `federation-import:${entry.id}`;
@@ -265,7 +274,7 @@ async function applyEntry(
         domainId: await resolveImportDomainId(tx, orgId, payload.domainId),
         properties: (payload.properties as Record<string, unknown>) ?? {},
         labels: (payload.labels as Record<string, unknown>) ?? {},
-        federationImport: { originDomainId, revision, provenance: null }
+        federationImport: { originDomainId, revision, provenance: null, forceOverwrite }
       });
       // THE EVIDENCE RESOLVES ITSELF. If this domain had previously recorded unattached
       // `change_status` for this very object (the status entry arrived before its object — routine
@@ -322,7 +331,11 @@ async function applyEntry(
           actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
           requestId,
           idOrUrn,
-          federationImport: { originDomainId: exporterDomainId, revision: entry.sequence }
+          federationImport: {
+            originDomainId: exporterDomainId,
+            revision: entry.sequence,
+            forceOverwrite
+          }
         });
       } catch (err) {
         if (isNotFound(err)) return; // never replicated locally — nothing to tombstone
@@ -366,7 +379,7 @@ async function applyEntry(
           toId: String(payload.toId),
           properties: (payload.properties as Record<string, unknown>) ?? {},
           labels: (payload.labels as Record<string, unknown>) ?? {},
-          federationImport: { originDomainId, revision }
+          federationImport: { originDomainId, revision, forceOverwrite }
         });
       } catch (err) {
         // Endpoints not yet replicated locally. Skipped rather than failing the whole bundle over
@@ -398,7 +411,11 @@ async function applyEntry(
           actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
           requestId,
           id: String(payload.id),
-          federationImport: { originDomainId: exporterDomainId, revision: entry.sequence }
+          federationImport: {
+            originDomainId: exporterDomainId,
+            revision: entry.sequence,
+            forceOverwrite
+          }
         });
       } catch (err) {
         if (isNotFound(err)) return;
@@ -470,7 +487,11 @@ async function applyEntry(
           requestId,
           idOrUrn: existing.id,
           properties: { ...existing.properties, federationState: state },
-          federationImport: { originDomainId: exporterDomainId, revision: existing.revision + 1 }
+          federationImport: {
+            originDomainId: exporterDomainId,
+            revision: existing.revision + 1,
+            forceOverwrite
+          }
         });
       } catch {
         // (b) only — case (a) never reaches here (it returns from inside the branch above). Still
@@ -481,8 +502,29 @@ async function applyEntry(
       }
       return;
     }
+    case "audit_segment": {
+      // §7.2.7 — no longer discarded: persist a passive WITNESS of the exporter's audit-chain head
+      // (peer, origin, sequence, auditEventId, contentHash). INFORMATIONAL: never gates the import,
+      // never affects applied/skipped counts — the post-failover runbook reads it to detect a
+      // truncation `scp audit verify` structurally cannot see. The payload is the audit-repo's own
+      // `{auditEventId, ...}` shape; `entry.rowHash` is the hash-chain content hash for the entry.
+      const auditEventId =
+        payload && typeof payload === "object" && "auditEventId" in payload
+          ? String((payload as { auditEventId: unknown }).auditEventId)
+          : null;
+      if (auditEventId) {
+        await recordAuditWitness(tx, {
+          orgId,
+          peerDomainId: exporterDomainId,
+          originDomainId: asTrustDomainId(entry.originDomainId),
+          sequence: entry.sequence,
+          auditEventId,
+          contentHash: entry.rowHash
+        });
+      }
+      return;
+    }
     case "approval_evidence":
-    case "audit_segment":
     case "key_rotation":
       // Informational-only in a plain sync bundle (v1): already hash-chained/signed on the
       // exporting side (audit-completeness lives there); not separately persisted here. Promotion
@@ -785,7 +827,13 @@ export async function importSyncBundle(
    *  is a file/pushed/inbox handoff, and the scheduler is the one caller that passes `"live-pull"`
    *  explicitly. Recorded on the transfer row so the §13 "as of" label can attribute the transport
    *  from fact rather than from a timestamp comparison that cannot work (drizzle/0041). */
-  transport: BundleTransport = "bundle"
+  transport: BundleTransport = "bundle",
+  /** §7.2.6 RESYNC ONLY. When true, every applied entry carries `forceOverwrite` into its
+   *  `FederationImportContext`, so a stale-revision entry OVERWRITES instead of no-op'ing — how a
+   *  lost-tail restore re-converges. The single-writer authority check is still enforced. Set only by
+   *  the mutually-authorized resync path, which resets the cursor to genesis first (so rail 4's
+   *  high-water mark, cleared by that reset, does not refuse the resync bundle as a regression). */
+  forceOverwrite = false
 ): Promise<ImportSyncBundleResult> {
   const self = await ensureFederationSelf(tx, orgId);
   if (bundle.header.peerDomainId !== self.domainId) {
@@ -849,6 +897,34 @@ export async function importSyncBundle(
   const cursor = await getCursor(tx, orgId, peer.id, exporterDomainId);
   const toApply = bundle.entries.filter((entry) => entry.sequence > cursor.sequence);
 
+  // DIVERGENCE RAIL 4 (§7.2) — the exporter's SIGNED tail attestation, verified and advanced against
+  // this side's monotonic high-water mark BEFORE any entry is applied, so a rolled-back/forked tail
+  // fails the whole import closed. Runs for BOTH full and sparse receivers and even for an
+  // entry-empty bundle — which is exactly what makes it catch a lost/rolled-back tail for a
+  // narrow-scope peer that rails 1–3 are structurally blind to. The attestation rides OUTSIDE the
+  // bundle checksum (a sibling field), so its signature is verified independently here against the
+  // same peer key; an un-upgraded exporter sends none and the rail no-ops (never blocks). `isReplay`
+  // (this bundle's tail is at or below what we already applied) keeps an idempotent re-import of an
+  // older bundle from being mistaken for a live regression.
+  if (bundle.tailAttestation) {
+    const att = bundle.tailAttestation;
+    const attestationChecksum = computeBundleChecksum({
+      exporterDomainId: bundle.header.exporterDomainId,
+      peerDomainId: bundle.header.peerDomainId,
+      tailSequence: att.tailSequence,
+      tailRowHash: att.tailRowHash
+    });
+    if (!verifyBundleSignature(attestationChecksum, att.signature, bundleKey)) {
+      throw new ProblemError(409, "Conflict", {
+        type: JOURNAL_DIVERGENCE_PROBLEM_TYPE,
+        detail: "tail attestation signature verification failed (rejected, fail-closed)"
+      });
+    }
+    await verifyAndAdvanceTailAttestation(tx, orgId, peer.id, exporterDomainId, att, {
+      isReplay: bundle.header.throughSequence <= cursor.sequence
+    });
+  }
+
   // Single-writer authority: every entry about to be applied must be authored by the verified
   // signer — reject the WHOLE bundle if any claims a foreign origin (CRITICAL review fix; see
   // assertEntryAuthoredBySigner). Runs before verification/apply so forged-authorship is caught
@@ -879,7 +955,7 @@ export async function importSyncBundle(
     // export). All toApply entries in a scoped bundle are in-scope; this only ever skips if an
     // exporter shipped something out-of-scope.
     if (entryMatchesScope(entry, peer.syncScope)) {
-      await applyEntry(tx, orgId, entry, exporterDomainId);
+      await applyEntry(tx, orgId, entry, exporterDomainId, forceOverwrite);
       applied += 1;
     } else if (entry.entryKind === "change_status") {
       // THE SECOND DROP CHOKEPOINT. This receiver's OWN scope discarded a change-status entry that

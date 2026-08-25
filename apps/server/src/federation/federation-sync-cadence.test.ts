@@ -352,8 +352,14 @@ describe("M14.4 loop handler — force vs. reschedule are two flags", () => {
     expect(sends).toHaveLength(1);
     expect(sends[0]!.queue).toBe(FEDERATION_SYNC_QUEUE);
     expect(sends[0]!.data).toEqual({ reason: "startup" });
-    // Immediate: no singleton / startAfter, exactly like the poke wake.
-    expect(sends[0]!.options).toBeUndefined();
+    // IMMEDIATE AND UNKEYED — no startAfter, no singletonKey, no singletonSeconds, so pg-boss has no
+    // singleton slot to drop it into. This assertion was previously the exact inverse (it required
+    // `{singletonKey: "startup", singletonSeconds: 10}`), which pinned a real defect: `job_i4`
+    // counts COMPLETED jobs, so a worker restarting inside its own 10s window had this send silently
+    // dropped and came back with no pull-on-(re)connect at all. The shared "tick" key remains off
+    // limits for the separate reason the original note gave — a pending interval tick would absorb
+    // it — and unkeyed is immune to both.
+    expect(sends[0]!.options ?? {}).toEqual({});
     await handle.stop();
   });
 

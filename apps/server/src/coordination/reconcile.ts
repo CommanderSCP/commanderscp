@@ -2799,6 +2799,8 @@ export async function startReconcileLoop(
       }
     );
   });
+  // UNKEYED, deliberately — this kick must ALWAYS insert or the loop can come back dead. See
+  // events/pgboss.ts's LOOP_STARTUP_SEND_IS_UNKEYED for the two ways a key killed it.
   await boss.send(RECONCILE_QUEUE, {});
   return {
     async stop() {

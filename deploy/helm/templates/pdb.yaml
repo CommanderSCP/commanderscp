@@ -1,0 +1,49 @@
+{{/*
+PodDisruptionBudgets for api/worker (M26.3, C1 — multi-region-instance-resilience.md §7.4). C1's
+gap, verbatim: "no PodDisruptionBudget template exists" — both replicas of a role could be
+VOLUNTARILY evicted together (a node drain, a cluster-autoscaler consolidation, a cordon-and-drain
+upgrade) with nothing telling Kubernetes to leave at least one standing. This is about VOLUNTARY
+disruptions only (the Eviction API) — it says nothing about, and cannot prevent, an involuntary
+one (a node/cluster dying outright, which is what the wider multi-region-instance-resilience
+proposal exists to survive; a PDB is the narrower "don't let routine cluster operations make it
+worse" complement to that).
+
+Each is independently toggled and sized via `api.pdb`/`worker.pdb` — see values.yaml's comments on
+both for the "why `enabled: true` is the sane default at this chart's own default replica count"
+reasoning and when to turn one off.
+*/}}
+{{- if .Values.api.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-api
+  labels:
+    {{- include "commanderscp.apiSelectorLabels" . | nindent 4 }}
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.api.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "commanderscp.apiSelectorLabels" . | nindent 6 }}
+---
+{{- end }}
+{{- if and .Values.worker.pdb.enabled (or (gt (int .Values.worker.replicaCount) 0) .Values.worker.hpa.enabled) }}
+{{- /* Guarded on there being any worker pod to protect at all — `worker.replicaCount: 0` is the
+       documented single-pod (`api.role=all`) topology values.yaml itself describes, and a PDB
+       over zero pods is harmless but pointless noise (permanently "unhealthy" in `kubectl get
+       pdb`, nothing it actually blocks). HPA-managed replica counts still pass this check since
+       `worker.hpa.enabled` implies pods will exist even though `replicas` itself goes unset on
+       the Deployment (see deployment-worker.yaml). */}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-worker
+  labels:
+    {{- include "commanderscp.workerSelectorLabels" . | nindent 4 }}
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.worker.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "commanderscp.workerSelectorLabels" . | nindent 6 }}
+{{- end }}

@@ -658,6 +658,9 @@ export async function startAutoRelayLoop(
       { startAfter: interval, singletonKey: "tick", singletonSeconds: interval }
     );
   });
+  // Startup kick: UNKEYED, so it always inserts (LOOP_STARTUP_SEND_IS_UNKEYED, events/pgboss.ts).
+  // Never give this send a singletonKey+window — not the chain's "tick" and not a private key
+  // either: job_i4 counts COMPLETED jobs, so any window lets a previous boot swallow it silently.
   await boss.send(AUTO_RELAY_QUEUE, {});
   return {
     async stop() {

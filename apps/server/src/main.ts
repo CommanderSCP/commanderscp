@@ -7,22 +7,26 @@ import { ensureBootstrapAdmin } from "./auth/local-auth.js";
 import { startPgBoss } from "./events/pgboss.js";
 import { domainEventRouters } from "./events/domain-event-registry.js";
 import { startOutboxRelay } from "./events/outbox-relay.js";
+import { startSseBridge } from "./events/sse-bridge.js";
 import { connectNatsFanout, type NatsFanoutHandle } from "./events/nats-fanout.js";
 import { loginAndSeedDemoData } from "./seed.js";
 import { startPluginHostForRole } from "./plugin-host/host-bootstrap.js";
 import { runsBackgroundWork, startBackgroundLoops } from "./background-work.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
+import { runSecretsDecryptCanary } from "./secrets/decrypt-canary.js";
+import { assertProductionSecretsOrThrow } from "./boot-checks.js";
+import { recordMemberClusterHeartbeat } from "./db/member-heartbeat-repo.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import type { AppDeps } from "./types.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  if (config.secretsMasterKeyWasGenerated) {
-    // M7 (secrets/crypto.ts) — see config.ts's doc comment: an ephemeral key lets the compose
-    // eval stack and a first `pnpm dev` boot with zero required env vars, but any org secret
-    // (GitHub App key, ArgoCD token, managed-iac infra creds) encrypted under it becomes
-    // undecryptable the moment this process restarts. Loud, not fatal.
+  // D6 (§7.3) — a PRODUCTION instance must not boot on ephemeral generated secrets (fail-closed,
+  // before anything else). Extracted to boot-checks.ts so it is directly testable.
+  assertProductionSecretsOrThrow(config);
+  if (config.deploymentMode !== "production" && config.secretsMasterKeyWasGenerated) {
+    // M7 (secrets/crypto.ts) — evaluation mode keeps the loud-not-fatal warning.
     console.warn(
       "[scpd] SCP_SECRETS_MASTER_KEY is unset — generated an EPHEMERAL secrets master key for this process only. " +
         "Any plugin secret stored now will be unreadable after the next restart. Set SCP_SECRETS_MASTER_KEY " +
@@ -59,6 +63,13 @@ async function main(): Promise<void> {
   // `withTenantTx` cannot become a cross-tenant leak (DESIGN.md §4.2 "two independent failures").
   const pool = createPool(config.runtimeDatabaseUrl);
   const db = createDb(pool);
+
+  // §7.4 — heartbeat this member cluster's (cluster id, app version) so the migrations Job's
+  // version-skew gate can see whether an old-version member cluster is still live. Never fatal: a
+  // heartbeat failure must not block boot (the gate fails OPEN if the table isn't there yet anyway).
+  await recordMemberClusterHeartbeat(db, config.clusterId, config.appVersion).catch((err) =>
+    console.warn("[scpd] failed to record member-cluster heartbeat (non-fatal)", err)
+  );
 
   // M7: `deps` is captured here (not just `{db, config}` inline) so `deps.pluginHost` can be set
   // AFTER the plugin host is constructed below — route handlers registered against this same
@@ -143,6 +154,36 @@ async function main(): Promise<void> {
       await pluginHost.stop();
     });
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // THE SSE BRIDGE — started for EVERY role, same reasoning as the plugin host just above.
+  //
+  // `app.listen()` below is unconditional: every role actually binds an HTTP listener and serves
+  // `GET /events/stream` (routes/events.ts is registered in `buildApp` with no role gate), even a
+  // pure `worker` process the chart's Service never routes real traffic to. Since the outbox relay
+  // no longer calls `sseHub.publish` directly (events/outbox-relay.ts's doc comment — proposal
+  // multi-region-instance-resilience.md §7.1 item 1, closing §4-A1), this bridge is the ONLY thing
+  // that can ever feed a process's local `sseHub`, in every topology — including a single
+  // `role=all` dev/compose process, where the relay and this route already share one process and
+  // it would be tempting to think the direct call was still fine there. It was not: keeping it
+  // would have meant an event reaching `sseHub` twice on `role=all` (once direct, once via this
+  // bridge's own NOTIFY loopback) and zero times on a split api/worker install. One delivery path,
+  // used everywhere, is what makes dev/compose actually exercise the production path.
+  //
+  // Cheap either way: one more reconnecting LISTEN connection (events/listen-client.ts) per
+  // process, idle until an outbox row commits.
+  // ---------------------------------------------------------------------------------------------
+  // A SMALL pool dedicated to the SSE bridge, NOT the request-serving `pool` (review finding
+  // SEC-1): the bridge's outbox fetches are driven by a Postgres NOTIFY channel any DB login can
+  // write to, so their load must be isolated from request handlers (and, on a worker, from the
+  // relay). `max: 2` caps the blast radius of a NOTIFY flood to this pool alone — starving it only
+  // degrades SSE freshness (recovered by resync), never coordination or request serving.
+  const sseBridgePool = createPool(config.runtimeDatabaseUrl, { max: 2 });
+  const sseBridge = startSseBridge(sseBridgePool, config.runtimeDatabaseUrl);
+  app.addHook("onClose", async () => {
+    await sseBridge.stop();
+    await sseBridgePool.end();
+  });
 
   // Outbox relay + pg-boss worker skeleton (DESIGN.md §8) — only the roles that own background
   // work run them; `role=api` stays a pure request server for everything EXCEPT request-scoped
@@ -236,6 +277,18 @@ async function main(): Promise<void> {
   // enforcement then lives only at the deployment edge (`deploy/helm/templates/ingress.yaml`'s
   // `ingress.mtls` — nginx client-cert-verification annotations, see deploy/helm/README.md's
   // "Federation mTLS" section).
+  // D6 / B3 (§7.3) — PROVE the configured secrets master key decrypts this instance's vault BEFORE
+  // binding the listener, in production mode. A member cluster (or a restored instance) booting with
+  // the wrong key would otherwise serve happily and fail every executor call later, one at a time,
+  // with no single loud signal. A throw here fails the process closed. Evaluation mode skips it (an
+  // eval stack may legitimately run on an ephemeral key with an empty or throwaway vault).
+  if (config.deploymentMode === "production") {
+    const canary = await runSecretsDecryptCanary(db, config.secretsMasterKey);
+    app.log.info(
+      `secrets decrypt canary passed (${canary.decryptsAttempted} decrypt(s) across ${canary.orgsWithSecrets} org(s) with a vault)`
+    );
+  }
+
   await app.listen({ port: config.port, host: config.host });
   const scheme = config.federationServerMtls ? "https" : "http";
   app.log.info(`scp (${config.role}) listening on ${scheme}://${config.host}:${config.port}`);

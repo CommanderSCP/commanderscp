@@ -52,7 +52,10 @@ spec:
         # practice against a real external Postgres that hiccups during a rolling upgrade. Same
         # image, a plain TCP-connect retry loop (no extra tooling — `pg_isready` isn't in this
         # image, DESIGN §16's "the scpd image carries no [extra toolchain]" principle extends
-        # here too); the outer Job's `activeDeadlineSeconds` is the overall backstop.
+        # here too); the outer Job's `activeDeadlineSeconds` is the overall backstop. Single-host
+        # `new URL()` parse, deliberately (D5, M26.3) — same DSN contract as
+        # `commanderscp.waitForPostgresInitContainer`'s doc comment; see values.yaml's
+        # `postgres.host`.
         - name: wait-for-postgres
           image: {{ include "commanderscp.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -98,6 +101,13 @@ spec:
           env:
             {{- include "commanderscp.commonEnv" . | nindent 12 }}
             {{- include "commanderscp.adminDbEnv" . | nindent 12 }}
+            {{- /* §7.4 version-skew gate: set migrations.phase=contract on the deploy that ships the
+                   CONTRACT half of an expand/contract migration — the Job then refuses while an
+                   old-version member cluster is still live. Unset/expand never gates. */}}
+            {{- if .Values.migrations.phase }}
+            - name: SCP_MIGRATION_PHASE
+              value: {{ .Values.migrations.phase | quote }}
+            {{- end }}
             # CRITICAL: without these explicit refs, config.ts's loadConfig() falls back to
             # DERIVING scp_app/scp_pgboss's connection strings from the ADMIN one (same password,
             # username swapped) — migrate-bin.ts's provisionRuntimeRole/provisionPgBossRole would
@@ -117,6 +127,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "commanderscp.postgresSecretName" . }}
                   key: {{ .Values.postgres.existingSecretKeys.pgboss }}
+            {{- if .Values.migrations.allowPasswordReset }}
+            # B9 guard opt-out (proposal §4-B9, §7.4) — see values.yaml's doc comment. Restores the
+            # pre-guard unconditional ALTER ROLE ... PASSWORD for a deliberate rotation; unset
+            # (the default) leaves the guard refusing on any live-password mismatch.
+            - name: SCP_PROVISION_ALLOW_PASSWORD_RESET
+              value: "1"
+            {{- end }}
           resources:
             {{- toYaml .Values.migrations.resources | nindent 12 }}
           volumeMounts:

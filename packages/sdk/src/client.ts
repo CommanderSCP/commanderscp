@@ -31,6 +31,7 @@ import {
   graphSubgraph as graphSubgraphRequest,
   graphIntegrity as graphIntegrityRequest,
   doctorReport as doctorReportRequest,
+  doctorInstanceReport as doctorInstanceReportRequest,
   pushObjectHealth as pushObjectHealthRequest,
   getObjectHealth as getObjectHealthRequest,
   graphHealth as graphHealthRequest,
@@ -249,6 +250,7 @@ import {
   // M16.2 phase A — E4's narrow peer read/PATCH and E1's `outpost` config object.
   getFederationPeer as getFederationPeerRequest,
   updateFederationPeer as updateFederationPeerRequest,
+  federationResyncPeer as federationResyncPeerRequest,
   createOutpostConfig as createOutpostConfigRequest,
   listOutpostConfigs as listOutpostConfigsRequest,
   getOutpostConfig as getOutpostConfigRequest,
@@ -381,6 +383,7 @@ import type {
   FederationSelfInfo,
   InitFederationRequest,
   FederationPeer,
+  FederationResyncResult,
   InstanceScanFloor,
   InstanceFreeze,
   PutInstanceFreezeRequest,
@@ -1325,6 +1328,18 @@ export class ScpClient {
      */
     report: async (): Promise<DoctorReport> => {
       const result = await doctorReportRequest({ client: this.client });
+      return unwrap(result);
+    },
+    /**
+     * §7.3 — INSTANCE-WIDE operational self-checks (DSN reachability, recovery state, delivery
+     * config, mTLS/XO readiness). Gated by the deployment OPERATOR token (not a tenant bearer),
+     * passed as the `x-scp-operator-token` header. `scp doctor instance`.
+     */
+    instanceReport: async (operatorToken: string): Promise<DoctorReport> => {
+      const result = await doctorInstanceReportRequest({
+        client: this.client,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
       return unwrap(result);
     }
   };
@@ -2407,6 +2422,13 @@ export class ScpClient {
         path: { id },
         body: req
       });
+      return unwrap(result);
+    },
+    /** §7.2.6 — resync this domain's replica with a peer after a journal divergence: the sanctioned
+     *  recovery (rail 5 refuses a bare re-anchor). Force-overwrites to the exporter's restored reality
+     *  and clears the standing divergence. `scp federation resync --peer <exporter>`. */
+    resyncPeer: async (id: string): Promise<FederationResyncResult> => {
+      const result = await federationResyncPeerRequest({ client: this.client, path: { id } });
       return unwrap(result);
     },
     /** M16.2 phase A (E1) — declare an already-paired outpost's commander-origin config object. It

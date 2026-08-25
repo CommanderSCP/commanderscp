@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { deriveRuntimeDatabaseUrl } from "./db/provision.js";
 import { generateMasterKeyBase64, parseMasterKeyBase64 } from "./secrets/crypto.js";
 import { isCrlExpired, parseCrlNextUpdate } from "./federation/crl-parse.js";
@@ -103,6 +104,24 @@ export interface ServerConfig {
    * serve behaviour changes — this field ADDS a distinction rather than moving the default.
    */
   federationRoleDeclared: boolean;
+  /**
+   * D6 (multi-region-instance-resilience.md §7.3, §11) — the DEPLOYMENT MODE. `production` (the
+   * default; Helm ships it) makes boot FAIL-CLOSED on the DR footguns that only bite after a
+   * restart/failover: an ephemeral generated `SCP_SECRETS_MASTER_KEY`/`SCP_COOKIE_SECRET` (which
+   * silently orphans every stored secret and every session on restart), and a secrets vault that
+   * cannot be decrypted with the configured key (the B3 canary). `evaluation` (compose-eval and
+   * `pnpm dev` set it explicitly) keeps today's zero-required-env boot with only a loud warning. An
+   * invalid value fails loud at boot, exactly like `SCP_FEDERATION_ROLE`.
+   */
+  deploymentMode: "production" | "evaluation";
+  /** True when `SCP_COOKIE_SECRET` was UNSET and an ephemeral one was generated — the cookie half of
+   *  the D6 production refusal (a restart invalidates every session signed under the old ephemeral). */
+  cookieSecretWasGenerated: boolean;
+  /** §7.4 — this member cluster's identity (`SCP_CLUSTER_ID`, else the host/pod name) and the running
+   *  release (`SCP_APP_VERSION`, else "dev"). Heartbeated on boot; the migrations Job's version-skew
+   *  gate refuses a contract-phase deploy while a live member cluster reports a different version. */
+  clusterId: string;
+  appVersion: string;
   /**
    * M17.5 (ADR-0016) — the INSTANCE OPERATOR's shared secret (`SCP_OPERATOR_TOKEN`). Authenticates
    * the one write surface that is deliberately NOT a tenant capability: authoring the
@@ -305,6 +324,21 @@ function loadFederationRole(env: NodeJS.ProcessEnv): ServerConfig["federationRol
   return role;
 }
 
+/**
+ * D6 (§7.3). `production` is the DEFAULT (unset → production) so a Helm install with no extra env is
+ * fail-closed on the DR footguns; the compose-eval stack and `pnpm dev` set `SCP_DEPLOYMENT_MODE=
+ * evaluation` explicitly to keep their zero-required-env boot. An explicit invalid value fails loud
+ * at boot rather than silently picking a posture the operator didn't ask for (mirrors
+ * `loadFederationRole`).
+ */
+function loadDeploymentMode(env: NodeJS.ProcessEnv): ServerConfig["deploymentMode"] {
+  const mode = env.SCP_DEPLOYMENT_MODE ?? "production";
+  if (mode !== "production" && mode !== "evaluation") {
+    throw new Error(`SCP_DEPLOYMENT_MODE must be "production" or "evaluation" (got "${mode}")`);
+  }
+  return mode;
+}
+
 function loadSecretsMasterKey(env: NodeJS.ProcessEnv): { key: Buffer; wasGenerated: boolean } {
   const raw = env.SCP_SECRETS_MASTER_KEY;
   if (raw) {
@@ -426,6 +460,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     federationRole: loadFederationRole(env),
     // Whether the operator SET it, kept beside the value it resolved to — see the field's doc.
     federationRoleDeclared: (env.SCP_FEDERATION_ROLE ?? "").trim() !== "",
+    deploymentMode: loadDeploymentMode(env),
+    cookieSecretWasGenerated: (env.SCP_COOKIE_SECRET ?? "").trim() === "",
+    clusterId: (env.SCP_CLUSTER_ID ?? "").trim() || hostname(),
+    appVersion: (env.SCP_APP_VERSION ?? "").trim() || "dev",
     bootstrapOrgName: env.SCP_BOOTSTRAP_ORG ?? "default",
     bootstrapAdminUsername: env.SCP_BOOTSTRAP_ADMIN_USERNAME ?? "admin",
     cookieSecret: env.SCP_COOKIE_SECRET ?? randomSecret(),

@@ -1,7 +1,6 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import pg from "pg";
 import {
   BackfillDependencyInventoryRequestSchema,
   BackfillDependencyInventoryResponseSchema,
@@ -21,6 +20,7 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
+import { createPool } from "../db/client.js";
 import { objects } from "../db/schema.js";
 import { authorize } from "../authz/resolve.js";
 import { operatorTokenMatches } from "./operator-db.js";
@@ -284,7 +284,7 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
       requireOperator(deps, request);
 
       const body = request.body;
-      const pool = new pg.Pool({ connectionString: deps.config.databaseUrl, max: 1 });
+      const pool = createPool(deps.config.databaseUrl, { max: 1 });
       try {
         // Upsert on the pinned singleton key — the CHECK in 0062 makes `'default'` the only row this
         // table can ever hold, so there is no "which unlock" to get wrong.

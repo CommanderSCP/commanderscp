@@ -1,4 +1,6 @@
 {{- include "commanderscp.assertRunnerPrerequisites" . }}
+{{- include "commanderscp.assertMultiClusterPrerequisites" . }}
+{{- include "commanderscp.assertRetransVolumePrerequisites" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -53,6 +55,7 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- include "commanderscp.topologySpreadConstraints" (dict "constraints" .Values.api.topologySpreadConstraints "selectorLabels" (include "commanderscp.apiSelectorLabels" .)) | nindent 6 }}
       initContainers:
         {{- include "commanderscp.waitForPostgresInitContainer" (dict "root" . "dbEnvVar" "SCP_RUNTIME_DATABASE_URL") | nindent 8 }}
       containers:

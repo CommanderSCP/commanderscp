@@ -201,6 +201,13 @@ describe("startDependencyVersionPollLoop", () => {
     await handle.stop();
     expect(boss.createQueue).toHaveBeenCalledWith(DEPENDENCY_VERSION_POLL_QUEUE);
     expect(boss.work).toHaveBeenCalledTimes(1);
+    // §4-A4/M26.1, CORRECTED TWICE: the startup kick is sent UNKEYED, with no singleton options at
+    // all, because it must ALWAYS insert. Keying it to the chain's `"tick"` killed the loops (a
+    // completed job holds pg-boss's singleton slot); moving it to its own key + window then broke
+    // crash resumption (a worker restarting inside the window had its kick swallowed by its own
+    // previous boot). A4's replica-dedupe was an efficiency win and is deliberately given up —
+    // redundant sweeps are safe, a dead loop is not. See events/pgboss.ts's
+    // LOOP_STARTUP_SEND_IS_UNKEYED and the census in coordination/loop-startup-singleton.test.ts.
     expect(boss.send).toHaveBeenCalledWith(DEPENDENCY_VERSION_POLL_QUEUE, {});
   });
 });

@@ -3,6 +3,55 @@ import PgBoss from "pg-boss";
 export const DOMAIN_EVENTS_QUEUE = "domain-events";
 
 /**
+ * A SELF-RESCHEDULING LOOP'S STARTUP KICK IS SENT **UNKEYED**. It must ALWAYS insert.
+ *
+ * This is the second correction to §4-A4, and the reason is that pg-boss gives standard-policy
+ * queues exactly one singleton index and it is the wrong shape for a startup kick
+ * (pg-boss 10.4.2, `src/plans.js`):
+ *
+ *   job_i4 ON (name, singleton_on, COALESCE(singleton_key,'')) WHERE state <> 'cancelled'
+ *                                                                AND singleton_on IS NOT NULL
+ *
+ * Three consequences, all measured:
+ *   - it applies ONLY when `singletonSeconds` is supplied (`singleton_on IS NOT NULL`), so a
+ *     `singletonKey` alone constrains nothing on these queues — "keyed but no window" is just an
+ *     unkeyed send wearing a key;
+ *   - it counts COMPLETED jobs as still holding the slot, and `singleton_on` is a wall-clock BUCKET,
+ *     so ANY window can swallow a later send — the window size only changes the odds;
+ *   - a losing insert is `ON CONFLICT DO NOTHING RETURNING id`: it returns NULL **silently**.
+ *
+ * A self-rescheduling loop's only other tick source is the reschedule inside its own handler, so one
+ * swallowed kick means no job -> no handler -> no reschedule -> **the loop is dead forever**, with no
+ * error, no log, and no failing health check. A4 first shipped the kick sharing the chain's `"tick"`
+ * key, which killed the 60s loops after a single sweep on ~58 of every 60 boots. Moving it to its own
+ * key + a 10s window fixed that and then broke CRASH RESUMPTION instead: a worker that dies mid-tick
+ * (so the chain never rescheduled) and restarts inside the window had its kick swallowed by its OWN
+ * previous boot, and came back dead. Measured as `coordination.integration.test.ts`'s crash-resumption
+ * test timing out waiting for a change to reach `validating` after a worker restart.
+ *
+ * SO: no key, no window — the kick always inserts, and the loop always lives. What this gives up is
+ * A4's stated goal, N replicas booting together collapsing to ONE startup sweep; that was always an
+ * EFFICIENCY optimisation, and the redundant sweeps are safe (every sweep claims its rows with
+ * `FOR UPDATE SKIP LOCKED` / per-row advisory locks, which is what makes N competing workers correct
+ * in the first place). Trading a liveness guarantee for it was the wrong bargain in both directions.
+ * `dependencies/bump-freeze-redrive.ts` has always sent unkeyed; it is now the shape for all of them.
+ *
+ * THE SECOND OCCURRENCE OUTLIVED THE FIRST FIX BY A WHOLE COMMIT, in `federation/federation-sync.ts`,
+ * because two things that both looked like safeguards were not:
+ *   - an earlier version of THIS COMMENT recommended the private-key-plus-window shape, citing that
+ *     file as the exemplar to copy;
+ *   - `coordination/loop-startup-singleton.test.ts` matched the literal key `"tick"`, so a startup
+ *     kick keyed `"startup"` passed it. It now matches on `singletonSeconds` instead — the ingredient
+ *     that actually creates a slot — and carries a positive control, because until then the rule was
+ *     green purely by absence and could have been deleted without failing.
+ * Measured there: two sends ~3-6s apart (pg-boss's 2s `pollingInterval` dominates the gap) against a
+ * 10s bucket, i.e. a ~0.4-0.7 coin flip on EVERY machine. It presented as "only fails in CI", and the
+ * direction is the opposite of the intuition — a slower runner lengthens the gap and makes the
+ * collision LESS likely. "Flaky on CI, green locally" was never evidence about the runner.
+ */
+export const LOOP_STARTUP_SEND_IS_UNKEYED = true;
+
+/**
  * One relayed outbox row, as the outbox relay sends it onto {@link DOMAIN_EVENTS_QUEUE}
  * (`events/outbox-relay.ts`). Fields are typed as what the relay writes; `data` stays `unknown`
  * because every event type carries its own payload and a router must narrow its own.

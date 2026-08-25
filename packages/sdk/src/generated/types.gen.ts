@@ -19123,6 +19123,19 @@ export type PairPeerErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+        exporterTailSequence?: number;
+        exporterTailRowHash?: string;
+    };
 };
 
 export type PairPeerError = PairPeerErrors[keyof PairPeerErrors];
@@ -19339,6 +19352,19 @@ export type UpdateFederationPeerErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+        exporterTailSequence?: number;
+        exporterTailRowHash?: string;
+    };
 };
 
 export type UpdateFederationPeerError = UpdateFederationPeerErrors[keyof UpdateFederationPeerErrors];
@@ -19520,6 +19546,7 @@ export type ExportSyncBundleData = {
         peer: string;
         sinceSequence?: number;
         deliver?: boolean;
+        lastAppliedRowHash?: string;
     };
     path?: never;
     query?: never;
@@ -19571,6 +19598,19 @@ export type ExportSyncBundleErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+        exporterTailSequence?: number;
+        exporterTailRowHash?: string;
+    };
 };
 
 export type ExportSyncBundleError = ExportSyncBundleErrors[keyof ExportSyncBundleErrors];
@@ -19608,10 +19648,193 @@ export type ExportSyncBundleResponses = {
         }>;
         checksum: string;
         bundleSignature: string;
+        tailAttestation?: {
+            tailSequence: number;
+            tailRowHash: string;
+            signature: string;
+        };
     };
 };
 
 export type ExportSyncBundleResponse = ExportSyncBundleResponses[keyof ExportSyncBundleResponses];
+
+export type FederationResyncAuthorizeData = {
+    body: {
+        peer: string;
+        requestSignature: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/federation/resync';
+};
+
+export type FederationResyncAuthorizeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type FederationResyncAuthorizeError = FederationResyncAuthorizeErrors[keyof FederationResyncAuthorizeErrors];
+
+export type FederationResyncAuthorizeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        bundle: {
+            header: {
+                formatVersion: 1;
+                kind: 'sync';
+                exporterDomainId: string;
+                peerDomainId: string;
+                sinceSequence: number;
+                throughSequence: number;
+                exportedAt: string;
+            };
+            entries: Array<{
+                id: string;
+                orgId: string;
+                originDomainId: string;
+                sequence: number;
+                entryKind: 'object_upsert' | 'object_tombstone' | 'relationship_upsert' | 'relationship_tombstone' | 'change_status' | 'policy_upsert' | 'approval_evidence' | 'audit_segment' | 'key_rotation';
+                payload: {
+                    [key: string]: unknown;
+                };
+                contentHash: string;
+                baseRevision: number | null;
+                conflict: string | null;
+                prevHash: string;
+                rowHash: string;
+                signature: string;
+                createdAt: string;
+            }>;
+            checksum: string;
+            bundleSignature: string;
+            tailAttestation?: {
+                tailSequence: number;
+                tailRowHash: string;
+                signature: string;
+            };
+        };
+        exporterGeneration: number;
+    };
+};
+
+export type FederationResyncAuthorizeResponse = FederationResyncAuthorizeResponses[keyof FederationResyncAuthorizeResponses];
+
+export type FederationResyncPeerData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/federation/peers/{id}/resync';
+};
+
+export type FederationResyncPeerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type FederationResyncPeerError = FederationResyncPeerErrors[keyof FederationResyncPeerErrors];
+
+export type FederationResyncPeerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        peerDomainId: string;
+        previousCursorSequence: number;
+        appliedEntries: number;
+        generation: number;
+        decisionId: string;
+    };
+};
+
+export type FederationResyncPeerResponse = FederationResyncPeerResponses[keyof FederationResyncPeerResponses];
 
 export type ExportPromotionBundleData = {
     body: {
@@ -19776,6 +19999,11 @@ export type ImportBundleData = {
         }>;
         checksum: string;
         bundleSignature: string;
+        tailAttestation?: {
+            tailSequence: number;
+            tailRowHash: string;
+            signature: string;
+        };
     } | {
         header: {
             formatVersion: 1;
@@ -22314,3 +22542,53 @@ export type DoctorReportResponses = {
 };
 
 export type DoctorReportResponse = DoctorReportResponses[keyof DoctorReportResponses];
+
+export type DoctorInstanceReportData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/doctor/instance';
+};
+
+export type DoctorInstanceReportErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DoctorInstanceReportError = DoctorInstanceReportErrors[keyof DoctorInstanceReportErrors];
+
+export type DoctorInstanceReportResponses = {
+    /**
+     * Success
+     */
+    200: {
+        checks: Array<{
+            id: string;
+            status: 'ok' | 'warn';
+            summary: string;
+            detail: string;
+        }>;
+    };
+};
+
+export type DoctorInstanceReportResponse = DoctorInstanceReportResponses[keyof DoctorInstanceReportResponses];

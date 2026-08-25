@@ -2,6 +2,13 @@
 # One scpd image, two Deployments (api HPA-scalable, worker queue-depth-scalable), a pre-upgrade
 # migrations Job, hardened pod defaults, NetworkPolicies. PostgreSQL is external by default; a
 # plain in-cluster postgres:16 is available for evaluation only (NO Bitnami subchart).
+#
+# MULTI-CLUSTER (M26.3 — docs/proposals/multi-region-instance-resilience.md §5/§7.4): this same
+# chart is what an operator installs ONCE PER MEMBER CLUSTER when one SCP instance spans more than
+# one Kubernetes cluster — there is no separate "multi-cluster chart". See `multiCluster` below and
+# deploy/helm/MULTI-CLUSTER.md for the full recipe (identical secrets, the single migrations-owning
+# release, mTLS SAN coverage, and the NetworkPolicy egress the cross-cluster Postgres endpoint
+# needs).
 
 image:
   repository: ghcr.io/commanderscp/scpd
@@ -26,6 +33,37 @@ fullnameOverride: ""
 # (see `commanderscp.federationRole` in templates/_helpers.tpl) — the SAME fail-fast validation
 # `deploy/helm-bundled` already applies to its own value.
 federationRole: commander
+
+# D6 (§7.3): deployment posture. "production" (the default) is FAIL-CLOSED — it refuses to boot on
+# ephemeral generated secrets and runs the secrets decrypt canary before serving. Set "evaluation"
+# ONLY for a throwaway eval Helm install that boots with generated secrets.
+deploymentMode: production
+
+# §7.4 version-skew heartbeat: this member cluster's identity. Defaults to the Helm release name.
+# In a multi-cluster install give EACH member cluster's release a distinct clusterId (or distinct
+# release names) so their heartbeats don't collide on one row.
+clusterId: ""
+
+# -------------------------------------------------------------------------------------------
+# MULTI-CLUSTER SELF-CONSISTENCY GUARD (M26.3 — multi-region-instance-resilience.md §5-I2, §7.4,
+# B9, B3-B5). Set `enabled: true` on EVERY release that is one member cluster of a multi-cluster
+# instance (i.e. more than one Helm release, in more than one Kubernetes cluster, sharing the SAME
+# `postgres.host`).
+#
+# WHAT THIS DOES AND DOES NOT CHECK. A single `helm template`/`install` invocation only ever sees
+# ITS OWN release's values — it cannot compare this cluster's `postgres.existingSecret` content
+# against another cluster's, so it cannot enforce "identical everywhere" (that is an operator
+# discipline documented in MULTI-CLUSTER.md, not a render-time fact). What it CAN check, and does:
+# that this release does not rely on the chart's OWN generated postgres/appSecrets Secrets, which
+# are single-cluster-only by construction (a second cluster's install would generate its OWN
+# random scp_app/scp_pgboss passwords and — worse — its migrations Job would try to reset the
+# first cluster's live credentials on the shared database, B9; and a promoted/second cluster
+# without the identical SCP_SECRETS_MASTER_KEY holds every plugin/managed-IaC credential
+# permanently undecryptable, B3). Leaving this `false` (default) changes nothing about a
+# single-cluster install.
+# -------------------------------------------------------------------------------------------
+multiCluster:
+  enabled: false
 
 serviceAccount:
   create: true
@@ -70,6 +108,32 @@ api:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # PodDisruptionBudget (M26.3, C1 — multi-region-instance-resilience.md §7.4). ENABLED by default
+  # because the chart's own default topology is already api×2 — `minAvailable: 1` is a genuinely
+  # sane posture at that replica count (a voluntary node drain/eviction can take at most one api
+  # pod at a time) and is a no-op cost-wise if you never drain anything. Set `enabled: false`
+  # explicitly if you run `api.replicaCount: 1` (a PDB requiring 1-of-1 available blocks EVERY
+  # voluntary eviction of that one pod, including a routine node drain, until it is forcibly
+  # ignored with `kubectl drain --disable-eviction-based-on-pdb`/`--force`).
+  pdb:
+    enabled: true
+    minAvailable: 1
+  # topologySpreadConstraints (M26.3, C1). DEFAULT IS NON-EMPTY BUT SAFE FOR SINGLE-NODE DEV: both
+  # entries use `whenUnsatisfiable: ScheduleAnyway` (a SOFT preference), never `DoNotSchedule` — on
+  # a single-node kind/k3s cluster the scheduler simply cannot do better and every pod still
+  # schedules; on a real multi-node/multi-zone cluster the SAME default now actually spreads
+  # replicas instead of letting both land on one node (the exact C1 gap: "both replicas of a role
+  # can land on one node"). `labelSelector` is injected by the chart from this Deployment's own
+  # selector labels — do not set it here. Set to `[]` to disable, or change `whenUnsatisfiable` to
+  # `DoNotSchedule` for a hard multi-zone guarantee once you know your cluster has enough zones/
+  # nodes to satisfy it.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
 
 # -------------------------------------------------------------------------------------------
 # worker — SCP_ROLE=worker: outbox relay, coordination reconcile loop, watchdog, subprocess
@@ -96,6 +160,21 @@ worker:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # See api.pdb's comment above — identical rationale, sane at the default worker×2 topology.
+  # Set `enabled: false` if you run `worker.replicaCount: 1` (or `0`, the single-pod
+  # `api.role=all` topology `values.yaml` itself documents — a PDB over zero pods is harmless but
+  # pointless; disabling it there is just tidiness, not a correctness requirement).
+  pdb:
+    enabled: true
+    minAvailable: 1
+  # See api.topologySpreadConstraints's comment above — identical rationale and defaults.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
 
 # -------------------------------------------------------------------------------------------
 # Migrations Job — pre-install,pre-upgrade Helm hook (DESIGN §16: "forward-only, expand/contract
@@ -104,9 +183,30 @@ worker:
 # only the least-privileged scp_app/scp_pgboss credentials (config.ts's doc comment).
 # -------------------------------------------------------------------------------------------
 migrations:
+  # MULTI-CLUSTER RULE (M26.3 — multi-region-instance-resilience.md §7.4, C5): exactly ONE member
+  # cluster's release runs this Job. Set `enabled: false` on every OTHER member cluster's release
+  # against the same database — two Jobs racing `migrate-bin.js` against one Postgres is undefined
+  # (Drizzle's own tracking table is not a cross-release mutex), and this Job is also the one place
+  # that provisions/resets the shared `scp_app`/`scp_pgboss` role passwords (B9's guard, below,
+  # narrows but does not replace this rule). See deploy/helm/MULTI-CLUSTER.md.
   enabled: true
+  # §7.4 VERSION-SKEW GATE. Leave empty (or "expand") for the normal deploy — including the deploy
+  # that ships a migration's EXPAND half, which runs WHILE old-version pods are still up. Set
+  # "contract" ONLY on the deploy that ships a migration's CONTRACT half: the Job then REFUSES to run
+  # while any live member cluster still reports an older version (N and N+1 only). Roll every member
+  # cluster to the new version first, then deploy with phase: contract.
+  phase: ""
   backoffLimit: 3
   activeDeadlineSeconds: 600
+  # B9 guard (multi-region-instance-resilience.md §4-B9, §7.4): the migrations Job's role
+  # provisioning now REFUSES to reset scp_app/scp_pgboss's password when the configured one
+  # doesn't match what's already live — the multi-cluster contract is that
+  # `postgres.existingSecret` is identical across every member cluster, so a mismatch means a
+  # cluster is misconfigured, not that a rotation was intended. Set this `true` only for a
+  # deliberate, operator-initiated password rotation (a single install/upgrade run); leave it
+  # `false` otherwise so a misconfigured second member cluster fails loud instead of clobbering
+  # the first cluster's live credentials.
+  allowPasswordReset: false
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: 500m, memory: 256Mi }
@@ -119,6 +219,21 @@ migrations:
 # `existingSecret` unset makes the chart GENERATE one at install time with random passwords for
 # the app/pgboss roles (persisted across upgrades via Helm's `lookup`) — the getting-started
 # path, still perfectly usable against a real external Postgres via `postgres.host`.
+#
+# THE DSN CONTRACT (owner decision D5, multi-region-instance-resilience.md §7.4/§11): `host` is
+# ONE stable, operator-provided endpoint — a DNS name/VIP/GSLB entry the operator's Postgres HA
+# layer keeps pointed at whatever is CURRENTLY the primary (failover is the operator's job, not
+# this chart's; charter principle 1/4). That single endpoint IS the contract: the role-URL
+# derivations (`provision.ts`) and the `wait-for-postgres` init container (below) parse it with a
+# plain single-host `new URL()` and this chart makes NO attempt at multi-host DSN parsing —
+# deliberately out of scope, not an oversight (D5, settled). A libpq multi-host DSN either throws
+# at boot or silently yields a bogus single host depending on its exact shape; if multi-host
+# support is ever taken up it is client-side host iteration with read-write probing, or a
+# fronting proxy, as a scoped project of its own — not a change to `host` here.
+#
+# MULTI-CLUSTER: every member cluster's release sets the SAME `host` (and the SAME
+# `existingSecret`, below — see `multiCluster.enabled` above and MULTI-CLUSTER.md). There is
+# exactly one Postgres for one instance, regardless of how many member clusters run its compute.
 # -------------------------------------------------------------------------------------------
 postgres:
   host: ""
@@ -126,6 +241,12 @@ postgres:
   database: scp
   # Admin/bootstrap username — its password is generated (or supplied) alongside app/pgboss.
   adminUser: scp
+  # MULTI-CLUSTER REQUIRED (multi-region-instance-resilience.md §7.4, B9): set this to the SAME
+  # Secret name/content on EVERY member cluster's release. Leaving it unset makes the chart
+  # GENERATE a Secret with random scp_app/scp_pgboss passwords — fine for one cluster, actively
+  # dangerous for two: a second cluster's install would mint its OWN random passwords and its
+  # migrations Job would try to reset the shared database's live roles to them (B9's clobber).
+  # `multiCluster.enabled: true` above refuses to render THIS release without a value here.
   existingSecret: ""
   existingSecretKeys:
     admin: DATABASE_URL
@@ -155,6 +276,12 @@ objectStorage:
     # out-of-band). When set, this chart does NOT create the storage PVC — the named claim must
     # already exist. Leave empty (default) for today's behavior: chart creates and owns it.
     existingClaim: ""
+  # C3 (M26.3, owner decision 2026-08-24): multi-cluster object storage does NOT get a bespoke S3
+  # BACKEND — it is served by the ALREADY-BUILT S3 delivery path (SCP_DELIVERY_S3_ENDPOINTS +
+  # `federation.relay.s3` above / `delivery-s3.ts`). For a multi-member install, either point the
+  # relay/blob drops at S3 delivery targets (allowlist the endpoints there) OR use a replicated RWX
+  # volume for the object-storage PVC. These `s3` values configure the S3 credentials/endpoint for
+  # that delivery path; there is no separate object-storage service to run. See MULTI-CLUSTER.md.
   s3:
     bucket: ""
     region: ""
@@ -164,6 +291,15 @@ objectStorage:
 # -------------------------------------------------------------------------------------------
 # Application secrets — cookie signing key + the secrets-table master key (secrets/crypto.ts).
 # Same existingSecret-or-generate pattern as postgres above.
+#
+# MULTI-CLUSTER REQUIRED (multi-region-instance-resilience.md §7.4, B3/B4): set this to the SAME
+# Secret name/content on EVERY member cluster's release, for the same reason as
+# `postgres.existingSecret` above. `SCP_SECRETS_MASTER_KEY` is the KEK for every secrets-vault
+# row (plugin/managed-IaC credentials) — those ROWS replicate with Postgres, but a per-cluster
+# chart-generated KEK does not, so a standby cluster promoted with a DIFFERENT key holds every one
+# of them permanently undecryptable, discovered only at first use (B3). `SCP_COOKIE_SECRET`
+# mismatched across clusters force-logs-out every user on a failover (B4). `multiCluster.enabled:
+# true` above refuses to render THIS release without a value here.
 # -------------------------------------------------------------------------------------------
 appSecrets:
   existingSecret: ""
@@ -506,6 +642,17 @@ bundledExecutor:
 # Federation mTLS transport identity (DESIGN §13, M8 hardening) — host-level, operator-owned
 # client certificate the federation-https subprocess presents to the commander. Air-gap file
 # transport is unaffected either way.
+#
+# MULTI-CLUSTER (multi-region-instance-resilience.md §5-I3, §6, B5): mTLS material (CA/cert/key/
+# CRL) is a per-cluster k8s Secret, mounted files — it does NOT ride Postgres replication like the
+# cert↔peer MAPPING does. A member cluster without the replicated Secret either serves no
+# federation TLS at all or presents the wrong identity. Replicate whichever of `federation.mtls`/
+# `serverMtls`/`ingress.mtls` you use to every member cluster, and — this is the part that is easy
+# to get half right — the SERVER certificate (`serverMtls`/`ingress.mtls`) must carry EVERY dial
+# name a peer might use as a SAN: the stable VIP/GSLB name AND each entry in that peer's ordered
+# fallback dial-URL list (§5-I3), including the label the standby/XO member cluster answers under.
+# `scp federation doctor`/`scp doctor` check SAN coverage against the configured dial list; this
+# chart cannot (it never sees the peer's dial-URL rows).
 # -------------------------------------------------------------------------------------------
 federation:
   mtls:
@@ -585,14 +732,14 @@ federation:
   #                       operator command. Set this ONLY on the retrans that can reach the SOURCE
   #                       registry (the LOW side); a high-side node has nothing to build.
   #
-  # ONLY the env plumbing is here. The relay's DIRECTORIES (SCP_RELAY_OUT_DIR / IN_DIR /
-  # BLOB_OUT_DIR and the SCP_DELIVERY_ROOTS that must bound them) are NOT chart-settable yet:
-  # a CDS drop directory is polled by a THIRD-PARTY intake watcher, so it needs a volume shape
-  # (RWX PVC / existingClaim / hostPath / CSI) this chart has no vocabulary for and that the
-  # `readOnlyRootFilesystem: true` pod default forbids improvising. Until that lands, a
-  # Helm-deployed retrans can be switched on but not given anywhere to drop — see
-  # docs/runbooks/retrans-relay.md. Enabling these without those directories is harmless: both
-  # loops resolve no target and defer with a named problem, consuming no attempt.
+  # **CORRECTED M26.3 (C4)**: this section used to say the relay's DIRECTORIES had no chart
+  # vocabulary at all. `volumes` below now gives SCP_RELAY_OUT_DIR/IN_DIR/BLOB_OUT_DIR (and the
+  # SCP_DELIVERY_ROOTS that must bound any PER-PEER override of them) somewhere to actually mount
+  # — see that block's own doc comment for the S3-first recommendation and the RWX-volume
+  # alternative, and docs/runbooks/retrans-relay.md for the wider operational picture. The one gap
+  # this does NOT close: a genuine third-party-intake-watcher CDS drop (a device/process outside
+  # this pod polling the same directory) still needs its own out-of-band arrangement with whatever
+  # volume you point `volumes.type` at — this chart mounts a volume, it does not run a watcher.
   # -----------------------------------------------------------------------------------------
   relay:
     inbox:
@@ -612,6 +759,64 @@ federation:
       # SCP_RETRANS_AUTO_RELAY_LEASE_SECONDS — how long a claiming worker owns a change (server
       # default 3600, clamped [60,86400]). Should exceed the slowest realistic multi-GB pull.
       leaseSeconds: 3600
+    # ---------------------------------------------------------------------------------------
+    # RETRANS BYTE-CHANNEL VOLUME VOCABULARY (M26.3, C4 — multi-region-instance-resilience.md
+    # §6/§7.4/§9.4). Mounted on whichever pod(s) actually run the worker role
+    # (`commanderscp.podRunsWorkerRole` — the `worker` Deployment always; the `api` Deployment
+    # only at `api.role=all`), matching exactly where `inbox`/`autoRelay` above can run
+    # (`background-work.ts`'s `runsBackgroundWork`).
+    #
+    # S3-FIRST GUIDANCE (RECOMMENDED — the ONLY realistic posture once a retrans spans more than
+    # one member cluster, §5/§6): the federation delivery path's S3-compatible targets already
+    # exist (`delivery-s3.ts`) and are replica- AND cluster-safe by construction — bytes land in
+    # an object store every replica/every member cluster reaches identically, so there is no
+    # "which pod has the file" question at all. A self-hosted MinIO in the enclave keeps this
+    # air-gap-legal (principle 4/5: this is a self-hostable object store, never a required cloud
+    # dependency). Set `s3.endpoints` below and leave `volumes.type: none` — no filesystem volume
+    # is needed in that posture.
+    #
+    # THE RWX-VOLUME ALTERNATIVE (`volumes.type: pvc`) — for a retrans that stays on filesystem
+    # drop dirs: the directories MUST be backed by ONE volume shared by every replica. This covers
+    # multiple replicas WITHIN one cluster; it does NOT cover multiple MEMBER CLUSTERS (an RWX
+    # storage class essentially never spans clusters) — S3 above is the only realistic answer once
+    # retrans spans more than one member cluster. `emptyDir` is pod-local: fine for a
+    # single-replica dev/eval retrans, and the chart REFUSES to render it together with more than
+    # one worker-role-capable replica (`commanderscp.assertRetransVolumePrerequisites` in
+    # `_helpers.tpl`) — a build claimed by one pod's tick and read by another would otherwise
+    # silently miss it, and a crash after commit strands a `submitted` artifact with no retry
+    # (§9.4). NO `hostPath` OPTION, DELIBERATELY: this chart's own `helm-verify` gate (M23.6
+    # clause 6, "the socket invariant") asserts NO `hostPath:` volume exists ANYWHERE under
+    # `deploy/helm/` — the same container-escape-risk reasoning that already refuses to mount a
+    # Docker socket. Use `pvc` (in-cluster, multi-replica) or S3 (cross-cluster) instead.
+    volumes:
+      # none (default — byte-identical to pre-M26.3 behavior: SCP_RELAY_* stay unset, inbox/
+      # autoRelay resolve no target and defer harmlessly, exactly as `docs/runbooks/
+      # retrans-relay.md` already describes) | emptyDir (single-replica dev/eval ONLY) | pvc (the
+      # supported multi-replica shape).
+      type: none
+      # Mounted as ONE volume at /var/lib/scp/relay; these three stay as subdirectories under it
+      # (the server itself creates them with `mkdir -p` on first write — no init container
+      # needed). Override only if you also change the mount path expectations below accordingly.
+      outDir: /var/lib/scp/relay/out
+      inDir: /var/lib/scp/relay/in
+      blobOutDir: /var/lib/scp/relay/blob-out
+      pvc:
+        # Required when `type: pvc` — an EXISTING ReadWriteMany PersistentVolumeClaim, shared by
+        # every replica that runs the worker role. This chart does not create it (RWX is a
+        # storage-class capability you provision — NFS/CephFS/EFS/Azure Files/…).
+        claimName: ""
+      # SCP_DELIVERY_ROOTS — required before any PER-PEER filesystem delivery directory (as
+      # opposed to the instance-wide fallback dirs above) will be honored (fail-closed default,
+      # ADR-0019 §4 symmetry with the artifact-channel allowlists). Absolute path(s). Leave empty
+      # to keep every peer on the instance-wide fallback dirs above (today's default behavior).
+      deliveryRoots: []
+    # S3-compatible delivery targets (`delivery-s3.ts`) — the RECOMMENDED posture, see above.
+    # SCP_DELIVERY_S3_ENDPOINTS allowlist: `endpoint` or `endpoint/bucket` entries. Fail-closed
+    # when unset (no S3 delivery target is honored, at pairing OR resolution). MUST be IDENTICAL
+    # on every member cluster's release coordinating the same retrans instance (§6) — same
+    # never-tenant-suppliable trust tier as `artifactChannel` above.
+    s3:
+      endpoints: []
 
 # -------------------------------------------------------------------------------------------
 # ARTIFACT BYTE-CHANNEL EGRESS ALLOWLISTS (ADR-0019 §4) — the operator half of the two-layer
@@ -722,6 +927,18 @@ networkPolicy:
   # typically a DNS name NetworkPolicy can't match directly — set this to your Postgres/NATS
   # host's own CIDR (e.g. a /32 for a single managed-Postgres endpoint reachable by public IP) to
   # scope precisely instead of relying on the private-range default.
+  #
+  # MULTI-CLUSTER / CROSS-CLUSTER POSTGRES (M26.3 — multi-region-instance-resilience.md §7.4):
+  # this is the SAME egress rule the multi-cluster contract needs — set it to whatever CIDR
+  # reaches `postgres.host` (the ONE shared, failover-stable endpoint every member cluster's
+  # release points at) from THIS cluster's network. It is one value on EVERY member cluster's
+  # release (the destination doesn't change just because more clusters dial it), and the RFC1918
+  # default already covers the common case of a peered/on-prem private endpoint reachable from
+  # every member cluster. Accepts either a single CIDR string (as above) OR a list of CIDR strings
+  # — e.g. `postgresCidr: ["10.20.0.0/16", "10.30.0.0/16"]` — for a topology where the reachable
+  # path differs (VPC peering ranges, a Transit Gateway/VPN's advertised routes, …); a genuinely
+  # public-IP-reachable managed-Postgres endpoint still wants a precise `/32`, not the RFC1918
+  # default.
   postgresCidr: ""
   natsCidr: ""
   # Egress to the KUBERNETES API SERVER, granted to the bundled-executor AUTO-WIRE HOOK PODS ONLY
