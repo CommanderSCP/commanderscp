@@ -9,7 +9,7 @@ All of M26.1–M26.4 is built, tested, and pushed on `multi-region-ha` (tip ~`aa
 - **M26.1 (§7.1)** — review-clean; F1 fixed; 9 review findings cleared (each mutation-proven), incl. a critical B9 clobber race (PV-1) and a leaked mutation marker.
 - **M26.2 (§7.2/§7.3)** — divergence rails 1/2/4/5 (rail 3 already covered), signed tail attestation, audit witness (§7.2.7), the **signed cross-domain resync handshake** (§7.2.6), D6 + decrypt canary + operator-gated instance doctor (§7.3). Migrations 0090–0093.
 - **M26.3 (§7.4)** — chart PDB/spread/multi-cluster values + version-skew heartbeat mechanism (migrations Job contract-phase gate) + C3 object-storage closeout (owner: served by the existing S3 delivery path, no new backend).
-- **M26.4 (§7.5/docs)** — lost-tail simulation gate, failover drill (which caught + fixed a real crash-on-failover: `createPool` had no pool `'error'` handler), two-member compose topology, boot-refusal + credential-clobber gates; runbook, GLOSSARY, DESIGN §17, **ADR-0042**.
+- **M26.4 (§7.5/docs)** — lost-tail simulation gate, failover drill (which caught + fixed a real crash-on-failover: `createPool` had no pool `'error'` handler), two-member compose topology, boot-refusal + credential-clobber gates; runbook, GLOSSARY, DESIGN §17, **ADR-0044**.
 
 ## ▶ Resume here (new session / new machine)
 
@@ -38,7 +38,7 @@ Keep this doc current as you work; delete it when M26 lands.
 - **M26.2 §7.2.7 audit witness** — commit `ebee565`, migration 0091, gate 2/2.
 - **M26.2 §7.3 D6 + decrypt canary** — commit `3604df8`. Deployment mode (production default), production refusal of ephemeral secrets, per-org RLS-correct decrypt canary before `app.listen`. Gate 3/3. Compose/dev set `evaluation`.
 - **M26.3 chart packaging** — commit `a4573ba`. PDB, topology spread, multi-cluster values contract, retrans volumes. `helm lint` clean.
-- **M26.4 docs** — commit `a4573ba`. `docs/runbooks/resilience.md`, GLOSSARY (member cluster / infra region / XO / instance), DESIGN §17, **ADR-0042**.
+- **M26.4 docs** — commit `a4573ba`. `docs/runbooks/resilience.md`, GLOSSARY (member cluster / infra region / XO / instance), DESIGN §17, **ADR-0044**.
 
 **NOT YET BUILT: NOTHING.** Every item once listed here is built, gated and pushed — §7.2.6 resync
 (signed cross-domain handshake), §7.3 instance doctor, §7.4 C3 object storage + version-skew
@@ -57,7 +57,7 @@ equal-`when` silent-skip trap never applied.
 - **Resync (§7.2.6) = SIGNED CROSS-DOMAIN HANDSHAKE.** Not two independent local commands — the owner chose a new *authenticated cross-domain request/response* so one side initiates and the other consents live. This is net-new wire surface (no existing live two-way federation handshake today — pairing is unilateral-declare + out-of-band). Design it carefully; it is the highest-risk M26.2 item and sequenced last.
 - **§7.3 instance doctor = NEW operator-token-gated route.** `GET /api/v1/doctor/instance` gated by the existing `requireOperator` operator-token (the pattern governance-move/scan-db use), separate from the per-org bearer-scoped `GET /doctor`. The instance checks (DSN reachability, `pg_is_in_recovery()`, mTLS SAN coverage, S3 endpoint consistency, XO readiness) are instance-wide, not per-tenant.
 - **Sequencing:** build the unblocked rails (1/2/4 + migration) now; hold resync/audit-witness/doctor until those land.
-- **ADR-0042** at M26.2 acceptance.
+- **ADR-0044** at M26.2 acceptance.
 
 ### M26.2 rail-4 grounding (verified against code 2026-08-24 — build on these, don't re-derive)
 
