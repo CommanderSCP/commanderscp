@@ -83,7 +83,7 @@ describe("§7.5 failover drill: outbox→bridge delivery survives a mid-flight b
     );
   }
 
-  it("delivers before the failover, survives pg_terminate of ALL backends, and delivers again exactly once", async () => {
+  it("delivers before the failover, survives pg_terminate of BOTH LISTEN backends, and delivers again exactly once", async () => {
     await adminClient.query(`UPDATE outbox SET processed_at = now() WHERE processed_at IS NULL`);
     const received: RelayedEvent[] = [];
     const onEvent = (e: RelayedEvent): void => {
@@ -120,11 +120,48 @@ describe("§7.5 failover drill: outbox→bridge delivery survives a mid-flight b
         "both LISTEN backends (relay wake + SSE bridge) must have been found and terminated — if this is 0 the drill proves nothing"
       ).toBeGreaterThanOrEqual(2);
 
+      // WAIT FOR THE BRIDGE TO BE LISTENING AGAIN BEFORE PUBLISHING. This is not tidiness, it is the
+      // difference between testing the product and testing a coin flip: **LISTEN/NOTIFY has no
+      // replay**. Both the relay and the bridge were just evicted, and they race to recover
+      // independently. If the relay wins, it emits `pg_notify('scp_sse_events', …)` for the probe
+      // below while the bridge is still disconnected — and that notification is gone permanently, so
+      // the probe is never delivered live no matter how long the test waits.
+      //
+      // That is CORRECT PRODUCT BEHAVIOUR, not a bug: an event published during a bridge outage is
+      // not recoverable from the live stream, which is exactly why reconnecting publishes a resync
+      // (ADR-0025) so clients refetch what they missed. Asserting live delivery of an event published
+      // mid-outage would assert a guarantee the design deliberately does not make.
+      //
+      // MEASURED: without this barrier the drill failed in CI with the relay having demonstrably
+      // processed the probe (`[worker] domain-events: scp.failover_drill.probe` in the log) while the
+      // bridge never saw it. The sibling reconnect test in `sse-bridge.integration.test.ts` passed in
+      // the same run precisely because it waits first.
+      //
+      // The wait EXCLUDES the pids just terminated, so a backend still winding down cannot satisfy it
+      // and let the publish through early.
+      const killedPids = killed.rows.map((r) => r.pid);
+      await waitUntil(
+        async () => {
+          const res = await adminClient.query<{ pid: number }>(
+            `SELECT pid FROM pg_stat_activity
+             WHERE datname = current_database() AND query ILIKE 'LISTEN scp_sse_events%'
+               AND pid <> ALL($1::int[])`,
+            [killedPids]
+          );
+          return res.rows.length > 0 ? true : undefined;
+        },
+        {
+          describe:
+            "the SSE bridge to re-establish a NEW LISTEN backend after the failover (NOTIFY has no replay, so publishing before this is a lost-event race)",
+          timeoutMs: 20_000
+        }
+      );
+
       // RECOVERY: a fresh event published after the blip must still flow end to end (the relay poll
       // fallback + the reconnecting LISTEN clients bring everything back), delivered EXACTLY ONCE.
       await publishProbe("post-failover");
       await waitUntil(async () => received.find((e) => e.subject === "post-failover"), {
-        describe: "the post-failover probe to be delivered after every backend was terminated",
+        describe: "the post-failover probe to be delivered after both LISTEN backends were terminated",
         timeoutMs: 20_000
       });
       // POSITIVE SIGNAL rather than a settle sleep (integration-sleep-census.test.ts's property): a
