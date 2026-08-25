@@ -75,7 +75,6 @@
  * promotion import — i.e. an import on the retrans automatically building + emitting the onward
  * tarball. That hop stays operator-gated (ADR-0009 D3).
  */
-import { LOOP_STARTUP_SINGLETON_KEY, LOOP_STARTUP_SINGLETON_SECONDS } from "../events/pgboss.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { and, eq, sql } from "drizzle-orm";
@@ -893,14 +892,7 @@ export async function startInboxLoop(
     );
   });
   // Startup kick: its OWN key/window, never the chain's `"tick"` — see LOOP_STARTUP_SINGLETON_KEY.
-  await boss.send(
-    INBOX_QUEUE,
-    {},
-    {
-      singletonKey: LOOP_STARTUP_SINGLETON_KEY,
-      singletonSeconds: LOOP_STARTUP_SINGLETON_SECONDS
-    }
-  );
+  await boss.send(INBOX_QUEUE, {});
   return {
     async stop() {
       stopped = true;

@@ -1,4 +1,3 @@
-import { LOOP_STARTUP_SINGLETON_KEY, LOOP_STARTUP_SINGLETON_SECONDS } from "../events/pgboss.js";
 import { and, eq, isNull, lt } from "drizzle-orm";
 import type PgBoss from "pg-boss";
 import type { ChangeStageDependencyTarget, ChangeState } from "@scp/schemas";
@@ -463,11 +462,7 @@ export async function startWatchdogLoop(
   // Startup kick: its OWN key/window, never the chain's `"tick"` (LOOP_STARTUP_SINGLETON_KEY). With
   // the shared key this loop's first reschedule landed in the same 60s bucket as its just-completed
   // startup job and was swallowed — the loop ran ONE sweep and died, on ~58 of every 60 boots.
-  await boss.send(
-    WATCHDOG_QUEUE,
-    {},
-    { singletonKey: LOOP_STARTUP_SINGLETON_KEY, singletonSeconds: LOOP_STARTUP_SINGLETON_SECONDS }
-  );
+  await boss.send(WATCHDOG_QUEUE, {});
   return {
     async stop() {
       stopped = true;

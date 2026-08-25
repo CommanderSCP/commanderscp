@@ -1,4 +1,3 @@
-import { LOOP_STARTUP_SINGLETON_KEY, LOOP_STARTUP_SINGLETON_SECONDS } from "../events/pgboss.js";
 import { v7 as uuidv7 } from "uuid";
 import { and, eq } from "drizzle-orm";
 import type PgBoss from "pg-boss";
@@ -422,14 +421,7 @@ export async function startObserveLoop(
   });
   // Startup kick uses its OWN key/window, never the chain's `"tick"` — see
   // LOOP_STARTUP_SINGLETON_KEY (a shared key lets a completed tick swallow this send, killing the loop).
-  await boss.send(
-    OBSERVE_QUEUE,
-    {},
-    {
-      singletonKey: LOOP_STARTUP_SINGLETON_KEY,
-      singletonSeconds: LOOP_STARTUP_SINGLETON_SECONDS
-    }
-  );
+  await boss.send(OBSERVE_QUEUE, {});
   return {
     async stop() {
       stopped = true;

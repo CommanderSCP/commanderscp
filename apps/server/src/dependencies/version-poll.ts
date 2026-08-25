@@ -1,4 +1,3 @@
-import { LOOP_STARTUP_SINGLETON_KEY, LOOP_STARTUP_SINGLETON_SECONDS } from "../events/pgboss.js";
 import type PgBoss from "pg-boss";
 import type { Db } from "../db/client.js";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -636,14 +635,7 @@ export async function startDependencyVersionPollLoop(
     );
   });
   // Startup kick: its OWN key/window, never the chain's `"tick"` — see LOOP_STARTUP_SINGLETON_KEY.
-  await boss.send(
-    DEPENDENCY_VERSION_POLL_QUEUE,
-    {},
-    {
-      singletonKey: LOOP_STARTUP_SINGLETON_KEY,
-      singletonSeconds: LOOP_STARTUP_SINGLETON_SECONDS
-    }
-  );
+  await boss.send(DEPENDENCY_VERSION_POLL_QUEUE, {});
   return {
     async stop() {
       stopped = true;

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import type PgBoss from "pg-boss";
-import { startPgBoss, LOOP_STARTUP_SINGLETON_KEY } from "../events/pgboss.js";
+import { startPgBoss } from "../events/pgboss.js";
 import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import {
@@ -11,26 +11,27 @@ import {
 import { RECONCILE_QUEUE, startReconcileLoop, type ReconcileLoopHandle } from "./reconcile.js";
 
 /**
- * §4-A4 / §7.1 item 4: `startReconcileLoop`'s INITIAL `boss.send` is singleton-keyed, so N replicas
- * restarting together produce ONE startup tick rather than an N-way first tick (before A4 it was a
- * plain unconstrained `boss.send(RECONCILE_QUEUE, {})`).
+ * §4-A4 / §7.1 item 4, AFTER TWO CORRECTIONS: `startReconcileLoop`'s startup kick is sent UNKEYED,
+ * and the property that matters is LIVENESS — it must always insert.
  *
- * IT USES ITS OWN KEY, NOT THE CHAIN'S `"tick"` — and that distinction is the whole point, learned
- * the hard way. A4 first shipped with the startup send reusing `"tick"` + the chain's
- * `singletonSeconds`; pg-boss counts COMPLETED jobs as still holding the singleton slot and buckets
- * `singleton_on` by wall clock, so the startup kick and the chain's own reschedule silently
- * swallowed each other (`ON CONFLICT DO NOTHING`, returning null, unchecked). A self-rescheduling
- * loop has no other tick source, so the loop simply DIED — measured at ~58 of every 60 boots for the
- * 60-second loops, in production as well as in CI. `events/pgboss.ts`'s
- * `LOOP_STARTUP_SINGLETON_KEY` carries the full account; `coordination/loop-startup-singleton.test.ts`
- * is the census that keeps every loop honest. This file pins the two behaviours at the real
- * `pgboss.job` table, mirroring `federation-sync-startup-singleton.integration.test.ts`.
+ * A4 shipped wanting the opposite (N replicas booting together collapse to ONE startup tick) and
+ * every implementation of that goal turned out to be fatal, because pg-boss's only applicable index
+ * (`job_i4`, see events/pgboss.ts) counts COMPLETED jobs as holding the singleton slot:
+ *   1. sharing the chain's `"tick"` key killed the 60s loops after a single sweep, on ~58 of every
+ *      60 boots, in production as well as CI;
+ *   2. its own key + a 10s window then killed CRASH RESUMPTION — a worker that died mid-tick (so the
+ *      chain never rescheduled) and restarted inside the window had its kick swallowed by its OWN
+ *      previous boot and came back dead.
+ * A dead loop has no error, no log and no failing health check, which is the same shape as the
+ * starvation bug that stopped production coordination for 13 days. Redundant startup sweeps, the
+ * thing A4 was avoiding, are merely wasteful — every sweep claims its rows with FOR UPDATE SKIP
+ * LOCKED. `coordination/loop-startup-singleton.test.ts` is the census that keeps every loop honest.
  *
  * This never fires against `reconcileOrgTick` itself (an empty isolated domain has no changes to
  * advance, so the stub `PluginHost` below is never called) — it proves the pg-boss WIRING, which is
  * exactly the layer the bug lived at.
  */
-describe("§4-A4 startReconcileLoop: startup gets its OWN singleton key", () => {
+describe("§4-A4 startReconcileLoop: the startup kick always inserts", () => {
   let domain: IsolatedDomain;
   let boss1: PgBoss;
   let boss2: PgBoss;
@@ -70,13 +71,14 @@ describe("§4-A4 startReconcileLoop: startup gets its OWN singleton key", () => 
     }
   } as unknown as PluginHost;
 
-  async function singletonKeyedJobCount(singletonKey: string): Promise<number> {
+  /** Startup kicks are UNKEYED, so they are the rows with no singleton_key at all. */
+  async function unkeyedStartupJobCount(): Promise<number> {
     const client = new pg.Client({ connectionString: domain.adminUrl });
     await client.connect();
     try {
       const res = await client.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM pgboss.job WHERE name = $1 AND singleton_key = $2`,
-        [RECONCILE_QUEUE, singletonKey]
+        `SELECT count(*)::text AS count FROM pgboss.job WHERE name = $1 AND singleton_key IS NULL`,
+        [RECONCILE_QUEUE]
       );
       return Number(res.rows[0]?.count ?? "0");
     } finally {
@@ -100,7 +102,7 @@ describe("§4-A4 startReconcileLoop: startup gets its OWN singleton key", () => 
     await domain?.close();
   });
 
-  it("two replicas starting together produce exactly ONE 'startup'-keyed job, not two", async () => {
+  it("two replicas starting together BOTH get a startup job — liveness beats dedupe", async () => {
     // Sequential, not `Promise.all` — the property under test is pg-boss's own singleton
     // constraint at INSERT, which fires regardless of ordering; sequential keeps the assertion
     // below race-free against pg-boss's own polling loop (default 2s), which has not had a chance
@@ -120,32 +122,31 @@ describe("§4-A4 startReconcileLoop: startup gets its OWN singleton key", () => 
       Buffer.alloc(32)
     );
 
-    // Without A4 this is 2 (one per replica's unconstrained startup send); with it, pg-boss's own
-    // singleton index collapses the second insert.
-    expect(await singletonKeyedJobCount(LOOP_STARTUP_SINGLETON_KEY)).toBe(1);
+    // A4 originally collapsed these to ONE job. That dedupe is deliberately GONE: every key/window
+    // that achieves it also lets a COMPLETED job swallow a later kick, and a swallowed kick is a
+    // permanently dead loop (see events/pgboss.ts). Redundant startup sweeps are safe — they claim
+    // rows with FOR UPDATE SKIP LOCKED, the same property that makes N competing workers correct.
+    expect(await unkeyedStartupJobCount()).toBe(2);
   });
 
-  it("the startup key is NOT the chain's 'tick' — a completed chain tick can never swallow the startup kick", async () => {
-    // THE REGRESSION THIS FILE EXISTS TO CATCH, and the one that shipped. Occupy the chain's `"tick"`
-    // slot exactly as a just-completed reschedule would, then start a loop: its startup kick must
-    // still be inserted. When the two shared a key this returned 0 and the loop was dead on arrival.
+  it("a COMPLETED 'tick' job can never swallow the startup kick (the regression that shipped twice)", async () => {
+    // THE PROPERTY THIS FILE EXISTS FOR. Occupy the chain's `"tick"` slot exactly as a just-completed
+    // reschedule would, then start a loop: its kick must STILL be inserted. When the kick shared the
+    // chain's key this was 0 and the loop was dead on arrival; when it had its own key + window, the
+    // same shape killed crash-resumption instead. Unkeyed, it always inserts.
     const client = new pg.Client({ connectionString: domain.adminUrl });
     await client.connect();
-    let before = 0;
     try {
       await client.query(`DELETE FROM pgboss.job WHERE name = $1`, [RECONCILE_QUEUE]);
-      // A COMPLETED job still holds pg-boss's singleton slot — that is precisely why sharing the key
-      // is fatal, so the fixture must be a completed one, not a pending one.
       await client.query(
         `INSERT INTO pgboss.job (id, name, data, state, singleton_key, singleton_on, completed_on)
          VALUES (gen_random_uuid(), $1, '{}'::jsonb, 'completed', 'tick', now(), now())`,
         [RECONCILE_QUEUE]
       );
-      before = await singletonKeyedJobCount(LOOP_STARTUP_SINGLETON_KEY);
     } finally {
       await client.end();
     }
-    expect(before).toBe(0);
+    expect(await unkeyedStartupJobCount()).toBe(0);
 
     const loop3 = await startReconcileLoop(
       boss1,
@@ -156,7 +157,7 @@ describe("§4-A4 startReconcileLoop: startup gets its OWN singleton key", () => 
     );
     try {
       expect(
-        await singletonKeyedJobCount(LOOP_STARTUP_SINGLETON_KEY),
+        await unkeyedStartupJobCount(),
         "a completed 'tick' job swallowed the startup kick — the loop would never tick again"
       ).toBe(1);
     } finally {

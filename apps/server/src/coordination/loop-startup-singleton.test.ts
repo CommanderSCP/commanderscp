@@ -28,11 +28,12 @@ import { matchingParen, productionSourceFiles, readStripped } from "@scp/source-
  * ~58 of every 60 boots, in production as well as in tests. It reached CI as four integration files
  * timing out waiting for engine progress, with no error anywhere.
  *
- * THE REMEDY is a DISTINCT key with a short window — `LOOP_STARTUP_SINGLETON_KEY` /
- * `LOOP_STARTUP_SINGLETON_SECONDS` (events/pgboss.ts). It keeps what §4-A4 wanted (N replicas
- * booting together dedupe their startup sweeps) while making a collision with the chain impossible.
- * An UNKEYED startup send is also fine (it always inserts) — `dependencies/bump-freeze-redrive.ts`
- * is the in-tree example; it simply forgoes the cross-replica dedupe.
+ * THE REMEDY IS AN UNKEYED STARTUP SEND — no key and no window, so it ALWAYS inserts
+ * (`LOOP_STARTUP_SEND_IS_UNKEYED`, events/pgboss.ts). A distinct key with a short window was tried
+ * second and is ALSO wrong: it fixed the chain collision but then swallowed a crash-restarted
+ * worker's kick with that worker's OWN previous boot, killing crash resumption. Any key+window can
+ * swallow, because job_i4 counts completed jobs; only "no window" cannot. §4-A4's replica dedupe is
+ * deliberately given up — redundant sweeps are safe (FOR UPDATE SKIP LOCKED), a dead loop is not.
  *
  * HOW THIS CENSUS DECIDES. Within each `boss.send(...)` call, a `startAfter` marks the RESCHEDULE
  * (the chain deliberately owns `"tick"`); a send WITHOUT `startAfter` is a startup kick, and a
@@ -109,8 +110,10 @@ describe("a loop's startup kick never reuses the interval chain's singleton key"
       'a self-rescheduling loop\'s STARTUP send carries `singletonKey: "tick"`, the same key its ' +
         "own reschedule uses. pg-boss counts COMPLETED jobs as holding the singleton slot, so one of " +
         "the two is silently dropped (ON CONFLICT DO NOTHING) and the loop can die after a single " +
-        "sweep with no error at all. Use LOOP_STARTUP_SINGLETON_KEY/SECONDS from events/pgboss.ts, " +
-        "or send unkeyed."
+        "sweep with no error at all. Send the startup kick UNKEYED — `boss.send(QUEUE, {})` with no " +
+        "singletonKey and no window (see LOOP_STARTUP_SEND_IS_UNKEYED in events/pgboss.ts). Do not " +
+        "reach for a private key + short window instead: that was tried, and it swallowed a " +
+        "crash-restarted worker's kick with that worker's own previous boot."
     ).toEqual([]);
   });
 });
