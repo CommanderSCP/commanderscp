@@ -51,6 +51,14 @@ A service's components in one scannable table: per-stage **version + status**, a
 Component-scoped, two lanes **top-to-bottom**:
 - **App release** — `Build & test` → `Image registry` → `Config bump` → `Gamma` → `Prod`. Each stage **links to its source or executor** (git source repo, image registry, git config repo, Argo CD app). `Build & test` carries a `Build → Test` sub-track (test optional). `Image registry` shows the **scan result**; the promotion after it is the **scan gate**.
 - **Infra · correlated** — an infra change directly correlated to the component runs as a **parallel lane** beside the app release.
+  > **SUPERSEDED, 2026-08-24 (owner decision).** Not a parallel lane — the infra pipeline shipped as
+  > its OWN TAB (`ComponentInfrastructurePage`, `/components/$id/infrastructure`,
+  > `apps/web/src/routes/component-pipeline.tsx`; `component-journey-view.md` §6#1/§7). "Directly
+  > correlated" is now a decided rule (`component-journey-view.md` §6#2/§7 Q2, owner 2026-08-24): a
+  > wave/bound target sharing a deployment-target with one of the component's placements, or a
+  > `hosted_on` edge, or a `provides`/`requires` coupling — and it renders as a **section on that
+  > infra tab** (`CorrelatedInfraSection`), not a lane beside App release. See
+  > `component-journey-view.md` §7 for what shipped.
 
 Between stages, promotions are **wide arrows** colored **green (open)** / **red (blocked: scan / window / gate)** / **amber (manual: approval or operator hold)**. Within a deploy stage, a left-to-right **Argo-native sub-track** (`Sync` · `Canary` · `Analysis` · `Promote` · `Abort`). Concurrency is shown as a **version staircase** (each stage's current version). Header carries **Freeze pipeline** + **Emergency deploy**.
 

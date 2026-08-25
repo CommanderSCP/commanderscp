@@ -136,6 +136,11 @@ Additive to `GET /components/{idOrUrn}/pipeline`, for the same reason the deploy
    "CI run observed in `changes.source_ref`" half of this decision — the part that was still just a
    sentence — is what `observedRun` builds.**
 2. **What makes an infra change "directly correlated to the component"** (item 1's lane)? `correlationKey` is the mechanism; the rule is not written down anywhere. Without it the infra lane cannot be drawn from data.
+   **DECIDED, §7 (2026-08-24) — not `correlationKey`.** The owner's rule: an infrastructure change is
+   correlated to a component when its wave/bound target names a deployment-target one of the
+   component's placements ALSO names, or the component is `hosted_on` it; a `provides`/`requires`
+   coupling ADDITIONALLY correlates, rendered with a distinct label. See §7's "What this increment
+   adds" for what shipped against this rule.
 3. **DECIDED — the two `image` bindings are to be DELETED.** Provenance settled it: hand-created
    2026-07-17 at 15:37 and 15:41 with deliberate instance names, inline config, no execution-system —
    someone starting the build arm on the day ADR-0007 was decided, and stopping. Nothing emits
@@ -211,13 +216,18 @@ case, absent leaves the tile unchanged.
 
 ### What remains open, with owners
 
-- **Q2 — the infra-correlation rule (§6#2), still UNDECIDED.** `correlationKey` exists; which infra
-  changes count as "directly correlated to this component" is still not written down anywhere. The
-  shape question §1 row 1 raised is no longer blocking, though: the infra lane shipped as its own tab
-  (`ComponentInfrastructurePage`, `/components/$id/infrastructure`) rather than a parallel lane beside
-  App release, so this is now scoped to the infra TAB's own correlated-changes view, not the software
-  journey. Owner: unassigned — needs an explicit decision before that tab can draw anything
-  correlation-shaped.
+- **Q2 — the infra-correlation rule (§6#2) — DECIDED (owner, 2026-08-24) and BUILT this increment.**
+  Not `correlationKey`: an infrastructure change is correlated to a component when its wave/bound
+  target names a deployment-target one of the component's placements ALSO names, or the component is
+  `hosted_on` it; a `provides`/`requires` coupling ADDITIONALLY correlates, rendered with a distinct
+  label. Each entry states its provenance (`correlatedVia.route` — `placement` / `hosted_on` /
+  `coupling`, plus the target it matched through) — READ off the server's own matching, never
+  inferred client-side. Server: `correlatedInfraForComponent`
+  (`apps/server/src/coordination/component-pipeline.ts`), wired into `getComponentPipeline`'s
+  `correlatedInfra` field (`ComponentPipelineCorrelatedInfraSchema`,
+  `packages/schemas/src/components.ts`). Web: the "Correlated infrastructure" section renders on the
+  infra TAB only (`CorrelatedInfraSection`, `apps/web/src/routes/component-pipeline.tsx`) — the shape
+  question §1 row 1 raised (own tab vs. parallel lane) stays answered in the tab's favour.
 - **Q3 — the two stray `image` bindings (§6#3), DECIDED but not yet DONE.** Deletion via
   `DELETE /v1/executors/{target}/binding?type=image` is an estate action against the live homelab, not
   a code change, and it is pending operator credentials. Owner: the platform operator (homelab
