@@ -1,5 +1,6 @@
 import type PgBoss from "pg-boss";
 import { describe, expect, it, vi } from "vitest";
+import { LOOP_STARTUP_SINGLETON_KEY, LOOP_STARTUP_SINGLETON_SECONDS } from "../events/pgboss.js";
 import type { Db } from "../db/client.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import {
@@ -201,16 +202,24 @@ describe("startDependencyVersionPollLoop", () => {
     await handle.stop();
     expect(boss.createQueue).toHaveBeenCalledWith(DEPENDENCY_VERSION_POLL_QUEUE);
     expect(boss.work).toHaveBeenCalledTimes(1);
-    // §4-A4/M26.1: the initial send now carries the SAME singletonKey/singletonSeconds as the
-    // reschedule send, so N replicas restarting together don't N-fire the first tick.
+    // §4-A4/M26.1: the initial send is singleton-keyed, so N replicas restarting together don't
+    // N-fire the first tick — but with its OWN key, never the reschedule's `"tick"`. Sharing the key
+    // is what shipped first and it KILLED the loops: pg-boss counts a COMPLETED job as still holding
+    // the singleton slot and buckets `singleton_on` by wall clock, so the startup kick and the
+    // chain's own reschedule silently swallowed each other (ON CONFLICT DO NOTHING, returning null,
+    // unchecked) and a self-rescheduling loop has no other tick source. See
+    // `events/pgboss.ts`'s LOOP_STARTUP_SINGLETON_KEY and the census in
+    // `coordination/loop-startup-singleton.test.ts`.
     expect(boss.send).toHaveBeenCalledWith(
       DEPENDENCY_VERSION_POLL_QUEUE,
       {},
       {
-        singletonKey: "tick",
-        singletonSeconds: dependencyVersionPollIntervalSeconds()
+        singletonKey: LOOP_STARTUP_SINGLETON_KEY,
+        singletonSeconds: LOOP_STARTUP_SINGLETON_SECONDS
       }
     );
+    // The distinctness IS the fix — pin it, so re-collapsing the two keys fails here too.
+    expect(LOOP_STARTUP_SINGLETON_KEY).not.toBe("tick");
   });
 });
 
