@@ -669,6 +669,35 @@ export const CampaignWaveTargetSchema = z.object({
   targetUrn: z.string().optional(),
   targetName: z.string().optional(),
   memberChangeObjectId: z.string().uuid().nullable(),
+  /** THE WAVE-TARGET FREEZE-HOLD PROJECTION, campaign side (M25.UI's closing "wave-target hold
+   *  projection" section, extended per the change-wave layer's own `ChangeWaveTargetSchema.hold`
+   *  doc — read that field's doc for the four properties this shape satisfies verbatim; this is a
+   *  structural mirror, composed by the SAME `toWaveTargetHold` helper `plan-service.ts` exports,
+   *  never a parallel reimplementation).
+   *
+   *  FREEZE-ONLY, unlike nothing — a campaign wave target has no stage-dependency concept at all
+   *  (`campaign-plan-service.ts`'s `compileAndPersistCampaignPlan` never threads
+   *  `declaredStageDependencies`; ADR-0028 is a Change-only coupling), so this field is already the
+   *  WHOLE hold, not one half of it the way `ChangeWaveTargetSchema.hold` is.
+   *
+   *  ADDITIVE-OPTIONAL AND COMPOSED AT READ TIME, never persisted, and present ONLY while the
+   *  target is genuinely held AND still a fan-out candidate (its own `memberChangeObjectId` is
+   *  still `null` — once a member Change is minted, admission has already acted and a freeze
+   *  bites that change's own wave targets one layer down, not this row). A lifted freeze, or a
+   *  target outside the currently-governing wave, is simply absent on the next read — never a
+   *  stale `held: true`. */
+  hold: z
+    .object({
+      freezes: z.array(
+        z.object({
+          freezeId: z.string().uuid(),
+          scope: z.object({ objectId: z.string().uuid(), name: z.string().nullable() }).nullable(),
+          summary: z.string(),
+          endsAt: z.string().datetime()
+        })
+      )
+    })
+    .optional(),
   status: z.string(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
@@ -685,6 +714,19 @@ export const CampaignWaveSchema = z.object({
   createdAt: z.string().datetime(),
   startedAt: z.string().datetime().nullable(),
   completedAt: z.string().datetime().nullable(),
+  /** SERVER-COMPUTED COUNT of this wave's currently-held targets — mirrors
+   *  `ChangeWaveSchema.heldTargetCount` exactly, but FREEZE-HELD ONLY (`targets[].hold`): a
+   *  campaign wave target has no stage-dependency half to add in (see that field's own doc).
+   *  ADDITIVE-OPTIONAL for oasdiff, and emitted ONLY for the wave admission currently governs — the
+   *  one RUNNING wave the freeze evaluation ever looks at (`campaign-plan-service.ts`'s
+   *  `resolveActiveCampaignWaveFreezeHolds`, the same `activeWaveOf` selector
+   *  `coordination/plan-service.ts` uses for the change side, so "which wave was evaluated" and
+   *  "which wave carries the count" cannot drift). Absent means "not evaluated" (a future wave's
+   *  targets may sit under a standing freeze that will hold them at their turn — a zero there would
+   *  be fabricated), never "zero by omission"; `0` means evaluated with nothing held. Clients must
+   *  never recompute this from `targets[].hold` alone for a different wave than the one this count
+   *  was emitted for. */
+  heldTargetCount: z.number().int().nonnegative().optional(),
   targets: z.array(CampaignWaveTargetSchema)
 });
 export type CampaignWave = z.infer<typeof CampaignWaveSchema>;

@@ -268,15 +268,20 @@ export async function compileAndPersistPlan(
 }
 
 /** Wire shape of `ChangeWaveTargetSchema.hold` — see that schema's doc for the four properties it
- *  satisfies. Built by `toWaveTargetHold` below from a live `FreezeHoldVerdict`, never persisted. */
-type WaveTargetHold = NonNullable<ChangeWaveTarget["hold"]>;
+ *  satisfies. Built by `toWaveTargetHold` below from a live `FreezeHoldVerdict`, never persisted.
+ *  EXPORTED: `CampaignWaveTargetSchema.hold` mirrors this shape exactly (freeze-only, since a
+ *  campaign wave target has no stage-dependency half), and `campaign-plan-service.ts` builds it
+ *  with the SAME `toWaveTargetHold` function below rather than a parallel reimplementation. */
+export type WaveTargetHold = NonNullable<ChangeWaveTarget["hold"]>;
 
 /** `FreezeHoldVerdict` -> the wire `hold` shape (or `undefined` for an unheld target) — the ONE
  *  place a `FreezeHoldVerdict` becomes API surface, so the freeze-projection idiom
  *  (`describeFreezeForWaveTarget`) is applied exactly once. `scopeNames` is the caller's one-query
  *  resolution of every covering freeze's `scopeObjectId` (`resolveFreezeScopeNames` below) —
- *  passed in rather than re-queried per target. */
-function toWaveTargetHold(
+ *  passed in rather than re-queried per target. EXPORTED for `campaign-plan-service.ts`, which
+ *  reuses this exact function for `CampaignWaveTargetSchema.hold` rather than re-deriving the wire
+ *  shape from a `FreezeHoldVerdict` a second time. */
+export function toWaveTargetHold(
   verdict: FreezeHoldVerdict | undefined,
   scopeNames: Map<string, string>
 ): WaveTargetHold | undefined {
@@ -355,8 +360,11 @@ function toChangeWaveTargetShape(
 /** THE ONE WAVE ADMISSION CURRENTLY GOVERNS — first wave not yet terminal. Shared by
  *  `resolveWaveTargetFreezeHolds` (which only ever evaluates THIS wave's targets) and
  *  `toChangePlanShape`'s `heldTargetCount` emission, so the two cannot disagree about which wave
- *  that is. */
-function activeWaveOf<W extends { status: string }>(waves: W[]): W | undefined {
+ *  that is. EXPORTED: `campaign-plan-service.ts`'s `resolveActiveCampaignWaveFreezeHolds` uses the
+ *  SAME selector over campaign waves (structurally compatible — both a raw `campaign_waves` row
+ *  and the wire `CampaignWave` shape carry a bare `status` string), so "which wave admission
+ *  governs" cannot drift between the change and campaign sides. */
+export function activeWaveOf<W extends { status: string }>(waves: W[]): W | undefined {
   return waves.find((w) => w.status !== "succeeded" && w.status !== "skipped");
 }
 function toChangePlanShape(
@@ -496,7 +504,9 @@ async function resolveWaveTargetFreezeHolds(
  *  `stage-dependency-status.ts`'s `resolveNames` uses. Ids that resolve to nothing (a deleted
  *  scope object) are simply absent, and `toWaveTargetHold` renders `name: null` — never the id
  *  dressed up as a name. */
-async function resolveFreezeScopeNames(
+/** EXPORTED for `campaign-plan-service.ts`, which resolves the SAME `scopeObjectId -> name` map
+ *  for its own `FreezeHoldVerdict`s through this function rather than a second copy of the query. */
+export async function resolveFreezeScopeNames(
   tx: TenantTx,
   orgId: string,
   holds: Map<string, FreezeHoldVerdict>

@@ -202,8 +202,11 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
           scopeObjectId: auth.orgId
         });
         const campaign = await getCampaign(tx, auth.orgId, request.params.id);
+        // `withFreezeHolds: true` — this response's `plan.waves[].targets[].hold` /
+        // `heldTargetCount` is the campaign-side wave-target hold projection (M25.UI), the same
+        // wire consumer `changes.ts`'s explain handler already opts into on the change side.
         const [plan, decisions] = await Promise.all([
-          getLatestCampaignPlan(tx, auth.orgId, request.params.id),
+          getLatestCampaignPlan(tx, auth.orgId, request.params.id, { withFreezeHolds: true }),
           listDecisionsForSubject(tx, auth.orgId, request.params.id)
         ]);
         return { campaign, plan, decisions };

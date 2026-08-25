@@ -25,7 +25,6 @@ import { createObject, getObjectByIdOrUrnAnyType, updateObject } from "../graph/
 import { authorize } from "../authz/resolve.js";
 import { insertDecision } from "./decisions-repo.js";
 import { computeCampaignStatus, type CampaignWaveStatusInput } from "./campaign-status.js";
-import { evaluateFreezeHolds } from "./freeze-hold.js";
 import { getLatestCampaignPlan } from "./campaign-plan-service.js";
 import { resolveChangeRecipe } from "./campaign-recipe.js";
 import { evaluateCampaignDeadlineLock, resolveCampaignDeadline } from "./campaign-deadline-lock.js";
@@ -566,7 +565,13 @@ export async function getCampaignStatus(
   // in hand, decided before `getLatestCampaignPlan` is even called.
   const deadline = resolveCampaignDeadline(properties);
 
-  const plan = await getLatestCampaignPlan(tx, orgId, campaignObjectId);
+  // `withFreezeHolds: true` — this read now IS the M25.2 freeze evaluation below (M25.UI):
+  // `getLatestCampaignPlan` composes `plan.waves[].targets[].hold` through the SAME
+  // `resolveActiveCampaignWaveFreezeHolds`/`evaluateFreezeHolds` this function used to call a
+  // second time for `frozenTargetIds` alone. Reusing the composed result rather than
+  // re-evaluating costs nothing extra: one `evaluateFreezeHolds` call either way, now shared by
+  // both the status derivation below and the wire `hold`/`heldTargetCount` projection.
+  const plan = await getLatestCampaignPlan(tx, orgId, campaignObjectId, { withFreezeHolds: true });
   if (!plan) return computeCampaignStatus({ hasPlan: false, waves: [] });
 
   const memberChangeIds = plan.waves
@@ -581,27 +586,27 @@ export async function getCampaignStatus(
     for (const row of rows) stateByChangeId.set(row.objectId, row.state);
   }
 
-  // M25.2 — WHICH TARGETS A FREEZE IS HOLDING RIGHT NOW, re-evaluated here rather than read off the
-  // campaign's `freeze_admission` Decision. The Decision is a historical record; a status derived
-  // from it would keep saying `blocked` after the window closed, which is the same stale-hold defect
-  // `routes/changes.ts` documents against ADR-0028's `stage_dependency` row. Re-evaluating costs one
-  // indexed window read per status render and NOTHING else when the org has no active freeze
-  // (`freezesByTarget`'s inertness property).
-  //
-  // SCOPED TO THE RUNNING WAVE. Only the active wave fans out, so a freeze over a target of a wave
-  // that has not started yet is not withholding anything and must not make the campaign read
-  // `blocked` weeks early. A target that already minted its member change is likewise past this
-  // seam — the freeze bites that change's own wave targets, one layer down.
+  // M25.2 — WHICH TARGETS A FREEZE IS HOLDING RIGHT NOW. NO LONGER a second `evaluateFreezeHolds`
+  // call here (M25.UI): `getLatestCampaignPlan({ withFreezeHolds: true })` above already ran the
+  // IDENTICAL evaluation (`resolveActiveCampaignWaveFreezeHolds`, `campaign-plan-service.ts`) to
+  // compose `plan.waves[].targets[].hold` for the wire, and a target's `hold` is present if and
+  // only if it came back frozen from that evaluation — so reading it off the composed plan is the
+  // same answer, not an approximation of it. This also keeps the two candidate-set rules (only the
+  // RUNNING wave, only targets not yet fanned into a member Change) defined in exactly one place
+  // rather than restated here.
+  const frozenTargetIds = new Set(
+    plan.waves
+      .flatMap((w) => w.targets.filter((t) => t.hold !== undefined))
+      .map((t) => t.targetObjectId)
+  );
+
+  // Still needed below, PURE (no query): the same candidate set the freeze evaluation used, re-derived
+  // here from `plan.waves` for the deadline-lock check, which is a SEPARATE mechanism (M25.6a) with
+  // its own read.
   const runningWaveTargetIds = plan.waves
     .filter((w) => w.status === "running")
     .flatMap((w) => w.targets.filter((t) => t.memberChangeObjectId === null))
     .map((t) => t.targetObjectId);
-  const frozenTargetIds =
-    runningWaveTargetIds.length === 0
-      ? new Set<string>()
-      : new Set(
-          (await evaluateFreezeHolds(tx, { orgId, targetObjectIds: runningWaveTargetIds })).keys()
-        );
 
   // M25.6a — WHICH TARGETS THIS CAMPAIGN'S OWN DEADLINE IS LOCKING OUT RIGHT NOW, re-evaluated here
   // rather than read off the standing `campaign_deadline` Decision, for the identical reason the
