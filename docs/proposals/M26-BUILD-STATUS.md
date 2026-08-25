@@ -33,18 +33,24 @@ Keep this doc current as you work; delete it when M26 lands.
 ## Where M26 stands (updated 2026-08-24)
 
 **LANDED & tested & pushed on `multi-region-ha`:**
-- **M26.1 (§7.1) — REVIEW-CLEAN.** All five items; F1 fixed; four-lens review reran, nine findings cleared, each mutation-proven. (A2 verify-only gate still owed — blocked on the M25 advisory-lock merge to `main`, STILL not merged as of 2026-08-24; watch `main`.)
+- **M26.1 (§7.1) — REVIEW-CLEAN.** All five items; F1 fixed; four-lens review reran, nine findings cleared, each mutation-proven. (A2: `m25-campaign-levers` is gone from the remote and the lock never landed on `main`, so per the "if it never lands, A2 reverts to an M26.1 fix" plan it was BUILT here, mutation-proven — not merely verified.)
 - **M26.2 rails 1/2/4/5 (§7.2)** — fork/rollback detection, commit `47bb4bd`. `journal_divergence` problem type; export tail check; anchor verification; signed tail attestation with a monotonic high-water mark (replay-safe); reanchor refusal under standing divergence. Rail 3 verified already covered by `verifySegment`. Gate `divergence-rails.integration.test.ts` 8/8; `federation.integration` 77/77. Migration 0090.
 - **M26.2 §7.2.7 audit witness** — commit `ebee565`, migration 0091, gate 2/2.
 - **M26.2 §7.3 D6 + decrypt canary** — commit `3604df8`. Deployment mode (production default), production refusal of ephemeral secrets, per-org RLS-correct decrypt canary before `app.listen`. Gate 3/3. Compose/dev set `evaluation`.
 - **M26.3 chart packaging** — commit `a4573ba`. PDB, topology spread, multi-cluster values contract, retrans volumes. `helm lint` clean.
 - **M26.4 docs** — commit `a4573ba`. `docs/runbooks/resilience.md`, GLOSSARY (member cluster / infra region / XO / instance), DESIGN §17, **ADR-0042**.
 
-**NOT YET BUILT (the remaining work to "finish M26"):**
-- **M26.2 §7.2.6 RESYNC — the big one, NOT started.** Owner chose a **SIGNED CROSS-DOMAIN HANDSHAKE** (below), a net-new authenticated cross-domain mutation surface. This is the highest-risk item and deserves its own focused pass. Grounded seams: migration 0092 = `federation_self.generation` stamp (`when` 1788152000000, ABOVE 0091's 1788151000000 — keep `when` monotonic with build order or hit the equal-`when` skip trap); new `FederationResyncRequestSchema`/`ResultSchema`; `graph/objects-repo.ts:867` revision-staleness guard (`if (input.federationImport.revision <= existing.revision) return`) needs a `forceOverwrite?` on `FederationImportContext` gated to bypass ONLY that early-return, NEVER the single-writer authority check just above it; `cursors-repo` `resetCursor` (unconditional, unlike forward-only `advanceCursor`); `self-repo` `bumpFederationGeneration`; `POST /api/v1/federation/resync`; and it must write a NEWER `federation-divergence`-kind Decision that SUPERSEDES the standing block so **rail 5's reanchor refusal clears** (that linkage is already built — resync just needs to record the clearing Decision). Model the one-shot permit shape on `reconcileOutpostConfig` (routes/federation.ts) + `scp federation outpost reconcile` (cli.ts). Permanent gate: the §7.5 lost-tail simulation.
-- **M26.2 §7.3 instance doctor** — `GET /api/v1/doctor/instance`, operator-token-gated (DSN reachability, `pg_is_in_recovery()`, mTLS SAN coverage, S3 endpoint consistency, XO readiness). NOT started.
-- **M26.3 S3 object-storage provider (C3)** + version-skew heartbeat mechanism (migration + migrate-bin refusal of a contract migration while a member cluster trails). NOT started.
-- **M26.4 CI drills** — Testcontainers failover drill, lost-tail simulation (permanent gate, depends on resync), two-member compose topology, boot-refusal tests for the D6 ephemeral case. NOT started (the credential-clobber gate already exists as provision PV-1; the decrypt-canary gate exists).
+**NOT YET BUILT: NOTHING.** Every item once listed here is built, gated and pushed — §7.2.6 resync
+(signed cross-domain handshake), §7.3 instance doctor, §7.4 C3 object storage + version-skew
+heartbeat, and the §7.5 CI drills. The subsections below are kept only as the *grounding* that was
+verified against code before building; they describe seams, not outstanding work.
+
+**Migration numbering, FINAL:** M26 owns **0090–0093** (`when` 1788150000000–1788153000000). These
+were renumbered twice during integration as `main` moved: first down to 0089–0092 when M25 left 0089
+reserved-but-unused, then back up to 0090–0093 when `main` actually landed `0089_freeze_object_type`
+(PR #282/#283). Verified at the tip: `idx` contiguous from 0 (the `journal-ordering` gate's rule),
+`when` strictly increasing, and every M26 `when` above M25's 0089 (1788147000000) — so the
+equal-`when` silent-skip trap never applied.
 
 ### M26.2 owner decisions (2026-08-24, settled)
 
