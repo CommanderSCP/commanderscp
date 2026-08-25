@@ -3908,8 +3908,17 @@ export function buildProgram(): Command {
   /**
    * M25.6a (owner decision D4) — SET, MOVE or CLEAR the deadline. `--clear` is THE BLUNT EXIT: it
    * releases every target the deadline was withholding this campaign's fan-out from, on the next
-   * tick, with no unlock verb. `scp campaign deadline-override` (M25.6b) is the per-target one, and
-   * costs the Owner-only `campaign:deadline-override` where this costs plain `object:write`.
+   * tick, with no unlock verb. `scp campaign deadline-override` (M25.6b) is the per-target one:
+   * narrower radius, same permission on the widening acts, and it leaves the deadline standing.
+   *
+   * WHAT EACH ACT COSTS (owner ruling 2026-08-25, D1 b-i):
+   *  * `--at <iso>` SETTING a first deadline, or SHORTENING an existing one — plain `object:write`
+   *    at the campaign. Both withhold this campaign's changes from strictly MORE targets, so
+   *    neither can launder a waiver, and routine campaign hygiene must not need an Owner.
+   *  * `--clear`, or `--at <iso>` naming an instant LATER than the one stored — `object:write` PLUS
+   *    the Owner-only `campaign:deadline-override`. Both release targets that were being withheld,
+   *    and clearing is a strict superset of waiving one target, so it cannot cost less than
+   *    `deadline-override` does. Expect a 403 naming that permission if you hold only the first.
    *
    * `--reason` is required on ALL THREE acts, clear included: it is the operator's own words on the
    * hash chain, beside a Decision carrying the previous instant.
@@ -3924,7 +3933,10 @@ export function buildProgram(): Command {
       "--adoption-signal <kind>",
       "which adoption evidence this deadline was authored against: delivered|dependency|control (declarative — the verdict always comes from the campaign's own recipe)"
     )
-    .option("--clear", "CLEAR the deadline — releases every locked target on the next tick")
+    .option(
+      "--clear",
+      "CLEAR the deadline — releases every locked target on the next tick. Takes the Owner-only 'campaign:deadline-override' on top of 'object:write', as does moving --at to a LATER instant; setting a first deadline or shortening one does not"
+    )
     .requiredOption("--reason <text>", "why (required on set, move AND clear)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")

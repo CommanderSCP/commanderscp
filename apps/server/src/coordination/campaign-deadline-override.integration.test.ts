@@ -36,8 +36,10 @@ import type { CampaignDeadline, CampaignDeadlineOverride, CampaignRecipe } from 
  * names which:
  *
  *   * NO `campaign:deadline-override` (an org-root Administrator, who holds `object:write` on
- *     everything) => 403. Borrowing `object:write` — the permission the CLEAR verb runs at — would
- *     make the Owner-only grant decorative.
+ *     everything) => 403. Borrowing `object:write` would make the Owner-only grant decorative. That
+ *     case ALSO now asserts the same subject cannot CLEAR the deadline outright: until the
+ *     2026-08-25 D1 ruling it could, which made this narrow door's guard decorative in the other
+ *     direction — a strictly wider act was available beside it for less.
  *   * THE PERMISSION, BUT NO `object:write` AT THE TARGET (an Owner bound at the campaign object
  *     ALONE) => 403. This is the case that proves the second check is wired at all, and it is the
  *     one that would silently pass if the target loop were ever deleted.
@@ -528,13 +530,26 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
 
   /**
    * NO `campaign:deadline-override` => 403, and the subject chosen is the sharpest available: an
-   * ADMINISTRATOR AT THE ORG ROOT. That role holds `object:write` over every object in the org — so
-   * it can set, MOVE and CLEAR this very deadline through `POST /campaigns/{id}/deadline` — and
+   * ADMINISTRATOR AT THE ORG ROOT. That role holds `object:write` over every object in the org, and
    * drizzle/0088 grants the new permission to Owner ALONE. A Viewer would have failed this for the
    * boring reason; an Administrator fails it for the designed one.
+   *
+   * ===========================================================================================
+   * THIS CASE'S CONTROL USED TO BE THE BUG (owner ruling 2026-08-25, decision D1 b-i)
+   * ===========================================================================================
+   * It asserted that the SAME Administrator could CLEAR the whole deadline through
+   * `POST /campaigns/{id}/deadline` — 200 — as the control proving the 403 above was about the
+   * missing permission rather than about authority over the campaign. That assertion was true, and it
+   * was the vulnerability, written down and guarded: clearing excuses EVERY target permanently, with
+   * no `until` and no per-target check, so the subject refused a ONE-TARGET waiver here had a
+   * strictly wider act available one route up for less. The clear now demands
+   * `campaign:deadline-override` too, so the old control asserts the opposite of the rule and is
+   * REPLACED rather than relaxed: the control is now a TIGHTENING through the same verb, which is
+   * still open at `object:write` and still proves exactly what the control existed to prove.
    */
-  it("A1: an org-root ADMINISTRATOR — who may CLEAR this deadline outright — cannot waive it per target", async () => {
-    const { org, componentIds, campaignId } = await lockedCampaign("override-authz-admin");
+  it("A1: an org-root ADMINISTRATOR cannot waive this deadline per target — nor, since the D1 ruling, clear it outright", async () => {
+    const { org, componentIds, campaignId, deadline } =
+      await lockedCampaign("override-authz-admin");
     const [component] = componentIds as [string];
     const administrator = await createTestUser(server, org, [
       { role: "Administrator", scope: org.orgId }
@@ -549,15 +564,35 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(refused.statusCode).toBe(403);
     expect(await storedOverrides(org, campaignId)).toHaveLength(0);
 
-    // THE CONTROL that makes the 403 mean what it claims: the SAME subject CAN clear the whole
-    // deadline, so what it lacks is this permission and not authority over the campaign.
+    // THE BLUNT EXIT IS SHUT TO THE SAME SUBJECT. Without this the narrow door is guarded and the
+    // wide one beside it is not, which is worse than guarding neither: it reads as enforced.
     const cleared = await server.app.inject({
       method: "POST",
       url: `/api/v1/campaigns/${campaignId}/deadline`,
       headers: { authorization: `Bearer ${administrator.token}` },
-      payload: { deadline: null, reason: "clearing is the blunt exit, and it is open to me" }
+      payload: {
+        deadline: null,
+        reason: "clearing used to be the blunt exit, and it was open to me"
+      }
     });
-    expect(cleared.statusCode).toBe(200);
+    expect(
+      cleared.statusCode,
+      "clearing excuses every target permanently — it cannot cost less than waiving one"
+    ).toBe(403);
+
+    // THE CONTROL that makes both 403s mean what they claim: the SAME subject CAN still move
+    // this deadline EARLIER through that verb, so what it lacks is the Owner-only permission and not
+    // authority over the campaign.
+    const tightened = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/campaigns/${campaignId}/deadline`,
+      headers: { authorization: `Bearer ${administrator.token}` },
+      payload: {
+        deadline: { at: new Date(Date.parse(deadline.at) - 60_000).toISOString() },
+        reason: "pulling the date in is a tightening, and it is open to me"
+      }
+    });
+    expect(tightened.statusCode, tightened.body).toBe(200);
   });
 
   /**

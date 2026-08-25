@@ -1835,9 +1835,17 @@ export class ScpClient {
      * CLEARS it, which releases every target the deadline was withholding fan-out from on the next
      * tick. That is the BLUNT exit; `overrideDeadline` below is the per-target one.
      *
+     * WHAT EACH ACT COSTS (owner ruling 2026-08-25, D1 b-i). Setting a FIRST deadline and SHORTENING
+     * an existing one are tightenings and run at plain `object:write` at the campaign. CLEARING it
+     * (`deadline: null`), or moving `at` to an instant LATER than the one stored, RELEASES targets —
+     * so both additionally require the Owner-only `campaign:deadline-override` at the campaign, and
+     * throw 403 without it. Clearing is a strict superset of waiving one target via
+     * `overrideDeadline`, so it cannot cost less than that call does.
+     *
      * `CampaignDeadlineInput`, not `CampaignDeadline`: the stored document carries `overrides[]` and
-     * this verb cannot author them — it runs at plain `object:write`, while minting a waiver takes
-     * the Owner-only `campaign:deadline-override`. Waivers already in force survive a set or a move.
+     * this verb cannot author them whatever the caller holds — minting a waiver goes through
+     * `overrideDeadline`, which names its targets and audits one event each. Waivers already in
+     * force survive a set or a move.
      *
      * `reason` is MANDATORY on all three acts including the clear: the audit event records the
      * operator's own words and the Decision it cites carries the PREVIOUS value, without which "the

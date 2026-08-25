@@ -398,13 +398,22 @@ export type CampaignDeadlineAdoptionSignal = z.infer<typeof CampaignDeadlineAdop
  * from the bearer subject, `at` from the write's own clock. Nothing on the wire can author one.
  *
  * That is not stylistic. `POST /campaigns` and `POST /campaigns/{id}/deadline` both take a
- * {@link CampaignDeadlineInputSchema} at plain `object:write`, and `POST
- * /campaigns/{id}/deadline-override` takes {@link OverrideCampaignDeadlineRequestSchema} behind the
- * Owner-only `campaign:deadline-override`. If the two doors shared one schema, the cheap door would
- * mint waivers the expensive one exists to gate — a self-service waiver channel that LOOKS
- * enforced, which is precisely the hazard M25.6a refused this key to avoid. `CampaignDeadlineSchema`
+ * {@link CampaignDeadlineInputSchema}, and `POST /campaigns/{id}/deadline-override` takes
+ * {@link OverrideCampaignDeadlineRequestSchema} behind the Owner-only
+ * `campaign:deadline-override`. If the two doors shared one schema, the deadline doors would mint
+ * waivers the override door exists to gate — a self-service waiver channel that LOOKS enforced,
+ * which is precisely the hazard M25.6a refused this key to avoid. `CampaignDeadlineSchema`
  * (storage + read) carries `overrides`; `CampaignDeadlineInputSchema` (both authoring doors) does
  * not, and it is `.strict()`, so naming the key there is a 400 rather than a silent drop.
+ *
+ * THE SCHEMA SPLIT IS STILL THE CHECK, EVEN THOUGH THE PRICES NOW OVERLAP. Owner ruling 2026-08-25
+ * (D1 b-i) made the WIDENING acts of `POST /campaigns/{id}/deadline` — clearing the deadline, and
+ * moving it to a later instant — demand `campaign:deadline-override` too. `POST /campaigns` and the
+ * tightening acts (a first set, a shortening) still run at plain `object:write`, so a schema
+ * carrying `overrides` would still be a waiver channel at a lower price. And even for a caller who
+ * DOES hold the override permission, minting a waiver through this key would skip the per-target
+ * `object:write`, the per-target audit event and the resolved-target list that
+ * `/deadline-override` produces — the split is about the SHAPE of the record as much as the bar.
  *
  * `until` IS A BOUNDARY, NOT A TIMER, and its expiry is READ-TIME: `campaign-deadline-lock.ts`
  * compares it against the tick's `now` on every evaluation and no job un-flips anything. An `until`
@@ -480,8 +489,12 @@ export type CampaignDeadline = z.infer<typeof CampaignDeadlineSchema>;
  * IDENTICAL TO {@link CampaignDeadlineSchema} MINUS `overrides`, and still STRICT, so naming
  * `overrides` at either door is a 400 rather than a value silently dropped on the floor. Minting a
  * waiver takes `campaign:deadline-override` (Owner-only, drizzle/0088) at the campaign PLUS
- * `object:write` at each named target; both of these doors take plain `object:write` at the
- * campaign alone. One shared schema would make the cheaper door the whole permission's bypass.
+ * `object:write` at each named target. `POST /campaigns` takes plain `object:write` at the campaign
+ * alone (a create is always a FIRST set), and so does `POST /campaigns/{id}/deadline` when it sets a
+ * first deadline or SHORTENS one; only that route's WIDENING acts — clearing, and moving the instant
+ * later — also take `campaign:deadline-override` (owner ruling 2026-08-25, D1 b-i). Neither door
+ * demands the per-target `object:write` a waiver does, and the create door demands nothing extra at
+ * all, so one shared schema would still be the permission's bypass.
  *
  * Deriving it by `.omit()` rather than declaring a second literal object is what keeps a future
  * third key (`at`-like configuration, not a waiver) from being added to one and not the other.
@@ -499,20 +512,29 @@ export type CampaignDeadlineInput = z.infer<typeof CampaignDeadlineInputSchema>;
  * cannot be moved is a deadline that gets worked around by deleting the campaign, which takes the
  * whole governance record's SURFACE with it.
  *
- * `reason` IS MANDATORY on every one of the three, including the clear. `object:write` is a low bar
- * for a governance act whose effect is immediate and fleet-wide within the campaign; the audit event
- * this produces records the PREVIOUS value beside the new one, because "the deadline slipped four
- * times" is otherwise unreconstructible from a chain of writes that each say only where it landed.
+ * `reason` IS MANDATORY on every one of the three, including the clear. The audit event this
+ * produces records the PREVIOUS value beside the new one, because "the deadline slipped four times"
+ * is otherwise unreconstructible from a chain of writes that each say only where it landed.
+ *
+ * TWO PRICES, ONE VERB (owner ruling 2026-08-25, D1 b-i). Setting a first deadline and SHORTENING an
+ * existing one are TIGHTENINGS — strictly more targets are withheld afterwards — and run at plain
+ * `object:write` at the campaign. CLEARING it, and moving `at` to an instant LATER than the stored
+ * one, RELEASE targets, and both additionally demand the Owner-only `campaign:deadline-override`
+ * (drizzle/0088) at the campaign. As shipped, all three ran at `object:write` while the NARROWER
+ * per-target waiver one route down needed an Owner, so an operator refused a one-target waiver could
+ * clear the whole deadline instead and excuse everybody, permanently — a wider verb at the narrower
+ * verb's price. The bar is ADDED, never substituted: `object:write` still governs all three acts.
  */
 export const SetCampaignDeadlineRequestSchema = z.object({
   /**
    * The new deadline, or `null` to clear it.
    *
-   * {@link CampaignDeadlineInputSchema}, NOT `CampaignDeadlineSchema`: this verb runs at plain
-   * `object:write`, and accepting `overrides` here would let it mint the very waivers
-   * `campaign:deadline-override` exists to gate. Naming the key is a 400 (the schema is strict), not
-   * a silent drop. The waivers already in force are PRESERVED across a set or a move — see
-   * `setCampaignDeadline`.
+   * {@link CampaignDeadlineInputSchema}, NOT `CampaignDeadlineSchema`: accepting `overrides` here
+   * would let this verb mint the very waivers `POST /campaigns/{id}/deadline-override` exists to
+   * produce — at plain `object:write` whenever the act is a tightening, and without the per-target
+   * `object:write`, the per-target audit event or the named target list even when it is not. Naming
+   * the key is a 400 (the schema is strict), not a silent drop. The waivers already in force are
+   * PRESERVED across a set or a move — see `setCampaignDeadline`.
    */
   deadline: CampaignDeadlineInputSchema.nullable(),
   reason: z.string().min(1)
