@@ -161,7 +161,8 @@ describe("§7.5 failover drill: outbox→bridge delivery survives a mid-flight b
       // fallback + the reconnecting LISTEN clients bring everything back), delivered EXACTLY ONCE.
       await publishProbe("post-failover");
       await waitUntil(async () => received.find((e) => e.subject === "post-failover"), {
-        describe: "the post-failover probe to be delivered after both LISTEN backends were terminated",
+        describe:
+          "the post-failover probe to be delivered after both LISTEN backends were terminated",
         timeoutMs: 20_000
       });
       // POSITIVE SIGNAL rather than a settle sleep (integration-sleep-census.test.ts's property): a
