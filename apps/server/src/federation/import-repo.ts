@@ -34,6 +34,7 @@ import {
 } from "./unattached-change-status-repo.js";
 import { createRelationship, deleteRelationship } from "../graph/relationships-repo.js";
 import { deleteObject, isUuid, upsertObjectByUrn } from "../graph/objects-repo.js";
+import { findArtifactByIdentity } from "../graph/artifacts-repo.js";
 import { updateObject } from "../graph/objects-repo.js";
 import { findObjectByIdOrUrnAnyType, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import {
@@ -258,6 +259,51 @@ async function applyEntry(
           requestId
         });
         return;
+      }
+      // ==========================================================================================
+      // AN ARTIFACT IDENTITY COLLISION COSTS ONE ENTRY, NEVER THE CHANNEL (ADR-0045)
+      // ==========================================================================================
+      // An `artifact` object is minted OUTSIDE the ordinary sync path too — `mintArtifactObjects`
+      // (`graph/artifacts-repo.ts`), called from BOTH `exportPromotionBundle` and
+      // `importPromotionBundle` — and it is an ordinary (non-domain-local) object once minted
+      // (ADR-0045 D3), so it also journals and CAN arrive here, independently, via ordinary
+      // full-scope sync. Measured, not hypothetical: `federation.integration.test.ts`'s M17.4(a)
+      // suite reuses one peer pair and one digest across several `it()`s, and the SECOND
+      // promotion's `buildBundleToward` syncs the FIRST promotion's already-minted commander-side
+      // artifact object toward a receiver that already minted its OWN row for the same digest at
+      // the first import — two different ids, one identity, `objects_artifact_one_per_digest_type`
+      // (0094) refuses the second INSERT, and `upsertObjectByUrn` has no branch that expects it.
+      //
+      // A PRE-CHECK, NOT A `catch`, for the identical reason the type-registration guard above is
+      // one: a failed INSERT poisons this transaction, and this switch has no try/catch around it.
+      //
+      // SKIP-AND-RECORD, and here skipping loses NOTHING: the identity this entry carries is
+      // ALREADY present locally under a different id (that is the collision), so the fact itself
+      // is not lost — only this specific replica row is, and it is recorded exactly like the
+      // unregistered-type drop above so the loss is visible rather than silent.
+      if (typeId === "artifact") {
+        const digest = (payload.properties as Record<string, unknown> | undefined)?.digest;
+        const artifactType = (payload.properties as Record<string, unknown> | undefined)
+          ?.artifactType;
+        if (typeof digest === "string" && typeof artifactType === "string") {
+          const existingByIdentity = await findArtifactByIdentity(tx, orgId, artifactType, digest);
+          if (existingByIdentity && existingByIdentity.id !== payload.id) {
+            await appendAuditEvent(tx, {
+              orgId,
+              actorId: FEDERATION_IMPORT_ACTOR_ID,
+              action: "federation.import.entry_dropped",
+              subjectId: existingByIdentity.id,
+              reason:
+                `dropped ${entry.entryKind} entry ${entry.id} (sequence ${entry.sequence}) from ` +
+                `'${exporterDomainId}': an 'artifact' object with digest '${digest}' (type ` +
+                `'${artifactType}') already exists locally as '${existingByIdentity.id}' (urn ` +
+                `'${urn}' incoming). The identity is already present under a different id — the ` +
+                `entry itself is what's dropped, not the fact. The rest of the bundle was applied.`,
+              requestId
+            });
+            return;
+          }
+        }
       }
       // Authority is the cryptographically-verified signer — NEVER the attacker-controlled
       // `payload.originDomainId` (validated identical to `exporterDomainId` by

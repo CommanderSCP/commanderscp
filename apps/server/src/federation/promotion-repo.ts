@@ -32,6 +32,7 @@ import { ensureInstanceCosignKey } from "../governance/cosign-keys.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { mintArtifactObjects } from "../graph/artifacts-repo.js";
 import {
   getChange,
   proposeChange,
@@ -545,6 +546,23 @@ export async function exportPromotionBundle(
       }
     );
 
+    // ADR-0045 D2 — MINT ARTIFACT OBJECTS HERE, and only here on the export side: the manifest is
+    // SIGNED (phase 3, above) and the boundary stamp naming it is written in this same statement's
+    // transaction, so this call fires exactly when the commander's attestation is real. Reads the
+    // signed manifest's own artifact set (not `artifactSet` from phase 2) so the minted identities
+    // are provably the ones the signature covers — the SAME set, not a second read of it.
+    await mintArtifactObjects(
+      tx,
+      input.orgId,
+      gathered.manifest.artifacts.map((a) => ({ artifactType: a.type, digest: a.digest })),
+      {
+        actorObjectId,
+        requestId: `federation-promotion-export:${gathered.header.sourceChangeObjectId}`,
+        mintedBy: "export",
+        firstPromotedChangeId: gathered.header.sourceChangeObjectId
+      }
+    );
+
     return {
       header: gathered.header,
       change: gathered.changePayload,
@@ -950,6 +968,27 @@ async function applyPromotionImport(
     targets,
     importedFromDomain: peerId
   });
+
+  // ADR-0045 D2 — MINT ARTIFACT OBJECTS HERE: `applyPromotionImport` runs ONLY after
+  // `importPromotionBundle`'s phase 2 `verifyPromotionManifest` returned `ok: true` — signature AND,
+  // when a manifest is present, SET-EQUALITY (`bundle.artifacts` proven to equal the cosign-signed
+  // `manifest.artifacts` multiset) AND the tie back to the Ed25519-checksummed `artifactDigests`.
+  // `bundle.artifacts` is therefore this receiver's own attested anchor for "this digest arrived
+  // here" — absent (`undefined`) only for a pre-E3 bundle, in which case there is nothing typed to
+  // mint from and none is minted (never fabricated from the untyped flat `artifactDigests` alone,
+  // which carries no `type`). `firstPromotedChangeId` names THIS domain's own newly-proposed change
+  // (`change.id`, just above) — the receiver's local anchor, not the exporter's.
+  await mintArtifactObjects(
+    tx,
+    orgId,
+    (bundle.artifacts ?? []).map((a) => ({ artifactType: a.type, digest: a.digest })),
+    {
+      actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
+      requestId: `federation-promotion:${bundle.header.sourceChangeObjectId}`,
+      mintedBy: "import",
+      firstPromotedChangeId: change.id
+    }
+  );
 
   // M12 P4B §8 Q2, the AUDIT half of the strip above: when the bundle's change actually CARRIED a
   // `requires` that was stripped, the strip itself is an engine verdict (charter principle 6 —
