@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, ExternalLink, TriangleAlert } from "lucide-react";
 import type { ChangeStageDependencyTarget } from "@scp/sdk";
+import { realObservedImages } from "@scp/schemas";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { cn, focusRing } from "../../lib/utils";
@@ -187,13 +188,15 @@ function droppedEntry(observed: ObservedLike, field: string): ObservedTruncation
  * the marker ALONE (`entriesElisionMarker`, `@scp/runner-launcher`) with `dropped` still `false`
  * (the field itself survived); this returns `[]` for that case too, so index 0 is only ever a real
  * entry, structurally guaranteed rather than sniffed.
+ *
+ * DELEGATES to `@scp/schemas`'s `realObservedImages` — the SAME function `component-pipeline.ts`'s
+ * per-stage `version` derivation calls server-side (per-stage version threading), so the two can
+ * never disagree about which prefix of `images` is "real". This wrapper exists only to keep the
+ * `ObservedLike` structural type (this module's own, deliberately not `@scp/sdk`'s campaign-carrying
+ * types — see the module contract at the top) as the call sites' declared parameter type.
  */
 function realImages(observed: ObservedLike): string[] {
-  const images = observed?.images;
-  if (!images) return [];
-  const entry = truncationOf(observed, "images");
-  if (typeof entry?.droppedEntries !== "number" || entry.droppedEntries <= 0) return images;
-  return images.slice(0, -1);
+  return realObservedImages(observed);
 }
 
 function droppedCountsSuffix(entry: ObservedTruncationEntry): string {

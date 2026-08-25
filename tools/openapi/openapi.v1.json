@@ -25938,6 +25938,79 @@
                                       "infrastructure",
                                       "configuration"
                                     ]
+                                  },
+                                  "observed": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "revision": {
+                                            "type": "string"
+                                          },
+                                          "images": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "rollout": {
+                                            "type": "object",
+                                            "properties": {
+                                              "phase": {
+                                                "type": "string"
+                                              },
+                                              "step": {
+                                                "type": "number"
+                                              },
+                                              "weight": {
+                                                "type": "number"
+                                              },
+                                              "message": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "truncation": {
+                                            "type": "object",
+                                            "propertyNames": {
+                                              "type": "string"
+                                            },
+                                            "additionalProperties": {
+                                              "type": "object",
+                                              "properties": {
+                                                "dropped": {
+                                                  "type": "boolean"
+                                                },
+                                                "droppedCharacters": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "droppedEntries": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "droppedFields": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "dropped"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
                                   }
                                 },
                                 "required": [
@@ -26015,6 +26088,79 @@
                                     "build",
                                     "infrastructure",
                                     "configuration"
+                                  ]
+                                },
+                                "observed": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "revision": {
+                                          "type": "string"
+                                        },
+                                        "images": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "rollout": {
+                                          "type": "object",
+                                          "properties": {
+                                            "phase": {
+                                              "type": "string"
+                                            },
+                                            "step": {
+                                              "type": "number"
+                                            },
+                                            "weight": {
+                                              "type": "number"
+                                            },
+                                            "message": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        "truncation": {
+                                          "type": "object",
+                                          "propertyNames": {
+                                            "type": "string"
+                                          },
+                                          "additionalProperties": {
+                                            "type": "object",
+                                            "properties": {
+                                              "dropped": {
+                                                "type": "boolean"
+                                              },
+                                              "droppedCharacters": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "droppedEntries": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "droppedFields": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              }
+                                            },
+                                            "required": [
+                                              "dropped"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
                                   ]
                                 }
                               },

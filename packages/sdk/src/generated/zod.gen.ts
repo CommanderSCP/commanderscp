@@ -2149,7 +2149,23 @@ export const zGetComponentPipelineResponse = z.object({
                 'build',
                 'infrastructure',
                 'configuration'
-            ])
+            ]),
+            observed: z.object({
+                revision: z.string().optional(),
+                images: z.array(z.string()).optional(),
+                rollout: z.object({
+                    phase: z.string().optional(),
+                    step: z.number().optional(),
+                    weight: z.number().optional(),
+                    message: z.string().optional()
+                }).optional(),
+                truncation: z.record(z.string(), z.object({
+                    dropped: z.boolean(),
+                    droppedCharacters: z.int().gte(0).lte(9007199254740991).optional(),
+                    droppedEntries: z.int().gte(0).lte(9007199254740991).optional(),
+                    droppedFields: z.int().gte(0).lte(9007199254740991).optional()
+                })).optional()
+            }).nullish()
         }).nullable(),
         currents: z.array(z.object({
             changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -2162,7 +2178,23 @@ export const zGetComponentPipelineResponse = z.object({
                 'build',
                 'infrastructure',
                 'configuration'
-            ])
+            ]),
+            observed: z.object({
+                revision: z.string().optional(),
+                images: z.array(z.string()).optional(),
+                rollout: z.object({
+                    phase: z.string().optional(),
+                    step: z.number().optional(),
+                    weight: z.number().optional(),
+                    message: z.string().optional()
+                }).optional(),
+                truncation: z.record(z.string(), z.object({
+                    dropped: z.boolean(),
+                    droppedCharacters: z.int().gte(0).lte(9007199254740991).optional(),
+                    droppedEntries: z.int().gte(0).lte(9007199254740991).optional(),
+                    droppedFields: z.int().gte(0).lte(9007199254740991).optional()
+                })).optional()
+            }).nullish()
         })),
         gate: z.object({
             policies: z.array(z.object({
