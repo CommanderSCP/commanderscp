@@ -88,6 +88,7 @@ describe("coordination engine: watchdog claim is single-flight under real multi-
 
   it("N concurrent sweeps racing the SAME stalled change produce exactly one Decision, one audit event, one notification", async () => {
     const ITERATIONS = 15;
+    const CONCURRENT_SWEEPS = 8;
     const counts: number[] = [];
     for (let iter = 0; iter < ITERATIONS; iter++) {
       const target = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
@@ -106,7 +107,6 @@ describe("coordination engine: watchdog claim is single-flight under real multi-
 
       const farFuture = new Date(Date.now() + 10 * 60_000);
 
-      const CONCURRENT_SWEEPS = 8;
       const results = await Promise.all(
         Array.from({ length: CONCURRENT_SWEEPS }, (_, i) =>
           runWatchdogSweep(server.deps.db, org.orgId, host, server.deps.config.secretsMasterKey, {
@@ -120,9 +120,15 @@ describe("coordination engine: watchdog claim is single-flight under real multi-
         flags.filter((f) => f.changeObjectId === target.id)
       );
       counts.push(winningFlags.length);
-      console.log(`iter ${iter}: winners=${winningFlags.length}`);
     }
-    console.log("ALL COUNTS:", counts);
-    expect(counts.every((c) => c === 1)).toBe(true);
+
+    // Compared as a WHOLE ARRAY, not `counts.every(c => c === 1)`. The `every` form reduces a race to
+    // "expected false to be true", which says nothing about WHICH iteration lost or by how much — the
+    // difference between two sweeps both flagging (the bug this test exists for) and zero sweeps
+    // flagging (a broken fixture) is invisible in that message, and this test is only meaningful when
+    // it fails in CI, where nobody can re-run it interactively.
+    expect(counts, `${ITERATIONS} iterations x ${CONCURRENT_SWEEPS} concurrent sweeps`).toEqual(
+      Array.from({ length: ITERATIONS }, () => 1)
+    );
   }, 120_000);
 });
