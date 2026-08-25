@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
-import type { ComponentPipelineCorrelatedInfra, GraphObject } from "@scp/schemas";
+import type { ComponentPipelineCorrelatedInfra } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { compileAndPersistPlan } from "./plan-service.js";
 import {
