@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { categoryOfType } from "@scp/schemas";
 import type {
+  ComponentPipelineCorrelatedInfraChange,
   ComponentPipelineHold,
   ComponentPipelineResponse,
   ComponentPipelineStage,
@@ -32,6 +33,8 @@ import { resolveOutpostObjectsByPeer } from "../federation/outposts-repo.js";
 import { federationPeers } from "../db/schema.js";
 import { artifactFactsForComponent } from "./artifact-facts.js";
 import { observedRunForComponent } from "./observed-run-facts.js";
+import { requiresOf } from "./changes-repo.js";
+import { namesForObjectIds } from "../dependencies/producer-declaration.js";
 
 /**
  * A COMPONENT'S PIPELINE — its stages, derived from durable graph state.
@@ -883,6 +886,16 @@ export async function getComponentPipeline(
   // `observed-run-facts.ts`).
   const observedRun = await observedRunForComponent(tx, orgId, component.id);
 
+  // owner decision, 2026-08-24 (correlated-infrastructure lane) — every infrastructure change this
+  // component's placements/hosted-on/couplings implicate, that is not its own. Independent of the
+  // stages above: it reads `change_wave_targets` for OTHER changes, not this component's own.
+  const correlatedInfra = await correlatedInfraForComponent(
+    tx,
+    orgId,
+    component.id,
+    placementByTargetId
+  );
+
   return {
     component: {
       id: component.id,
@@ -904,8 +917,302 @@ export async function getComponentPipeline(
     registry,
     artifact,
     observedRun,
+    correlatedInfra,
     unknownFields: []
   };
+}
+
+/**
+ * THE `hosted_on` DEPLOYMENT-TARGET IDS a component names directly (owner decision, 2026-08-24) —
+ * one relationship read, mirroring `registryForComponent`'s `publishes_to` read: the same
+ * `fromId`/`typeId` shape, joined live (`deleted_at IS NULL`) to the deployment-target it names.
+ * `hosted_on` is a component-level fact, independent of placement — a component can be `hosted_on`
+ * a place it holds no `placement` row at all.
+ */
+async function hostedOnDeploymentTargetIds(
+  tx: TenantTx,
+  orgId: string,
+  componentId: string
+): Promise<string[]> {
+  const rows = await tx
+    .select({ targetId: objects.id })
+    .from(relationships)
+    .innerJoin(
+      objects,
+      and(
+        eq(objects.id, relationships.toId),
+        eq(objects.orgId, orgId),
+        eq(objects.typeId, "deployment-target"),
+        isNull(objects.deletedAt)
+      )
+    )
+    .where(
+      and(
+        eq(relationships.orgId, orgId),
+        eq(relationships.typeId, "hosted_on"),
+        eq(relationships.fromId, componentId),
+        isNull(relationships.deletedAt)
+      )
+    );
+  return rows.map((r) => r.targetId);
+}
+
+/** Which correlation arm named a deployment-target — `placement` beats `hosted_on` when a target
+ *  qualifies both ways (component-pipeline.ts module doc, `ComponentPipelineCorrelatedInfraChangeSchema`). */
+type CorrelationRoute = "placement" | "hosted_on";
+
+/**
+ * THE CORRELATED-INFRASTRUCTURE LANE (owner decision, 2026-08-24) — every infrastructure change
+ * NOT this component's own whose wave/bound target names a deployment-target this component's
+ * placements ALSO name, or that this component is `hosted_on`; plus a coupling arm for a
+ * `provides`/`requires` match. See `ComponentPipelineCorrelatedInfraChangeSchema` for the full rule
+ * and `ComponentPipelineCorrelatedInfraSchema` for the always-emitted-once-evaluated contract.
+ *
+ * ============================================================================================
+ * THE KEY SET, AND WHY IT IS THREE UNIONS
+ * ============================================================================================
+ * `change_wave_targets.target_object_id` is a PLACEMENT id under stage-shaped compilation
+ * (`plan-service.ts`'s `resolveStagePlacements` — every stage-mode wave target IS a placement,
+ * never the deployment-target it sits at), but a change that targets a deployment-target DIRECTLY
+ * (no component in its `targets` at all — a legitimate shape: an infrastructure change about the
+ * place itself, e.g. a cluster upgrade, has no component to be `placements`-resolved through) never
+ * enters stage mode and keeps the raw deployment-target id under legacy compilation. BOTH id shapes
+ * are real, so the key set is the union of this component's own placement ids (catches this
+ * component's OWN stage-mode releases — see the exclusion below) and its placements' own
+ * deployment-target ids (catches a direct infrastructure change against the place itself), plus
+ * every deployment-target this component is `hosted_on`.
+ *
+ * ============================================================================================
+ * WHY THE COMPONENT'S OWN CHANGES ARE EXCLUDED BY READING `properties.targets`, NOT BY IDENTITY
+ * ============================================================================================
+ * This component's own stage-mode infrastructure releases land in the key set for free (their wave
+ * target IS one of this component's own placement ids), which is exactly why they must be filtered
+ * OUT — the lane this section sits beside already renders them. The filter reads
+ * `properties.targets` (the same field `targetObjectIdsOf` names) rather than comparing wave-target
+ * identity, because that is the field that actually states "whose release this is" — a wave target
+ * id says WHERE a release lands, not WHOSE release it is.
+ *
+ * ============================================================================================
+ * WHAT IT COSTS
+ * ============================================================================================
+ * One relationship read (`hosted_on`), one bounded (`LIMIT 25`) scan of `change_wave_targets` keyed
+ * on the `change_wave_targets_org_target` index, and — only if this component's own recent changes
+ * declare a `requires` — one bounded scan for those plus one probe per distinct key, each served by
+ * the `obj_props` GIN index exactly as `coupling.ts`'s `requirementStatuses` is. Nothing for a
+ * component with no placements, no `hosted_on` edge and no `requires`: the key set is empty and the
+ * placement/hosted_on scan is skipped, and the coupling scan returns no keys to probe.
+ */
+async function correlatedInfraForComponent(
+  tx: TenantTx,
+  orgId: string,
+  componentId: string,
+  placementByTargetId: Map<string, { id: string; urn: string }>
+): Promise<NonNullable<ComponentPipelineResponse["correlatedInfra"]>> {
+  // THE KEY SET — target_object_id values that correlate to THIS component, and which arm each one
+  // belongs to. A deployment-target id claimed by BOTH `placementByTargetId` and `hosted_on` keeps
+  // its `placement` route (the more specific fact), never gets downgraded.
+  const routeByTargetObjectId = new Map<string, CorrelationRoute>();
+  const deploymentTargetIdOf = new Map<string, string>(); // target_object_id -> deployment-target id
+  for (const [deploymentTargetId, placement] of placementByTargetId) {
+    routeByTargetObjectId.set(deploymentTargetId, "placement");
+    deploymentTargetIdOf.set(deploymentTargetId, deploymentTargetId);
+    routeByTargetObjectId.set(placement.id, "placement");
+    deploymentTargetIdOf.set(placement.id, deploymentTargetId);
+  }
+  const hostedOnIds = await hostedOnDeploymentTargetIds(tx, orgId, componentId);
+  for (const deploymentTargetId of hostedOnIds) {
+    if (!routeByTargetObjectId.has(deploymentTargetId)) {
+      routeByTargetObjectId.set(deploymentTargetId, "hosted_on");
+      deploymentTargetIdOf.set(deploymentTargetId, deploymentTargetId);
+    }
+  }
+  const keySet = [...routeByTargetObjectId.keys()];
+
+  interface MatchedChange {
+    changeObjectId: string;
+    name: string | null;
+    state: string;
+    type: string;
+    createdAt: string;
+    route: CorrelationRoute;
+    deploymentTargetId: string;
+  }
+  const byChangeId = new Map<string, MatchedChange>();
+
+  if (keySet.length > 0) {
+    // Ordered newest-first, same tiebreak `currentsByPlacement` documents (a UUIDv7 change id is
+    // itself time-ordered, so `object_id DESC` breaks a same-timestamp tie deterministically). NOT
+    // `DISTINCT ON` — a change can carry several matching wave targets (placed at more than one
+    // correlated place), and the JS reduction below needs every one of them to apply the
+    // placement-beats-hosted_on priority correctly; the bounded page is the guard against an
+    // unbounded scan instead (the same tradeoff `artifact-facts.ts`'s `pickArtifactChange` fallback
+    // documents).
+    const rows = await tx.execute<{
+      target_object_id: string;
+      change_object_id: string;
+      change_name: string | null;
+      change_state: string;
+      type: string;
+      created_at: string;
+    }>(sql`
+      SELECT
+        t.target_object_id AS target_object_id,
+        o.id                AS change_object_id,
+        o.name              AS change_name,
+        c.state             AS change_state,
+        t.type              AS type,
+        c.created_at         AS created_at
+      FROM ${changeWaveTargets} t
+      JOIN ${changeWaves} w  ON w.id = t.wave_id AND w.org_id = t.org_id
+      JOIN ${changePlans} p  ON p.id = w.plan_id AND p.org_id = w.org_id
+      JOIN ${changes} c      ON c.object_id = p.change_object_id AND c.org_id = p.org_id
+      JOIN ${objects} o      ON o.id = c.object_id AND o.org_id = c.org_id
+      WHERE t.org_id = ${orgId}::uuid
+        AND t.type = 'infrastructure'
+        AND o.deleted_at IS NULL
+        AND t.target_object_id IN (${sql.join(
+          keySet.map((id) => sql`${id}::uuid`),
+          sql`, `
+        )})
+        AND NOT (o.properties @> ${JSON.stringify({ targets: [componentId] })}::jsonb)
+      ORDER BY c.created_at DESC, o.id DESC
+      LIMIT 25
+    `);
+    for (const r of rows.rows) {
+      const route = routeByTargetObjectId.get(r.target_object_id);
+      const deploymentTargetId = deploymentTargetIdOf.get(r.target_object_id);
+      if (!route || !deploymentTargetId) continue; // unreachable — every row came from the key set
+      const existing = byChangeId.get(r.change_object_id);
+      // `placement` beats `hosted_on`; otherwise the first row wins (rows are already newest-first,
+      // so within one route the identity fields are the same change regardless of which matching
+      // target is kept).
+      if (existing && (existing.route === "placement" || route === "hosted_on")) continue;
+      byChangeId.set(r.change_object_id, {
+        changeObjectId: r.change_object_id,
+        name: r.change_name,
+        state: r.change_state,
+        type: r.type,
+        // `new Date(...)` rather than trusting the declared string type: `tx.execute` is the raw
+        // driver path (unlike a drizzle `.select()`, which decodes per the schema's column type and
+        // hands back a `Date`), and its runtime shape for a `timestamptz` is not this file's to
+        // assume — `currentsByPlacement` gets away with the bare string because it only ever
+        // `localeCompare`s it, never puts it on the wire. This is the one place here that does.
+        createdAt: new Date(r.created_at).toISOString(),
+        route,
+        deploymentTargetId
+      });
+    }
+  }
+
+  // THE COUPLING ARM — this component's OWN recent `requires` keys, then every infra-Type change
+  // that `provides` one of them (`coupling.ts`'s jsonb-containment probe pattern, without the
+  // `targets`/`at` half: a coupling correlates by KEY alone, not by place). Skipped entirely for a
+  // component with no `requires` anywhere in its recent history — the common case.
+  const ownRecentRows = await tx
+    .select({ properties: objects.properties })
+    .from(changes)
+    .innerJoin(objects, and(eq(objects.id, changes.objectId), eq(objects.orgId, changes.orgId)))
+    .where(
+      and(
+        eq(changes.orgId, orgId),
+        isNull(objects.deletedAt),
+        sql`${objects.properties} @> ${JSON.stringify({ targets: [componentId] })}::jsonb`
+      )
+    )
+    .orderBy(sql`${changes.createdAt} DESC`, sql`${changes.objectId} DESC`)
+    .limit(25);
+  const requiredKeys = new Set<string>();
+  for (const row of ownRecentRows) {
+    for (const req of requiresOf(row.properties as Record<string, unknown> | null).requirements) {
+      requiredKeys.add(req.key);
+    }
+  }
+
+  const coupledKeyByChangeId = new Map<string, string>();
+  for (const key of requiredKeys) {
+    const probe = JSON.stringify({ provides: [key], type: "infrastructure" });
+    const rows = await tx.execute<{
+      change_object_id: string;
+      change_name: string | null;
+      change_state: string;
+      created_at: string;
+    }>(sql`
+      SELECT o.id AS change_object_id, o.name AS change_name, c.state AS change_state,
+             c.created_at AS created_at
+      FROM ${changes} c
+      JOIN ${objects} o ON o.id = c.object_id AND o.org_id = c.org_id
+      WHERE c.org_id = ${orgId}::uuid
+        AND o.deleted_at IS NULL
+        AND o.properties @> ${probe}::jsonb
+        AND NOT (o.properties @> ${JSON.stringify({ targets: [componentId] })}::jsonb)
+      ORDER BY c.created_at DESC, o.id DESC
+      LIMIT 20
+    `);
+    for (const r of rows.rows) {
+      // One coupled key surfaces per change (the wire shape carries a single `coupledKey`); the
+      // first key found for a change wins, which is a stable pick since `requiredKeys` iterates in
+      // the newest-first order the recent-changes scan above produced it in.
+      if (!coupledKeyByChangeId.has(r.change_object_id)) {
+        coupledKeyByChangeId.set(r.change_object_id, key);
+      }
+      if (!byChangeId.has(r.change_object_id)) {
+        byChangeId.set(r.change_object_id, {
+          changeObjectId: r.change_object_id,
+          name: r.change_name,
+          state: r.change_state,
+          type: "infrastructure",
+          createdAt: new Date(r.created_at).toISOString(),
+          // Placeholder — overwritten below by the merge into wire shape, which reads `route:
+          // "coupling"` for any change absent from the placement/hosted_on map. Kept here only so
+          // this map's value type stays uniform; never read as `placement` for such a row.
+          route: "hosted_on",
+          deploymentTargetId: ""
+        });
+      }
+    }
+  }
+
+  // NAMES, batched — every deployment-target this response is about to cite, resolved in one read
+  // (`namesForObjectIds`, `dependencies/producer-declaration.ts`), never a bare id where a name
+  // exists.
+  const targetNames = await namesForObjectIds(
+    tx,
+    orgId,
+    [...byChangeId.values()].map((m) => m.deploymentTargetId).filter((id) => id.length > 0)
+  );
+
+  const changesOut: ComponentPipelineCorrelatedInfraChange[] = [...byChangeId.entries()]
+    .map(([changeObjectId, m]) => {
+      const coupledKey = coupledKeyByChangeId.get(changeObjectId) ?? null;
+      // A row this loop only ever inserted via the coupling arm (never matched via
+      // placement/hosted_on) carries the placeholder `deploymentTargetId: ""` from above — that is
+      // exactly the signal to render `route: "coupling"` with a null target, whatever placeholder
+      // route string rides along with it.
+      const matchedViaPlacementOrHostedOn = m.deploymentTargetId.length > 0;
+      return {
+        changeObjectId,
+        name: m.name,
+        state: m.state,
+        type: m.type,
+        createdAt: m.createdAt,
+        correlatedVia: matchedViaPlacementOrHostedOn
+          ? {
+              route: m.route,
+              target: {
+                objectId: m.deploymentTargetId,
+                name: targetNames.get(m.deploymentTargetId) ?? null
+              }
+            }
+          : { route: "coupling" as const, target: null },
+        coupledKey
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.createdAt.localeCompare(a.createdAt) || b.changeObjectId.localeCompare(a.changeObjectId)
+    );
+
+  return { changes: changesOut };
 }
 
 /**

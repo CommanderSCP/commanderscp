@@ -6749,6 +6749,23 @@ export type GetComponentPipelineResponses = {
             observedAt: string;
             changeId: string;
         } | null;
+        correlatedInfra?: {
+            changes: Array<{
+                changeObjectId: string;
+                name: string | null;
+                state: string;
+                type: string;
+                createdAt: string;
+                correlatedVia: {
+                    route: 'placement' | 'hosted_on' | 'coupling';
+                    target: {
+                        objectId: string;
+                        name: string | null;
+                    } | null;
+                };
+                coupledKey: string | null;
+            }>;
+        } | null;
         unknownFields: Array<string>;
     };
 };
