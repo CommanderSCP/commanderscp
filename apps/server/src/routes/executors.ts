@@ -98,6 +98,7 @@ async function bindTargetToExecutionSystem(
   tx: TenantTx,
   orgId: string,
   subjectObjectId: string,
+  requestId: string,
   targetObjectId: string,
   executionSystemId: string,
   externalRef?: string,
@@ -130,7 +131,9 @@ async function bindTargetToExecutionSystem(
     targetObjectId,
     type,
     ...identity,
-    externalRef
+    externalRef,
+    actorObjectId: subjectObjectId,
+    requestId
   });
 }
 
@@ -320,6 +323,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             tx,
             auth.orgId,
             auth.subjectObjectId,
+            request.id,
             target.id,
             body.executionSystemId,
             body.externalRef,
@@ -336,7 +340,9 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           config: body.config,
           secretRefs: body.secretRefs,
           allowedHosts: body.allowedHosts,
-          externalRef: body.externalRef
+          externalRef: body.externalRef,
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id
         });
       });
       reply.status(200).send(binding);
@@ -471,7 +477,14 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           scopeObjectId: target.id
         });
         const type = request.query.type ?? DEFAULT_BINDING_TYPE;
-        const row = await deleteExecutorBinding(tx, auth.orgId, target.id, type);
+        const row = await deleteExecutorBinding(
+          tx,
+          auth.orgId,
+          target.id,
+          type,
+          auth.subjectObjectId,
+          request.id
+        );
         if (!row) {
           throw notFound(
             `no '${type}' executor binding configured for '${request.params.idOrUrn}'`
@@ -524,7 +537,9 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           auth.orgId,
           target.id,
           fromType,
-          request.body.type
+          request.body.type,
+          auth.subjectObjectId,
+          request.id
         );
         if (!row) {
           throw notFound(
@@ -1160,6 +1175,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             tx,
             auth.orgId,
             auth.subjectObjectId,
+            "discovery-accept",
             targetId,
             proposedBinding.executionSystemId,
             proposedBinding.externalRef

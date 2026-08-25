@@ -13,6 +13,7 @@ import { badRequest, conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
 import { assertManagedTimeoutSchemas } from "../plugin-host/call-policy.js";
 import { assertEveryModuleHasManifest } from "../plugin-host/plugin-manifests.js";
@@ -263,6 +264,18 @@ export interface UpsertExecutorBindingInput {
   allowedHosts?: string[];
   externalRef?: string | null;
   executionSystemId?: string | null;
+  /** WHO/WHAT REQUEST is doing this write — carried through to `executor.binding.put`'s audit event
+   *  (2026-08-25 gap: PUT and DELETE binding wrote no audit event at all; the only executor-ish
+   *  audit action ever written was `change.wave_target.no_executor`, a READ-time observation, not a
+   *  record of the binding itself changing). Threaded HERE rather than appended at each call site,
+   *  the same "one shared write, every caller covered" idiom `objects-repo.ts`'s `createObject` and
+   *  `relationships-repo.ts`'s `createRelationship` already use (M6's audit-repo doc: "zero
+   *  additional call-site wiring anywhere else in the codebase") — this is the ONE function every
+   *  binding write already funnels through (the typed routes AND `iac/plans-repo.ts`'s apply-time
+   *  create/update loop), so putting the audit call here covers both doors in one change instead of
+   *  two that could drift. */
+  actorObjectId: string;
+  requestId: string;
 }
 
 export async function upsertExecutorBinding(
@@ -281,8 +294,9 @@ export async function upsertExecutorBinding(
   // silently destroyed the first one before P3.
   const type = input.type ?? DEFAULT_BINDING_TYPE;
   const existing = await getExecutorBinding(tx, input.orgId, input.targetObjectId, type);
+  let row: ExecutorBindingRow;
   if (existing) {
-    const [row] = await tx
+    const [updated] = await tx
       .update(executorBindings)
       .set({
         pluginModule: input.pluginModule,
@@ -296,25 +310,39 @@ export async function upsertExecutorBinding(
       })
       .where(eq(executorBindings.id, existing.id))
       .returning();
-    return toRow(row!);
+    row = toRow(updated!);
+  } else {
+    const [inserted] = await tx
+      .insert(executorBindings)
+      .values({
+        id: uuidv7(),
+        orgId: input.orgId,
+        targetObjectId: input.targetObjectId,
+        type,
+        pluginModule: input.pluginModule,
+        pluginInstanceId: input.pluginInstanceId,
+        config: input.config ?? {},
+        secretRefs: input.secretRefs ?? {},
+        allowedHosts: input.allowedHosts ?? [],
+        externalRef: input.externalRef ?? null,
+        executionSystemId: input.executionSystemId ?? null
+      })
+      .returning();
+    row = toRow(inserted!);
   }
-  const [row] = await tx
-    .insert(executorBindings)
-    .values({
-      id: uuidv7(),
-      orgId: input.orgId,
-      targetObjectId: input.targetObjectId,
-      type,
-      pluginModule: input.pluginModule,
-      pluginInstanceId: input.pluginInstanceId,
-      config: input.config ?? {},
-      secretRefs: input.secretRefs ?? {},
-      allowedHosts: input.allowedHosts ?? [],
-      externalRef: input.externalRef ?? null,
-      executionSystemId: input.executionSystemId ?? null
-    })
-    .returning();
-  return toRow(row!);
+  // NEVER config/secrets — `reason` carries only the identity a binding is keyed on (target, Type,
+  // which plugin), the same restraint `beforeHash`/`afterHash` observe for object mutations (those
+  // hash the properties rather than inline them; a binding's `config`/`secretRefs` has no such hash
+  // to point at, so the honest choice is to name neither in the audit row at all).
+  await appendAuditEvent(tx, {
+    orgId: input.orgId,
+    actorId: input.actorObjectId,
+    action: "executor.binding.put",
+    subjectId: input.targetObjectId,
+    reason: `${existing ? "updated" : "created"} '${row.type}' binding on '${input.targetObjectId}' -> plugin '${row.pluginModule}'${row.executionSystemId ? ` (execution-system '${row.executionSystemId}')` : ""}`,
+    requestId: input.requestId
+  });
+  return row;
 }
 
 /**
@@ -323,14 +351,25 @@ export async function upsertExecutorBinding(
  * primitive that was missing: before P5c a binding could be created and repointed but never removed,
  * so a stale/mis-imported binding polled forever. Returns the deleted row (for the route to report),
  * or undefined if no such binding exists (the route 404s).
+ *
+ * WRITES `executor.binding.delete` in THIS transaction, same reasoning as `upsertExecutorBinding`'s
+ * doc — this is the one function both the DELETE route and `iac/plans-repo.ts`'s apply-time prune
+ * funnel through, so the audit event needs writing here once, not per caller. A no-op delete (no
+ * such binding) writes NOTHING — there is no row to name, and the route 404s instead.
  */
 export async function deleteExecutorBinding(
   tx: TenantTx,
   orgId: string,
   targetObjectId: string,
-  type: BindingType = DEFAULT_BINDING_TYPE
+  type: BindingType = DEFAULT_BINDING_TYPE,
+  // REQUIRED, not optional: an optional pair here is exactly the shape that lets a future caller
+  // silently skip the audit event by omission (the failure mode this increment exists to close —
+  // `executor.binding.put`/`.delete` had NO caller writing them at all until now). Both current
+  // callers (the DELETE route, `iac/plans-repo.ts`'s apply-time prune) already hold both.
+  actorObjectId: string,
+  requestId: string
 ): Promise<ExecutorBindingRow | undefined> {
-  const [row] = await tx
+  const [deleted] = await tx
     .delete(executorBindings)
     .where(
       and(
@@ -340,7 +379,17 @@ export async function deleteExecutorBinding(
       )
     )
     .returning();
-  return row ? toRow(row) : undefined;
+  if (!deleted) return undefined;
+  const row = toRow(deleted);
+  await appendAuditEvent(tx, {
+    orgId,
+    actorId: actorObjectId,
+    action: "executor.binding.delete",
+    subjectId: targetObjectId,
+    reason: `deleted '${row.type}' binding on '${targetObjectId}' -> plugin '${row.pluginModule}'`,
+    requestId
+  });
+  return row;
 }
 
 /**
@@ -352,13 +401,20 @@ export async function deleteExecutorBinding(
  * caller must delete/repurpose that one first — surfaced as a clear conflict, not a raw
  * unique-violation. A same-type relabel is an idempotent no-op. Returns undefined if no (target,
  * fromType) binding exists (route 404s).
+ *
+ * AUDITED (`executor.binding.retype`) — same census that added `.put`/`.delete`: PATCH is a third
+ * binding-identity write door (the only one reachable through the typed routes besides PUT/DELETE)
+ * and was equally silent. The idempotent same-type no-op returns early and writes NOTHING — nothing
+ * changed, so there is nothing to record.
  */
 export async function setExecutorBindingType(
   tx: TenantTx,
   orgId: string,
   targetObjectId: string,
   fromType: BindingType,
-  toType: BindingType
+  toType: BindingType,
+  actorObjectId: string,
+  requestId: string
 ): Promise<ExecutorBindingRow | undefined> {
   const existing = await getExecutorBinding(tx, orgId, targetObjectId, fromType);
   if (!existing) return undefined;
@@ -375,7 +431,16 @@ export async function setExecutorBindingType(
     .set({ type: toType, updatedAt: new Date() })
     .where(eq(executorBindings.id, existing.id))
     .returning();
-  return toRow(row!);
+  const updated = toRow(row!);
+  await appendAuditEvent(tx, {
+    orgId,
+    actorId: actorObjectId,
+    action: "executor.binding.retype",
+    subjectId: targetObjectId,
+    reason: `relabelled binding on '${targetObjectId}' from '${fromType}' to '${toType}' -> plugin '${updated.pluginModule}'`,
+    requestId
+  });
+  return updated;
 }
 
 /**
@@ -384,6 +449,16 @@ export async function setExecutorBindingType(
  * the destination has no binding at this Type first (owner Q1: reject-and-relabel, no
  * auto-collision); this still catches a concurrent racer at `UNIQUE(org,target,type)` and surfaces
  * the same one-per-Type 409 rather than a raw unique-violation.
+ *
+ * NOT AUDITED THIS ROUND, DELIBERATELY LEFT SO, NOT SILENTLY (the 2026-08-25 binding-lifecycle
+ * audit census's one open item): this is the FOURTH binding-identity write door, reached only from
+ * `component-merge-repo.ts`'s `mergeComponents`. It is not being wired here because the gap it sits
+ * in is bigger than this function — `POST /v1/components/{id}/merge` (routes/components.ts) writes
+ * NO audit event at all today, for the merge OR any of its side effects (this repoint among them,
+ * plus every relationship/placement the merge moves). Auditing the repoint alone would produce one
+ * correct-looking row while the merge that caused it stays invisible beside it, which is worse than
+ * leaving both silent — a reader would reasonably assume "audited" covers the whole action. Fixing
+ * `mergeComponents`'s audit coverage is its own increment, not a rider on this one.
  */
 export async function repointExecutorBindingTarget(
   tx: TenantTx,

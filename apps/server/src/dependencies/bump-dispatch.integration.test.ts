@@ -441,7 +441,9 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         targetObjectId: component.id,
         pluginModule: options?.pluginModule ?? "github",
         pluginInstanceId: instanceId,
-        config: { appId: "1", installationId: "2", owner: "acme", repo: `dep-${slug}` }
+        config: { appId: "1", installationId: "2", owner: "acme", repo: `dep-${slug}` },
+        actorObjectId: org.orgId,
+        requestId: "test-setup"
       })
     );
 
@@ -759,7 +761,9 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         targetObjectId: component.id,
         pluginModule: "github",
         pluginInstanceId: `gh-quiet-${slug}`,
-        config: { appId: "1", installationId: "2", owner: "acme", repo: `quiet-${slug}` }
+        config: { appId: "1", installationId: "2", owner: "acme", repo: `quiet-${slug}` },
+        actorObjectId: org.orgId,
+        requestId: "test-setup"
       })
     );
     const line = await inOrg((tx) =>
@@ -2435,7 +2439,9 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
           pluginModule,
           pluginInstanceId: `${pluginModule}-inst`,
           type,
-          config: {}
+          config: {},
+          actorObjectId: org.orgId,
+          requestId: "test-setup"
         })
       );
     }

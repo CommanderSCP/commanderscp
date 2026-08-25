@@ -1575,7 +1575,9 @@ export async function executePlanDiff(
       tx,
       orgId,
       await bindingTargetObjectId(entry),
-      entry.type
+      entry.type,
+      actorObjectId,
+      requestId
     );
     if (!removed) {
       throw notFound(
@@ -1671,7 +1673,9 @@ export async function executePlanDiff(
         targetObjectId,
         type: entry.type,
         ...identity,
-        externalRef: target.externalRef
+        externalRef: target.externalRef,
+        actorObjectId,
+        requestId
       });
       continue;
     }
@@ -1686,7 +1690,9 @@ export async function executePlanDiff(
       secretRefs: target.secretRefs,
       allowedHosts: target.allowedHosts,
       externalRef: target.externalRef,
-      executionSystemId: null
+      executionSystemId: null,
+      actorObjectId,
+      requestId
     });
   }
 

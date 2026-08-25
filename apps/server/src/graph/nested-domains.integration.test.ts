@@ -179,7 +179,9 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
         type: "configuration",
         pluginModule: "test-plugin",
         pluginInstanceId: `test-plugin-${uniq("instance")}`,
-        config: {}
+        config: {},
+        actorObjectId: org.orgId,
+        requestId: "test-setup"
       })
     );
 

@@ -1115,7 +1115,9 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
           targetObjectId: producer.id,
           pluginModule: "github",
           pluginInstanceId: instanceId,
-          config: { appId: "1", installationId: "2", owner: "acme", repo: "wired" }
+          config: { appId: "1", installationId: "2", owner: "acme", repo: "wired" },
+          actorObjectId: org.orgId,
+          requestId: "test-setup"
         })
       );
       const change = await releaseTo(producer.id, prodTarget, {
