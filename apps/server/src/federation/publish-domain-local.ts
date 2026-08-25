@@ -42,6 +42,21 @@ export interface PublishDomainLocalResult {
  * edges, and an operator must be able to see that as an action with an effect rather than as a field
  * edit that quietly emitted a stream of entries.
  *
+ * ## Authorization lives at the door, and it is TWO permissions
+ *
+ * This function takes a `TenantTx` and an `actorObjectId` for AUTHORSHIP only — it authorizes
+ * nothing, the same split `federation/domain-local.ts` documents ("authorization at the door,
+ * invariant at the repo"). Its sole route, `POST /objects/{type}/{idOrUrn}/publish`, demands BOTH
+ * `object:write` and `federation:write` at the object.
+ *
+ * BOTH, because this is both acts at once. `federation:write` matches the permission that DECLARED
+ * locality (ADR-0031 §1) — undoing a boundary decision cannot be cheaper than making it.
+ * `object:write` matches declaring's OTHER half, and it is here because of what the body below
+ * actually does: it `UPDATE`s an estate row and BUMPS `version`. On `federation:write` alone the
+ * FederationAdmin shape ("operates the link, does not edit the estate") could re-version estate
+ * rows through the inverse of a verb it was never allowed to perform. A new caller that reaches
+ * this function without both bars re-opens that.
+ *
  * ## One-way, permanently
  *
  * There is no inverse and there will not be one. Federation has no un-send: once an object's

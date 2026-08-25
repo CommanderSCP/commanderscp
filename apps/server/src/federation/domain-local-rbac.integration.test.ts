@@ -11,6 +11,8 @@ import {
   type TestOrg,
   type TestUser
 } from "../test-support/harness.js";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { roleBindings, roles } from "../db/schema.js";
 
 /**
  * M20.1 (ADR-0031 §1) — DECLARING AN OBJECT DOMAIN-LOCAL REQUIRES `federation:write`, AT EVERY DOOR.
@@ -38,9 +40,27 @@ import {
  * can create objects and cannot declare locality — which is exactly the distinction ADR-0031 draws,
  * and the same actor `outposts-rbac.integration.test.ts` uses for the mirror-image case.
  *
- * Every 403 here is therefore about the *federation* permission specifically. The first test is the
- * control that earns that reading: without proving this actor can create an ordinary object, the
- * whole file would pass just as well with a token holding no permissions at all.
+ * Every 403 from `operator` is therefore about the *federation* permission specifically. The first
+ * test is the control that earns that reading: without proving this actor can create an ordinary
+ * object, the whole file would pass just as well with a token holding no permissions at all.
+ *
+ * ## The PUBLISH door tests use two DIFFERENT actors, in the opposite direction
+ *
+ * `POST /objects/{type}/{idOrUrn}/publish` is gated on BOTH permissions, so it is exercised from
+ * both sides and `operator` can only test one of them. The `federationOnly` /
+ * `federationAndObjectWrite` pair below are org-defined roles differing in exactly `object:write`,
+ * which is what makes that 403 attributable. Their cases say so explicitly; do not read the
+ * paragraph above as covering them.
+ *
+ * ### MUTATION RUN (2026-08-25) for the publish `object:write` bar. MEASURED, not predicted.
+ *
+ * DELETE the `object:write` `authorize` from the publish handler in `routes/objects-generic.ts`
+ *   -> 1 failed | 16 passed. "403 with federation:write but NO object:write" went red on
+ *      `AssertionError: ... expected 200 to be 403`, and the returned body is the proof rather than
+ *      the status: `"domainLocal":false,"version":2` — a subject holding `object:write` NOWHERE had
+ *      cleared the locality flag and re-versioned a live estate row, which is the whole defect.
+ *      THE OTHER PUBLISH CASES STAYED GREEN, including the `federation:write` 403 — so the new bar
+ *      is not what makes them pass and they are not what makes it pass.
  *
  * ## What is asserted at each door — three things, because a status code alone is weak
  *
@@ -117,6 +137,18 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
   let org: TestOrg;
   let admin: ScpClient;
   let operator: TestUser;
+  /**
+   * The PUBLISH pair. Two org-defined roles differing in EXACTLY ONE permission, `object:write`, so
+   * the 403 below is attributable to the bar under test and to nothing else.
+   *
+   * Org-defined rather than built-in because no BUILT-IN role can express "federation:write without
+   * object:write": `drizzle/0012` puts `federation:write` on Administrator and Owner, and
+   * `drizzle/0002` puts `object:write` on both of those plus Operator and Approver, so every
+   * built-in holder of one holds the other. Comparing against `admin` instead would leave the 403
+   * explainable by any of four other permissions Administrator happens to carry.
+   */
+  let federationOnly: TestUser;
+  let federationAndObjectWrite: TestUser;
   let serviceUrn: string;
 
   /** Raw inject, not the SDK: the subject is the STATUS an under-permissioned token gets, and the
@@ -145,11 +177,62 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     // Org-root Operator: object:write + relationship:write + federation:read, NO federation:write.
     operator = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+    federationOnly = await createUserWithPermissions(["federation:read", "federation:write"]);
+    federationAndObjectWrite = await createUserWithPermissions([
+      "federation:read",
+      "federation:write",
+      "object:write"
+    ]);
     const service = await admin
       .object("service")
       .create({ name: `svc-${randomUUID().slice(0, 8)}` });
     serviceUrn = service.urn;
-  }, 120_000);
+  }, 180_000);
+
+  /**
+   * A subject holding EXACTLY `permissions` at the org root.
+   *
+   * Viewer is bound purely so the harness mints an auth row and a live token; `object:read` grants
+   * no write anywhere and is no part of what is under test.
+   */
+  async function createUserWithPermissions(permissions: string[]): Promise<TestUser> {
+    const user = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const roleId = randomUUID();
+      await tx.insert(roles).values({
+        id: roleId,
+        orgId: org.orgId,
+        name: `dl-publish-${randomUUID().slice(0, 8)}`,
+        permissions
+      });
+      await tx.insert(roleBindings).values({
+        id: randomUUID(),
+        orgId: org.orgId,
+        subjectId: user.objectId,
+        roleId,
+        scopeObjectId: org.orgId,
+        effect: "allow"
+      });
+    });
+    return user;
+  }
+
+  /** A fresh domain-local `service`, created by the admin — the only actor that can declare one. */
+  async function newDomainLocalService(label: string): Promise<{ id: string }> {
+    const created = await admin
+      .object("service")
+      .create({ name: `${label}-${randomUUID().slice(0, 8)}`, domainLocal: true });
+    expect(created.domainLocal).toBe(true);
+    return { id: created.id };
+  }
+
+  async function publishAs(token: string, id: string) {
+    return server.app.inject({
+      method: "POST",
+      url: `/api/v1/objects/service/${id}/publish`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+  }
 
   afterAll(async () => {
     await server?.close();
@@ -302,7 +385,8 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
 
   it("POST /objects/{type}/{idOrUrn}/publish — 403 without federation:write, and the object stays domain-local", async () => {
     // M20.4. Undoing a boundary decision cannot be cheaper than making it, so publish is gated on
-    // the same permission that declared locality. Note this route takes NO body, so the census above
+    // the same permissionS that declared locality — this case covers the `federation:write` half,
+    // and the two cases below cover the `object:write` half. Note this route takes NO body, so the census above
     // (which reads request bodies) cannot see it — it is covered here explicitly, and this comment
     // is why the census is a floor rather than the whole story.
     const created = await admin
@@ -319,6 +403,35 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
     // The refusal is REAL, not merely a status: the object is untouched and still domain-local.
     const after = await admin.object("service").get(created.id);
     expect(after.domainLocal).toBe(true);
+  });
+
+  it("POST /objects/{type}/{idOrUrn}/publish — 403 with federation:write but NO object:write, and the object stays domain-local", async () => {
+    // THE ASYMMETRY THIS CLOSES. Declaring locality costs `object:write` AND `federation:write`
+    // (every 403 above). Publishing — the INVERSE verb, which UPDATEs the estate row, bumps
+    // `version`, and sweeps the object plus its edges onto the federation journal — cost only
+    // `federation:write`. So the FederationAdmin shape ("operates the link, does not edit the
+    // estate", `federation/handfill-repo.ts`) could mutate and re-version estate rows here.
+    //
+    // The actor differs from the one in the NEXT case in exactly one permission, so this 403 cannot
+    // be explained by anything but the `object:write` bar.
+    const created = await newDomainLocalService("publish-no-objwrite");
+
+    const res = await publishAs(federationOnly.token, created.id);
+    expect(res.statusCode, res.body).toBe(403);
+
+    // The refusal is REAL, not merely a status: the row is untouched and still domain-local.
+    const after = await admin.object("service").get(created.id);
+    expect(after.domainLocal).toBe(true);
+  });
+
+  it("POST /objects/{type}/{idOrUrn}/publish — the SAME actor plus object:write succeeds (so the 403 is about object:write)", async () => {
+    // The control that earns the case above its reading. Without it, the file would pass just as
+    // well against a publish route that is broken for every non-admin subject.
+    const created = await newDomainLocalService("publish-both");
+
+    const res = await publishAs(federationAndObjectWrite.token, created.id);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(JSON.parse(res.body).object.domainLocal).toBe(false);
   });
 
   it("POST /objects/{type}/{idOrUrn}/publish — an authorized actor publishes, and it is one-way", async () => {

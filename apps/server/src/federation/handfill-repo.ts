@@ -49,8 +49,9 @@ export interface HandFillInput {
    * still written as `FEDERATION_IMPORT_ACTOR_ID` with `provenance: 'manual'`, which is what makes
    * the reconciliation above work, and what makes the row look like a replica.
    *
-   * Required rather than optional so a new caller has to decide. TWO authorization checks below
-   * resolve this subject, and both are broken by a defaultable or synthetic value:
+   * Required rather than optional so a new caller has to decide. THREE authorization checks below
+   * resolve this subject, and all three are broken by a defaultable or synthetic value:
+   * `assertObjectWriteAuthorityForHandFill` (the estate-authoring bar every hand-fill clears),
    * `assertGovernanceAuthorityForHandFill` (M21.7) and `assertMayWriteGovernanceLabels`. The
    * synthetic import actor has no `objects` row and therefore
    * no role bindings, so resolving IT would answer "no permission" for everyone — which reads as
@@ -71,7 +72,9 @@ export interface HandFillInput {
 /**
  * THE FIFTH LOCAL WRITE DOOR, AND WHY IT NEEDS ITS OWN NARROWING (M16.2 phase A, review round 4).
  *
- * `handFillObject` is a free-form-`typeId` write door reachable by any `federation:write` operator, and
+ * `handFillObject` is a free-form-`typeId` write door reachable by any operator holding
+ * `federation:write` AND org-root `object:write` (`assertObjectWriteAuthorityForHandFill` below — it
+ * was `federation:write` alone until that guard landed), and
  * it stamps `federationImport`. That flag is what makes `graph/objects-repo.ts`'s peer-binding choke
  * point SKIP — a skip whose whole justification is "a replica's `peerDomainId` names the RECEIVING
  * instance's own domain, which is never one of its peers". That is true of the OUTPOST-side use and
@@ -214,6 +217,115 @@ async function assertGovernanceAuthorityForHandFill(
 }
 
 /**
+ * `federation:write` STOPS BEING A GRAPH-WRITE PERMISSION AT THIS DOOR (owner decision, option (a):
+ * "added, never substituted").
+ *
+ * THE HOLE. `POST /v1/federation/hand-fill` authorizes exactly one thing —
+ * `{permission: 'federation:write', scopeObjectId: auth.orgId}` (`routes/federation.ts`) — and then
+ * hands this function a free-form `typeId`, `urn`, `name`, `properties` and `labels`. The four
+ * type-level refusals that precede this one are narrow by construction:
+ * `assertHandFillableType` refuses pair-bound types (`placement`) and peer-bound types naming a
+ * foreign domain, and `assertGovernanceAuthorityForHandFill` refuses projection-bound types
+ * (`freeze`) and demands `policy:write` for governance-managed ones. Everything OUTSIDE those sets —
+ * `service`, `component`, `assembly`, `deployment-target`, `change`, `campaign`, `execution-system`,
+ * and every type an operator registers tomorrow — was admitted on `federation:write` alone, with
+ * `object:write` demanded NOWHERE in the request's path. The module doc above conceded exactly this
+ * in as many words ("takes a free-form typeId and free-form properties from any `federation:write`
+ * holder"), and a conceded hazard is a signal to sweep, not evidence it was handled.
+ *
+ * WHY IT MATTERS NOW, and why the coincidence argument that saved the `policy` half does not save
+ * this one. A `FederationAdmin` role holds `federation:read` + `federation:write` and DELIBERATELY
+ * withholds `object:write`, on the stated invariant that "a federation administrator operates the
+ * link, it does not edit the estate". That invariant was FALSE at runtime and this door was ONE of
+ * the reasons — not the only one: one POST here authored an arbitrary `service`/`component`/`change`
+ * row in the estate. Unlike M21.7's `policy:write` case — where the hole was latent because
+ * `federation:write` and `policy:write` happen to land on the same two built-in roles — this role is
+ * being written to hold one permission and not the other on purpose, so the hole is reachable by
+ * design rather than by accident.
+ *
+ * THE INVARIANT IS NOT RESTORED BY THIS CHANGE ALONE, AND SAYING OTHERWISE WOULD BE THE FALSE
+ * COMMENT THIS FILE IS OTHERWISE CAREFUL TO AVOID. `federation:write` still buys a two-step chain to
+ * estate write authority that never touches this door:
+ *
+ *   1. `POST /api/v1/federation/peers` authorizes exactly `{permission: 'federation:write',
+ *      scopeObjectId: auth.orgId}` (`routes/federation.ts`) and takes the peer's Ed25519 `publicKey`
+ *      VERBATIM FROM THE REQUEST BODY — so the holder can pair a peer against a keypair they
+ *      generated themselves, i.e. install their own trust anchor.
+ *   2. `POST /api/v1/federation/imports` authorizes the same single permission, and `applyEntry`'s
+ *      `object_upsert` branch then resolves ANY registered `typeId` through `upsertObjectByUrn`
+ *      (`federation/import-repo.ts`) — so a bundle signed with that keypair verifies and lands
+ *      arbitrary rows.
+ *
+ * Pair-then-import is therefore estate write authority without `object:write` and without hand-fill.
+ * The import half legitimately carries carve-outs rather than bars — a throw there aborts a peer's
+ * WHOLE signed bundle and `inbox-loop.ts` re-fetches it forever, which is the wedge the
+ * unregistered-type skip above exists to prevent — so the second bar, if there is to be one, belongs
+ * at PAIRING, and whether pairing gets one is an OWNER DECISION escalated separately (2026-08-25).
+ * Until that is answered, treat "FederationAdmin cannot edit the estate" as an intended invariant
+ * this door no longer violates, NOT as a property the system currently has.
+ *
+ * ADDED, NEVER SUBSTITUTED. `federation:write` is still required at the route and is not weakened:
+ * hand-fill remains a federation act, and this is a SECOND, INDEPENDENT bar in exactly the shape
+ * `assertGovernanceAuthorityForHandFill` uses one function up, and the shape `routes/governance.ts`
+ * uses when it demands `federation:write` ON TOP of `freeze:write` for a federating freeze.
+ *
+ * THE SCOPE IS THE ORG ROOT, AND THAT IS THE ROW'S REAL CONTAINMENT SCOPE — not a convenience.
+ * `handFillObject` passes NO `domainId` to `upsertObjectByUrn`, so on the create branch
+ * `graph/objects-repo.ts`'s `resolveContainmentParent(tx, orgId, undefined)` returns the org root
+ * object and the row is filed there. That is the same org-root shortcut `assertHandFillableType`
+ * records above (it is why a hand-filled row skipped the domain-local D1 check), and the org root
+ * object's id IS the org id (`auth/local-auth.ts` `ensureOrgRootObject`). So `scopeObjectId:
+ * input.orgId` names the object the row is genuinely contained by.
+ *
+ * ON THE UPDATE BRANCH the bar is deliberately still the org root, and it is the STRICTER choice
+ * rather than the convenient one. A hand-fill of an EXISTING urn passes no `domainId` either, so
+ * `upsertObjectByUrn` keeps `existing.domainId`, which a prior signed import may have placed deep in
+ * a subtree. Checking THAT scope instead would be a strict WIDENING, not a refinement:
+ * `authz/resolve.ts`'s `scope_expand` walks UPWARD ONLY, so an org-root grant already satisfies a
+ * check at every descendant, while a subtree grant satisfies nothing at the root. Narrowing to the
+ * row's own scope would therefore hand a subtree-scoped `object:write` holder a write onto a
+ * signature-verified replica sitting inside their subtree — a row every other local door refuses
+ * outright (`upsertObjectByUrn`'s read-only-replica 409, which hand-fill bypasses precisely because
+ * it stamps `federationImport`). One bar, at the root, fails closed in both branches.
+ *
+ * AUTHORIZATION ONLY — AUTHORSHIP IS UNTOUCHED. `input.actorObjectId` is the REAL requesting
+ * subject and is what this resolves; the ROW is still written as `FEDERATION_IMPORT_ACTOR_ID` with
+ * `provenance: 'manual'`, which is the whole reconciliation mechanism the module doc describes. If a
+ * later change "tidies" that by passing `actorObjectId` to the upsert, the next signed bundle stops
+ * reconciling over the shadow. And resolving the synthetic import actor HERE would be worse than no
+ * check at all: it has no `objects` row, so it has no bindings, so this would answer "no" for
+ * everyone and read as fail-closed while having stopped depending on who is asking.
+ *
+ * ON THE SIBLING COMMENTS IN THIS FILE that describe the door as reachable by "any `federation:write`
+ * holder": read "and org-root `object:write`" into each of them from here on. None of those guards
+ * becomes unnecessary — every one of them is about whether the DOCUMENT is admissible (an
+ * unvalidated `security` bag, a self-decided scan-override grant, a delegated dependency update, a
+ * reserved governance label), and an `object:write` holder is precisely someone entitled to author
+ * estate documents, so a document-validity refusal is exactly as load-bearing against them.
+ */
+async function assertObjectWriteAuthorityForHandFill(
+  tx: TenantTx,
+  input: HandFillInput
+): Promise<void> {
+  const ok = await hasPermission(tx, {
+    orgId: input.orgId,
+    subjectObjectId: input.actorObjectId,
+    permission: "object:write",
+    // The org root object's id IS the org id (auth/local-auth.ts `ensureOrgRootObject`), and it is
+    // where a hand-filled row lands — see the docblock.
+    scopeObjectId: input.orgId
+  });
+  if (!ok) {
+    throw forbidden(
+      `hand-filling a '${input.typeId}' writes a graph object into this organization's estate and ` +
+        `requires 'object:write' at the organization root (a hand-filled row lands at org-root ` +
+        `containment) — 'federation:write' operates the federation link and is not authority to ` +
+        `author estate objects. Both are required; neither substitutes for the other`
+    );
+  }
+}
+
+/**
  * ADR-0032 §6a — THE SECOND CHECK THIS DOOR HAS TO RUN FOR ITSELF, AND IT IS THE SAME REASON AS THE
  * FIRST.
  *
@@ -228,7 +340,8 @@ async function assertGovernanceAuthorityForHandFill(
  * Hand-fill stamps `federationImport` and therefore inherits that skip, and here it is unearned for
  * exactly the reason `assertHandFillableType` documents one function up: this is a LOCAL OPERATOR
  * ACTION, not an arriving bundle. `POST /v1/federation/hand-fill` takes a free-form `typeId` and
- * free-form `properties` from any `federation:write` holder, there is no chain to wedge and no
+ * free-form `properties` from any holder of `federation:write` plus org-root `object:write`
+ * (`assertObjectWriteAuthorityForHandFill`), there is no chain to wedge and no
  * transport to interrupt, and the operator is right there to read the 400. Left exempt, this route
  * would be a one-request bypass of the whole clause — the same shape as the H1 hole, one guard later.
  *
@@ -350,6 +463,23 @@ export async function handFillObject(tx: TenantTx, input: HandFillInput): Promis
     after: input.labels ?? {},
     subject: `hand-filled ${input.typeId} '${input.urn}'`
   });
+  // THE ESTATE-AUTHORING BAR — the last thing between this request and a row, and the ONLY refusal
+  // here that does not read `typeId` at all. See `assertObjectWriteAuthorityForHandFill`.
+  //
+  // ORDERED LAST AMONG THE REFUSALS, which is the reverse of the #249/#251 cost argument and is
+  // deliberate. Every check above names the SPECIFIC thing wrong with the document — a pair-bound
+  // type, a foreign `peerDomainId`, a projection-backed `freeze`, a governance type needing
+  // `policy:write`, a self-decided grant, a reserved label — and those are the actionable 403s. This
+  // one is the broad "you may not author estate objects at all", and in FRONT it would MASK them:
+  // `governance-managed-write-doors.integration.test.ts` DOOR 5 drives a `federation:write`-only
+  // actor and asserts the refusal detail names `policy:write`, which is the claim that the
+  // governance bar is installed here. Answering that request with an `object:write` 403 instead
+  // would leave that case green while saying nothing about the guard it exists to prove — a test
+  // passing for a reason unrelated to its claim, which is this codebase's most-repeated defect.
+  //
+  // Still ahead of the peer lookup and the write, so a refused request costs nothing, cannot depend
+  // on which peer was named, and stores nothing.
+  await assertObjectWriteAuthorityForHandFill(tx, input);
   const peer = await getPeerByIdOrName(tx, input.orgId, input.peerIdOrName);
   const { object } = await upsertObjectByUrn(tx, {
     orgId: input.orgId,
