@@ -284,16 +284,20 @@ describe("PipelineWaveCard: the freeze-hold field (ChangeWaveTargetSchema.hold, 
         wave={waveWith({ ...BASE_TARGET, status: "pending" })}
         waveNumber={1}
         holdFor={() => ({
-          dependsOn: "platform-core",
-          dependsOnName: "platform-core",
-          summary: "held until platform-core reaches gamma",
-          satisfied: false,
+          targetObjectId: BASE_TARGET.targetObjectId,
+          targetName: "agentkit-bootstrap @ gamma",
+          componentObjectId: null,
+          componentName: null,
+          deploymentTargetObjectId: null,
+          deploymentTargetName: null,
+          held: true,
           dependencies: [
             {
               dependsOn: "platform-core",
               dependsOnName: "platform-core",
-              summary: "held until platform-core reaches gamma",
-              satisfied: false
+              branch: "never_deployed",
+              satisfied: false,
+              summary: "held until platform-core reaches gamma"
             }
           ]
         })}
