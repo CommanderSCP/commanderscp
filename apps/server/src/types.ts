@@ -8,6 +8,27 @@ export interface AppDeps {
   db: Db;
   config: ServerConfig;
   /**
+   * A SMALL pool dedicated to `GET /events/stream`'s PER-FRAME `object:read` check
+   * (routes/events.ts), assigned by `main.ts` right beside the SSE bridge's own `max: 2` pool.
+   *
+   * WHY IT EXISTS. That check is a recursive-CTE permission walk inside a tenant transaction, run
+   * once per (connection, distinct subject) per memo window — so it is long-lived, streaming,
+   * fan-out-shaped load whose volume is set by how many events the org produces and how many
+   * clients are connected, NOT by how many API requests are in flight. Putting it on `db` (the
+   * request-serving pool, `max` = pg's default 10) means a bulk import or a reconcile sweep — a
+   * stream of DISTINCT subjects, which the memo cannot collapse — competes for connections with
+   * ordinary request handlers, and `createPool`'s `connectionTimeoutMillis: 5000` (db/client.ts)
+   * turns that contention into REQUEST TIMEOUTS. This is the same property, one layer down, that
+   * `main.ts`'s `sseBridgePool` comment already names (review finding SEC-1); the two pools are ONE
+   * isolation decision about the SSE path, not two unrelated ones.
+   *
+   * OPTIONAL ON PURPOSE. `buildApp` is also called by `openapi:emit` and by every test harness,
+   * which construct deps by hand (`{ db, config }`). routes/events.ts falls back to `deps.db`
+   * explicitly when this is absent — the fallback is the pre-existing behaviour, so a hand-built
+   * deps still serves the stream correctly, just without the isolation.
+   */
+  sseAuthzDb?: Db;
+  /**
    * M14.2 (ADR-0009): the process's pg-boss handle, present only on `role === "all" || "worker"`
    * (set by `main.ts` alongside `pluginHost`, once `startPgBoss` has run). The inbound federation
    * poke endpoint (`routes/federation.ts` `POST /federation/poke`) uses it to enqueue an IMMEDIATE
