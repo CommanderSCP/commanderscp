@@ -40,6 +40,7 @@ import {
   ExecutorTypeSchema,
   PipelineClassificationSchema,
   SourceMappingScopeSchema,
+  type ChangeState,
   type CreatePlacementRequest,
   type DeleteSourceMappingRequest,
   type ExecutorType,
@@ -53,6 +54,7 @@ import { useAuth } from "../lib/auth-context";
 import { componentPipelineKey, federationSelfKey } from "../lib/query-client";
 import { useIdOrUrnParam } from "../lib/use-route-params";
 import { cn, focusRing } from "../lib/utils";
+import { stateBadgeVariant } from "../lib/change-format";
 import { Card, CardContent, CardHeader } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -220,6 +222,14 @@ export const LANES: readonly Lane[] = [
   }
 ];
 
+/** THE CORRELATED-INFRASTRUCTURE SECTION RENDERS ONLY ON THE INFRASTRUCTURE LANE (owner decision,
+ *  2026-08-24) — a component's SOFTWARE releases have no infrastructure pipeline to correlate
+ *  against; `correlatedInfra` is a fact about the infra pipeline specifically. A pure function
+ *  (rather than an inline ternary at the call site) so the pin is a unit, not a DOM assertion. */
+export function showsCorrelatedInfra(lane: Lane): boolean {
+  return lane.key === "infrastructure";
+}
+
 /** The per-site registry (pipeline-substrate-registry-scan.md §9.2) — optional on the wire because
  *  it shipped after `/v1` did; absent/null means an OLDER SERVER, not "none" (`state: "none"` is
  *  itself a value the server always emits once it knows the field). */
@@ -242,6 +252,15 @@ type SbomRef = NonNullable<ComponentPipelineArtifact["sbom"]>;
  *  `null` = the server SAYS no change of this component names a run; an object = the pick. */
 type ComponentPipelineObservedRun = NonNullable<ComponentPipelineResponse["observedRun"]>;
 type ObservedRunOnWire = ComponentPipelineObservedRun | null | undefined;
+
+/** THE CORRELATED-INFRASTRUCTURE LANE (owner decision, 2026-08-24) — `undefined` = an OLDER
+ *  SERVER, which never evaluated correlation and renders no section at all; an object (`changes`
+ *  possibly empty) = evaluated. Unlike `artifact`/`observedRun`, the server never sends `null` here
+ *  — evaluated-and-empty is spelled `{ changes: [] }`, not `null` — but the wire type still allows
+ *  it (the same additive idiom `registry`/`artifact` use), so this reading keeps both apart. */
+type ComponentPipelineCorrelatedInfra = NonNullable<ComponentPipelineResponse["correlatedInfra"]>;
+type CorrelatedInfraOnWire = ComponentPipelineCorrelatedInfra | null | undefined;
+type CorrelatedInfraChange = ComponentPipelineCorrelatedInfra["changes"][number];
 
 /** The target's substrate facet as the wire carries it on both stage shapes (§9.1). */
 type DeploymentTargetFacet = Pick<
@@ -4431,6 +4450,88 @@ function WaveRow({
   );
 }
 
+/**
+ * THE PROVENANCE SENTENCE (owner decision, 2026-08-24) — server-composed facts, plain-English
+ * sentence, verbatim per the design system's copy rule. Reads `entry.correlatedVia` alone: the
+ * PRIMARY route decides the sentence even when `coupledKey` is also set (a change can match BOTH a
+ * place and a coupling — the place is the more specific fact, so it is the one said out loud).
+ */
+export function correlatedInfraSentence(entry: CorrelatedInfraChange): string {
+  const { route, target } = entry.correlatedVia;
+  if (route === "placement" && target) {
+    return `infrastructure change on ${target.name ?? "(unnamed target)"} — this component is placed there`;
+  }
+  if (route === "hosted_on" && target) {
+    return `infrastructure change on ${target.name ?? "(unnamed target)"} — hosted on it`;
+  }
+  // `route === "coupling"` (target is null by construction), or a placement/hosted_on route
+  // that somehow carries no target — same fallback, since there is nothing else to name.
+  return `provides ${entry.coupledKey ?? "(unknown key)"}`;
+}
+
+/**
+ * THE CORRELATED-INFRASTRUCTURE SECTION (owner decision, 2026-08-24) — infrastructure lane ONLY
+ * (never rendered on the software lane, and the caller below never mounts it there). Absent vs
+ * empty (design system §"honesty-copy rules"): `undefined` renders NO section at all (an older
+ * server never evaluated this); an evaluated `{ changes: [] }` renders the section with one quiet
+ * line, because "we looked and found none" is a different, honest fact from "we never looked".
+ */
+export function CorrelatedInfraSection({
+  correlatedInfra
+}: {
+  correlatedInfra: CorrelatedInfraOnWire;
+}): React.JSX.Element | null {
+  if (correlatedInfra === null || correlatedInfra === undefined) return null;
+  return (
+    <Card data-testid="pipeline-correlated-infra">
+      <CardHeader>
+        <SectionLabel>Correlated infrastructure</SectionLabel>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {correlatedInfra.changes.length === 0 ? (
+          <p className="text-xs text-slate-500" data-testid="pipeline-correlated-infra-empty">
+            No correlated infrastructure changes observed.
+          </p>
+        ) : (
+          correlatedInfra.changes.map((entry) => (
+            <div
+              key={entry.changeObjectId}
+              className="flex flex-col gap-0.5"
+              data-testid="pipeline-correlated-infra-entry"
+            >
+              <p
+                className="text-xs text-slate-500"
+                data-testid="pipeline-correlated-infra-provenance"
+              >
+                {correlatedInfraSentence(entry)}
+              </p>
+              <p className="flex items-center gap-2 text-sm">
+                <Link
+                  to="/changes/$id"
+                  params={{ id: entry.changeObjectId }}
+                  className={cn(
+                    "underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900",
+                    focusRing
+                  )}
+                  data-testid="pipeline-correlated-infra-change-link"
+                >
+                  {entry.name ?? "(unnamed change)"}
+                </Link>
+                <Badge
+                  variant={stateBadgeVariant(entry.state as ChangeState)}
+                  data-testid="pipeline-correlated-infra-state"
+                >
+                  {entry.state}
+                </Badge>
+              </p>
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** `/components/$id/infrastructure` — the infrastructure pipeline tab. */
 export function ComponentInfrastructurePage(): React.JSX.Element {
   return <ComponentPipelinePage lane={LANES[1]!} />;
@@ -4568,6 +4669,13 @@ export function ComponentPipelinePage({
           </span>
         }
       />
+
+      {/* owner decision, 2026-08-24: the correlated-infrastructure lane renders ONLY on the
+          infrastructure tab, independent of whether THIS component has any stages of its own —
+          an infra change can correlate through `hosted_on` or a coupling with no placement at all. */}
+      {showsCorrelatedInfra(lane) ? (
+        <CorrelatedInfraSection correlatedInfra={unscoped.correlatedInfra} />
+      ) : null}
 
       {waves.length === 0 ? (
         // Not an error, and deliberately explicit about the consequence: a component placed nowhere,

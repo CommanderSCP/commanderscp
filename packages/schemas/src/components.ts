@@ -705,6 +705,58 @@ export const ComponentPipelineObservedRunSchema = z.object({
 });
 export type ComponentPipelineObservedRun = z.infer<typeof ComponentPipelineObservedRunSchema>;
 
+/** The deployment-target a correlated infrastructure change was matched THROUGH — null for a
+ *  coupling-only match, which names no place at all (owner decision, 2026-08-24). */
+export const ComponentPipelineCorrelatedInfraTargetSchema = z.object({
+  objectId: z.string().uuid(),
+  name: z.string().nullable()
+});
+
+/**
+ * ONE infrastructure change correlated to this component (owner decision, 2026-08-24,
+ * correlated-infrastructure lane): an infrastructure change is correlated when its wave/bound
+ * target names a deployment-target one of this component's placements ALSO names, or this
+ * component is `hosted_on` it; a `provides`/`requires` coupling additionally correlates, rendered
+ * with a distinct route so a client never renders it as though it were a placement-level fact it
+ * is not. `correlatedVia.route` states WHICH kind of match this is — read off the server's own
+ * matching, never re-derived client-side. `placement` beats `hosted_on` when both would apply to
+ * the same target (a component is rarely both placed at and `hosted_on` the same place, but the
+ * placement fact is the more specific one when it happens); a change found ONLY via a coupling
+ * gets `route: "coupling"` and a null `target` — there is no place to name for that match. This
+ * component's OWN changes are excluded (the lane already renders its own pipeline) by reading
+ * `properties.targets`, never re-derived from placement/wave-target identity.
+ */
+export const ComponentPipelineCorrelatedInfraChangeSchema = z.object({
+  changeObjectId: z.string().uuid(),
+  name: z.string().nullable(),
+  state: z.string(),
+  type: z.string(),
+  createdAt: z.string().datetime(),
+  correlatedVia: z.object({
+    route: z.enum(["placement", "hosted_on", "coupling"]),
+    target: ComponentPipelineCorrelatedInfraTargetSchema.nullable()
+  }),
+  /** The `provides`/`requires` key this change satisfies for this component, or null when the
+   *  match carries no coupling (a placement/hosted_on-only match). A `placement`/`hosted_on` match
+   *  MAY still carry one, when both arms independently correlate the same change. */
+  coupledKey: z.string().nullable()
+});
+export type ComponentPipelineCorrelatedInfraChange = z.infer<
+  typeof ComponentPipelineCorrelatedInfraChangeSchema
+>;
+
+/** THE CORRELATED-INFRASTRUCTURE LANE (owner decision, 2026-08-24) — every infrastructure change
+ *  this component's placements/hosted-on/couplings implicate, that is not this component's own.
+ *  The server ALWAYS emits `{ changes: [...] }` (possibly empty) once it has evaluated the
+ *  correlation — an empty array is a real, evaluated "none found", never confused with "not
+ *  computed". */
+export const ComponentPipelineCorrelatedInfraSchema = z.object({
+  changes: z.array(ComponentPipelineCorrelatedInfraChangeSchema)
+});
+export type ComponentPipelineCorrelatedInfra = z.infer<
+  typeof ComponentPipelineCorrelatedInfraSchema
+>;
+
 /**
  * A component's pipeline: its stages, and where its pipeline definition came from.
  *
@@ -778,6 +830,12 @@ export const ComponentPipelineResponseSchema = z.object({
    *  wire (additive-only `/v1`); a server that emits it sends an object or `null` (null = no change
    *  names a run). Absent = an older server. */
   observedRun: ComponentPipelineObservedRunSchema.nullable().optional(),
+  /** THE CORRELATED-INFRASTRUCTURE LANE — see `ComponentPipelineCorrelatedInfraSchema`. Optional on
+   *  the wire (additive-only `/v1`; this shipped after the response did). A server that has
+   *  evaluated correlation always sends an object (`{ changes: [] }` is itself a value — "evaluated,
+   *  none found"). Absent = an older server that never computed this at all; a client must keep the
+   *  two distinguishable, the same rule `registry`/`artifact`/`observedRun` already follow. */
+  correlatedInfra: ComponentPipelineCorrelatedInfraSchema.nullable().optional(),
   unknownFields: z.array(z.string())
 });
 export type ComponentPipelineResponse = z.infer<typeof ComponentPipelineResponseSchema>;
