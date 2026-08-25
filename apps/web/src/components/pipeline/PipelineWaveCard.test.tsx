@@ -278,6 +278,33 @@ const STAGE_DEP_HELD: ChangeStageDependencyTarget = {
 };
 
 describe("PipelineWaveCard: the freeze-hold field (ChangeWaveTargetSchema.hold, M25.UI)", () => {
+  it("a stage-dependency-ONLY held target keeps the informational blue badge — it clears itself; amber is the freeze's", () => {
+    const html = renderToStaticMarkup(
+      <PipelineWaveCard
+        wave={waveWith({ ...BASE_TARGET, status: "pending" })}
+        waveNumber={1}
+        holdFor={() => ({
+          dependsOn: "platform-core",
+          dependsOnName: "platform-core",
+          summary: "held until platform-core reaches gamma",
+          satisfied: false,
+          dependencies: [
+            {
+              dependsOn: "platform-core",
+              dependsOnName: "platform-core",
+              summary: "held until platform-core reaches gamma",
+              satisfied: false
+            }
+          ]
+        })}
+      />
+    );
+    const heldBadgeTag = html.match(/<div[^>]*pipeline-wave-target-held-badge[^>]*>/)?.[0];
+    expect(heldBadgeTag).toBeDefined();
+    expect(heldBadgeTag).toContain("bg-blue-50");
+    expect(heldBadgeTag).not.toContain("bg-amber-50");
+  });
+
   it("a freeze-held target shows the held badge and the freeze line, rendered VERBATIM", () => {
     const html = renderCard({
       ...BASE_TARGET,
@@ -298,6 +325,13 @@ describe("PipelineWaveCard: the freeze-hold field (ChangeWaveTargetSchema.hold, 
     expect(html).toContain(FREEZE_ENTRY.summary);
     // The raw status stays beside the hold — it is not overwritten.
     expect(html).toContain("pending");
+    // TONE FOLLOWS THE HOLD KIND (design-system §1.5): a freeze hold is an operator-declared
+    // needs-attention state — the held badge renders `warning` (amber), never the informational
+    // blue a self-clearing stage-dependency hold gets. Element-scoped so no other amber in the
+    // render can satisfy it.
+    const heldBadgeTag = html.match(/<div[^>]*pipeline-wave-target-held-badge[^>]*>/)?.[0];
+    expect(heldBadgeTag).toBeDefined();
+    expect(heldBadgeTag).toContain("bg-amber-50");
     // The stage-dependency line was not asked for and must not appear.
     expect(html).not.toContain('data-testid="pipeline-wave-target-hold"');
   });
