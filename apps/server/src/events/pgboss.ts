@@ -35,32 +35,19 @@ export const DOMAIN_EVENTS_QUEUE = "domain-events";
  * `FOR UPDATE SKIP LOCKED` / per-row advisory locks, which is what makes N competing workers correct
  * in the first place). Trading a liveness guarantee for it was the wrong bargain in both directions.
  * `dependencies/bump-freeze-redrive.ts` has always sent unkeyed; it is now the shape for all of them.
- * `coordination/loop-startup-singleton.test.ts` is the census that keeps it true.
  *
- * (Historical note, kept because it is the rule that was violated twice: the interval chain owns
- * `"tick"`, and `federation/federation-sync.ts` — whose startup pull is an OPTIMISATION over a due-gate
- * rather than the loop's only lifeline — documents its own distinct key for the same collision reason.)
- *
- * WHY REUSING `"tick"` IS FATAL, in pg-boss's own terms (pg-boss 10.4.2, src/plans.js):
- *   - the unique index is `(name, singleton_on, COALESCE(singleton_key,''))` WHERE `state <>
- *     'cancelled'` — so a COMPLETED or ACTIVE job STILL HOLDS the slot;
- *   - `singleton_on` is a wall-clock BUCKET (`floor(epoch/singletonSeconds)*singletonSeconds`), not
- *     "time since the last job";
- *   - a losing insert is `ON CONFLICT DO NOTHING RETURNING id`, i.e. it returns NULL **silently**.
- * A self-rescheduling loop's ONLY other source of ticks is the reschedule inside its own worker
- * handler, so one swallowed send means: no job -> no handler -> no reschedule -> the loop is dead
- * forever, with no error, no log and no failing health check.
- *
- * MEASURED: a 60s loop's first reschedule (sent ~2s after its startup job, inside the SAME 60s
- * bucket) was swallowed by that just-completed startup job — killing the loop after ONE sweep on
- * ~58 of every 60 boots, in production as well as in tests.
- *
- * A DISTINCT key with a SHORT window keeps what §4-A4 actually wanted — N replicas booting together
- * dedupe their startup sweeps among themselves — while making a collision with the interval chain
- * impossible. `federation/federation-sync.ts` established this shape first
- * (`FEDERATION_SYNC_STARTUP_SINGLETON_SECONDS`) and its doc already warned that `"tick"` was off
- * limits; these constants are that rule, hoisted to where every loop can see it.
- * `coordination/loop-startup-singleton.test.ts` is the census that keeps it true.
+ * THE SECOND OCCURRENCE OUTLIVED THE FIRST FIX BY A WHOLE COMMIT, in `federation/federation-sync.ts`,
+ * because two things that both looked like safeguards were not:
+ *   - an earlier version of THIS COMMENT recommended the private-key-plus-window shape, citing that
+ *     file as the exemplar to copy;
+ *   - `coordination/loop-startup-singleton.test.ts` matched the literal key `"tick"`, so a startup
+ *     kick keyed `"startup"` passed it. It now matches on `singletonSeconds` instead — the ingredient
+ *     that actually creates a slot — and carries a positive control, because until then the rule was
+ *     green purely by absence and could have been deleted without failing.
+ * Measured there: two sends ~3-6s apart (pg-boss's 2s `pollingInterval` dominates the gap) against a
+ * 10s bucket, i.e. a ~0.4-0.7 coin flip on EVERY machine. It presented as "only fails in CI", and the
+ * direction is the opposite of the intuition — a slower runner lengthens the gap and makes the
+ * collision LESS likely. "Flaky on CI, green locally" was never evidence about the runner.
  */
 export const LOOP_STARTUP_SEND_IS_UNKEYED = true;
 

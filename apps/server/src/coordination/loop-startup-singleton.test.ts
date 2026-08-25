@@ -48,6 +48,22 @@ const SEND_CALL = /boss\.send\s*\(/g;
 const CHAIN_KEY = /singletonKey\s*:\s*"tick"/;
 const RESCHEDULE_MARKER = /startAfter\s*:/;
 
+/**
+ * THE INGREDIENT THAT MAKES A SEND SWALLOWABLE — `singletonSeconds`, not `singletonKey`.
+ *
+ * `job_i4` is `(name, singleton_on, COALESCE(singleton_key,'')) WHERE state <> 'cancelled' AND
+ * singleton_on IS NOT NULL`, and `singleton_on` is populated ONLY when `singletonSeconds` is passed.
+ * So:
+ *   - a key WITHOUT seconds constrains nothing at all under the standard policy (no `singleton_on`
+ *     ⇒ the row is not in the index). `internal-release-loop.ts` and `inventory-ingestion-loop.ts`
+ *     both send `{singletonKey: changeObjectId}` in that shape;
+ *   - seconds WITHOUT a key still takes a slot, since the key is `COALESCE(singleton_key,'')`.
+ * Matching on `singletonSeconds` therefore catches every immediate send that pg-boss can silently
+ * drop, and only those. Matching on the literal `"tick"` — which is all this census originally did —
+ * missed the second occurrence of this very bug, where the key was `"startup"`.
+ */
+const SWALLOWABLE_WINDOW = /singletonSeconds\s*:/;
+
 interface Offender {
   file: string;
   snippet: string;
@@ -92,12 +108,12 @@ describe("a loop's startup kick never reuses the interval chain's singleton key"
     ).toBeGreaterThanOrEqual(6);
   });
 
-  it("no STARTUP send (a boss.send with no startAfter) carries the chain's 'tick' key", () => {
+  it("no IMMEDIATE send (a boss.send with no startAfter) opens a singleton window at all", () => {
     const offenders: Offender[] = [];
     for (const file of files) {
       for (const args of sendCallArguments(readStripped(file))) {
         if (RESCHEDULE_MARKER.test(args)) continue; // the reschedule legitimately owns "tick"
-        if (!CHAIN_KEY.test(args)) continue;
+        if (!SWALLOWABLE_WINDOW.test(args)) continue;
         offenders.push({
           file: relative(SERVER_SRC, file),
           snippet: args.replace(/\s+/g, " ").trim().slice(0, 120)
@@ -107,13 +123,38 @@ describe("a loop's startup kick never reuses the interval chain's singleton key"
 
     expect(
       offenders,
-      'a self-rescheduling loop\'s STARTUP send carries `singletonKey: "tick"`, the same key its ' +
-        "own reschedule uses. pg-boss counts COMPLETED jobs as holding the singleton slot, so one of " +
-        "the two is silently dropped (ON CONFLICT DO NOTHING) and the loop can die after a single " +
-        "sweep with no error at all. Send the startup kick UNKEYED — `boss.send(QUEUE, {})` with no " +
-        "singletonKey and no window (see LOOP_STARTUP_SEND_IS_UNKEYED in events/pgboss.ts). Do not " +
-        "reach for a private key + short window instead: that was tried, and it swallowed a " +
-        "crash-restarted worker's kick with that worker's own previous boot."
+      "an IMMEDIATE `boss.send` carries `singletonSeconds`, which puts it in a wall-clock bucket that " +
+        "pg-boss's job_i4 can already consider occupied. Because that index is `WHERE state <> " +
+        "'cancelled'`, a COMPLETED job holds the slot too — so the job an immediate send most " +
+        "reliably collides with is the one THIS PROCESS filed on its previous boot. The losing " +
+        "insert is ON CONFLICT DO NOTHING RETURNING id: it returns NULL, nobody checks, and for a " +
+        "self-rescheduling loop that means no job -> no handler -> no reschedule -> dead forever, " +
+        "with no error, no log and no failing health check. Send it UNKEYED — `boss.send(QUEUE, {})` " +
+        "(LOOP_STARTUP_SEND_IS_UNKEYED, events/pgboss.ts). A private key with a short window is NOT " +
+        "the answer; that was shipped as the fix and became the second occurrence of this bug."
     ).toEqual([]);
+  });
+
+  it("the widened rule would still have caught BOTH historical shapes (the census is not just re-passing)", () => {
+    // Anti-regression for the CENSUS ITSELF. Occurrence 1 used the chain's key; occurrence 2 used a
+    // private "startup" key — and the original matcher, which tested for the literal "tick", waved
+    // the second one straight through while the defect was live in federation-sync. Both shapes are
+    // asserted here as strings so the matcher cannot narrow back to one of them unnoticed.
+    const occurrence1 = `RECONCILE_QUEUE, {}, { singletonKey: "tick", singletonSeconds: 60 }`;
+    const occurrence2 = `FEDERATION_SYNC_QUEUE, { reason: "startup" }, { singletonKey: "startup", singletonSeconds: 10 }`;
+    const fixed = `FEDERATION_SYNC_QUEUE, { reason: "startup" }`;
+    const reschedule = `INBOX_QUEUE, {}, { startAfter: 60, singletonKey: "tick", singletonSeconds: 60 }`;
+    const keyOnly = `INTERNAL_RELEASE_QUEUE, job, { singletonKey: changeObjectId }`;
+
+    const flagged = (args: string) =>
+      !RESCHEDULE_MARKER.test(args) && SWALLOWABLE_WINDOW.test(args);
+
+    expect(flagged(occurrence1), "occurrence 1 (shared 'tick' key) must be caught").toBe(true);
+    expect(flagged(occurrence2), "occurrence 2 (private 'startup' key) must be caught").toBe(true);
+    expect(flagged(fixed), "the unkeyed fix must NOT be flagged").toBe(false);
+    expect(flagged(reschedule), "a legitimate interval reschedule must NOT be flagged").toBe(false);
+    expect(flagged(keyOnly), "a key with no window is inert under job_i4, so not flagged").toBe(
+      false
+    );
   });
 });

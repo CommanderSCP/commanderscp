@@ -455,13 +455,11 @@ export async function startWatchdogLoop(
       { startAfter: intervalSeconds, singletonKey: "tick", singletonSeconds: intervalSeconds }
     );
   });
-  // A4 fix: the initial send now carries the SAME singleton params as the reschedule send above
-  // (only `startAfter` differs — the reschedule delays, the initial send fires immediately) — see
-  // reconcile.ts's `startReconcileLoop` for the identical shape. Without this, N replicas starting
-  // together each queue their own unkeyed first job and all N fire the very first sweep.
-  // Startup kick: its OWN key/window, never the chain's `"tick"` (LOOP_STARTUP_SINGLETON_KEY). With
-  // the shared key this loop's first reschedule landed in the same 60s bucket as its just-completed
-  // startup job and was swallowed — the loop ran ONE sweep and died, on ~58 of every 60 boots.
+  // Startup kick: UNKEYED, so it always inserts (LOOP_STARTUP_SEND_IS_UNKEYED, events/pgboss.ts).
+  // Never give this send a singletonKey+window — not the chain's "tick" and not a private key
+  // either: job_i4 counts COMPLETED jobs, so any window lets a previous boot swallow it silently.
+  // With the shared key this loop's first reschedule landed in the same 60s bucket as its
+  // just-completed startup job and was swallowed — one sweep, then dead, on ~58 of every 60 boots.
   await boss.send(WATCHDOG_QUEUE, {});
   return {
     async stop() {

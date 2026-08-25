@@ -74,6 +74,41 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
     }
   }
 
+  /**
+   * Insert a COMPLETED job in the singleton slot that a `singletonKey: "startup"` +
+   * `singletonSeconds: 10` send would target right now — i.e. the residue of a previous boot inside
+   * the same wall-clock bucket.
+   *
+   * This must NOT block the fixed (unkeyed) send: `job_i4` is
+   * `(name, singleton_on, COALESCE(singleton_key,''))` and an unkeyed send leaves `singleton_on`
+   * NULL, which the index's `WHERE singleton_on IS NOT NULL` excludes outright.
+   */
+  async function seedCompletedStartupJob(): Promise<void> {
+    // `singleton_on` is NOT `now()` — pg-boss stores a TRUNCATED bucket. Copied verbatim from
+    // pg-boss 10.4.2 `src/plans.js`:
+    //   'epoch'::timestamp + '1 second'::interval * ("singletonSeconds" * floor(date_part('epoch', now()) / "singletonSeconds"))
+    // Seeding a bare `now()` would store an unaligned timestamp that collides with nothing, and this
+    // test would then pass against the very defect it exists to catch.
+    //
+    // Both the CURRENT and NEXT bucket are seeded: the send happens milliseconds after this insert,
+    // so a bucket rollover in between would otherwise silently un-reproduce the collision.
+    const bucket = (offsetBuckets: number) =>
+      `'epoch'::timestamp + '1 second'::interval * (10 * (floor(date_part('epoch', now()) / 10) + ${offsetBuckets}))`;
+    const client = new pg.Client({ connectionString: testPgBossDatabaseUrl() });
+    await client.connect();
+    try {
+      for (const offset of [0, 1]) {
+        await client.query(
+          `INSERT INTO pgboss.job (id, name, data, state, singleton_key, singleton_on, completed_on)
+           VALUES (gen_random_uuid(), $1, '{"reason":"startup"}'::jsonb, 'completed', 'startup', ${bucket(offset)}, now())`,
+          [FEDERATION_SYNC_QUEUE]
+        );
+      }
+    } finally {
+      await client.end();
+    }
+  }
+
   /** Clears the queue so a restart scenario starts from a known, empty pending set. */
   async function clearPendingJobs(): Promise<void> {
     const client = new pg.Client({ connectionString: testPgBossDatabaseUrl() });
@@ -179,6 +214,21 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
         .where(and(eq(federationPeers.orgId, domain.orgId), eq(federationPeers.id, peerId)))
     );
     expect(await pendingJobs()).toBe(0);
+
+    // OCCUPY THE SINGLETON SLOT A KEYED STARTUP SEND WOULD LAND IN — deterministically, instead of
+    // hoping the wall clock arranges it. `clearPendingJobs()` above deletes only `state = 'created'`,
+    // and `job_i4` is `WHERE state <> 'cancelled'`, so a COMPLETED startup job from the previous boot
+    // survives the teardown and still holds `(name, singleton_on, key)`.
+    //
+    // This is what made the bug a COIN FLIP rather than a CI quirk. The two startup sends are ~3-6s
+    // apart (the gap is dominated by pg-boss's 2s pollingInterval, since nothing notifies the worker
+    // on send) against a 10s bucket, so they collided with probability roughly 0.4-0.7 ON ANY
+    // MACHINE. Note the direction, which is the opposite of the intuitive one: a SLOWER runner
+    // lengthens the gap and makes the collision LESS likely, so "passes locally, fails in CI" was a
+    // sampling artefact and never evidence about the runner. Seeding the row makes the collision
+    // certain, so this test now fails 100% of the time against a keyed startup send and passes 100%
+    // against an unkeyed one.
+    await seedCompletedStartupJob();
 
     // THE RESTART.
     loop = await startFederationSyncLoop(boss, domain.db);

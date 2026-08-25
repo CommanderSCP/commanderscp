@@ -741,15 +741,24 @@ export const FEDERATION_SYNC_POKE_REASON = "poke";
 export const FEDERATION_SYNC_STARTUP_REASON = "startup";
 
 /**
- * M26.1 (§4-A4) — the startup send's OWN singleton key/window, distinct from the interval chain's
- * `"tick"` key. N replicas restarting together (or one replica bouncing repeatedly within the
- * window) must dedupe their startup pulls AMONG THEMSELVES, but the shared `"tick"` key is off
- * limits: `wakeFederationSyncNow`'s doc (see {@link FEDERATION_SYNC_POKE_REASON}) already
- * established that a pending interval tick occupying `"tick"` would silently swallow a later
- * singleton-keyed send under the same key. A short window (well under the sync interval) is enough
- * to collapse a simultaneous-restart storm without masking a genuine later reconnect.
+ * RETIRED (M26, §4-A4's second correction) — this used to be `= 10`, the startup send's own singleton
+ * window. It is gone rather than re-tuned, and the reasoning is worth keeping because it was subtle
+ * enough to be got wrong twice:
+ *
+ * The original note correctly established that the chain's `"tick"` key was off limits (a pending
+ * interval tick would swallow a startup send filed under it), and concluded that a DISTINCT key with
+ * a short window was therefore safe. It is not. `job_i4` counts jobs in every state except
+ * `cancelled`, so the slot is held by a COMPLETED job too — which means the thing a restart most
+ * reliably collides with is *its own previous boot*, the one case a "restart storm" window is least
+ * able to distinguish from the storm it was meant to collapse. There is no window size that separates
+ * them: shrink it and simultaneous replicas stop deduping, grow it and restarts get swallowed for
+ * longer.
+ *
+ * The startup send is now UNKEYED (`LOOP_STARTUP_SEND_IS_UNKEYED`, events/pgboss.ts), like every other
+ * loop's. Note that simply dropping `singletonSeconds` while keeping the key would NOT have worked
+ * either — it only makes the key inert (job_i4 requires `singleton_on IS NOT NULL`), leaving code that
+ * reads as if it dedupes while doing nothing at all.
  */
-export const FEDERATION_SYNC_STARTUP_SINGLETON_SECONDS = 10;
 
 /** The wake payload a tick carries (see {@link FEDERATION_SYNC_POKE_REASON}). */
 export interface FederationSyncJobData {
@@ -856,17 +865,23 @@ export async function startFederationSyncLoop(
     );
   });
   // PULL-ON-(RE)CONNECT: fire the first tick immediately, FORCED (see the constant's doc) — and it
-  // is this tick that bootstraps the self-rescheduling interval chain. Its OWN singleton key (never
-  // the shared "tick" key — see FEDERATION_SYNC_STARTUP_SINGLETON_SECONDS) dedupes N replicas
-  // restarting together without letting a pending interval tick swallow it.
-  await boss.send(
-    FEDERATION_SYNC_QUEUE,
-    { reason: FEDERATION_SYNC_STARTUP_REASON },
-    {
-      singletonKey: FEDERATION_SYNC_STARTUP_REASON,
-      singletonSeconds: FEDERATION_SYNC_STARTUP_SINGLETON_SECONDS
-    }
-  );
+  // is this tick that bootstraps the self-rescheduling interval chain. SENT UNKEYED, so it ALWAYS
+  // inserts (LOOP_STARTUP_SEND_IS_UNKEYED, events/pgboss.ts).
+  //
+  // This send used to carry its own `"startup"` key with a 10s window, on the reasoning that N
+  // replicas restarting together should dedupe their startup pulls among themselves while staying
+  // off the chain's `"tick"` key. That reasoning was half right — `"tick"` is indeed off limits —
+  // and half fatal: job_i4 counts COMPLETED jobs as holding the slot, so a worker that bounced
+  // inside its own 10s window had its startup send silently dropped and came back with the
+  // pull-on-(re)connect leg missing. Losing that leg is invisible: the loop still ticks on its
+  // interval, so nothing errors and nothing alerts — the outpost is just stale for a whole window,
+  // which is exactly the reliability floor this send exists to hold up.
+  //
+  // The dedupe is deliberately given up rather than re-tuned, because no window size fixes it: any
+  // (key, bucket) pair a restart can share with its own previous boot can swallow it. Redundant
+  // startup pulls are merely wasteful — the tick claims work per peer, and imports advance a
+  // forward-only cursor, so a duplicate pull converges instead of corrupting.
+  await boss.send(FEDERATION_SYNC_QUEUE, { reason: FEDERATION_SYNC_STARTUP_REASON });
   return {
     async stop() {
       stopped = true;

@@ -419,8 +419,9 @@ export async function startObserveLoop(
       }
     );
   });
-  // Startup kick uses its OWN key/window, never the chain's `"tick"` — see
-  // LOOP_STARTUP_SINGLETON_KEY (a shared key lets a completed tick swallow this send, killing the loop).
+  // Startup kick: UNKEYED, so it always inserts (LOOP_STARTUP_SEND_IS_UNKEYED, events/pgboss.ts).
+  // Never give this send a singletonKey+window — not the chain's "tick" and not a private key
+  // either: job_i4 counts COMPLETED jobs, so any window lets a previous boot swallow it silently.
   await boss.send(OBSERVE_QUEUE, {});
   return {
     async stop() {
