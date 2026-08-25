@@ -6,6 +6,13 @@ import { campaignPlans, campaignWaveTargets, campaignWaves, relationships } from
 import { badRequest, notFound } from "../errors.js";
 import { compilePlan, type DependsOnEdge } from "./plan-compiler.js";
 import { parseTopologyWaves } from "./topology-waves.js";
+import { evaluateFreezeHolds, type FreezeHoldVerdict } from "./freeze-hold.js";
+import {
+  activeWaveOf,
+  resolveFreezeScopeNames,
+  toWaveTargetHold,
+  type WaveTargetHold
+} from "./plan-service.js";
 
 /**
  * Compiles and PERSISTS a campaign's plan — the campaign-scoped sibling of
@@ -146,23 +153,73 @@ export async function compileAndPersistCampaignPlan(
 }
 
 function toCampaignWaveTargetShape(
-  row: typeof campaignWaveTargets.$inferSelect
+  row: typeof campaignWaveTargets.$inferSelect,
+  hold?: WaveTargetHold
 ): CampaignWaveTarget {
   return {
     id: row.id,
     waveId: row.waveId,
     targetObjectId: row.targetObjectId,
     memberChangeObjectId: row.memberChangeObjectId,
+    ...(hold ? { hold } : {}),
     status: row.status,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
   };
 }
 
+/**
+ * THE ACTIVE (RUNNING) CAMPAIGN WAVE'S FREEZE HOLDS — the campaign-scoped sibling of
+ * `plan-service.ts`'s `resolveWaveTargetFreezeHolds`, evaluated through the SAME `evaluateFreezeHolds`
+ * (`freeze-hold.ts`) rather than a second implementation, and gated by the SAME `activeWaveOf`
+ * selector the change side uses — so "which wave admission governs" cannot drift between the two
+ * schemas.
+ *
+ * CANDIDATE SET, restated from `campaign-repo.ts`'s M25.2 comment (this function now IS that
+ * evaluation — `getCampaignStatus` calls `getLatestCampaignPlan({ withFreezeHolds: true })` and
+ * derives its `frozenTargetCount` input from the SAME composed `hold` field this produces, rather
+ * than re-evaluating): the active wave must be `running` (a wave that has not started yet is
+ * withholding nothing, and a terminal wave is past admission entirely), and only its targets whose
+ * `memberChangeObjectId` is still `null` are candidates — once a member Change is minted, admission
+ * has already acted on that target and a freeze bites the member Change's own wave targets one
+ * layer down, not this row.
+ *
+ * `waves` is accepted STRUCTURALLY (bare `status`/`targetObjectId`/`memberChangeObjectId`) so a
+ * caller can pass either raw `campaign_waves`/`campaign_wave_targets` rows (this file, building the
+ * response) or the already-composed wire `CampaignPlan.waves` (`campaign-repo.ts`, deriving status)
+ * — both shapes satisfy it, and there is no second evaluation to keep in sync with this one.
+ */
+export async function resolveActiveCampaignWaveFreezeHolds(
+  tx: TenantTx,
+  orgId: string,
+  waves: {
+    id: string;
+    status: string;
+    targets: { targetObjectId: string; memberChangeObjectId: string | null }[];
+  }[]
+): Promise<{ activeWaveId: string | undefined; holds: Map<string, FreezeHoldVerdict> }> {
+  const activeWave = activeWaveOf(waves);
+  if (!activeWave || activeWave.status !== "running") {
+    return { activeWaveId: undefined, holds: new Map() };
+  }
+
+  const candidateTargetIds = activeWave.targets
+    .filter((t) => t.memberChangeObjectId === null)
+    .map((t) => t.targetObjectId);
+  if (candidateTargetIds.length === 0) {
+    return { activeWaveId: activeWave.id, holds: new Map() };
+  }
+
+  const holds = await evaluateFreezeHolds(tx, { orgId, targetObjectIds: candidateTargetIds });
+  return { activeWaveId: activeWave.id, holds };
+}
+
 function toCampaignPlanShape(
   plan: typeof campaignPlans.$inferSelect,
   waves: (typeof campaignWaves.$inferSelect)[],
-  targets: (typeof campaignWaveTargets.$inferSelect)[]
+  targets: (typeof campaignWaveTargets.$inferSelect)[],
+  freezeHolds?: { activeWaveId: string | undefined; holds: Map<string, FreezeHoldVerdict> },
+  scopeNames?: Map<string, string>
 ): CampaignPlan {
   return {
     id: plan.id,
@@ -173,25 +230,54 @@ function toCampaignPlanShape(
     createdAt: plan.createdAt.toISOString(),
     waves: waves
       .sort((a, b) => a.waveIndex - b.waveIndex)
-      .map((w) => ({
-        id: w.id,
-        planId: w.planId,
-        waveIndex: w.waveIndex,
-        name: w.name,
-        requiresFanIn: w.requiresFanIn,
-        status: w.status,
-        createdAt: w.createdAt.toISOString(),
-        startedAt: w.startedAt?.toISOString() ?? null,
-        completedAt: w.completedAt?.toISOString() ?? null,
-        targets: targets.filter((t) => t.waveId === w.id).map(toCampaignWaveTargetShape)
-      }))
+      .map((w) => {
+        const waveTargets = targets.filter((t) => t.waveId === w.id);
+        // ACTIVE WAVE ONLY, exactly as `plan-service.ts`'s `toChangePlanShape` restricts
+        // `heldTargetCount` — the evaluation never looks at any other wave, so any other wave's
+        // count would be a fabricated zero (absent = not evaluated; see the schema doc).
+        const heldTargetCount =
+          freezeHolds !== undefined && w.id === freezeHolds.activeWaveId
+            ? waveTargets.filter((t) => freezeHolds.holds.has(t.targetObjectId)).length
+            : undefined;
+        return {
+          id: w.id,
+          planId: w.planId,
+          waveIndex: w.waveIndex,
+          name: w.name,
+          requiresFanIn: w.requiresFanIn,
+          status: w.status,
+          createdAt: w.createdAt.toISOString(),
+          startedAt: w.startedAt?.toISOString() ?? null,
+          completedAt: w.completedAt?.toISOString() ?? null,
+          ...(heldTargetCount !== undefined ? { heldTargetCount } : {}),
+          targets: waveTargets.map((t) =>
+            toCampaignWaveTargetShape(
+              t,
+              toWaveTargetHold(freezeHolds?.holds.get(t.targetObjectId), scopeNames ?? new Map())
+            )
+          )
+        };
+      })
   };
 }
 
 export async function getLatestCampaignPlan(
   tx: TenantTx,
   orgId: string,
-  campaignObjectId: string
+  campaignObjectId: string,
+  /**
+   * `withFreezeHolds` defaults `false`, the OPPOSITE default from `plan-service.ts`'s
+   * `getLatestPlanForChange` — deliberately, not an oversight. `campaign-reconcile.ts`'s per-tick
+   * loop and every other existing caller here (adoption, deadline evaluation, a dozen integration
+   * tests) call this UNCONDITIONALLY, often once per campaign per tick, and none of them read
+   * `.hold`/`heldTargetCount` off the result — flipping the default would pay for a freeze
+   * evaluation on every one of those paths for a projection nobody there consumes, exactly the cost
+   * the change side's own `withFreezeHolds: false` escape hatch exists to avoid (see that param's
+   * doc). Only the wire consumers that actually serve the projection — the `:explain` route and
+   * `campaign-repo.ts`'s `getCampaignStatus` (which now derives `frozenTargetCount` from this SAME
+   * evaluation instead of running its own) — opt in.
+   */
+  options?: { withFreezeHolds?: boolean }
 ): Promise<CampaignPlan | null> {
   const planRow = await tx.query.campaignPlans.findFirst({
     where: (t, { eq: eqOp, and: andOp }) =>
@@ -227,7 +313,28 @@ export async function getLatestCampaignPlan(
             and(eq(campaignWaveTargets.orgId, orgId), inArray(campaignWaveTargets.waveId, waveIds))
           );
 
-  return toCampaignPlanShape(planRow, waveRows, targetRows);
+  if (!options?.withFreezeHolds) {
+    return toCampaignPlanShape(planRow, waveRows, targetRows);
+  }
+
+  const waveTargetsByWaveId = new Map<string, (typeof targetRows)[number][]>();
+  for (const t of targetRows) {
+    const bucket = waveTargetsByWaveId.get(t.waveId);
+    if (bucket) bucket.push(t);
+    else waveTargetsByWaveId.set(t.waveId, [t]);
+  }
+  const wavesForFreezeEval = waveRows.map((w) => ({
+    id: w.id,
+    status: w.status,
+    targets: (waveTargetsByWaveId.get(w.id) ?? []).map((t) => ({
+      targetObjectId: t.targetObjectId,
+      memberChangeObjectId: t.memberChangeObjectId
+    }))
+  }));
+  const freezeHolds = await resolveActiveCampaignWaveFreezeHolds(tx, orgId, wavesForFreezeEval);
+  const scopeNames = await resolveFreezeScopeNames(tx, orgId, freezeHolds.holds);
+
+  return toCampaignPlanShape(planRow, waveRows, targetRows, freezeHolds, scopeNames);
 }
 
 export async function markCampaignPlanCompleted(

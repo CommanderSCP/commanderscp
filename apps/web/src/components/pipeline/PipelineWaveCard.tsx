@@ -546,9 +546,17 @@ export function PipelineWaveCard({
                 {/* BOTH, not one instead of the other (ADR-0028 increment 4, extended to the
                     freeze half). `held` is the headline; the raw status stays beside it because
                     `pending` is a real recorded value and substituting it would be a second kind
-                    of lie. */}
+                    of lie.
+                    TONE FOLLOWS THE HOLD KIND (design-system §1.5 — the same split the hold lines
+                    below already draw): a FREEZE hold is `warning` (amber — an operator declared
+                    it and should notice it), a stage-dependency-only hold is `info` (blue —
+                    informational, it clears itself when the dependency lands). One fixed variant
+                    lied about one of the two: a freeze-held target read as self-clearing. */}
                 {anyHeld && (
-                  <Badge variant="info" data-testid="pipeline-wave-target-held-badge">
+                  <Badge
+                    variant={freezeHold ? "warning" : "info"}
+                    data-testid="pipeline-wave-target-held-badge"
+                  >
                     held
                   </Badge>
                 )}

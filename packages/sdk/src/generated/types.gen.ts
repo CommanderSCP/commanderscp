@@ -18408,6 +18408,7 @@ export type ExplainCampaignResponses = {
                 createdAt: string;
                 startedAt: string | null;
                 completedAt: string | null;
+                heldTargetCount?: number;
                 targets: Array<{
                     id: string;
                     waveId: string;
@@ -18415,6 +18416,17 @@ export type ExplainCampaignResponses = {
                     targetUrn?: string;
                     targetName?: string;
                     memberChangeObjectId: string | null;
+                    hold?: {
+                        freezes: Array<{
+                            freezeId: string;
+                            scope: {
+                                objectId: string;
+                                name: string | null;
+                            } | null;
+                            summary: string;
+                            endsAt: string;
+                        }>;
+                    };
                     status: string;
                     createdAt: string;
                     updatedAt: string;

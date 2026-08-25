@@ -19,13 +19,13 @@ import {
  * it; a `provides`/`requires` coupling additionally correlates, with its own `route`. Each entry
  * states its provenance (`correlatedVia.route` + `target`), read off the server's own matching.
  *
- * NOT COVERED here: a change found via BOTH the placement/hosted_on arm and the coupling arm at
- * once (the merge that keeps the placement/hosted_on route and still surfaces `coupledKey`) — the
- * five scenarios below exercise each arm and the exclusion/absence rules in isolation, which is
- * what a first HTTP-layer pass over a brand-new field should pin; the merge-priority logic itself
- * is documented and reasoned about in `component-pipeline.ts`'s own comments. Also not covered: a
- * federation/cross-domain fixture (no two-domain harness exists for this suite, the same gap
- * `component-pipeline.integration.test.ts`'s own mutation log records for `maintainedBy`).
+ * ALSO COVERED: a change found via BOTH the placement/hosted_on arm and the coupling arm at once —
+ * the merge keeps the placement/hosted_on route (and its named target) and still surfaces
+ * `coupledKey`, per `component-pipeline.ts`'s `coupledKeyByChangeId` overlay (~:1131-1207).
+ *
+ * NOT COVERED here: a federation/cross-domain fixture (no two-domain harness exists for this
+ * suite, the same gap `component-pipeline.integration.test.ts`'s own mutation log records for
+ * `maintainedBy`).
  */
 describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () => {
   let server: ListeningTestServer;
@@ -202,6 +202,52 @@ describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () 
     expect(entry!.correlatedVia.route).toBe("coupling");
     expect(entry!.correlatedVia.target, "a coupling-only match names no place").toBeNull();
     expect(entry!.coupledKey).toBe("feature-a");
+  });
+
+  it("a BOTH-arms match (placement + coupling on the same change) keeps route 'placement', names the target, AND carries coupledKey", async () => {
+    const gamma = await admin.deploymentTargets.create({
+      name: uniq("gamma"),
+      properties: { environment: "gamma" }
+    });
+    const component = await createOrphanComponent(admin, uniq("placed-and-coupled"));
+    await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
+
+    // This component's own recent release REQUIRES a key — sets up the coupling arm's key set.
+    await admin.changes.propose({
+      name: uniq("own-release-requiring-feature-both"),
+      targets: [component.id],
+      requires: [{ key: "feature-both", at: gamma.id }]
+    });
+
+    // ONE infra change that matches BOTH arms: it targets the shared deployment-target (placement
+    // arm, via `change_wave_targets.target_object_id`) AND it `provides` the key the component's
+    // own change `requires` (coupling arm, via the jsonb-containment probe).
+    const bothArmsChange = await admin.changes.propose({
+      name: uniq("infra-both-arms"),
+      targets: [gamma.id],
+      type: "infrastructure",
+      provides: ["feature-both"]
+    });
+    await compile(bothArmsChange, [gamma.id]);
+
+    const correlated = await correlatedInfraOf(component.id);
+    const entry = correlated!.changes.find((c) => c.changeObjectId === bothArmsChange.id);
+    expect(entry, "a change matched by both arms must still appear exactly once").toBeDefined();
+    expect(
+      correlated!.changes.filter((c) => c.changeObjectId === bothArmsChange.id),
+      "no duplicate entry for the same change"
+    ).toHaveLength(1);
+    expect(entry!.correlatedVia.route, "placement/hosted_on route wins over coupling").toBe(
+      "placement"
+    );
+    expect(
+      entry!.correlatedVia.target,
+      "the placement arm's target is still named, not nulled by the coupling merge"
+    ).toEqual({ objectId: gamma.id, name: gamma.name });
+    expect(
+      entry!.coupledKey,
+      "the coupling arm's key still surfaces even though the placement route won"
+    ).toBe("feature-both");
   });
 
   it("no correlations at all -> { changes: [] }, never a fabricated entry", async () => {
