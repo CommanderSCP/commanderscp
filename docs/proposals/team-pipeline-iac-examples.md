@@ -265,8 +265,13 @@ new InfrastructurePipeline(api, {
  *
  * source     git.corp.example/payments/payments-api @ main
  *
- * build      [gates: build ✓ · unit ✓]
- *   → image  org-registry/payments/payments-api  [gate: scan ✓ · sign@commander]
+ * build      [build ✓ · unit ✓ · scan ✓] → sign(origin) → push
+ *   → image  org-registry/payments/payments-api        (commercial)
+ *
+ * distribute (lazy — bytes move only with an admitted crossing, ADR-0019;
+ *             commander signs the journey manifest per crossing, ADR-0013)
+ *   govcloud-registry ← on govcloud staging admission   (mTLS pull)
+ *   airgap-registry   ← on airgap staging admission     (retrans media)
  *
  * staging    commercial-amer-staging ∥ govcloud-amer-staging ∥ airgap-amer-staging
  *            [exit: integration ✓ · bake-alarms quiet 30m]
@@ -288,7 +293,7 @@ The trailing block is **generated, committed codegen** — `scp iac render --wri
 
 **One pipeline, one source, typed by what it delivers (D17).** `ImagePipeline`, `RpmPipeline`, `NpmPipeline`, …, `InfrastructurePipeline`, `ConfigurationPipeline` — generated from the closed kind vocabulary; the class implies the journey template (D13: an image builds → pushes → bumps config → syncs; an RPM builds → publishes → batch-installs) and the wire Type. The pipeline carries its own source props: `repo` is **required** (D18 — never assumed); `branch:` picks any branch (ADR-0030); `path:` slices the repo — which is exactly how the infra pipeline shares the component's repo without colliding with it. Identity stays the (repo, path, ref) tuple, so edits diff cleanly. A single-pipeline repo roots at the pipeline class (component inferred, §5); a multi-pipeline repo roots at `Component`.
 
-**Where the code comes from, and where the image goes.** The code source is **always written by the user** — `repo` is a required prop on every pipeline, never inferred (D18); `repos()` keeps it to the org-relative part, and `branch`/`path` are per-pipeline choices. The publish destination of an `ImagePipeline` (and every build kind) is the opposite: **estate infrastructure, never a team concern** — the platform estate declares the org's unified registry once (§3, ADR-0012), the pipeline defaults its destination to that registry at a `<service>/<component>` repository path (override the path with `repository:`), recorded as the existing `publishes_to` edge at synth. Scan, sign, and promotion pull from the commander's registry (ADR-0013); outposts receive bytes through the established channel (ADR-0019). Teams always name their source; they never type a registry URL.
+**Where the code comes from, and where the image goes.** The code source is **always written by the user** — `repo` is a required prop on every pipeline, never inferred (D18); `repos()` keeps it to the org-relative part, and `branch`/`path` are per-pipeline choices. The publish destination of an `ImagePipeline` (and every build kind) is the opposite: **estate infrastructure, never a team concern** — the platform estate declares the org's unified registry once (§3, ADR-0012), the pipeline defaults its destination to that registry at a `<service>/<component>` repository path (override the path with `repository:`), recorded as the existing `publishes_to` edge at synth. Each **domain** runs its own registry (ADR-0012 — outposts are Gitea-only), declared as domain estate IaC in that domain's federating slice (D22) — bytes replicate into it **lazily**, only with an admitted crossing into that domain (ADR-0019; retrans media for the air gap), so an image that fails build/unit/scan never leaves commercial. Teams always name their source; they never type a registry URL — commercial or otherwise.
 
 **Refs and pending dependencies (D14).** Every `fromName()` / `fromUrn()` reference resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the pipeline's status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
 
@@ -389,6 +394,12 @@ const sharedInfra = new InfrastructurePipeline(payments, "payments-infra", {
 });
 const payBlue = new Cluster(sharedInfra, "pay-blue", { within: prodAmer, account: "123456789012" });
 const govBlue = new Cluster(sharedInfra, "gov-blue", { within: govProd, account: "210987654321" });
+
+// ═══ 3b. DOMAIN REGISTRIES — each domain's own (ADR-0012); outpost-origin, federates ═══
+// Bytes arrive here LAZILY: only with an admitted crossing into the domain (D22).
+const govEstate = new Stack("govcloud-estate");
+new Registry(govEstate, "govcloud-registry", { url: "https://git.gov.example" });
+// airgap-estate declares airgap-registry the same way; delivered on the media run
 
 // ═══ 4. DOMAIN HOW — each domain's operators; domain-local, NEVER federates ═══
 // (execution systems referenced here were connected in the §1 ceremony)
