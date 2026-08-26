@@ -659,6 +659,13 @@
       "when": 1788153000000,
       "tag": "0093_member_cluster_heartbeat",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1788154000000,
+      "tag": "0094_federation_pair_permission",
+      "breakpoints": true
     }
   ]
 }

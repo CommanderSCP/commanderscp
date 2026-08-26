@@ -243,26 +243,32 @@ async function assertGovernanceAuthorityForHandFill(
  * being written to hold one permission and not the other on purpose, so the hole is reachable by
  * design rather than by accident.
  *
- * THE INVARIANT IS NOT RESTORED BY THIS CHANGE ALONE, AND SAYING OTHERWISE WOULD BE THE FALSE
- * COMMENT THIS FILE IS OTHERWISE CAREFUL TO AVOID. `federation:write` still buys a two-step chain to
- * estate write authority that never touches this door:
+ * THIS CHANGE ALONE DID NOT RESTORE THE INVARIANT — a SECOND increment did, and both halves are
+ * needed. `federation:write` used to buy a two-step chain to estate write authority that never
+ * touches this door:
  *
- *   1. `POST /api/v1/federation/peers` authorizes exactly `{permission: 'federation:write',
+ *   1. `POST /api/v1/federation/peers` authorized exactly `{permission: 'federation:write',
  *      scopeObjectId: auth.orgId}` (`routes/federation.ts`) and takes the peer's Ed25519 `publicKey`
- *      VERBATIM FROM THE REQUEST BODY — so the holder can pair a peer against a keypair they
+ *      VERBATIM FROM THE REQUEST BODY — so the holder could pair a peer against a keypair they
  *      generated themselves, i.e. install their own trust anchor.
  *   2. `POST /api/v1/federation/imports` authorizes the same single permission, and `applyEntry`'s
  *      `object_upsert` branch then resolves ANY registered `typeId` through `upsertObjectByUrn`
  *      (`federation/import-repo.ts`) — so a bundle signed with that keypair verifies and lands
  *      arbitrary rows.
  *
- * Pair-then-import is therefore estate write authority without `object:write` and without hand-fill.
+ * Pair-then-import was therefore estate write authority without `object:write` and without hand-fill.
  * The import half legitimately carries carve-outs rather than bars — a throw there aborts a peer's
  * WHOLE signed bundle and `inbox-loop.ts` re-fetches it forever, which is the wedge the
- * unregistered-type skip above exists to prevent — so the second bar, if there is to be one, belongs
- * at PAIRING, and whether pairing gets one is an OWNER DECISION escalated separately (2026-08-25).
- * Until that is answered, treat "FederationAdmin cannot edit the estate" as an intended invariant
- * this door no longer violates, NOT as a property the system currently has.
+ * unregistered-type skip above exists to prevent — so the second bar belonged at PAIRING, and that
+ * was escalated as a separate OWNER DECISION.
+ *
+ * RULED AND BUILT (owner ruling D4, 2026-08-25): step 1 now ALSO demands `federation:pair`
+ * (`authz/resolve.ts`, drizzle/0094, `federation/federation-pair-authz.integration.test.ts`), which
+ * FederationAdmin is written to withhold. Import, export, status, outposts, resync and poke stay on
+ * `federation:write` so an established link keeps working. With this door's `object:write` bar and
+ * that one, "a federation administrator operates the link, it does not edit the estate" is a property
+ * the system has — but it is held up by TWO guards in two files, and removing either restores the
+ * hole by a different route.
  *
  * ADDED, NEVER SUBSTITUTED. `federation:write` is still required at the route and is not weakened:
  * hand-fill remains a federation act, and this is a SECOND, INDEPENDENT bar in exactly the shape
