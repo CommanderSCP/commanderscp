@@ -263,31 +263,32 @@ new BindingPolicy(bindings, "tests", {
 });
 ```
 
-**The target menu is constructs** published by domain operators — `Cluster` / `InstanceGroup`, sugar over child deployment-targets, so a freeze or binding policy can scope to one cluster. The menu stack **federates** (outpost-origin, §14.9): team placements at the commander must resolve against it; only the binding policies stay domain-local.
+**Sub-targets are pipeline products (D19).** A cluster or instance group is declared by — scoped to — the Infrastructure/Configuration pipeline that manages it, at whichever rung that infra genuinely lives (component, service, or assembly):
 
 ```ts
-new Cluster(menu, "pay-blue", {
+const sharedInfra = new InfrastructurePipeline(payments, "payments-infra", {
+  repo: repos("payments/payments-infra"), // REQUIRED (D18)
+  waves: waves.standard,
+});
+const payBlue = new Cluster(sharedInfra, "pay-blue", {
   within: DeploymentTarget.fromName("commercial-amer-prod"),
   account: "123456789012",
 });
-new InstanceGroup(menu, "pay-prod-ig", {
-  within: DeploymentTarget.fromName("govcloud-amer-prod"),
-});
 ```
 
-Teams `placeAt()` handles from the standards package — and the `targets` module is **codegen, not hand-written truth**: `scp iac export --handles` regenerates it from the live estate (committed like all codegen here), and `targets.commercialAmerProd.payBlue` compiles to nothing more than `Cluster.fromName("pay-blue")`. The graph stays the single source of truth; the handles give it autocomplete. Selecting something the domain never declared fails at compile (no handle) or at plan (bad ref). Sub-target *creation* by a team is a scoped write grant: selection is the default, creation is deliberate delegation.
+The graph object and the real cluster share one managing pipeline — provenance is honest, stack pruning applies, and "who owns this cluster" has exactly one answer. Consumers reference the product: `Cluster.fromName("pay-blue")` directly, or the generated `targets.*` handles — the `targets` module stays **codegen over the graph** (`scp iac export --handles`), regardless of who manages the objects. A placement refined onto a cluster whose managing pipeline has not yet released is **loud** (readiness surfaced, never fake success); whether the image waits for the infra stays the operator's choice (2026-07-15 ruling) — explicit dependency or topology naming, never an implicit gate. The estate declares *stages*; domain operators author only the *HOW* (binding policies); the sub-target layer between them belongs to the infra pipelines that build it.
 
 **Rollout: the strategy is the construct** (`CanaryRollout`, `RollingRollout` — no strategy strings), scoped to its pipeline and keyed to a `TargetClass` — an `RpmPipeline` would declare `new RollingRollout(rpm, { on: TargetClass.instanceGroup, batchPercent: 25, pauseBetween: Duration.minutes(5) })`. Authoritative for `scp-runner-*` classes; trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8) — declared-vs-observed divergence is loud, and SCP never moves traffic itself.
 
 
 ## 8. The whole estate in one file — accounting for everything
 
-In practice these live in different stacks with different owners (each block is annotated with its real home and authority). Shown as one file so every object the pipeline touches is declared on screen — nothing arrives by magic. The only things that may NOT appear here are the §1 ceremonies: execution-system connections (credentials), federation pairing, and the XO designation.
+In practice these live in different stacks with different owners (each block is annotated with its real home and authority). Shown as one file so every object the pipelines touch is declared on screen — nothing arrives by magic. The only things that may NOT appear here are the §1 ceremonies: execution-system connections (credentials), federation pairing, and the XO designation.
 
 ```ts
 import {
-  Stack, Team, Service, Component, Registry, DeploymentTarget, Cluster, InstanceGroup,
-  BindingPolicy, ExecutionSystem, TrustTier, ExecutorType, TargetClass, Duration,
+  Stack, Team, Service, Component, Registry, DeploymentTarget, Cluster,
+  BindingPolicy, ExecutionSystem, ExecutorType, TargetClass, Duration,
   ImagePipeline, InfrastructurePipeline, Workflow,
   PostMergeTest, PostDeployTest, ContinuousTest, CanaryRollout,
 } from "@scp/iac";
@@ -296,7 +297,6 @@ import {
 const estate = new Stack("platform-estate");
 
 const paymentsTeam = new Team(estate, "team-payments");
-
 const registry = new Registry(estate, "org-registry", { url: "https://git.corp.example" });
 
 const stg = new DeploymentTarget(estate, "commercial-amer-staging", {
@@ -315,15 +315,23 @@ const airgapProd = new DeploymentTarget(estate, "airgap1-prod", {
   properties: { environment: "prod" },
 });
 
-// ═══ 2. DOMAIN MENUS — each domain's operators; outpost-origin, FEDERATES ═══
-// (team placements at the commander must resolve against these)
-const hqMenu = new Stack("hq-menu");
-const payBlue = new Cluster(hqMenu, "pay-blue", { within: prodAmer, account: "123456789012" });
+// ═══ 2. TEAM HOME — the payments team's thin service stack ═══
+const home = new Stack("payments-team");
+const payments = new Service(home, "payments");
+payments.grantOwnership(paymentsTeam); // D16 grant fluent → owns edge + role binding
 
-const govMenu = new Stack("govcloud-menu");
-const govBlue = new Cluster(govMenu, "gov-blue", { within: govProd, account: "210987654321" });
+// ═══ 3. SHARED INFRASTRUCTURE — clusters are pipeline PRODUCTS, not menus (D19) ═══
+// The cluster the image deploys onto is itself managed by an Infrastructure
+// pipeline — here at the SERVICE rung (D8's shared exception, used for what is
+// genuinely shared). One managing pipeline owns the graph object AND the real thing.
+const sharedInfra = new InfrastructurePipeline(payments, "payments-infra", {
+  repo: "git.corp.example/payments/payments-infra", // REQUIRED (D18)
+  waves: [stg, prodAmer, prodEmea, [govProd, airgapProd]],
+});
+const payBlue = new Cluster(sharedInfra, "pay-blue", { within: prodAmer, account: "123456789012" });
+const govBlue = new Cluster(sharedInfra, "gov-blue", { within: govProd, account: "210987654321" });
 
-// ═══ 3. DOMAIN HOW — each domain's operators; domain-local, NEVER federates ═══
+// ═══ 4. DOMAIN HOW — each domain's operators; domain-local, NEVER federates ═══
 // (execution systems referenced here were connected in the §1 ceremony)
 const hqBindings = new Stack("hq-bindings", { domainLocal: true });
 new BindingPolicy(hqBindings, "deploys", {
@@ -336,12 +344,7 @@ new BindingPolicy(hqBindings, "tests", {
   type: ExecutorType.build,
   executionSystem: ExecutionSystem.fromName("workflows-hq"),
 });
-// govcloud-bindings / airgap1-bindings: same five lines against their own executors
-
-// ═══ 4. TEAM HOME — the payments team's thin service stack ═══
-const home = new Stack("payments-team");
-const payments = new Service(home, "payments");
-payments.grantOwnership(paymentsTeam); // D16 grant fluent → owns edge + role binding
+// govcloud-bindings / airgap1-bindings: same lines against their own executors
 
 // ═══ 5. THE COMPONENT REPO — what a team actually writes day to day ═══
 const api = new Component("payments-api", { service: payments });
@@ -352,9 +355,9 @@ const image = new ImagePipeline(api, {
   publishesTo: registry.repository("payments/payments-api"), // default: registry + "<service>/<component>"
   waves: [stg, prodAmer, prodEmea, [govProd, airgapProd]], // last wave: CDS gate per crossing
 });
-image.placeAt(payBlue); //  refine prod placements to declared clusters
-image.placeAt(govBlue);
-image.dependsOn(Component.fromName("ledger-core")); // the ONE undeclared ref — pending (D14)
+image.placeAt(payBlue); // references block 3's PRODUCT; readiness is loud, and
+image.placeAt(govBlue); // whether image waits for infra is the operator's choice
+image.dependsOn(Component.fromName("ledger-core")); // the ONE off-screen ref — pending (D14)
 
 const unit = new Workflow(image, "unit", { path: "ci/unit.yaml" });
 const integration = new Workflow(image, "integration", { path: "ci/integration.yaml" });
@@ -366,14 +369,16 @@ new ContinuousTest(probe, { every: Duration.minutes(5), maxAge: Duration.minutes
 
 new CanaryRollout(image, { on: TargetClass.kubernetes, steps: [10, 50, 100] });
 
-const infra = new InfrastructurePipeline(api, {
+// the component's OWN infra (its queues, buckets) — component rung, same repo, path slice
+new InfrastructurePipeline(api, {
   repo: "git.corp.example/payments/payments-api", // same repo, declared again — explicitly (D18)
   path: "infra/**",
   waves: [stg, prodAmer, prodEmea, [govProd, airgapProd]],
 });
 ```
 
-Reading it for completeness: every stage a wave names is declared in block 1; every cluster a `placeAt` refines to is declared in block 2 and sits `within` a block-1 stage; every executor the pipelines will run against is resolved by a block-3 policy (never by the team); the registry the image publishes to is declared in block 1 and referenced, not retyped; the service and its ownership are block 4; and the single reference to something not on this screen — `ledger-core`, another team's component — is exactly the case D14 makes safe. The `targets.*` / `stages.*` handles used in §5/§7 are nothing more than generated names for blocks 1–2.
+Reading it for completeness: every stage a wave names is declared in block 1; every cluster a `placeAt` refines to is the declared **product of the infrastructure pipeline that manages it** (block 3), sitting `within` a block-1 stage; every executor the pipelines run against resolves through a block-4 policy — the team never names one; the registry the image publishes to is block 1, referenced rather than retyped; the service and its ownership are block 2; and the single reference to something not on this screen — `ledger-core`, another team's component — is exactly the case D14 makes safe. The `targets.*` / `stages.*` handles used in §5/§7 are nothing more than generated names for what blocks 1 and 3 declare.
+
 ---
 
 A component team merged one PR in its own repo. The commander applied it once. Every domain the service is placed in — including the one behind the CDS — runs the pipeline against its own executor, and no repo, credential, or binding crossed any boundary to make that true.
