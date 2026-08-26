@@ -142,10 +142,11 @@ And a component's **entire** declaration, in its own repo — the file *is* the 
 
 ```ts
 import { ImagePipeline, Service } from "@scp/iac";
-import { waves } from "@corp/scp-standards"; // inherited repo (D10)
+import { waves, repos } from "@corp/scp-standards"; // inherited repo (D10)
 
 new ImagePipeline("payments-api", {
   service: Service.fromName("payments"),
+  repo: repos("payments/payments-api"), // REQUIRED — the source is never assumed (D18)
   waves: waves.standard,
 });
 ```
@@ -211,12 +212,17 @@ The grammar: the file roots at the **typed pipeline class** (or at `Component` w
 import { Component, Service, ImagePipeline, InfrastructurePipeline } from "@scp/iac";
 import { TargetClass, Duration, Workflow } from "@scp/iac";
 import { PostMergeTest, PostDeployTest, ContinuousTest, CanaryRollout } from "@scp/iac";
-import { stages, targets, waves } from "@corp/scp-standards"; // typed handles (D10)
+import { stages, targets, waves, repos } from "@corp/scp-standards"; // typed handles (D10)
 
 const api = new Component("payments-api", { service: Service.fromName("payments") });
 
 // -- the image pipeline: what this repo builds and ships (D17) ---------------
-const image = new ImagePipeline(api, { waves: waves.standard }); // source: this repo, default branch
+const image = new ImagePipeline(api, {
+  repo: repos("payments/payments-api"), // REQUIRED — the source is never assumed (D18)
+  branch: "main",
+  repository: "payments/payments-api", // within the estate registry (§3); default "<service>/<component>"
+  waves: waves.standard,
+});
 
 image.placeAt(targets.commercialAmerProd.payBlue); //  refine prod to a Cluster (§14.9)
 image.dependsOn(Component.fromName("ledger-core")); // pending until it exists (D14)
@@ -235,14 +241,15 @@ new CanaryRollout(image, { on: TargetClass.kubernetes, steps: [10, 50, 100] });
 // -- the infra pipeline: the component's own infrastructure (D17) ------------
 // Same repo because it is component-scoped — a path slice, its own cadence.
 new InfrastructurePipeline(api, {
+  repo: repos("payments/payments-api"), // same repo — declared again, explicitly (D18)
   path: "infra/**",
   waves: waves.standard, // share the shape by value, or diverge freely
 });
 ```
 
-**One pipeline, one source, typed by what it delivers (D17).** `ImagePipeline`, `RpmPipeline`, `NpmPipeline`, …, `InfrastructurePipeline`, `ConfigurationPipeline` — generated from the closed kind vocabulary; the class implies the journey template (D13: an image builds → pushes → bumps config → syncs; an RPM builds → publishes → batch-installs) and the wire Type. The pipeline carries its own source props: omitted `repo` = the repo this manifest ships in; `branch:` picks any branch (ADR-0030); `path:` slices the repo — which is exactly how the infra pipeline shares the component's repo without colliding with it. Identity stays the (repo, path, ref) tuple, so edits diff cleanly. A single-pipeline repo roots at the pipeline class (component inferred, §5); a multi-pipeline repo roots at `Component`.
+**One pipeline, one source, typed by what it delivers (D17).** `ImagePipeline`, `RpmPipeline`, `NpmPipeline`, …, `InfrastructurePipeline`, `ConfigurationPipeline` — generated from the closed kind vocabulary; the class implies the journey template (D13: an image builds → pushes → bumps config → syncs; an RPM builds → publishes → batch-installs) and the wire Type. The pipeline carries its own source props: `repo` is **required** (D18 — never assumed); `branch:` picks any branch (ADR-0030); `path:` slices the repo — which is exactly how the infra pipeline shares the component's repo without colliding with it. Identity stays the (repo, path, ref) tuple, so edits diff cleanly. A single-pipeline repo roots at the pipeline class (component inferred, §5); a multi-pipeline repo roots at `Component`.
 
-**Where the code comes from, and where the image goes.** The code source of a pipeline with no source props is **the repo this file ships in** (D9) — synth stamps the real URL into the manifest, so the inference is authoring-side only. The publish destination of an `ImagePipeline` (and every build kind) is **estate infrastructure, never a team concern**: the platform estate declares the org's unified registry once (§3, ADR-0012), and the pipeline infers its destination — org registry + a `<service>/<component>` repository path — recorded as the existing `publishes_to` edge at synth, overridable via `repository:` when the convention doesn't fit. Scan, sign, and promotion pull from the commander's registry (ADR-0013); outposts receive bytes through the established channel (ADR-0019). Teams never type a registry URL.
+**Where the code comes from, and where the image goes.** The code source is **always written by the user** — `repo` is a required prop on every pipeline, never inferred (D18); `repos()` keeps it to the org-relative part, and `branch`/`path` are per-pipeline choices. The publish destination of an `ImagePipeline` (and every build kind) is the opposite: **estate infrastructure, never a team concern** — the platform estate declares the org's unified registry once (§3, ADR-0012), the pipeline defaults its destination to that registry at a `<service>/<component>` repository path (override the path with `repository:`), recorded as the existing `publishes_to` edge at synth. Scan, sign, and promotion pull from the commander's registry (ADR-0013); outposts receive bytes through the established channel (ADR-0019). Teams always name their source; they never type a registry URL.
 
 **Refs and pending dependencies (D14).** Every `fromName()` / `fromUrn()` reference resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the pipeline's status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
 
@@ -272,6 +279,101 @@ Teams `placeAt()` handles from the standards package — and the `targets` modul
 
 **Rollout: the strategy is the construct** (`CanaryRollout`, `RollingRollout` — no strategy strings), scoped to its pipeline and keyed to a `TargetClass` — an `RpmPipeline` would declare `new RollingRollout(rpm, { on: TargetClass.instanceGroup, batchPercent: 25, pauseBetween: Duration.minutes(5) })`. Authoritative for `scp-runner-*` classes; trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8) — declared-vs-observed divergence is loud, and SCP never moves traffic itself.
 
+
+## 8. The whole estate in one file — accounting for everything
+
+In practice these live in different stacks with different owners (each block is annotated with its real home and authority). Shown as one file so every object the pipeline touches is declared on screen — nothing arrives by magic. The only things that may NOT appear here are the §1 ceremonies: execution-system connections (credentials), federation pairing, and the XO designation.
+
+```ts
+import {
+  Stack, Team, Service, Component, Registry, DeploymentTarget, Cluster, InstanceGroup,
+  BindingPolicy, ExecutionSystem, TrustTier, ExecutorType, TargetClass, Duration,
+  ImagePipeline, InfrastructurePipeline, Workflow,
+  PostMergeTest, PostDeployTest, ContinuousTest, CanaryRollout,
+} from "@scp/iac";
+
+// ═══ 1. PLATFORM ESTATE — platform team, applied at the commander, federates ═══
+const estate = new Stack("platform-estate");
+
+const paymentsTeam = new Team(estate, "team-payments");
+
+const registry = new Registry(estate, "org-registry", { url: "https://git.corp.example" });
+
+const stg = new DeploymentTarget(estate, "commercial-amer-staging", {
+  properties: { environment: "staging", region: "amer" },
+});
+const prodAmer = new DeploymentTarget(estate, "commercial-amer-prod", {
+  properties: { environment: "prod", region: "amer" },
+});
+const prodEmea = new DeploymentTarget(estate, "commercial-emea-prod", {
+  properties: { environment: "prod", region: "emea" },
+});
+const govProd = new DeploymentTarget(estate, "govcloud-amer-prod", {
+  properties: { environment: "prod", region: "amer" },
+});
+const airgapProd = new DeploymentTarget(estate, "airgap1-prod", {
+  properties: { environment: "prod" },
+});
+
+// ═══ 2. DOMAIN MENUS — each domain's operators; outpost-origin, FEDERATES ═══
+// (team placements at the commander must resolve against these)
+const hqMenu = new Stack("hq-menu");
+const payBlue = new Cluster(hqMenu, "pay-blue", { within: prodAmer, account: "123456789012" });
+
+const govMenu = new Stack("govcloud-menu");
+const govBlue = new Cluster(govMenu, "gov-blue", { within: govProd, account: "210987654321" });
+
+// ═══ 3. DOMAIN HOW — each domain's operators; domain-local, NEVER federates ═══
+// (execution systems referenced here were connected in the §1 ceremony)
+const hqBindings = new Stack("hq-bindings", { domainLocal: true });
+new BindingPolicy(hqBindings, "deploys", {
+  scope: prodAmer,
+  type: ExecutorType.configuration,
+  executionSystem: ExecutionSystem.fromName("argocd-hq"),
+});
+new BindingPolicy(hqBindings, "tests", {
+  scope: stg,
+  type: ExecutorType.build,
+  executionSystem: ExecutionSystem.fromName("workflows-hq"),
+});
+// govcloud-bindings / airgap1-bindings: same five lines against their own executors
+
+// ═══ 4. TEAM HOME — the payments team's thin service stack ═══
+const home = new Stack("payments-team");
+const payments = new Service(home, "payments");
+payments.grantOwnership(paymentsTeam); // D16 grant fluent → owns edge + role binding
+
+// ═══ 5. THE COMPONENT REPO — what a team actually writes day to day ═══
+const api = new Component("payments-api", { service: payments });
+
+const image = new ImagePipeline(api, {
+  repo: "git.corp.example/payments/payments-api", // REQUIRED — never assumed (D18)
+  branch: "main",
+  publishesTo: registry.repository("payments/payments-api"), // default: registry + "<service>/<component>"
+  waves: [stg, prodAmer, prodEmea, [govProd, airgapProd]], // last wave: CDS gate per crossing
+});
+image.placeAt(payBlue); //  refine prod placements to declared clusters
+image.placeAt(govBlue);
+image.dependsOn(Component.fromName("ledger-core")); // the ONE undeclared ref — pending (D14)
+
+const unit = new Workflow(image, "unit", { path: "ci/unit.yaml" });
+const integration = new Workflow(image, "integration", { path: "ci/integration.yaml" });
+const probe = new Workflow(image, "canary-probe", { path: "ci/canary-probe.yaml" });
+
+new PostMergeTest(unit); //                                          gates wave 1
+new PostDeployTest(integration, { stage: stg }); //                  gates promotion out of staging
+new ContinuousTest(probe, { every: Duration.minutes(5), maxAge: Duration.minutes(15) });
+
+new CanaryRollout(image, { on: TargetClass.kubernetes, steps: [10, 50, 100] });
+
+const infra = new InfrastructurePipeline(api, {
+  repo: "git.corp.example/payments/payments-api", // same repo, declared again — explicitly (D18)
+  path: "infra/**",
+  waves: [stg, prodAmer, prodEmea, [govProd, airgapProd]],
+});
+```
+
+Reading it for completeness: every stage a wave names is declared in block 1; every cluster a `placeAt` refines to is declared in block 2 and sits `within` a block-1 stage; every executor the pipelines will run against is resolved by a block-3 policy (never by the team); the registry the image publishes to is declared in block 1 and referenced, not retyped; the service and its ownership are block 4; and the single reference to something not on this screen — `ledger-core`, another team's component — is exactly the case D14 makes safe. The `targets.*` / `stages.*` handles used in §5/§7 are nothing more than generated names for blocks 1–2.
 ---
 
 A component team merged one PR in its own repo. The commander applied it once. Every domain the service is placed in — including the one behind the CDS — runs the pipeline against its own executor, and no repo, credential, or binding crossed any boundary to make that true.
