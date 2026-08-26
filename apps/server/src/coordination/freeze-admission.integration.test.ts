@@ -1139,24 +1139,42 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     // Viewer purely so the harness mints the auth row and a live token; `object:read` grants no
     // write anywhere and is no part of what is under test.
     const user = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
+    await grantOrgDefinedRole(user.objectId, ["freeze:write", "freeze:override"]);
+    return user.token;
+  }
+
+  /** Bind `subjectObjectId` to a FRESH ORG-DEFINED role holding exactly `permissions`, allow, at the
+   *  org root — `roles.org_id` exists for precisely this. It is the only instrument in the suite
+   *  that can express an actor the built-in role table cannot: drizzle/0010 lands `freeze:write` and
+   *  `federation:write` together on Administrator and Owner, and `freeze:override` on Owner alone,
+   *  so every permission-separating case here has to mint its own role or measure a coincidence
+   *  between two grant lists.
+   *
+   *  Bound at the ORG ROOT deliberately: `scopeExpandCte` expands the CHECKED scope upward, so an
+   *  org-root binding satisfies a check made at any object in the org — including the deployment
+   *  targets and services these fixtures scope their freezes to. A case that needs the two spellings
+   *  to DISAGREE must bind below the root instead (the M25.9 scope case at the end of this file). */
+  async function grantOrgDefinedRole(
+    subjectObjectId: string,
+    permissions: string[]
+  ): Promise<void> {
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const roleId = randomUUID();
       await tx.insert(roles).values({
         id: roleId,
         orgId: org.orgId,
-        name: `freeze-only-${randomUUID().slice(0, 8)}`,
-        permissions: ["freeze:write", "freeze:override"]
+        name: `adhoc-${randomUUID().slice(0, 8)}`,
+        permissions
       });
       await tx.insert(roleBindings).values({
         id: randomUUID(),
         orgId: org.orgId,
-        subjectId: user.objectId,
+        subjectId: subjectObjectId,
         roleId,
         scopeObjectId: org.orgId,
         effect: "allow"
       });
     });
-    return user.token;
   }
 
   it("D6 door: `federate` is settable through POST /api/v1/freezes and reports the object it minted", async () => {
@@ -1869,14 +1887,37 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(ok.liftedByActorId).toBe(serviceAdmin.objectId);
   });
 
-  it("M25.1 authz: Viewer and Operator hold no `freeze:write` at all", async () => {
+  it("M25.1 authz: Viewer and Operator hold no `freeze:write` — and `freeze:override` is ADDED to it, never a substitute for it", async () => {
+    // THE M25.9 BAR IS CLEARED FOR THESE SUBJECTS ON PURPOSE, and that grant is the whole reason
+    // this case still measures its own title. `frozen` is declared by `admin` (`freezeAt`), so
+    // after owner ruling D1 a Viewer and an Operator are refused BOTH verbs for two independent
+    // reasons: no `freeze:write`, and not-the-declarer-plus-no-`freeze:override`. Review MEASURED
+    // the consequence on 2026-08-25 — with both `freeze:write` `authorize` blocks deleted from the
+    // `DELETE` and `PATCH` handlers in `routes/governance.ts`, this case stayed GREEN, carried
+    // entirely by a bar it never claimed to be about. Granting the override at the org root retires
+    // the second cause, leaving the missing `freeze:write` as the only thing that can produce a 403.
+    //
+    // RE-MEASURED after the grant, same mutation, both handlers: RED at the FIRST arm, with
+    //   → Viewer does not hold freeze:write …: expected 200 to be 403
+    // (the case aborts there, so the later arms and the closing `liftedAt` check never run). Each
+    // block was then deleted ALONE, and each reds only ITS OWN verb's arm — the `DELETE` block reds
+    // the lift with the message above, the `PATCH` block reds the window edit with the bare
+    // `expected 200 to be 403` of the second arm. That is why both verbs are asserted here: one
+    // arm would leave the other door's check unmeasured.
+    //
+    // It also turns the case into the positive statement its title now makes: an actor holding
+    // `freeze:override` and NOT `freeze:write` is refused, so the M25.9 bar is genuinely stacked on
+    // the older one rather than standing in for it (`routes/governance.ts`, "ADDED, NEVER
+    // SUBSTITUTED"). Nothing else in this file drives that direction — every other override-holder
+    // here holds `freeze:write` too.
     const frozen = await freezeAt(amer.id, "amer-role-freeze");
     for (const role of ["Viewer", "Operator"]) {
       const user = await createTestUser(server, org, [{ role, scope: org.orgId }]);
+      await grantOrgDefinedRole(user.objectId, ["freeze:override"]);
       const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
       expect(
         await statusOf(client.freezes.lift(frozen.id, { reason: `${role} tries to lift` })),
-        `${role} does not hold freeze:write (drizzle/0010 grants it to Administrator and Owner only)`
+        `${role} does not hold freeze:write (drizzle/0010 grants it to Administrator and Owner only), and the freeze:override they were just handed does not stand in for it`
       ).toBe(403);
       expect(
         await statusOf(
@@ -2156,9 +2197,14 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   //      retraction then demands the override. This kills the ALLOW-YOUR-OWN arms, NOT the
   //      refusals: "an Administrator lifts THEIR OWN freeze" and the second case's closing arm
   //      (bob lifts a freeze he declared) both 403 where they require 200, and the pre-existing
-  //      `M25.1 authz` case dies with them for the same reason. Note what that means: deleting the
-  //      guard makes the route STRICTER, so a block asserting only refusals would survive it
-  //      untouched. The own-freeze arms are the half of the ruling this mutation measures.
+  //      `M25.1 authz` SCOPE case ("`freeze:write` at a service cannot lift the ORG-ROOT freeze")
+  //      dies with them, on its own closing control arm, for the same reason. RE-RUN 2026-08-25:
+  //      those THREE and nothing else. Named precisely because there are two `M25.1 authz` cases
+  //      and the OTHER one — the Viewer/Operator case — correctly survives: it asserts refusals
+  //      only, and a mutation that makes the route stricter cannot red a refusal. Note what that
+  //      means generally: deleting the guard makes the route STRICTER, so a block asserting only
+  //      refusals would survive it untouched. The own-freeze arms are the half of the ruling this
+  //      mutation measures.
   //   2. INVERT it to `!==` — the override is then demanded of the DECLARING actor and of nobody
   //      else, which is the mutation the refusals answer. Five of the six cases here go red:
   //      "expected 200 to be 403" on the lift refusal, on the PATCH shortening arm, on the
