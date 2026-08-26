@@ -2967,6 +2967,133 @@ describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () 
     const blocked = await expectImportBlocked(outpostWithKey, badSig);
     expect(blocked.decisionId).toBeTruthy();
   });
+
+  // ------------------------------------------------------------------------------------------
+  // ADR-0045 D2a — the D2/D3 artifact-identity collision converges by ADOPTION, never drops.
+  // ------------------------------------------------------------------------------------------
+
+  it("(h) D2a: promotion-import-mint THEN ordinary sync of the exporter's own copy converges to ONE object, adopted origin, no entry_dropped", async () => {
+    const digest = "sha256:" + "6".repeat(64);
+    const bundle = await buildBundleToward(outpostWithKey, { artifact_digest: digest });
+    const result = await importPromotionBundle(outpostWithKey.db, outpostWithKey.orgId, bundle);
+    expect(result.localChangeObjectId).toBeTruthy();
+
+    // The receiver's own import-minted anchor exists immediately (D2), authored by ITSELF.
+    const receiverSelf = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      ensureFederationSelf(tx, outpostWithKey.orgId)
+    );
+    const anchorBeforeSync = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      findArtifactByIdentity(tx, outpostWithKey.orgId, "oci", digest)
+    );
+    expect(anchorBeforeSync).toBeDefined();
+    expect(anchorBeforeSync!.originDomainId).toBe(receiverSelf.domainId);
+
+    // An ORDINARY full sync — independent of any promotion — carries the commander's OWN minted
+    // row for the identical identity (D3: an artifact is an ordinary, non-domain-local object).
+    // This is exactly what a second `buildBundleToward` call does internally for a NEW promotion;
+    // triggered directly here so it is provable without needing a second change/target.
+    const cursor = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      getCursor(tx, outpostWithKey.orgId, selfCommander.domainId, selfCommander.domainId)
+    );
+    const syncBundle = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      exportSyncBundle(tx, commander.orgId, outpostWithKey.orgName, cursor.sequence)
+    );
+    await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      importSyncBundle(tx, outpostWithKey.orgId, syncBundle)
+    );
+
+    // ONE object, same id as before (never the incoming one), now authored by the COMMANDER.
+    const anchorAfterSync = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      findArtifactByIdentity(tx, outpostWithKey.orgId, "oci", digest)
+    );
+    expect(anchorAfterSync!.id).toBe(anchorBeforeSync!.id);
+    expect(anchorAfterSync!.originDomainId).toBe(selfCommander.domainId);
+
+    const allRows = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      tx
+        .select({ id: objects.id })
+        .from(objects)
+        .where(
+          and(
+            eq(objects.orgId, outpostWithKey.orgId),
+            eq(objects.typeId, "artifact"),
+            isNull(objects.deletedAt),
+            sql`${objects.properties} ->> 'digest' = ${digest}`
+          )
+        )
+    );
+    expect(allRows).toHaveLength(1);
+
+    const dropped = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      listAuditEvents(tx, outpostWithKey.orgId, { limit: 200 })
+    );
+    expect(
+      dropped.items.filter(
+        (e) =>
+          e.action === "federation.import.entry_dropped" && e.subjectId === anchorBeforeSync!.id
+      )
+    ).toHaveLength(0);
+    // Filtered to THIS anchor's id, not counted globally — this describe block's shared
+    // commander/outpostWithKey pair means the ordinary sync step above also carries every OTHER
+    // still-unsynced commander-minted artifact from earlier `it()`s in this suite, each of which
+    // may ALSO collide with its own already-imported anchor and adopt (correctly) — this
+    // assertion is about THIS digest's anchor specifically.
+    expect(
+      dropped.items.filter(
+        (e) => e.action === "artifact.update" && e.subjectId === anchorBeforeSync!.id
+      )
+    ).toHaveLength(1);
+  });
+
+  it("(i) D2a, reverse order: ordinary sync FIRST, then promotion import — no re-mint, the anchor IS the synced object", async () => {
+    const digest = "sha256:" + "7".repeat(64);
+    // Build (export) the bundle — this mints the COMMANDER's own artifact row — but do not import
+    // it at the receiver yet.
+    const bundle = await buildBundleToward(outpostWithKey, { artifact_digest: digest });
+
+    // Ordinary sync BEFORE the promotion import: the receiver has no local row yet, so this is an
+    // ORDINARY replica landing under the commander's own id — no collision, nothing to adopt.
+    const cursor = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      getCursor(tx, outpostWithKey.orgId, selfCommander.domainId, selfCommander.domainId)
+    );
+    const syncBundle = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      exportSyncBundle(tx, commander.orgId, outpostWithKey.orgName, cursor.sequence)
+    );
+    await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      importSyncBundle(tx, outpostWithKey.orgId, syncBundle)
+    );
+
+    const syncedAnchor = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      findArtifactByIdentity(tx, outpostWithKey.orgId, "oci", digest)
+    );
+    expect(syncedAnchor).toBeDefined();
+    expect(syncedAnchor!.originDomainId).toBe(selfCommander.domainId);
+
+    // NOW the promotion import: `mintArtifactObjects`'s upsert-by-identity finds the already-synced
+    // row and returns it unchanged — no mint, no new row.
+    const result = await importPromotionBundle(outpostWithKey.db, outpostWithKey.orgId, bundle);
+    expect(result.localChangeObjectId).toBeTruthy();
+
+    const anchorAfterImport = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      findArtifactByIdentity(tx, outpostWithKey.orgId, "oci", digest)
+    );
+    expect(anchorAfterImport!.id).toBe(syncedAnchor!.id);
+
+    const allRows = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      tx
+        .select({ id: objects.id })
+        .from(objects)
+        .where(
+          and(
+            eq(objects.orgId, outpostWithKey.orgId),
+            eq(objects.typeId, "artifact"),
+            isNull(objects.deletedAt),
+            sql`${objects.properties} ->> 'digest' = ${digest}`
+          )
+        )
+    );
+    expect(allRows).toHaveLength(1);
+  });
 });
 
 // ============================================================================================

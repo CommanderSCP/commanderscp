@@ -35,6 +35,64 @@ A commander-minted (export-side) artifact object is an ordinary federated object
 
 One relationship type, `derived_from`, `from_types: ['artifact']`, `to_types: ['artifact']`, cardinality `many_to_one` — one derivative names exactly one base (the "from" side singular), a base may be the origin of many derivatives (the "to" side plural). `many_to_one` is already an enforced cardinality (`graph/relationships-repo.ts`'s `assertCardinality`, `SINGULAR_SIDES.many_to_one = { from: true, to: false }` — refuses a second `derived_from` edge out of the same artifact, which is exactly "REFUSES a second base for one derivative"). `produced_by` (artifact → the build/executor run that produced it) is **explicitly deferred** — it answers a different question ("what process made this") than `derived_from` answers ("what artifact is this a modification of"), and nothing in this increment's motivating gaps (the version staircase, machine-image provenance) needs it yet. Naming it here and deferring it is deliberate, so a future increment does not have to re-discover that the two are separate relationships.
 
+### D2a — Amendment (2026-08-26): a D2/D3 collision converges by adoption, never drops
+
+D2 mints a receiver-local anchor at promotion import time; D3 makes that anchor an ordinary
+(non-domain-local) object the moment it exists. Put together, those two decisions produce a
+collision D2/D3 did not separately anticipate: the **exporter's own** minted row for the identical
+`(digest, artifactType)` is *also* ordinary, and reaches the same receiver independently via
+ordinary full-scope sync, whenever that receiver syncs at `full` scope (routine, not an edge case).
+Two different ids, one identity — `objects_artifact_one_per_digest_type` (0094) refuses the second
+row outright, and `federation/import-repo.ts`'s pre-check (built alongside the type-registration
+skip-and-record it sits beside) caught this the same way: drop the entry, record it as
+`federation.import.entry_dropped`.
+
+That was the wrong steady state. The 0051/0043 skip-and-record precedent is correct for an
+*accidental* one-off collision. This one is not accidental — it is **guaranteed** for every
+promoted digest that also reaches the peer under full scope — so skip-and-record produced one
+dropped entry per promotion per peer **forever**, and the receiver's own anchor never learned the
+shared base had arrived.
+
+**The fix, in three parts:**
+
+- **(a) Import-mint only when no object with that identity exists.** Unchanged from D2/D1 as
+  written — `mintArtifactObjects`'s upsert-by-identity (`findArtifactByIdentity`, keyed on
+  `(digest, artifactType)`) already never mints a second row for an identity this domain already
+  holds. Restated here because D2a's fix depends on this invariant continuing to hold exactly as
+  D1 specified it.
+- **(b) The import-minted anchor carries `mintedBy: 'import'` provenance.** Also unchanged —
+  `MintArtifactObjectsOptions.mintedBy` already stamps this at mint time (`federation/promotion-
+  repo.ts`'s `applyPromotionImport` call). Restated because D2a's adoption path preserves this
+  historical fact rather than overwriting it (see below).
+- **(c) The sync import path, for `artifact` identity collisions ONLY, converges by ADOPTION
+  instead of skip-and-record.** When an incoming, signature-verified `object_upsert` entry's
+  `(digest, artifactType)` already exists locally under a different id, the existing row's
+  **authority** (`originDomainId`, `revision`, `provenance`) and **properties** move onto the
+  incoming entry's — with one carve-out: `properties.firstPromotedChangeId` (this receiver's own
+  local history — "the promotion that first caused this identity to be minted HERE") is preserved,
+  never overwritten by convergence, the same rule a plain re-mint already honors. The row's **id and
+  urn never change** — every local reference the receiver's own promoted change already holds
+  (`sourceRef.artifactDigests`, any `derived_from` edge) keeps resolving. The incoming entry itself
+  is then fully consumed by the adoption; it is not additionally applied through the ordinary
+  `upsertObjectByUrn` path. Implemented in `graph/artifacts-repo.ts`'s `adoptArtifactIdentity`,
+  called from `federation/import-repo.ts`'s `object_upsert` branch in place of the prior
+  skip-and-record. Idempotent: a resync or channel replay of an already-adopted (or older-revision)
+  entry is a no-op, matching DESIGN §13's "double-import is a no-op" DoD for every other entry kind.
+
+**The alternative considered and rejected: make the import-minted anchor `domainLocal: true`.** A
+domain-local object never journals, which looks like it sidesteps the collision entirely. It does
+not solve the problem, it relocates it: a domain-local anchor's identity is invisible to every peer
+by design (ADR-0031 §2), so the exporter's later-arriving shared copy could never land under the
+SAME id, and the receiver would be permanently split between its own local-only anchor and the real
+shared artifact the rest of the federation actually references. This ADR's own D3 states plainly
+that "this object IS the org's one graph object for this identity, replicated with authority" — a
+domain-local anchor breaks exactly that, for every promoted artifact, forever, which is a more
+permanent version of the same problem this amendment exists to close, not a fix for it.
+
+This keeps D2 (a receiver anchor exists immediately, before any ordinary sync could possibly have
+carried the exporter's copy) and D3 (the base artifact is the commander's, shared) coherent with
+each other, with zero permanent drops.
+
 ## Mechanism
 
 **Registry rows, not tables** (charter principle 2; the ADR-0026/0051 precedent, applied verbatim). `artifact` is one `INSERT INTO object_types`; `derived_from` is one `INSERT INTO relationship_types`. No new column, no new table, no schema migration beyond the registry rows and the one partial unique index D1 requires. A component's pipeline view, the graph explorer, `traverse`, blast-radius — every generic object/relationship surface this platform already has — gets artifact support for free, the same way `placement` did.

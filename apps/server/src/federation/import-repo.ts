@@ -34,7 +34,7 @@ import {
 } from "./unattached-change-status-repo.js";
 import { createRelationship, deleteRelationship } from "../graph/relationships-repo.js";
 import { deleteObject, isUuid, upsertObjectByUrn } from "../graph/objects-repo.js";
-import { findArtifactByIdentity } from "../graph/artifacts-repo.js";
+import { adoptArtifactIdentity, findArtifactByIdentity } from "../graph/artifacts-repo.js";
 import { updateObject } from "../graph/objects-repo.js";
 import { findObjectByIdOrUrnAnyType, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import {
@@ -261,7 +261,7 @@ async function applyEntry(
         return;
       }
       // ==========================================================================================
-      // AN ARTIFACT IDENTITY COLLISION COSTS ONE ENTRY, NEVER THE CHANNEL (ADR-0045)
+      // AN ARTIFACT IDENTITY COLLISION CONVERGES BY ADOPTION, NEVER DROPS (ADR-0045 D2a)
       // ==========================================================================================
       // An `artifact` object is minted OUTSIDE the ordinary sync path too — `mintArtifactObjects`
       // (`graph/artifacts-repo.ts`), called from BOTH `exportPromotionBundle` and
@@ -277,10 +277,17 @@ async function applyEntry(
       // A PRE-CHECK, NOT A `catch`, for the identical reason the type-registration guard above is
       // one: a failed INSERT poisons this transaction, and this switch has no try/catch around it.
       //
-      // SKIP-AND-RECORD, and here skipping loses NOTHING: the identity this entry carries is
-      // ALREADY present locally under a different id (that is the collision), so the fact itself
-      // is not lost — only this specific replica row is, and it is recorded exactly like the
-      // unregistered-type drop above so the loss is visible rather than silent.
+      // ADOPT, NOT SKIP-AND-RECORD (D2a amendment — the prior behavior here, and why it changed).
+      // This collision is not an accidental one-off (0051/0043's precedent, still correct for THAT
+      // case): every promotion mints a receiver-local anchor (D2) that is GUARANTEED to collide
+      // with the exporter's own ordinary-synced copy (D3) the moment it also reaches this peer, so
+      // skip-and-record produced one `entry_dropped` audit per promotion per peer FOREVER and the
+      // receiver's own anchor never learned the shared base had arrived. Adoption keeps this
+      // receiver's existing id/urn (every local reference — this receiver's own promoted change's
+      // `sourceRef`, any `derived_from` edge — keeps resolving) and moves the row's AUTHORITY and
+      // `properties` onto the incoming, signature-verified entry; see `adoptArtifactIdentity`'s doc
+      // for the full reasoning, including why `firstPromotedChangeId` (receiver-local history)
+      // survives the adoption untouched and why a `domainLocal` anchor was considered and rejected.
       if (typeId === "artifact") {
         const digest = (payload.properties as Record<string, unknown> | undefined)?.digest;
         const artifactType = (payload.properties as Record<string, unknown> | undefined)
@@ -288,17 +295,12 @@ async function applyEntry(
         if (typeof digest === "string" && typeof artifactType === "string") {
           const existingByIdentity = await findArtifactByIdentity(tx, orgId, artifactType, digest);
           if (existingByIdentity && existingByIdentity.id !== payload.id) {
-            await appendAuditEvent(tx, {
-              orgId,
-              actorId: FEDERATION_IMPORT_ACTOR_ID,
-              action: "federation.import.entry_dropped",
-              subjectId: existingByIdentity.id,
-              reason:
-                `dropped ${entry.entryKind} entry ${entry.id} (sequence ${entry.sequence}) from ` +
-                `'${exporterDomainId}': an 'artifact' object with digest '${digest}' (type ` +
-                `'${artifactType}') already exists locally as '${existingByIdentity.id}' (urn ` +
-                `'${urn}' incoming). The identity is already present under a different id — the ` +
-                `entry itself is what's dropped, not the fact. The rest of the bundle was applied.`,
+            await adoptArtifactIdentity(tx, orgId, {
+              existingId: existingByIdentity.id,
+              originDomainId: exporterDomainId,
+              revision,
+              incomingProperties: (payload.properties as Record<string, unknown>) ?? {},
+              actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
               requestId
             });
             return;
