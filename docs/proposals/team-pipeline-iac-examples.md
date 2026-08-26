@@ -61,7 +61,7 @@ The component's declaration rides the same repo that already drives its releases
 ## 3. `platform/estate.ts` — the operator stack (applies at the commander, federates)
 
 ```ts
-import { Stack, Team, DeploymentTarget, TrustTier } from "@scp/iac";
+import { Stack, Team, DeploymentTarget, TrustTier, Registry } from "@scp/iac";
 import { Outpost } from "@scp/iac"; // (new) one-liner registry construct over the
                                     // `outpost` object type (migration 0043)
 
@@ -76,6 +76,9 @@ const paymentsTeam = new Team(estate, "team-payments", {});
 new Outpost(estate, "hq", { trustTier: TrustTier.commercial });
 new Outpost(estate, "govcloud", { trustTier: TrustTier.govcloud });
 new Outpost(estate, "airgap1", { trustTier: TrustTier.il5 });
+
+// -- the unified registry (ADR-0012): where build pipelines publish ----------
+new Registry(estate, "org-registry", { url: "https://git.corp.example" }); // Gitea
 
 // -- stages: deployment-targets, GLOSSARY grammar, D6 vocabulary ------------
 const stage = (id: string, environment: string, region?: string) =>
@@ -239,6 +242,8 @@ new InfrastructurePipeline(api, {
 
 **One pipeline, one source, typed by what it delivers (D17).** `ImagePipeline`, `RpmPipeline`, `NpmPipeline`, …, `InfrastructurePipeline`, `ConfigurationPipeline` — generated from the closed kind vocabulary; the class implies the journey template (D13: an image builds → pushes → bumps config → syncs; an RPM builds → publishes → batch-installs) and the wire Type. The pipeline carries its own source props: omitted `repo` = the repo this manifest ships in; `branch:` picks any branch (ADR-0030); `path:` slices the repo — which is exactly how the infra pipeline shares the component's repo without colliding with it. Identity stays the (repo, path, ref) tuple, so edits diff cleanly. A single-pipeline repo roots at the pipeline class (component inferred, §5); a multi-pipeline repo roots at `Component`.
 
+**Where the code comes from, and where the image goes.** The code source of a pipeline with no source props is **the repo this file ships in** (D9) — synth stamps the real URL into the manifest, so the inference is authoring-side only. The publish destination of an `ImagePipeline` (and every build kind) is **estate infrastructure, never a team concern**: the platform estate declares the org's unified registry once (§3, ADR-0012), and the pipeline infers its destination — org registry + a `<service>/<component>` repository path — recorded as the existing `publishes_to` edge at synth, overridable via `repository:` when the convention doesn't fit. Scan, sign, and promotion pull from the commander's registry (ADR-0013); outposts receive bytes through the established channel (ADR-0019). Teams never type a registry URL.
+
 **Refs and pending dependencies (D14).** Every `fromName()` / `fromUrn()` reference resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the pipeline's status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
 
 **Tests know where the code is through their pipeline.** A `Workflow` scopes to a pipeline, so it inherits the repo and branch the pipeline already declares — `path:` names the WorkflowTemplate *within that repo*; a hook scopes to its `Workflow`. `PostMergeTest(unit)` fires on merges to `image`'s branch and runs `ci/unit.yaml` from `image`'s repo, because that is what its scope chain says. SCP **triggers** the run on the domain's Argo Workflows (resolved by binding policy) and consumes the result as gate/hold evidence — stale continuous green reads as absent (`maxAge` required). No `argo-workflows` plugin exists yet: build increment 8 (main doc §13).
@@ -263,7 +268,7 @@ new InstanceGroup(menu, "pay-prod-ig", {
 });
 ```
 
-Teams `placeAt()` handles the standards package re-exports (`targets.commercialAmerProd.payBlue`, regenerable via `scp iac export --handles`) — selecting something the domain never declared fails at compile (no handle) or at plan (bad ref). Sub-target *creation* by a team is a scoped write grant: selection is the default, creation is deliberate delegation.
+Teams `placeAt()` handles from the standards package — and the `targets` module is **codegen, not hand-written truth**: `scp iac export --handles` regenerates it from the live estate (committed like all codegen here), and `targets.commercialAmerProd.payBlue` compiles to nothing more than `Cluster.fromName("pay-blue")`. The graph stays the single source of truth; the handles give it autocomplete. Selecting something the domain never declared fails at compile (no handle) or at plan (bad ref). Sub-target *creation* by a team is a scoped write grant: selection is the default, creation is deliberate delegation.
 
 **Rollout: the strategy is the construct** (`CanaryRollout`, `RollingRollout` — no strategy strings), scoped to its pipeline and keyed to a `TargetClass` — an `RpmPipeline` would declare `new RollingRollout(rpm, { on: TargetClass.instanceGroup, batchPercent: 25, pauseBetween: Duration.minutes(5) })`. Authoritative for `scp-runner-*` classes; trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8) — declared-vs-observed divergence is loud, and SCP never moves traffic itself.
 
