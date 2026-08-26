@@ -9,10 +9,10 @@ The estate: a **commander** (with its **XO** — the designated standby member c
                 │        │
         hq outpost    govcloud outpost                ── mTLS journal pull
                           │
-                       retrans ══ CDS ══▶ airgap1 outpost   ── signed .scpbundle files
+                       retrans ══ CDS ══▶ airgap outpost   ── signed .scpbundle files
 ```
 
-Stage names follow the GLOSSARY grammar `<domain>[-<location>]-<env>` with hyphen-free segments — hence `airgap1-prod`, not `airgap-1-prod`. Per D6, examples use `staging` (never `gamma`); `dev` lives in domain-local dev pipelines (ADR-0030) and does not appear in the global promotion path.
+Stage names follow the GLOSSARY grammar `<domain>[-<location>]-<env>` with hyphen-free segments — hence `airgap-amer-production` (domain `airgap`, location `amer`, env `production`). Per D6/D21, examples spell out `staging` and `production` (never `gamma`, never bare `prod`); `dev` lives in domain-local dev pipelines (ADR-0030) and does not appear in the global promotion path.
 
 ## 1. What is deliberately NOT in IaC
 
@@ -22,7 +22,7 @@ Transport identity, keys, credentials, and the XO designation are operator cerem
 # one-time estate ceremonies — never expressed in a manifest
 $ scp federation pair --peer govcloud …                # mTLS identity + key exchange
 $ scp federation pair --peer retrans-1 …
-$ scp federation pair --peer airgap1 --bundle …        # pairing bundle rides sneakernet
+$ scp federation pair --peer airgap --bundle …        # pairing bundle rides sneakernet
 $ scp federation peer update commander \
     --dial-urls 'https://scp.corp.example,https://scp-dr.corp.example#xo'
                                                        # ordered dial list; the #xo-labeled
@@ -44,7 +44,7 @@ Nothing is ever declared *for* the XO: it serves the same instance and database,
 git.corp.example/
   platform/scp-platform/            # central: the estate (§3) + per-domain HOW (§4)
     platform/estate.ts + estate.manifest.json
-    domains/{hq,govcloud,airgap1}/bindings.ts
+    domains/{hq,govcloud,airgap}/bindings.ts
   platform/scp-standards/           # central: importable standards (D10), published to
     src/index.ts                    #   the org registry as @corp/scp-standards
   payments/payments-team/           # thin team home: the service object, shared exceptions
@@ -56,7 +56,7 @@ git.corp.example/
   payments/payments-worker/         # same shape
 ```
 
-The component's declaration rides the same repo that already drives its releases — one push webhook feeds both config sync (when `scp/manifest.json` changed) and release correlation (everything else). Domain HOW slices are applied by each domain's operators locally (CLI-push, D7 — for airgap1, from the same media run as the regular bundle delivery).
+The component's declaration rides the same repo that already drives its releases — one push webhook feeds both config sync (when `scp/manifest.json` changed) and release correlation (everything else). Domain HOW slices are applied by each domain's operators locally (CLI-push, D7 — for airgap, from the same media run as the regular bundle delivery).
 
 ## 3. `platform/estate.ts` — the operator stack (applies at the commander, federates)
 
@@ -75,7 +75,7 @@ const paymentsTeam = new Team(estate, "team-payments", {});
 // trustTier etc. — transport/keys stay in §1's ceremonies.
 new Outpost(estate, "hq", { trustTier: TrustTier.commercial });
 new Outpost(estate, "govcloud", { trustTier: TrustTier.govcloud });
-new Outpost(estate, "airgap1", { trustTier: TrustTier.il5 });
+new Outpost(estate, "airgap", { trustTier: TrustTier.il5 });
 
 // -- the unified registry (ADR-0012): where build pipelines publish ----------
 new Registry(estate, "org-registry", { url: "https://git.corp.example" }); // Gitea
@@ -85,10 +85,15 @@ const stage = (id: string, environment: string, region?: string) =>
   new DeploymentTarget(estate, id, { properties: { environment, region } });
 
 stage("commercial-amer-staging", "staging", "amer");
-stage("commercial-amer-prod", "prod", "amer");
-stage("commercial-emea-prod", "prod", "emea");
-stage("govcloud-amer-prod", "prod", "amer");
-stage("airgap1-prod", "prod");
+stage("govcloud-amer-staging", "staging", "amer");
+stage("airgap-amer-staging", "staging", "amer");
+stage("commercial-amer-production", "production", "amer");
+stage("commercial-emea-production", "production", "emea");
+stage("commercial-apac-production", "production", "apac");
+stage("commercial-mide-production", "production", "mide");
+stage("govcloud-amer-production", "production", "amer");
+stage("govcloud-emea-production", "production", "emea");
+stage("airgap-amer-production", "production", "amer");
 ```
 
 ## 4. `domains/govcloud/bindings.ts` — one domain's HOW (domain-local, D4)
@@ -104,14 +109,14 @@ const bindings = new Stack("govcloud-bindings", { domainLocal: true });
 // domainLocal (new): everything in this stack is born domain-local (ADR-0031) —
 // it never journals, never leaves this domain.
 
-new BindingPolicy(bindings, "prod-configuration", {
-  scope: DeploymentTarget.fromName("govcloud-amer-prod"),
+new BindingPolicy(bindings, "production-configuration", {
+  scope: DeploymentTarget.fromName("govcloud-amer-production"),
   type: ExecutorType.configuration,
   executionSystem: ExecutionSystem.fromName("argocd-govcloud"),
 });
 ```
 
-`domains/hq/bindings.ts` and `domains/airgap1/bindings.ts` are the same five lines pointing at `argocd-hq` / `argocd-airgap1`. This is the whole per-domain cost of joining every team's pipeline: the domain reconciler joins these policies against federated placements and materializes the `executor_bindings` itself. A placement no policy matches is **loud** (unbound status), never a silent fake-success.
+`domains/hq/bindings.ts` and `domains/airgap/bindings.ts` are the same five lines pointing at `argocd-hq` / `argocd-airgap`. This is the whole per-domain cost of joining every team's pipeline: the domain reconciler joins these policies against federated placements and materializes the `executor_bindings` itself. A placement no policy matches is **loud** (unbound status), never a silent fake-success.
 
 ## 5. The component's own repo — the headline surface (D9/D10/D15)
 
@@ -121,12 +126,16 @@ The platform team publishes standards once, as a versioned package on the org's 
 // platform/scp-standards → @corp/scp-standards (Gitea npm — air-gap-clean)
 export const waves = {
   standard: [
-    "commercial-amer-staging",
-    "commercial-amer-prod",
-    "commercial-emea-prod",
-    // one wave, two security domains: ordinary promotion into govcloud, cross-domain
-    // promotion into airgap1 — the CDS gate applies per crossing, not per wave
-    ["govcloud-amer-prod", "airgap1-prod"],
+    // staging deploys to EVERY security domain first (D21) — the CDS crossings
+    // (scan+sign at the commander, retrans into the air gap) happen here, not
+    // as a production surprise. Gate applies per crossing, not per wave.
+    { name: "staging",
+      targets: ["commercial-amer-staging", "govcloud-amer-staging", "airgap-amer-staging"] },
+    // production widens out: 1 → 2 → 4 stages
+    "commercial-amer-production",
+    ["commercial-emea-production", "govcloud-amer-production"],
+    ["commercial-apac-production", "govcloud-emea-production",
+     "airgap-amer-production", "commercial-mide-production"],
   ],
 };
 ```
@@ -165,7 +174,7 @@ new ImagePipeline(payments, "payments-release", { waves: waves.standard });
 ```ts
 export const widePod = (regions: string[]) => [
   "commercial-amer-staging",
-  ...widening(regions.map((r) => `commercial-${r}-prod`), { start: 1, factor: 2 }),
+  ...widening(regions.map((r) => `commercial-${r}-production`), { start: 1, factor: 2 }),
 ];
 ```
 
@@ -183,9 +192,12 @@ export const widePod = (regions: string[]) => [
     { "typeId": "component", "name": "payments-api", "…": "…" },
     { "typeId": "release-topology", "name": "payments-api-pipeline",
       "properties": { "waves": [
-        { "name": "staging", "targets": ["commercial-amer-staging"] },
-        { "name": "regulated", "mode": "parallel",
-          "targets": ["govcloud-amer-prod", "airgap1-prod"] } ] } }
+        { "name": "staging", "mode": "parallel",
+          "targets": ["commercial-amer-staging", "govcloud-amer-staging",
+                      "airgap-amer-staging"] },
+        { "name": "wave3", "mode": "parallel",
+          "targets": ["commercial-apac-production", "govcloud-emea-production",
+                      "airgap-amer-production", "commercial-mide-production"] } ] } }
   ],
   "relationships": [ { "typeId": "releases_via", "…": "…" } ],
   "placements": [ { "component": "payments-api", "target": "commercial-amer-staging" } ],
@@ -201,7 +213,7 @@ export const widePod = (regions: string[]) => [
 | **hq outpost** | the outpost in the commander's own trust domain | WHAT via the ordinary journal path; its HOW stack (`domains/hq/`) applied by HQ operators (D7 CLI-push) |
 | **govcloud outpost** | field outpost, `trustTier: govcloud` | pulls the journal over mTLS (dial list includes the XO entry); reconciler joins `domains/govcloud/` policy → local `executor_bindings` to `argocd-govcloud` |
 | **retrans** | relay at the CDS boundary | nothing to declare — pairing + inbox/outbox delivery config only; relays signed bundles, validates, never terminates a promotion |
-| **airgap1 outpost** | air-gapped, `trustTier: il5` | WHAT arrives as `.scpbundle` via retrans (the M13.1a inbox loop — untouched by D1); its HOW stack applied locally from the same media run |
+| **airgap outpost** | air-gapped, `trustTier: il5` | WHAT arrives as `.scpbundle` via retrans (the M13.1a inbox loop — untouched by D1); its HOW stack applied locally from the same media run |
 
 ## 7. The authoring surface in detail — the D15–D17 grammar
 
@@ -211,8 +223,8 @@ The grammar: the file roots at the **typed pipeline class** (or at `Component` w
 // payments/payments-api/scp/stack.ts — the component's entire SCP footprint
 import { Component, Service, ImagePipeline, InfrastructurePipeline } from "@scp/iac";
 import { TargetClass, Duration, Workflow } from "@scp/iac";
-import { PostMergeTest, PostDeployTest, ContinuousTest, CanaryRollout } from "@scp/iac";
-import { stages, waves, repos, registry } from "@corp/scp-standards"; // org standards (D10)
+import { PostMergeTest, PostDeployTest, ContinuousTest, BakeAlarms, CanaryRollout } from "@scp/iac";
+import { waves, repos, registry } from "@corp/scp-standards"; // org standards (D10)
 import { products } from "@corp/payments-infra"; // the infra pipeline's typed products (D20)
 
 const api = new Component("payments-api", { service: Service.fromName("payments") });
@@ -233,8 +245,10 @@ const unit = new Workflow(image, "unit", { path: "ci/unit.yaml" });
 const integration = new Workflow(image, "integration", { path: "ci/integration.yaml" });
 const probe = new Workflow(image, "canary-probe", { path: "ci/canary-probe.yaml" });
 
-new PostMergeTest(unit); //                       merge to image's branch; gates wave 1
-new PostDeployTest(integration, { stage: stages.commercialAmerStaging }); // gates promotion out
+new PostMergeTest(unit); //         with the build itself, gates entry to the registry step
+new PostDeployTest(integration); // NO stage: → runs after EVERY wave; gates promotion out (D21)
+new BakeAlarms(image, { quiet: Duration.minutes(30) }); // alarm-free bake after each wave's
+//                                                         deploy — ADR-0008 observed signals (D21)
 new ContinuousTest(probe, { every: Duration.minutes(5), maxAge: Duration.minutes(15) });
 
 new CanaryRollout(image, { on: TargetClass.kubernetes, steps: [10, 50, 100] });
@@ -249,21 +263,25 @@ new InfrastructurePipeline(api, {
 
 /* ── pipeline: payments-api (image) ── generated by `scp iac render --write` ──
  *
- * source  git.corp.example/payments/payments-api @ main
- * image   org-registry → payments/payments-api
+ * source     git.corp.example/payments/payments-api @ main
  *
- * merge(main) → [unit] → build → push → scan+sign@commander
+ * build      [gates: build ✓ · unit ✓]
+ *   → image  org-registry/payments/payments-api  [gate: scan ✓ · sign@commander]
  *
- * wave 1   commercial-amer-staging
- *          └ post-deploy: integration — gates promotion out
- * wave 2   commercial-amer-prod · cluster pay-blue · canary 10→50→100
- * wave 3   commercial-emea-prod · canary 10→50→100
- * wave 4   govcloud-amer-prod (gov-blue) ∥ airgap1-prod
- *          └ cross-domain: CDS gate per crossing; airgap1 bytes via retrans
+ * staging    commercial-amer-staging ∥ govcloud-amer-staging ∥ airgap-amer-staging
+ *            [exit: integration ✓ · bake-alarms quiet 30m]
+ *            (CDS gate per crossing; airgap bytes via retrans)
  *
- * always   canary-probe every 5m (maxAge 15m) → per-target hold
- * pending  depends_on ledger-core (not yet in graph)
- * ────────────────────────────────────────────────────────────────────────── */
+ * wave 1     commercial-amer-production · pay-blue · canary 10→50→100
+ *            [exit: integration ✓ · bake-alarms quiet 30m]
+ * wave 2     commercial-emea-production ∥ govcloud-amer-production
+ *            [exit: integration ✓ · bake-alarms quiet 30m]
+ * wave 3     commercial-apac-production ∥ govcloud-emea-production ∥
+ *            airgap-amer-production ∥ commercial-mide-production
+ *
+ * always     canary-probe every 5m (maxAge 15m) → per-target hold
+ * pending    depends_on ledger-core (not yet in graph)
+ * ─────────────────────────────────────────────────────────────────────────── */
 ```
 
 The trailing block is **generated, committed codegen** — `scp iac render --write` regenerates it from the synthesized manifest and CI drift-checks it like everything else generated in this shop, so the picture at the bottom of the file can never quietly disagree with the declarations above it.
@@ -274,7 +292,7 @@ The trailing block is **generated, committed codegen** — `scp iac render --wri
 
 **Refs and pending dependencies (D14).** Every `fromName()` / `fromUrn()` reference resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the pipeline's status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
 
-**Tests know where the code is through their pipeline.** A `Workflow` scopes to a pipeline, so it inherits the repo and branch the pipeline already declares — `path:` names the WorkflowTemplate *within that repo*; a hook scopes to its `Workflow`. `PostMergeTest(unit)` fires on merges to `image`'s branch and runs `ci/unit.yaml` from `image`'s repo, because that is what its scope chain says. SCP **triggers** the run on the domain's Argo Workflows (resolved by binding policy) and consumes the result as gate/hold evidence — stale continuous green reads as absent (`maxAge` required). No `argo-workflows` plugin exists yet: build increment 8 (main doc §13).
+**Tests know where the code is through their pipeline.** A `Workflow` scopes to a pipeline, so it inherits the repo and branch the pipeline already declares — `path:` names the WorkflowTemplate *within that repo*; a hook scopes to its `Workflow`. `PostMergeTest(unit)` fires on merges to `image`'s branch and runs `ci/unit.yaml` from `image`'s repo, because that is what its scope chain says. Per D21, `PostDeployTest` with no `stage:` gates **every** wave's exit (a `stage:` narrows it), and `BakeAlarms` holds each wave's exit until the declared quiet window passes alarm-free after deploy. SCP **triggers** the run on the domain's Argo Workflows (resolved by binding policy) and consumes the result as gate/hold evidence — stale continuous green reads as absent (`maxAge` required). No `argo-workflows` plugin exists yet: build increment 8 (main doc §13).
 
 ```ts
 new BindingPolicy(bindings, "tests", {
@@ -292,7 +310,7 @@ const sharedInfra = new InfrastructurePipeline(payments, "payments-infra", {
   waves: waves.standard,
 });
 const payBlue = new Cluster(sharedInfra, "pay-blue", {
-  within: DeploymentTarget.fromName("commercial-amer-prod"),
+  within: DeploymentTarget.fromName("commercial-amer-production"),
   account: "123456789012",
 });
 ```
@@ -324,7 +342,7 @@ import {
   Stack, Team, Service, Component, Registry, DeploymentTarget, Cluster,
   BindingPolicy, ExecutionSystem, ExecutorType, TargetClass, Duration,
   ImagePipeline, InfrastructurePipeline, Workflow,
-  PostMergeTest, PostDeployTest, ContinuousTest, CanaryRollout,
+  PostMergeTest, PostDeployTest, ContinuousTest, BakeAlarms, CanaryRollout,
 } from "@scp/iac";
 
 // ═══ 1. PLATFORM ESTATE — platform team, applied at the commander, federates ═══
@@ -333,20 +351,27 @@ const estate = new Stack("platform-estate");
 const paymentsTeam = new Team(estate, "team-payments");
 const registry = new Registry(estate, "org-registry", { url: "https://git.corp.example" });
 
+// (a SUBSET of §5's full ten-stage plan, for brevity)
 const stg = new DeploymentTarget(estate, "commercial-amer-staging", {
   properties: { environment: "staging", region: "amer" },
 });
-const prodAmer = new DeploymentTarget(estate, "commercial-amer-prod", {
-  properties: { environment: "prod", region: "amer" },
+const govStg = new DeploymentTarget(estate, "govcloud-amer-staging", {
+  properties: { environment: "staging", region: "amer" },
 });
-const prodEmea = new DeploymentTarget(estate, "commercial-emea-prod", {
-  properties: { environment: "prod", region: "emea" },
+const airgapStg = new DeploymentTarget(estate, "airgap-amer-staging", {
+  properties: { environment: "staging", region: "amer" },
 });
-const govProd = new DeploymentTarget(estate, "govcloud-amer-prod", {
-  properties: { environment: "prod", region: "amer" },
+const prodAmer = new DeploymentTarget(estate, "commercial-amer-production", {
+  properties: { environment: "production", region: "amer" },
 });
-const airgapProd = new DeploymentTarget(estate, "airgap1-prod", {
-  properties: { environment: "prod" },
+const prodEmea = new DeploymentTarget(estate, "commercial-emea-production", {
+  properties: { environment: "production", region: "emea" },
+});
+const govProd = new DeploymentTarget(estate, "govcloud-amer-production", {
+  properties: { environment: "production", region: "amer" },
+});
+const airgapProd = new DeploymentTarget(estate, "airgap-amer-production", {
+  properties: { environment: "production", region: "amer" },
 });
 
 // ═══ 2. TEAM HOME — the payments team's thin service stack ═══
@@ -360,7 +385,7 @@ payments.grantOwnership(paymentsTeam); // D16 grant fluent → owns edge + role 
 // genuinely shared). One managing pipeline owns the graph object AND the real thing.
 const sharedInfra = new InfrastructurePipeline(payments, "payments-infra", {
   repo: "git.corp.example/payments/payments-infra", // REQUIRED (D18)
-  waves: [stg, prodAmer, prodEmea, [govProd, airgapProd]],
+  waves: [[stg, govStg, airgapStg], prodAmer, [prodEmea, govProd], [airgapProd]],
 });
 const payBlue = new Cluster(sharedInfra, "pay-blue", { within: prodAmer, account: "123456789012" });
 const govBlue = new Cluster(sharedInfra, "gov-blue", { within: govProd, account: "210987654321" });
@@ -378,7 +403,7 @@ new BindingPolicy(hqBindings, "tests", {
   type: ExecutorType.build,
   executionSystem: ExecutionSystem.fromName("workflows-hq"),
 });
-// govcloud-bindings / airgap1-bindings: same lines against their own executors
+// govcloud-bindings / airgap-bindings: same lines against their own executors
 
 // ═══ 5. THE COMPONENT REPO — what a team actually writes day to day ═══
 const api = new Component("payments-api", { service: payments });
@@ -387,7 +412,7 @@ const image = new ImagePipeline(api, {
   repo: "git.corp.example/payments/payments-api", // REQUIRED — never assumed (D18)
   branch: "main",
   publishesTo: registry.repository("payments/payments-api"), // default: registry + "<service>/<component>"
-  waves: [stg, prodAmer, prodEmea, [govProd, airgapProd]], // last wave: CDS gate per crossing
+  waves: [[stg, govStg, airgapStg], prodAmer, [prodEmea, govProd], [airgapProd]], // staging-everywhere first (D21)
 });
 image.placeAt(payBlue); // references block 3's PRODUCT; readiness is loud, and
 image.placeAt(govBlue); // whether image waits for infra is the operator's choice
@@ -397,8 +422,9 @@ const unit = new Workflow(image, "unit", { path: "ci/unit.yaml" });
 const integration = new Workflow(image, "integration", { path: "ci/integration.yaml" });
 const probe = new Workflow(image, "canary-probe", { path: "ci/canary-probe.yaml" });
 
-new PostMergeTest(unit); //                                          gates wave 1
-new PostDeployTest(integration, { stage: stg }); //                  gates promotion out of staging
+new PostMergeTest(unit); //                      with the build, gates entry to the registry
+new PostDeployTest(integration); //               no stage: → gates EVERY wave's exit (D21)
+new BakeAlarms(image, { quiet: Duration.minutes(30) }); // alarm-free bake per wave exit (D21)
 new ContinuousTest(probe, { every: Duration.minutes(5), maxAge: Duration.minutes(15) });
 
 new CanaryRollout(image, { on: TargetClass.kubernetes, steps: [10, 50, 100] });
@@ -407,7 +433,7 @@ new CanaryRollout(image, { on: TargetClass.kubernetes, steps: [10, 50, 100] });
 new InfrastructurePipeline(api, {
   repo: "git.corp.example/payments/payments-api", // same repo, declared again — explicitly (D18)
   path: "infra/**",
-  waves: [stg, prodAmer, prodEmea, [govProd, airgapProd]],
+  waves: [[stg, govStg, airgapStg], prodAmer, [prodEmea, govProd], [airgapProd]],
 });
 ```
 
