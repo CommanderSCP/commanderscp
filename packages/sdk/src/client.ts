@@ -1767,9 +1767,18 @@ export class ScpClient {
       return unwrap(result);
     },
     /** M25.1 — LIFT (retract) a freeze: it stops being in force immediately, whatever `endsAt`
-     *  says. `freeze:write` AT THE FREEZE'S OWN SCOPE (`routes/governance.ts` states why that, and
-     *  not `freeze:override`), and the `reason` is mandatory — lifting is a governance LOOSENING
-     *  that applies to everyone the freeze covered.
+     *  says. The `reason` is mandatory — lifting is a governance LOOSENING that applies to everyone
+     *  the freeze covered.
+     *
+     *  `freeze:write` AT THE FREEZE'S OWN SCOPE, and — M25.9 / owner ruling D1(a-ii), 2026-08-25 —
+     *  the Owner-only `freeze:override` AT THAT SAME SCOPE ON TOP whenever you are not the actor who
+     *  declared it (compared on the freeze's `created_by_actor_id`). Lifting YOUR OWN freeze stays
+     *  `freeze:write` alone, so the permission that declares a freeze is still the permission that
+     *  undoes it; retracting someone else's protection for everyone it covers costs the same
+     *  permission that admits one change past it. Expect a 403 naming `freeze:override` otherwise.
+     *  Scope is NOT expanded downward: `freeze:override` bound at a service does not reach the
+     *  org-root freeze that covers everyone. `routes/governance.ts`'s `assertMayRetractAnothersFreeze`
+     *  is where the rule is spelled.
      *
      *  A SOFT lift: the returned row is the freeze, still readable by `get(id)` forever with
      *  `liftedAt` set, because a `gate`/`freeze_admission` Decision cites `freeze.id` in its
@@ -1781,7 +1790,17 @@ export class ScpClient {
     /** M25.1 — move a freeze's `endsAt`, in EITHER direction. Shortening it is a loosening and
      *  extending it is a tightening; both take `freeze:write` at the freeze's own scope, both
      *  require a reason, and the server records which direction it was along with the old and new
-     *  instants. Shortening to a past instant is allowed and is NOT re-labelled a lift. */
+     *  instants. Shortening to a past instant is allowed and is NOT re-labelled a lift.
+     *
+     *  THE TWO DIRECTIONS DO NOT COST THE SAME (M25.9 / owner ruling D1(a-ii), 2026-08-25). A
+     *  SHORTENING ends the protection early for everyone the freeze covers — the same act as
+     *  {@link lift} with a different record — so it additionally takes the Owner-only
+     *  `freeze:override` at the freeze's own scope whenever you are not the actor who declared it,
+     *  and gating the lift alone would have left the retraction one PATCH away. EXTENDING adds
+     *  protection and takes nothing from anyone, so it stays `freeze:write` even on someone else's
+     *  freeze; so does re-sending the `endsAt` a freeze already has, which moves nothing. The server
+     *  decides this from the direction it computes under the row lock, so the answer is about the
+     *  window actually in force, not the one you last read. */
     updateWindow: async (id: string, req: UpdateFreezeWindowRequest): Promise<Freeze> => {
       const result = await updateFreezeWindowRequest({
         client: this.client,

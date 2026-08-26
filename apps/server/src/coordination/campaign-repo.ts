@@ -259,12 +259,20 @@ export async function listCampaignTargetObjectIds(
  * `campaign:deadline-override` (drizzle/0088) — is `overrideCampaignDeadline` below, added in
  * M25.6b. The two are different prices for different radii and both remain.
  *
- * `object:write` AT THE CAMPAIGN, not at the targets — checked by the route. The thing being
- * configured is this campaign's own policy about its own fan-out, and a target-scoped check would
- * hand the laggard their own waiver, which is exactly the inversion §4.5 warns about for the
- * override. `hasPermission` expands the checked scope UPWARD, so an Administrator bound at the
- * campaign's containment domain can move its deadline and an actor bound at one unrelated service
- * cannot.
+ * AT THE CAMPAIGN, not at the targets — checked by the route. The thing being configured is this
+ * campaign's own policy about its own fan-out, and a target-scoped check would hand the laggard
+ * their own waiver, which is exactly the inversion §4.5 warns about for the override.
+ * `hasPermission` expands the checked scope UPWARD, so an Administrator bound at the campaign's
+ * containment domain can move its deadline and an actor bound at one unrelated service cannot.
+ *
+ * TWO PRICES, ONE VERB (owner ruling 2026-08-25, D1 b-i). Setting a FIRST deadline and SHORTENING an
+ * existing one are TIGHTENINGS — strictly more targets are withheld afterwards — and run at plain
+ * `object:write` at the campaign. CLEARING it, and moving `at` to an instant LATER than the stored
+ * one, RELEASE targets, and both additionally demand the Owner-only `campaign:deadline-override`
+ * (drizzle/0088) at the campaign. The bar is ADDED, never substituted: `object:write` still governs
+ * all three acts. As shipped, all three ran at `object:write` while the NARROWER per-target waiver
+ * one route down needed an Owner, so an operator refused a one-target waiver could clear the whole
+ * deadline instead and excuse everybody — a wider verb at the narrower verb's price.
  *
  * **THE ROW IS READ `FOR UPDATE`**, and that is not defensive habit — it is M25.1's measured lesson
  * applied to the identical shape. This is a read-modify-write whose READ decides what goes into a
@@ -331,8 +339,13 @@ export async function setCampaignDeadline(
     actorObjectId: string;
     requestId: string;
     /** `null` CLEARS it — the exit. Carries NO `overrides`: the wire schema for this verb is
-     *  `CampaignDeadlineInputSchema`, which omits the key, because this door runs at plain
-     *  `object:write` and minting a waiver takes `campaign:deadline-override`. */
+     *  `CampaignDeadlineInputSchema`, which omits the key, because this door is never the waiver
+     *  door. A first set or a shortening runs at plain `object:write` while minting a waiver takes
+     *  the Owner-only `campaign:deadline-override`; and even on the acts where D1(b-i) DOES demand
+     *  that same permission here (a clear, or a move to a later instant), this door still never
+     *  demands the per-target `object:write` a waiver does, nor names targets, nor writes the
+     *  per-target audit event. Either way, accepting the key would make this route the waiver
+     *  route's bypass. */
     deadline: CampaignDeadlineInput | null;
   }
 ): Promise<SetCampaignDeadlineResult> {
