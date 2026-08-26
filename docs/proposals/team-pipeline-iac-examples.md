@@ -327,6 +327,12 @@ The graph object and the real cluster share one managing pipeline — provenance
 
 ```ts
 import { products } from "@corp/payments-infra"; // typed products of the infra pipeline
+// the module is interface-typed by infra KIND (D24):
+//   products.payBlue: ICluster · products.payProdIg: IInstanceGroup · products.paymentsDb: IDatabase
+
+image.placeAt(products.payBlue); //    ✓ ImagePipeline.placeAt(target: ICluster)
+image.placeAt(products.paymentsDb); // ✗ COMPILE error — a Database is never a deploy target
+rpm.placeAt(products.payBlue); //      ✗ COMPILE error — RpmPipeline takes IInstanceGroup
 
 image.placeAt(products.payBlue); // no such product → COMPILE error
 //                                  in graph but object missing → plan HARD-REFUSED (structural ref;
@@ -334,7 +340,7 @@ image.placeAt(products.payBlue); // no such product → COMPILE error
 //                                  exists but not yet provisioned → LOUD readiness (D19)
 ```
 
-The ladder is compile → plan (hard) → readiness (loud), and a refused plan re-plans on every config-source sync, so infra-lands-then-image-succeeds converges without sequencing PRs.
+The ladder is compile → plan (hard) → readiness (loud), and a refused plan re-plans on every config-source sync, so infra-lands-then-image-succeeds converges without sequencing PRs. Per D24 the compile arm also checks **kind**: the artifact-class × infra-kind matrix lives once in `@scp/schemas`, the server re-checks it at plan on the explicit manifest (L1 authors cannot bypass it), and the domain reconciler only binds executor classes that serve the target's kind — RPM→cluster and image→RDS die at the earliest layer that sees them.
 
 **Rollout: the strategy is the construct** (`CanaryRollout`, `RollingRollout` — no strategy strings), scoped to its pipeline and keyed to a `TargetClass` — an `RpmPipeline` would declare `new RollingRollout(rpm, { on: TargetClass.instanceGroup, batchPercent: 25, pauseBetween: Duration.minutes(5) })`. Authoritative for `scp-runner-*` classes; trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8) — declared-vs-observed divergence is loud, and SCP never moves traffic itself.
 
