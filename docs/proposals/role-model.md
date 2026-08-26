@@ -1,7 +1,8 @@
 # Proposal — Purpose-shaped roles, and the permission review behind them
 
-**Status:** Draft — proposed, pending owner review. Nothing here is built.
-**Date:** 2026-08-25
+**Status:** Draft — proposed, pending owner review. **Step 0 (§5) is built and in PR #286**; the role
+work itself (steps 1–10) is not started.
+**Date:** 2026-08-25, last revised 2026-08-26
 **Prompted by:** owner ask — *"review the permissions and create the proper roles for each. Generally
 we'll want some for security/compliance (global scans and overrides), commander-wide admin, org
 admin, service admin, assembly & component admin (share a role)."*
@@ -520,3 +521,144 @@ not the cheap preconditions. Steps 1 and 2 follow it rather than preceding it.
    charter-level act and should be made deliberately rather than by omission.
    **D5 sharpens this:** with Administrator deprecated, an org that wants a broad general-purpose role
    has no built-in to bind and no API to author one.
+
+---
+
+## 8. The read-surface blocker (§4.2), scoped
+
+Analysis 2026-08-26, three parallel passes. Costs below were **measured** on a purpose-built
+20,910-object estate (18,500 components / 1,900 assemblies / 500 services / 5 domains, 20,400
+`contains` edges) on PostgreSQL 16 with all migrations applied and `ANALYZE`d — not estimated.
+
+### 8.1 The census was wrong, in the way this repo keeps being wrong
+
+`grep -rna 'scopeObjectId: auth.orgId' apps/server/src/routes/*.ts` returns 81 lines; one
+(`governance-move.ts:142`) is inside a comment. So 80 real sites. **But the string census misses the
+surface entirely in two places:**
+
+- **`routes/objects.ts` contains ZERO `authorize(` calls.** Its four routes — `POST`/`GET
+  /api/v1/objects/service` and the `/orgs/:org/` variants — delegate to `services/objects-service.ts`,
+  where the check is spelled `scopeObjectId: orgId` (`:116` a LIST, `:70`/`:77` a CREATE). Same
+  property, different spelling, one directory away.
+- **9 further create doors carry it latently** as `X ?? auth.orgId`: `objects-generic.ts:229,235`,
+  `typed-registries.ts:211,218`, `campaigns.ts:152`, `changes.ts:169,183`, `objects-service.ts:70,77`.
+
+Census by property — *"this check can only be satisfied by an org-root binding"* — not by string.
+
+### 8.2 The LIST fork is settled by pagination, not by cost
+
+**Per-row filtering (shape 1) is disqualified, and it fails silently.** Every list repo is
+keyset-paginated with `.limit(query.limit + 1)` and derives `nextCursor` from the last *unfiltered*
+row. Post-filtering shrinks a page **after** the LIMIT.
+
+Measured: an assembly-bound ComponentAdmin's 5 readable components sit at cursor ranks 97, 140, 254,
+339 and 440 of 18,500. At `limit=100` that is **one readable row on page 1, one each on pages 2–5, and
+zero on pages 6 through 185 — each with a non-null `nextCursor`.** And **27 of 30** `apps/web` list
+call sites fetch exactly one page. So the Components view renders 1 of their 5 components and stops:
+wrong, silent, and worse than the 403 it replaces. (Cost is also bad — 0.96–1.08 ms/row, so 96 ms per
+100-row page against 1.05 ms today — but pagination is what kills it.)
+
+**Recommendation: query-side intersection (shape 2), two-query form, with an org-root short-circuit.**
+
+1. Export `containmentChildrenSql(orgId, parentIdSql)` from `graph/containment.ts` — the three
+   downward arms — and refactor `containmentSubtreeExceeds`'s `down` CTE to compose it.
+2. `authz/readable-scope.ts` → `readableRootsFor(tx, {orgId, subjectObjectId, permission})`, one query
+   returning `{rootId, effect}`. Measured **0.3–0.5 ms**, uses the existing
+   `role_bindings_subject (org_id, subject_id)` index.
+3. `readableObjectFilterSql(orgId, allowRoots, denyRoots)` → **`null` when `allowRoots` contains
+   `auth.orgId`** (the short-circuit: today's query verbatim), else a recursive descend seeded from
+   `unnest($allowRoots::uuid[])`, **minus a second descend from `denyRoots`**.
+4. Push it **inside** the repo functions, **before the LIMIT**. `listObjects` has exactly four callers,
+   so this covers `/objects/{type}`, `/components`, `/objects/service` and every typed registry at once.
+5. **Keep the org-root `authorize()` at the top of each door unchanged**, so a subject with no allow
+   binding anywhere still gets today's 403. That makes the change a **pure widening** — everything that
+   works today still works, identically.
+
+> **The drift objection is the reason for step 1, not an argument against shape 2.**
+> `containmentSubtreeExceeds` already mirrors the four upward routes by hand, and its own docblock
+> names the drift that produced a service-scoped freeze failing **open** and a service-scoped approval
+> failing **closed**. Hand-writing a new descend would make routes 1 and 2 exist in **four** places.
+> Exporting the fragment turns today's third hand-typed copy into the second consumer of one definition.
+
+### 8.3 A new invariant nobody has named
+
+**Upward and downward must be exact inverses**, or get-by-id and LIST disagree: an object `authorize()`
+admits at its own id would be absent from the list, which reads as a cache bug rather than an authz
+bug. This needs its own test — over a random sample, `hasPermission(o)` **iff** `o ∈ readableSet(subject)`.
+That test is the drift detector.
+
+Three corollaries that are each a silent-failure class:
+
+- **Truncation fails silently downward.** ADR-0037's probe converts an untrustworthy *upward* deny at
+  depth > 10 into a loud `walkDepthExceeded`. Downward there is no such conversion: a component 11
+  levels below its binding just does not appear, and the two walks then disagree — one throwing, one
+  returning an empty list.
+- **`role_bindings.effect` is bare text with no CHECK.** `hasPermission` tests
+  `effects.includes('deny')` then `includes('allow')` in JS, so `'ALLOW'` grants nothing. A SQL filter
+  written `effect <> 'deny'` would silently **widen** authority relative to the function it mirrors.
+  It must be `effect = 'allow'` exactly.
+- **Deny is a subtraction, not an absence.** Omitting the second descend makes a deny binding inert on
+  list doors while still working on get-by-id — a deny that fails **open**.
+
+### 8.4 `change:accept` — per target, and the alternative is actively dangerous
+
+Re-scoping a change door to the change is **inert**: `objects.domain_id` for a change is the org root
+for every one of the five internal `proposeChange` callers, `scp change propose` has **no `--domain`
+flag at all**, and the only caller in the tree that ever sets a change's `domainId` is one test file.
+Re-scoping to `change.id` is equally inert — route 1 walks straight back to that same `domain_id`.
+
+**Check per target**: read `targetObjectIdsOf(change.properties)`, dedupe, `authorize` at each.
+**EVERY target for the write doors** (reusing `assertCoordinationTargetsWithinAuthority`'s loop, so the
+two cannot drift) — otherwise a ComponentAdmin over one target of a five-target change accepts the
+release into the four they have no standing on. **ANY ONE target for the read doors.**
+
+> ⚠️ **Do not copy `assertCoordinationTargetsWithinAuthority`'s guard shape.**
+> `campaign-scope-authz.ts:39` opens `if (!Array.isArray(input.targets)) return;` — a silent **pass**.
+> That is safe at propose (the schema pins `.min(1)`) but on accept the array is read back off a
+> *persisted* row, making the same line a total authorization bypass. Refuse explicitly instead.
+
+**Nearest-common-ancestor + backfill is rejected**, for four measured reasons — chiefly that
+`objects.domain_id` is simultaneously the authority chain, the governance-reach chain, domain-locality
+inheritance, and the input to the route-1 orphan guard. A backfill re-parenting every change row would
+**start refusing deletion of any service that has ever had a change proposed against it**, on every
+deployment.
+
+### 8.5 There is no test safety net — this is the biggest risk
+
+All 334 `403` occurrences across `apps/server` tests were enumerated and their doors resolved.
+**Zero depend on the org-root pin of any re-scope candidate.** That is worse than a breakage list: all
+54 pins are entirely unpinned, so the change would ship with nothing holding it to anything. The only
+tests that *do* assert an org-root pin (`federation/outposts-rbac.integration.test.ts:117,150,155`)
+cover `federation:read`, which is not being re-scoped.
+
+**Behavioural tests must be written before the re-scope, not after.**
+
+### 8.6 Doors that must NOT be swept
+
+A mechanical rewrite of every `object:write` + `auth.orgId` pair is wrong. Explicitly excluded:
+
+| Door | Why |
+|---|---|
+| `PUT`/`DELETE /secrets/:key`, `PUT /change-sources/:kind/webhook-secret` | §1.3d wants these **split into `secret:write`**, not widened. A sweep hands every future ComponentAdmin the org's execution-system credentials. |
+| `POST /discovery/run`, `/accept`, `/backfill-source-mappings` | Discovery makes SCP dial an execution system with stored credentials. |
+| `POST /change-sources/:kind/webhook`, `/report` | CI ingress is org-root **deliberately** — the principal is a robot with no per-object standing, and an existing test rests its whole argument on that. |
+| `policy-scope-authz.ts:111`, `governance-labels.ts:163`, `handfill-repo.ts:208,322`, `overlay-repo.ts:197` | Four **deliberate** org-root escalation bars, two of them added by this very branch. |
+| `POST /plans` | Re-scoping downward **widens**: the manifest is caller-supplied and the persisted `diff` reports each named object's current state. |
+| `GET /freezes` | Needs the **upward** closure, not a downward filter — a freeze blocking a ComponentAdmin is declared *above* them. A downward filter returns only the freezes that are **not** blocking them: the page reads green while the release is held. |
+| `GET /decisions/:id` | Re-scoping to `decision.subjectId` hands the accountability record to the party being held accountable. Ship as a **disjunction**: `audit:read` at the org root **OR** `object:read` at the subject. |
+
+Also flagged, out of scope here: **`/graph/traverse` and `/graph/subgraph` are an enumeration
+bypass** — they authorize `graph:query` at one `objectId` and then return many objects with no row
+filtering.
+
+### 8.7 Sequencing
+
+**Split step 2.5 at the LIST boundary.**
+
+- **2.5a** — the get-by-id re-scopes. A mechanical parameter change against an in-tree pattern
+  (`components.ts:310-311`, `typed-registries.ts:311-315`), no new query, no new traversal. Most fixes
+  need a *reorder* only, and cost nothing because the object is loaded on the very next line.
+  ⚠️ Scoping at a path param **without resolving the object first turns 404 into 403** —
+  `scopeExpandCte` seeds the CTE with the raw uuid and never checks existence.
+- **2.5b** — the LIST filtering. Needs the exported children fragment, the readable-scope module, the
+  deny subtraction, the inverse-walk test, and a downward truncation story. Its own increment.
