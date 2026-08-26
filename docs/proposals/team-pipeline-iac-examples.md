@@ -212,7 +212,8 @@ The grammar: the file roots at the **typed pipeline class** (or at `Component` w
 import { Component, Service, ImagePipeline, InfrastructurePipeline } from "@scp/iac";
 import { TargetClass, Duration, Workflow } from "@scp/iac";
 import { PostMergeTest, PostDeployTest, ContinuousTest, CanaryRollout } from "@scp/iac";
-import { stages, targets, waves, repos } from "@corp/scp-standards"; // typed handles (D10)
+import { stages, waves, repos } from "@corp/scp-standards"; // org standards (D10)
+import { products } from "@corp/payments-infra"; // the infra pipeline's typed products (D20)
 
 const api = new Component("payments-api", { service: Service.fromName("payments") });
 
@@ -224,7 +225,7 @@ const image = new ImagePipeline(api, {
   waves: waves.standard,
 });
 
-image.placeAt(targets.commercialAmerProd.payBlue); //  refine prod to a Cluster (§14.9)
+image.placeAt(products.payBlue); // the infra pipeline's cluster — compile → plan(hard) → readiness(loud)
 image.dependsOn(Component.fromName("ledger-core")); // pending until it exists (D14)
 
 // workflows scope to their pipeline — repo + branch come from it (D11/D15)
