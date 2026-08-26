@@ -36,6 +36,7 @@ import {
 } from "../governance/governance-labels.js";
 import { assertValidComponentSecurityDeclarations } from "../governance/component-declaration-guard.js";
 import { assertValidCampaignRecipe } from "../governance/campaign-recipe-guard.js";
+import { assertMayWidenCampaignDeadline } from "../governance/campaign-deadline-widening-guard.js";
 import {
   assertDeclaredFactClauseIsNarrowed,
   assertScanRuleRequiresScanControl
@@ -1005,6 +1006,34 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       actorObjectId: input.actorObjectId,
       typeId: input.typeId,
       objectId: existing.id,
+      before: existing.properties as Record<string, unknown>,
+      after: nextProperties
+    });
+    // OWNER RULING 2026-08-25 (D1 b-i) — WIDENING A CAMPAIGN'S DEADLINE. The UPDATE half and the
+    // ONLY half: a create is always a first set, which the ruling leaves at `object:write`.
+    //
+    // Here rather than only at `POST /campaigns/{id}/deadline` for the reason
+    // `assertValidCampaignRecipe` two guards up is here — `campaign-recipe-guard.ts`'s census of the
+    // SAME property found three write doors, and a route-level guard is invisible to two of them.
+    // The ruling shipped at the route alone, and IaC apply reaches this function directly with a
+    // free-form `typeId` and free-form `properties`: a manifest that simply omitted `deadline`
+    // produced exactly the effect the route refuses, at exactly the permission it was raised above.
+    //
+    // A DELTA OVER THE STORED ROW (`existing.properties` vs `nextProperties`), exactly like the two
+    // guards above it and for the same two reasons at once: a PATCH that never mentions `deadline`
+    // must stay free, and a full-replacement write that OMITS it is a REMOVAL and must be priced as
+    // one. Those are the same bytes on the wire and only the stored row tells them apart.
+    //
+    // Cheap by construction on every write that is not about a campaign deadline: it returns before
+    // resolving anything unless a READABLE deadline is stored and the incoming document releases it.
+    // See `governance/campaign-deadline-widening-guard.ts` — including why it asks a strictly
+    // NARROWER question than the route's check, so it can never refuse what the route admits, and
+    // why `federationImport` (this block's exemption) leaves no local-actor bypass at hand-fill.
+    await assertMayWidenCampaignDeadline(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      typeId: input.typeId,
+      subjectObjectId: existing.id,
       before: existing.properties as Record<string, unknown>,
       after: nextProperties
     });

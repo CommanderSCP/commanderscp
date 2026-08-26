@@ -18,6 +18,7 @@ import { assertProductionSecretsOrThrow } from "./boot-checks.js";
 import { recordMemberClusterHeartbeat } from "./db/member-heartbeat-repo.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
+import { SSE_AUTHZ_POOL_MAX } from "./routes/events.js";
 import type { AppDeps } from "./types.js";
 
 async function main(): Promise<void> {
@@ -173,16 +174,36 @@ async function main(): Promise<void> {
   // Cheap either way: one more reconnecting LISTEN connection (events/listen-client.ts) per
   // process, idle until an outbox row commits.
   // ---------------------------------------------------------------------------------------------
-  // A SMALL pool dedicated to the SSE bridge, NOT the request-serving `pool` (review finding
-  // SEC-1): the bridge's outbox fetches are driven by a Postgres NOTIFY channel any DB login can
-  // write to, so their load must be isolated from request handlers (and, on a worker, from the
-  // relay). `max: 2` caps the blast radius of a NOTIFY flood to this pool alone — starving it only
-  // degrades SSE freshness (recovered by resync), never coordination or request serving.
+  // TWO SMALL POOLS FOR THE SSE PATH — ONE isolation decision, in two places (review finding SEC-1)
+  //
+  // Neither is the request-serving `pool` above, and for the same reason: the SSE path's database
+  // load is driven by EVENT VOLUME and CONNECTED-CLIENT COUNT, not by how many API requests are in
+  // flight, and both of those are influenceable from outside a request. `pool` has no `max`, so it
+  // is pg's default of 10, and `createPool` sets `connectionTimeoutMillis: 5000` (db/client.ts) —
+  // so any SSE-driven checkout that competes with request handlers turns into request TIMEOUTS.
+  // Isolating them means a starved SSE pool degrades only SSE (stale frames, dropped frames —
+  // best-effort is the stream's own contract, ADR-0025 D4), never request serving or coordination.
+  //
+  //  1. `sseBridgePool` — the bridge's outbox fetches, driven by a Postgres NOTIFY channel any DB
+  //     login can write to. `max: 2` caps the blast radius of a NOTIFY flood to this pool alone.
+  //  2. `sseAuthzPool` — `GET /events/stream`'s PER-FRAME `object:read` walk (routes/events.ts),
+  //     one tenant transaction per (connection, distinct subject) per memo window. Its `max` is
+  //     IMPORTED from that route as `SSE_AUTHZ_POOL_MAX` rather than written as a literal here, so
+  //     the number and the paragraph justifying it (beside `READ_MEMO_TTL_MS`, which sets how often
+  //     a check recurs) cannot drift apart.
+  //
+  // `deps.sseAuthzDb` is assigned AFTER `buildApp`, exactly like `deps.pluginHost`/`deps.boss`
+  // (types.ts): the route reads it inside its handler, and no handler can run before `app.listen`
+  // far below.
+  // ---------------------------------------------------------------------------------------------
   const sseBridgePool = createPool(config.runtimeDatabaseUrl, { max: 2 });
   const sseBridge = startSseBridge(sseBridgePool, config.runtimeDatabaseUrl);
+  const sseAuthzPool = createPool(config.runtimeDatabaseUrl, { max: SSE_AUTHZ_POOL_MAX });
+  deps.sseAuthzDb = createDb(sseAuthzPool);
   app.addHook("onClose", async () => {
     await sseBridge.stop();
     await sseBridgePool.end();
+    await sseAuthzPool.end();
   });
 
   // Outbox relay + pg-boss worker skeleton (DESIGN.md §8) — only the roles that own background

@@ -157,6 +157,11 @@ async function resolveOutboundDelivery(
  * `federation:write`; every read requires `federation:read` (roles seeded in
  * drizzle/0012_federation.sql). Scoped at the org root (`auth.orgId`) rather than per-object —
  * federation identity/peers/journal are org-instance-wide concerns, not containment-scoped.
+ *
+ * ONE ROUTE TAKES MORE (owner ruling D4, 2026-08-25): `POST /federation/peers` — pairing, i.e.
+ * declaring whose signature this instance believes — demands `federation:pair` (drizzle/0094) ON TOP
+ * OF `federation:write`. Nothing else does, deliberately: operating an established link must keep
+ * working for an actor that cannot establish a new one.
  */
 export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
@@ -294,6 +299,28 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           permission: "federation:write",
           scopeObjectId: auth.orgId
         });
+        // THE SECOND BAR (owner ruling D4, 2026-08-25 — docs/proposals/role-model.md §4.1).
+        // ADDED, NEVER SUBSTITUTED: the `federation:write` check above is untouched, so this door
+        // only ever got harder. This route is where an operator declares WHOSE SIGNATURE this
+        // instance believes — `publicKey` is taken verbatim from the body, and `pairPeer` treats a
+        // changed value as a KEY ROTATION that supersedes the current window — and from there
+        // `POST /federation/imports` (still `federation:write`) will apply anything signed with it
+        // through `applyEntry`'s `object_upsert`, i.e. estate write authority without
+        // `object:write`. The import path is deliberately left ungated: a throw there wedges a
+        // legitimately paired peer's whole signed bundle, and pairing is the link that can be gated
+        // without breaking the contract. See `authz/resolve.ts`'s `federation:pair` note.
+        //
+        // NO OTHER federation route demands `federation:pair` — not import, export, status,
+        // outposts, resync, poke, nor the transport-only peer PATCH — so a paired link keeps working
+        // under an actor that cannot establish a new one. (Their own gates are unchanged, which for
+        // some is more than `federation:write`: hand-fill also takes `object:write`, a federating
+        // freeze also takes `freeze:write`.)
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:pair",
+          scopeObjectId: auth.orgId
+        });
         const self = await ensureFederationSelf(tx, auth.orgId);
         if (request.body.domainId === self.domainId) {
           throw badRequest("cannot pair this domain with itself");
@@ -330,6 +357,13 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
   // and each guard's disposition live on `updatePeerTransport` in `federation/peers-repo.ts`; the two
   // that need route-level work are the delivery-target ALLOWLIST (below, same call as pairing) and the
   // poke/mTLS + re-anchor guards (inside the repo, over the MERGED post-write tuple).
+  //
+  // ONE PAIR-TIME BAR IS DELIBERATELY NOT RE-APPLIED: `federation:pair` (owner ruling D4). That
+  // permission gates re-keying, and this route's structural keylessness is exactly what makes it not
+  // a re-key — "may edit peer transport, may NOT rotate a peer's trust anchor" is now enforced at BOTH
+  // the schema and the permission layer, which was the point of splitting the permission. If
+  // `UpdateFederationPeerRequestSchema` ever gains a field that can carry key material, this route
+  // needs `federation:pair` in the same commit.
   // -----------------------------------------------------------------------------------------
 
   typed.route({

@@ -333,6 +333,37 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const { type, idOrUrn } = request.params;
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const existing = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
+        // ADDED, NEVER SUBSTITUTED — `object:write` is a SECOND bar in front of the federation one
+        // below, which is unchanged. Publish is still a federation act; it is now also an estate
+        // write, because it is one.
+        //
+        // THE ASYMMETRY IS THE ARGUMENT. DECLARING locality (`POST /objects/{type}` above, and the
+        // five sibling doors `assertMayDeclareDomainLocal` guards) requires BOTH `object:write` and
+        // `federation:write` — ADR-0031 §1's split: `object:write` is the permission for describing
+        // your estate, `federation:write` is the permission for deciding what crosses a security
+        // boundary. Publish is the INVERSE verb of that same decision and until now cost strictly
+        // less than making it: `federation:write` alone. That is backwards. `publishDomainLocalObject`
+        // does not merely flip a federation flag — it `UPDATE`s the estate row (clearing
+        // `domain_local` and its inherited-from provenance), BUMPS `version`, writes an audit event,
+        // and sweeps the object plus its edges onto the journal. A subject holding `federation:write`
+        // and no `object:write` — the FederationAdmin shape, "operates the link, does not edit the
+        // estate" (`federation/handfill-repo.ts`) — was mutating and re-versioning estate rows here.
+        //
+        // WHY A REFUSAL IS SAFE AT THIS DOOR, unlike the import path. This is a local operator's
+        // per-request POST and its failure mode is one 403 to the caller who typed it. The federation
+        // IMPORT path deliberately carries carve-outs instead of bars, because a throw there wedges a
+        // peer's whole signed bundle and `inbox-loop.ts` re-fetches it forever. Nothing here can
+        // absorb a refusal on someone else's behalf.
+        //
+        // Scoped to the object itself for both bars, like every other operation on an existing object
+        // in this router; `authz/resolve.ts`'s `scope_expand` walks upward only, so an org-root or
+        // ancestor grant already satisfies a check here.
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: existing.id
+        });
         // `federation:write`, matching the permission that DECLARED locality in the first place
         // (ADR-0031 §1) — undoing a boundary decision cannot be cheaper than making it. Scoped to
         // the object itself, like every other operation on an existing object in this router.

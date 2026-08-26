@@ -129,10 +129,13 @@ export const CAMPAIGN_DEADLINE_SET_DECISION_KIND = "campaign_deadline_set";
  * parts, and the trap ADR-0039 §7 avoided for `freeze_admission`.
  *
  * NOT `campaign_deadline_set` either, though both are authoring acts by a human at this campaign.
- * They are different acts with different authority (`object:write` vs the Owner-only
- * `campaign:deadline-override`) and different radii (the whole campaign vs named targets), and
- * `scp campaign explain` must be able to answer "who was excused, and by whom" without first
- * filtering "and when did the date move".
+ * They are different acts with different radii (the whole campaign vs named targets) and different
+ * authority — a waiver ALWAYS takes the Owner-only `campaign:deadline-override` at the campaign PLUS
+ * `object:write` at each named target, where the set/move/clear verb takes plain `object:write` for a
+ * first set or a shortening and adds `campaign:deadline-override` only on its widening acts (a clear,
+ * or a move to a later instant — owner ruling 2026-08-25, D1 b-i). The two prices OVERLAP; they are
+ * not equal, and the radii never were. And `scp campaign explain` must be able to answer "who was
+ * excused, and by whom" without first filtering "and when did the date move".
  */
 export const CAMPAIGN_DEADLINE_OVERRIDE_DECISION_KIND = "campaign_deadline_override";
 

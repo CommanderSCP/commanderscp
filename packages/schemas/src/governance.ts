@@ -314,6 +314,14 @@ export type FreezeListResponse = z.infer<typeof FreezeListResponseSchema>;
  * change past and leaves the freeze standing, and which has refused to work without a reason since
  * M4 (DESIGN §10.3). A loosening with no recorded reason is exactly what that refusal exists to
  * prevent.
+ *
+ * AND THAT RADIUS ARGUMENT IS ALSO THE PERMISSION (M25.9 / owner ruling D1(a-ii), 2026-08-25). This
+ * verb takes `freeze:write` at the freeze's own scope, plus the Owner-only `freeze:override` at that
+ * same scope whenever the acting subject is not the freeze's `created_by_actor_id` — the wider verb
+ * can no longer cost the narrower permission. Lifting YOUR OWN freeze stays `freeze:write` alone, so
+ * declaring a freeze is never an entrance with no exit for the role that declared it. The same pair
+ * governs a SHORTENING via {@link UpdateFreezeWindowRequestSchema}, or the retraction would be one
+ * PATCH away.
  */
 export const LiftFreezeRequestSchema = z.object({
   reason: z.string().min(1)
@@ -327,6 +335,15 @@ export type LiftFreezeRequest = z.infer<typeof LiftFreezeRequestSchema>;
  * Both need `freeze:write` at the freeze's own scope and both require a reason; the server records
  * which direction it was, together with the old and new instants, in the audit event and the
  * Decision — "who made governance weaker, and when" is the question an audit log is read with.
+ *
+ * AND THE DIRECTION IS ALSO AN AUTHORIZATION INPUT (M25.9 / owner ruling D1(a-ii), 2026-08-25). A
+ * SHORTENING ends the protection early for everyone the freeze covers — the same act as `DELETE
+ * /freezes/{id}` with a different record — so it additionally demands the Owner-only
+ * `freeze:override` at the freeze's own scope whenever the acting subject is not the freeze's
+ * `created_by_actor_id`. Gating the lift alone would leave the retraction one PATCH away. EXTENDING
+ * takes nothing from anyone the freeze covers and stays `freeze:write` even on another actor's
+ * freeze, and so does re-sending the `endsAt` a freeze already has. The direction is computed under
+ * the row lock, against the window in force rather than the one the client last read.
  *
  * `startsAt` IS DELIBERATELY NOT EDITABLE. Moving the start of an open window is either a no-op or
  * a rewriting of history ("this freeze was in force from a time it was not"), and `endsAt` is the

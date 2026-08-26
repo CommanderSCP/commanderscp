@@ -345,7 +345,8 @@ only exits. What landed, and the decisions taken to land it:
   reaching further than an override: requiring the Owner-only bypass permission to retract a
   declaration would mean an Administrator can create a governance object they cannot remove — the
   entrance-with-no-exit this increment exists to close — and reach is already bounded by the scope
-  the permission is demanded at.
+  the permission is demanded at. *(As shipped in M25.1. Superseded in part by the 2026-08-25 ruling
+  below: `freeze:override` is now demanded on top for a freeze you did not declare.)*
 
 **OPEN DECISION — OWNER RULING NEEDED: does `freeze:write` now supersede the Owner-only
 `freeze:override`?** Raised by the adversarial pass over M25.1 and *not* settled by the bullet
@@ -371,6 +372,30 @@ the three exits are:
      Administrator undoing an Owner. Must cover PATCH-shortening too, or it is bypassed in one call.
   c. **`freeze:override` only while the freeze is actually holding something** — read-time,
      racy, and it makes the permission needed depend on fleet state; recorded for completeness.
+
+**RULED 2026-08-25 (owner decision D1, option a-ii) — EXIT (b), and it is built (M25.9).**
+`freeze:override` is required to **lift or shorten a freeze you did not declare**, compared on
+`freezes.created_by_actor_id` against the acting subject; retracting or shortening **your own**
+freeze stays `freeze:write`. Added, never substituted: `freeze:write` at the freeze's own
+`scopeObjectId` is still demanded first on both verbs, and the override is demanded **at that same
+scope**, so an Owner bound at one service still cannot reach the org-root freeze. The ruling covers
+`PATCH` **shortening** — ending a protection early is the same act as retracting it, and gating only
+the `DELETE` would leave the retraction one `PATCH` away, exit (b)'s own caveat. **Extending**
+`endsAt` adds protection rather than removing it and stays `freeze:write`, as does a `PATCH` whose
+direction is `unchanged`. The direction is read from `updateFreezeWindow`'s **locked** result, not
+from the route's earlier unlocked read: under READ COMMITTED a stale read can call a shortening an
+extension and admit it. `routes/governance.ts`'s lift docblock carries the full reasoning;
+`drizzle/0010_governance.sql`'s comment and DESIGN §10.3 now agree with the code — **and the edits
+that make that sentence true were made rather than assumed.** DESIGN §10.3's *retraction* bullet ("A
+freeze can be retracted") stated the rule flatly as `freeze:write` at the freeze's own scope with no
+mention of the override; it now carries the override clause, the actor comparison and the
+shorten/extend split. BUILD_AND_TEST.md §8's **M25.1 definition of done** carried the identical
+superseded wording and now carries the same clause, labelled in place as a deliberate post-ship
+correction of a shipped milestone's DoD. §10.3's *Override* bullet already agreed and is untouched;
+`drizzle/0010`'s comment needs no edit, since all it asserts is that the override is not granted to
+Administrator by default — which is exactly what the new bar relies on. *(Caught by the adversarial
+pass: the first cut of this work asserted the agreement in two code comments while both doc
+sentences still stated the old rule.)*
 
 **Post-review corrections (same day, adversarial pass):**
 
@@ -904,6 +929,7 @@ Current is a four-item list (Organization / Domain / Service / Component). **Thi
 - **M25.6** — deadline lock (ADR-0042): predicate, actuator, clock seam, override route + permission, `computeCampaignStatus` thread.
 - **M25.7** *(confirmed in scope by D6)* — federated org-tier freeze as a graph object: a `freeze` object type, the projection rebuilt on import, the commander-vs-local precedence rule, the read-only-replica guard proving an outpost cannot lift a commander freeze, and the deliberate flip of `service-board-precedence.integration.test.ts` carrying its retired reasoning plus a non-vacuity mutation. Platform tier explicitly does NOT federate.
 - **M25.8** *(D8)* — the dependency actuator's freeze gap: `bump-dispatch.ts` / `bump-gate.ts` consult freezes before AUTO-MERGE (never before PR authoring), writing a Decision on refusal. A fix to an already-shipped path, sequenced last so it does not entangle the campaigns design.
+- **M25.9** *(D1, ruled 2026-08-25 — §1.7 exit (b))* — `freeze:override` on top of `freeze:write` to LIFT or SHORTEN a freeze you did not declare, compared on `freezes.created_by_actor_id` and demanded at the freeze's own scope. **Not the same increment as M25.8 above** — that number belongs to D8 and is already shipped under it; this one carries its own. A correction to M25.1's authorization rule, so DESIGN §10.3's retraction bullet and BUILD_AND_TEST's M25.1 DoD are edited to match rather than left stating the superseded rule.
 
 ---
 

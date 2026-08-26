@@ -637,17 +637,26 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
   it("hand-filled commander-origin config reconciles correctly when a signed bundle later arrives", async () => {
     const urn = `urn:scp:${domainA.orgName}:service:handfill-target-${Date.now()}`;
 
+    // The authorization-only subject this direct-repo call has to supply for itself. It has to be a
+    // REAL bound subject now: `assertObjectWriteAuthorityForHandFill` resolves org-root
+    // `object:write` against it, and the bare org-root OBJECT this case used to pass carries no role
+    // bindings at all, so it resolves to a default deny. `createApprover` is generically "a `user`
+    // object plus a built-in role bound at the org root" despite its name; Administrator is the role
+    // that actually holds hand-fill's two permissions (`object:write` from `drizzle/0002`,
+    // `federation:write` from `drizzle/0012`).
+    const filler = await createApprover(domainB, "Administrator");
+
     const handFilled = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       handFillObject(tx, {
         orgId: domainB.orgId,
-        // M21.7 — authorization-only subject, which this direct-repo call has to supply for itself.
-        // It is what the governance-authority, policy-scope and governance-label refusals resolve —
-        // never the synthetic import actor `handFillObject` hands to the upsert. `service` is not
-        // governance-managed and carries no governance labels here, so none of those three fire and
-        // the org-root object (the bootstrap admin subject) will do; the governance cases are
-        // asserted in `governance-managed-write-doors.integration.test.ts` and
-        // `governance-label-write-doors.integration.test.ts`.
-        actorObjectId: domainB.orgId,
+        // M21.7 — the subject the governance-authority, policy-scope and governance-label refusals
+        // resolve, never the synthetic import actor `handFillObject` hands to the upsert. `service`
+        // is not governance-managed and carries no governance labels here, so none of those three
+        // fire; the governance cases are asserted in
+        // `governance-managed-write-doors.integration.test.ts` and
+        // `governance-label-write-doors.integration.test.ts`, and the `object:write` bar every
+        // hand-fill clears in `handfill-object-write-authority.integration.test.ts`.
+        actorObjectId: filler.objectId,
         peerIdOrName: domainA.orgName,
         typeId: "service",
         urn,

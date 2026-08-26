@@ -1,0 +1,55 @@
+-- ===========================================================================================
+-- 0094 — `federation:pair`: the second bar on PAIRING (owner ruling D4, 2026-08-25;
+--         docs/proposals/role-model.md §4.1). Demanded by `POST /api/v1/federation/peers` ON TOP
+--         OF the `federation:write` that door already demanded.
+--
+-- NUMBERING RE-VERIFY AT MERGE TIME. `0094` was the free tail when this was authored (`0093` was
+-- `member_cluster_heartbeat`), but migration numbering in this repo is strictly serial in MERGE
+-- order and is gated by `db/journal-ordering.test.ts` (contiguous `idx`, strictly increasing
+-- `when`, one journal entry per `.sql` and no orphan of either kind). If another migration lands
+-- on main first, RENUMBER this file, its `meta/_journal.json` entry and this header together.
+--
+-- WHAT IT GATES, AND WHY IT IS NOT `federation:write`. `federation:write` operates an established
+-- link: export, import, hand-fill, outposts, resync, poke. This permission gates ESTABLISHING one —
+-- adding a peer, or re-keying an existing one — because that single act decides whose signature
+-- this instance will believe, and every bundle that arrives afterwards inherits that decision.
+--
+-- THE CHAIN IT CLOSES. `POST /federation/peers` takes the peer's Ed25519 `publicKey` verbatim from
+-- the request body and treats a changed value as a key ROTATION superseding the current window;
+-- `POST /federation/imports` (still `federation:write`) then hands every entry of a bundle signed
+-- with that key to `applyEntry`, whose `object_upsert` branch resolves ANY registered `typeId`
+-- through `upsertObjectByUrn`. On `federation:write` alone: pair a peer with a keypair you
+-- generated, import a bundle you signed with it, and you have estate write authority having never
+-- held `object:write`. The IMPORT path is deliberately left ungated — a throw there wedges a
+-- legitimately paired peer's whole signed bundle, and an import from a legitimately paired peer
+-- writing what that peer sent is the federation contract working as designed. Pairing is the link
+-- in the chain that can be gated without breaking the contract.
+--
+-- ADMINISTRATOR AND OWNER, which NARROWS NOTHING THAT EXISTS TODAY: 0012 §6 grants
+-- `federation:write` to `('Administrator', 'Owner')` and to no other built-in role, so the set that
+-- can pair before and after this migration is identical. It matters only prospectively — the
+-- FederationAdmin role being designed in role-model.md §4.1 holds `federation:read` +
+-- `federation:write` and withholds BOTH `object:write` and this permission, on the invariant that a
+-- federation administrator operates the link and does not establish trust relationships.
+--
+-- NOT modelled on the Owner-alone shape of `freeze:override`/`campaign:deadline-override` (0088).
+-- Those are bypass permissions — they excuse an estate from a control the platform is otherwise
+-- enforcing, and blast radius argues for the narrowest possible grant. Pairing is ordinary
+-- federation administration that Administrator has always performed; making it Owner-only here
+-- would break every existing Administrator's ability to pair, which is a live narrowing rather than
+-- a prospective one.
+--
+-- THE IDIOM, VERBATIM FROM 0088 (itself 0010 §4's and 0083 §3's), and every clause is load-bearing:
+--   * `array_append` is ADDITIVE — existing role rows keep every permission they already had.
+--     `roles.permissions` is a plain `text[]` with no CHECK constraint or enum backing it (0002 §7),
+--     so a new member costs no type change and no other DDL.
+--   * `org_id IS NULL` selects the BUILT-IN roles only; an org's own custom roles are its business
+--     and are untouched (a custom role that deliberately withholds this is the whole point).
+--   * `NOT ('federation:pair' = ANY(permissions))` makes a re-run a no-op rather than appending a
+--     duplicate — drizzle gates on the journal's `when`, never on idempotency, so a migration that
+--     is run twice by any means (a restored dump, a renumber, a hand-applied file) must be safe.
+-- ===========================================================================================
+
+UPDATE roles SET permissions = array_append(permissions, 'federation:pair')
+WHERE org_id IS NULL AND name IN ('Administrator', 'Owner')
+  AND NOT ('federation:pair' = ANY(permissions));

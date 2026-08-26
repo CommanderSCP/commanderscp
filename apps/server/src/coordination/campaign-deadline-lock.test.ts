@@ -214,11 +214,16 @@ describe("resolveCampaignDeadline — a refusal is never an absence", () => {
   });
 
   /**
-   * THE AUTHORING DOORS CANNOT MINT ONE. `POST /campaigns` and `POST /campaigns/{id}/deadline` both
-   * run at plain `object:write`; the waiver takes the Owner-only `campaign:deadline-override`. If
-   * the two shared one schema the cheap door would be the expensive permission's bypass, so the
-   * split is the authority check and this is what holds it in place — a 400 at the door, never a key
-   * silently dropped.
+   * THE AUTHORING DOORS CANNOT MINT ONE. `POST /campaigns` runs at plain `object:write`, always — a
+   * create is always a FIRST set. `POST /campaigns/{id}/deadline` runs at plain `object:write` for a
+   * first set or a SHORTENING, and adds the Owner-only `campaign:deadline-override` only on its
+   * widening acts (a clear, or a move to a later instant — owner ruling 2026-08-25, D1 b-i). The
+   * waiver ALWAYS takes `campaign:deadline-override` at the campaign, and — the part neither
+   * authoring door pays at any price — `object:write` AT EACH NAMED TARGET, plus a per-target audit
+   * event. So if the two shared one schema, `POST /campaigns` would be the expensive permission's
+   * outright bypass and the deadline route would be its bypass for the per-target bar even where the
+   * permissions coincide. The split is the authority check and this is what holds it in place — a
+   * 400 at the door, never a key silently dropped.
    */
   it("the AUTHORING schema omits `overrides` entirely — the cheap door cannot mint a waiver", () => {
     expect("overrides" in CampaignDeadlineSchema.shape).toBe(true);
