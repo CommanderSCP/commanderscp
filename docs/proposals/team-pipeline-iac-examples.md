@@ -28,33 +28,34 @@ $ scp federation peer update commander \
                                                        # ordered dial list; the #xo-labeled
                                                        # entry is the DR fallback (ADR-0044 D3)
 $ scp connect argocd --name argocd-hq …                # per-domain, credential-holding
-$ scp config-source register \
-    --repo git.corp.example/platform/scp-config --ref main \
-    --path 'platform/*.manifest.json' --path 'teams/*/manifest.json' \
-    --stack platform-estate=team-platform \
-    --stack team-payments=team-payments               # stack → team identity (D3/D7: these
-                                                       # stacks are now repo-owned)
+$ scp config-source register --repo-pattern 'git.corp.example/payments/*' \
+    --team team-payments --path 'scp/manifest.json'   # ONE registration covers the team's
+                                                       # whole fleet of component repos (D9)
+$ scp config-source register --repo git.corp.example/platform/scp-platform \
+    --team team-platform --path '**/*.manifest.json'  # the central platform repo
 ```
 
 Nothing is ever declared *for* the XO: it serves the same instance and database, so every applied manifest is already "on" it. Its entire IaC footprint is the `#xo` dial label above.
 
-## 2. The repo (one repo, commander's domain)
+## 2. The repos (D9: declarations live with the component)
 
 ```
-scp-config/
-  platform/
-    estate.ts                 # operator stack — global WHAT skeleton
-    estate.manifest.json      # committed synth output (D2) — what SCP reads
-  domains/
-    hq/bindings.ts            # each domain's HOW — small, rarely changes
-    govcloud/bindings.ts
-    airgap1/bindings.ts
-  teams/
-    payments/stack.ts         # a team's WHAT
-    payments/manifest.json
+git.corp.example/
+  platform/scp-platform/            # central: the estate (§3) + per-domain HOW (§4)
+    platform/estate.ts + estate.manifest.json
+    domains/{hq,govcloud,airgap1}/bindings.ts
+  platform/scp-standards/           # central: importable standards (D10), published to
+    src/index.ts                    #   the org registry as @corp/scp-standards
+  payments/payments-team/           # thin team home: the service object, shared exceptions
+    scp/stack.ts + scp/manifest.json
+  payments/payments-api/            # the component's own repo (D9)
+    src/…                           #   the component's actual code
+    scp/stack.ts                    #   its SCP declaration
+    scp/manifest.json               #   committed synth output (D2) — what SCP reads
+  payments/payments-worker/         # same shape
 ```
 
-One repo holds all the code. Delivery differs per node (§6): the commander's config source syncs `platform/` and `teams/`; each domain's operators apply their `domains/<name>/` slice locally (CLI-push, D7 — for airgap1, from the same media run as the regular bundle delivery).
+The component's declaration rides the same repo that already drives its releases — one push webhook feeds both config sync (when `scp/manifest.json` changed) and release correlation (everything else). Domain HOW slices are applied by each domain's operators locally (CLI-push, D7 — for airgap1, from the same media run as the regular bundle delivery).
 
 ## 3. `platform/estate.ts` — the operator stack (applies at the commander, federates)
 
@@ -109,20 +110,13 @@ new BindingPolicy(bindings, "prod-configuration", {
 
 `domains/hq/bindings.ts` and `domains/airgap1/bindings.ts` are the same five lines pointing at `argocd-hq` / `argocd-airgap1`. This is the whole per-domain cost of joining every team's pipeline: the domain reconciler joins these policies against federated placements and materializes the `executor_bindings` itself. A placement no policy matches is **loud** (unbound status), never a silent fake-success.
 
-## 5. `teams/payments/stack.ts` — the team's WHAT (the headline surface)
+## 5. The component's own repo — the headline surface (D9/D10)
 
-Component-level pipelines by default, inference at synth (D8): pipeline attachment comes from construct scope, placements from the stages a component's waves name, the source mapping from `repo` (default branch, default Type), the service owner from the stack's registered team. The synthesized manifest still spells all of it out — inference never reaches the server.
+The platform team publishes standards once, as a versioned package on the org's own registry:
 
 ```ts
-import { App, Stack, Service, Component } from "@scp/iac";
-
-const app = new App();
-const stack = new Stack(app, "team-payments");
-
-const payments = new Service(stack, "payments"); // owner inferred: the stack's team
-
-// one wave shape, reused as a plain TS value
-const rollout = [
+// platform/scp-standards → @corp/scp-standards (Gitea npm — air-gap-clean)
+export const standardRollout = [
   "commercial-amer-staging",
   "commercial-amer-prod",
   "commercial-emea-prod",
@@ -130,45 +124,58 @@ const rollout = [
   // promotion into airgap1 — the CDS gate applies per crossing, not per wave
   ["govcloud-amer-prod", "airgap1-prod"],
 ];
+```
 
-new Component(payments, "payments-api", {
-  repo: "git.corp.example/payments/payments-api", // source mapping inferred: default branch, Type configuration
-  pipeline: { waves: rollout }, // placements inferred: payments-api × every stage named above
-});
+The team's thin home (`payments/payments-team/scp/stack.ts`) declares the service once:
 
-new Component(payments, "payments-worker", {
-  repo: "git.corp.example/payments/payments-worker",
-  pipeline: { waves: rollout }, // same shape, still its own component-level pipeline
+```ts
+const stack = new Stack(app, "payments-team");
+new Service(stack, "payments"); // owner inferred: the registered team (D8)
+```
+
+And a component's **entire** declaration, in its own repo (`payments/payments-api/scp/stack.ts`):
+
+```ts
+import { App, Stack, Service, Component } from "@scp/iac";
+import { standardRollout } from "@corp/scp-standards"; // inherited repo (D10)
+
+const app = new App();
+const stack = new Stack(app, "payments-api");
+
+new Component(stack, "payments-api", {
+  service: Service.ref("payments"),
+  pipeline: { waves: standardRollout },
+  // inferred (D8/D9): repo + source mapping = the repo this manifest ships in;
+  // placements = payments-api × every stage the waves name
 });
 ```
 
-That is the whole file. Wave shorthand: a bare string is a sequential single-stage wave; an array is a parallel wave; the full `{ name, mode, targets, requiresFanIn }` object stays available when the shorthand isn't enough. The `dev` branch is deliberately unmapped here — dev pipelines are domain-local (ADR-0030) and belong to a domain-local stack.
+Three hundred component repos are three hundred copies of that file with a different name — and when the platform team publishes a new `@corp/scp-standards`, the **dependency-subscription machinery (M21) delivers the bump to every subscribed repo as a PR**. Pipeline structure standards roll out like any other dependency.
 
-**The shared exception (D8):** only when components genuinely release as one unit does a pipeline move up a rung — and it is explicit:
+Divergence is explicit and plain TypeScript: `waves: [...standardRollout, "one-more-stage"]`, or a fully local shape. Wave shorthand: a bare string is a sequential single-stage wave; an array is a parallel wave; the full `{ name, mode, targets, requiresFanIn }` object stays available. The `dev` branch is deliberately unmapped — dev pipelines are domain-local (ADR-0030).
+
+**The shared exception (D8):** only when components genuinely release as one unit does a pipeline move up a rung — explicitly, in the team repo:
 
 ```ts
 // deliberate: one shared pipeline at the service rung (releases_via nearest-rung
 // ladder, ADR-0027/0029). A component that declares its own pipeline still wins by rung.
-new Pipeline(payments, "payments-release", { waves: rollout });
+new Pipeline(payments, "payments-release", { waves: standardRollout });
 ```
 
-**The widening pattern (1 → 2 → 4 → 8):** when prod is many targets, the helper builds the fan-out:
+**The widening pattern (1 → 2 → 4 → 8)** lives naturally in the standards repo too:
 
 ```ts
-const prod = regions.map((r) => `commercial-${r}-prod`);
-new Component(payments, "payments-api", {
-  repo: "git.corp.example/payments/payments-api",
-  pipeline: {
-    waves: ["commercial-amer-staging", ...waves.widening(prod, { start: 1, factor: 2 })],
-  },
-});
+export const widePod = (regions: string[]) => [
+  "commercial-amer-staging",
+  ...waves.widening(regions.map((r) => `commercial-${r}-prod`), { start: 1, factor: 2 }),
+];
 ```
 
 (Canary *percentages within* a target stay the rollout executor's job — ADR-0008. SCP orders waves of stages; it does not orchestrate traffic weights.)
 
 ## 6. Synth output and delivery, node by node
 
-`teams/payments/manifest.json` (committed by the team's CI, D2 — excerpt). Every entry §5's inference produced — placements, per-component topology, source mapping — appears here explicitly; inference is synth-time only (D8):
+`payments/payments-api/scp/manifest.json` (committed by the component repo's CI, D2 — excerpt). Every entry §5's inference produced — placements, per-component topology, source mapping — appears here explicitly; inference is synth-time only (D8):
 
 ```json
 {
@@ -198,4 +205,4 @@ new Component(payments, "payments-api", {
 | **retrans** | relay at the CDS boundary | nothing to declare — pairing + inbox/outbox delivery config only; relays signed bundles, validates, never terminates a promotion |
 | **airgap1 outpost** | air-gapped, `trustTier: il5` | WHAT arrives as `.scpbundle` via retrans (the M13.1a inbox loop — untouched by D1); its HOW stack applied locally from the same media run |
 
-The team merged one PR. The commander applied it once. Every domain the service is placed in — including the one behind the CDS — runs the pipeline against its own executor, and no repo, credential, or binding crossed any boundary to make that true.
+A component team merged one PR in its own repo. The commander applied it once. Every domain the service is placed in — including the one behind the CDS — runs the pipeline against its own executor, and no repo, credential, or binding crossed any boundary to make that true.
