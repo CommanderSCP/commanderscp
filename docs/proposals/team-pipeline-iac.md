@@ -2,6 +2,7 @@
 
 **Status:** Draft — proposed 2026-08-26. The six rulings in §0 were made by the owner in-session on 2026-08-26; the design built on them is pending owner review as a whole.
 **Relates to:** [ADR-0002](../adr/0002-execution-strategy.md) (three modes, ownership test), [ADR-0005](../adr/0005-component-create-strict.md) (create-strict / import-permissive), [ADR-0030](../adr/0030-dev-branch-pipelines.md) (dev pipelines selected by source ref), [ADR-0031](../adr/0031-domain-local-objects-never-federate.md) (pipeline routing is domain-local), [iac-placements.md](iac-placements.md) (ACCEPTED 2026-08-03), [iac-stack-ownership.md](iac-stack-ownership.md), [import-existing-executors.md](import-existing-executors.md), [post-import-configuration.md §8](post-import-configuration.md).
+**Worked example:** [team-pipeline-iac-examples.md](team-pipeline-iac-examples.md) — the full estate (commander + XO, HQ outpost, retrans, govcloud outpost, air-gapped outpost).
 
 ## 0. Owner rulings (2026-08-26)
 
