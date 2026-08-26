@@ -205,4 +205,44 @@ export const widePod = (regions: string[]) => [
 | **retrans** | relay at the CDS boundary | nothing to declare — pairing + inbox/outbox delivery config only; relays signed bundles, validates, never terminates a promotion |
 | **airgap1 outpost** | air-gapped, `trustTier: il5` | WHAT arrives as `.scpbundle` via retrans (the M13.1a inbox loop — untouched by D1); its HOW stack applied locally from the same media run |
 
+## 7. Sources, targets, dependencies, gates, and Types
+
+**Dependencies (`dependsOn`).** Already a fluent method on every `@scp/iac` construct; it stays, and gains refs to objects the team does not own — components, assemblies, or services:
+
+```ts
+const api = new Component(stack, "payments-api", { service: Service.ref("payments"), pipeline: { waves: standardRollout } });
+api.dependsOn(Component.ref("ledger-core")); // another team's component
+api.dependsOn(Service.ref("identity"));      // or a service / assembly
+```
+
+`depends_on` is what the plan compiler topo-sorts by when no explicit topology is given, and what drives ADR-0028 stage-dependency holds — declaring a dependency holds *your* rollout behind theirs, never the reverse, which is why a component owner may declare one against anything visible. Open (§14): whether relationship writes require `relationship:write` at both endpoints today; this proposal's position is that `depends_on` should need it only at the **from** endpoint, since the edge burdens the depender.
+
+**Sources.** The common case is inferred (D9): the repo the manifest ships in, default branch, one mapping. The explicit form covers everything else — additional repos (the infra/software split), monorepo path slices, ref patterns:
+
+```ts
+new Component(stack, "payments-api", {
+  service: Service.ref("payments"),
+  pipeline: { waves: standardRollout },
+  sources: [
+    {}, //                                                  this repo (inferred), Type configuration
+    { repo: "git.corp.example/payments/payments-infra", //  the component's IaC/tofu pipeline
+      type: "infrastructure" },
+    { path: "services/api/**", ref: "refs/heads/release-*" }, // monorepo / ref slicing
+  ],
+});
+```
+
+These synthesize to `sourceMappings`; identity is the (repo, path, ref) tuple (ADR-0030), so edits diff cleanly instead of delete+recreate. The git *connection* — credentials, webhook secret — stays an operator ceremony (§1): teams declare routing, never credentials.
+
+**Targets.** Teams never create targets; they **name** them. Deployment-targets (stages) are estate topology, declared once in the platform stack (§3) with `properties.environment`/`region`; the domain binding policy (§4) decides which executor serves each target. A team needing per-stage configuration declares an explicit `Placement` with properties — explicit beats inferred (D8).
+
+**Tests and rollout strategies** — two layers, deliberately split:
+
+- *Gates between waves* are SCP's: controls and scoped policies (CI-evidence `github-check` control, scan thresholds ADR-0016, approvals) evaluated at the wave boundary. In IaC these are Policy/Control declarations at a scope (org / service / component / stage). A per-wave `gates:` shorthand that compiles to scoped declarations is proposed sugar — open in §14, because the wave document schema loudly rejects unknown keys today, so a native per-wave field is a parser change, not a given.
+- *Rollout strategy within a target* (canary weight, bake time, analysis) belongs to the rollout executor: Argo Rollouts config lives in the team's own deploy manifests; SCP observes and mirrors weights (ADR-0008) and can couple co-placed components on `minWeight` (ADR-0028), but never orchestrates traffic. Waves are SCP's rollout strategy **across** targets; the executor owns it **within** one.
+
+**Pipeline Type.** Declared, never inferred from repo contents: each source carries a `type` from the executor-Type taxonomy (ADR-0007 — `build` / `infrastructure` / `configuration`), defaulting `configuration`. Mapping the everyday words: Config → `configuration` (Argo CD deploys), IaC → `infrastructure` (plan→gate→apply), RPMs/Images → **artifact classes produced by `build`-Type pipelines**, not Types — what a build produces is read from registry/build evidence per the artifact model, never guessed from the repo. A component with an app pipeline and an infra pipeline is one component with two sources of different Types; bindings are 1:N per target keyed by Type, and the domain binding policy resolves (target, Type) → executor.
+
+---
+
 A component team merged one PR in its own repo. The commander applied it once. Every domain the service is placed in — including the one behind the CDS — runs the pipeline against its own executor, and no repo, credential, or binding crossed any boundary to make that true.
