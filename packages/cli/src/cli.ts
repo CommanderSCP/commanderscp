@@ -3759,10 +3759,23 @@ export function buildProgram(): Command {
   // which throw the RELEASE away rather than lifting the FREEZE. Since M25.2's per-target
   // admission that is worse than waiting — a mistyped `--ends-at` year now holds a SUBSET of a
   // wave's targets while the siblings have already shipped.
+  /**
+   * WHAT LIFTING COSTS (M25.9 / owner ruling D1(a-ii), 2026-08-25):
+   *  * YOUR OWN freeze — `freeze:write` at the freeze's own scope, the same permission that declared
+   *    it. Your own mistake stays yours to undo, or `scp freeze create` would be an entrance with no
+   *    exit for the very role that uses it.
+   *  * A freeze ANOTHER ACTOR declared — that PLUS the Owner-only `freeze:override`, at the freeze's
+   *    own scope. Retracting someone else's protection for everyone it covers costs the same
+   *    permission that admits one change past it (`scp change accept --override-freeze`). Expect a
+   *    403 naming `freeze:override` if you hold only the first.
+   *
+   * Scope expands UPWARD only: `freeze:override` bound at a service lifts that service's freezes and
+   * never the org-root freeze that covers everyone.
+   */
   freezeCmd
     .command("lift <id>")
     .description(
-      "Lift (retract) a freeze — it stops being in force immediately, whatever endsAt says"
+      "Lift (retract) a freeze — it stops being in force immediately, whatever endsAt says. Lifting a freeze SOMEONE ELSE declared additionally requires the Owner-only freeze:override at the freeze's own scope; lifting your own needs only freeze:write"
     )
     .requiredOption(
       "--reason <text>",
@@ -3778,12 +3791,29 @@ export function buildProgram(): Command {
       printResult(lifted, opts.output, (item) => freezeRow(item as Freeze));
     });
 
+  /**
+   * WHAT EACH DIRECTION COSTS (M25.9 / owner ruling D1(a-ii), 2026-08-25) — the two are NOT the same
+   * price, and the server decides from the direction it computes under the row lock:
+   *  * SHORTENING — it ends the protection early for everyone the freeze covers, which is `lift`
+   *    with a different record, so on ANOTHER ACTOR'S freeze it takes the Owner-only
+   *    `freeze:override` on top of `freeze:write`, at the freeze's own scope. Gating `lift` alone
+   *    would have left the retraction one `update` away. On your own freeze it stays `freeze:write`.
+   *  * EXTENDING — it ADDS protection and takes nothing from anyone the freeze covers, so it stays
+   *    `freeze:write` whoever declared the freeze. So does re-sending the `endsAt` it already has.
+   *
+   * (A FEDERATING freeze is the one case where extending is the sharper direction, because it grows
+   * a block inside another security domain — that is a separate `federation:write` bar, and both
+   * apply.)
+   */
   freezeCmd
     .command("update <id>")
     .description(
       "Move a freeze's endsAt — shortening it is a loosening, extending it is a tightening"
     )
-    .requiredOption("--ends-at <iso>", "the new ISO 8601 end (must still be after startsAt)")
+    .requiredOption(
+      "--ends-at <iso>",
+      "the new ISO 8601 end (must still be after startsAt). SHORTENING another actor's freeze additionally requires the Owner-only freeze:override at the freeze's own scope — it ends their protection early, the same act as `freeze lift`; extending never does"
+    )
     .requiredOption("--reason <text>", "mandatory reason, in BOTH directions")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -3908,8 +3938,17 @@ export function buildProgram(): Command {
   /**
    * M25.6a (owner decision D4) — SET, MOVE or CLEAR the deadline. `--clear` is THE BLUNT EXIT: it
    * releases every target the deadline was withholding this campaign's fan-out from, on the next
-   * tick, with no unlock verb. `scp campaign deadline-override` (M25.6b) is the per-target one, and
-   * costs the Owner-only `campaign:deadline-override` where this costs plain `object:write`.
+   * tick, with no unlock verb. `scp campaign deadline-override` (M25.6b) is the per-target one:
+   * narrower radius, same permission on the widening acts, and it leaves the deadline standing.
+   *
+   * WHAT EACH ACT COSTS (owner ruling 2026-08-25, D1 b-i):
+   *  * `--at <iso>` SETTING a first deadline, or SHORTENING an existing one — plain `object:write`
+   *    at the campaign. Both withhold this campaign's changes from strictly MORE targets, so
+   *    neither can launder a waiver, and routine campaign hygiene must not need an Owner.
+   *  * `--clear`, or `--at <iso>` naming an instant LATER than the one stored — `object:write` PLUS
+   *    the Owner-only `campaign:deadline-override`. Both release targets that were being withheld,
+   *    and clearing is a strict superset of waiving one target, so it cannot cost less than
+   *    `deadline-override` does. Expect a 403 naming that permission if you hold only the first.
    *
    * `--reason` is required on ALL THREE acts, clear included: it is the operator's own words on the
    * hash chain, beside a Decision carrying the previous instant.
@@ -3924,7 +3963,10 @@ export function buildProgram(): Command {
       "--adoption-signal <kind>",
       "which adoption evidence this deadline was authored against: delivered|dependency|control (declarative — the verdict always comes from the campaign's own recipe)"
     )
-    .option("--clear", "CLEAR the deadline — releases every locked target on the next tick")
+    .option(
+      "--clear",
+      "CLEAR the deadline — releases every locked target on the next tick. Takes the Owner-only 'campaign:deadline-override' on top of 'object:write', as does moving --at to a LATER instant; setting a first deadline or shortening one does not"
+    )
     .requiredOption("--reason <text>", "why (required on set, move AND clear)")
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")

@@ -42,7 +42,7 @@ D2 mints a receiver-local anchor at promotion import time; D3 makes that anchor 
 collision D2/D3 did not separately anticipate: the **exporter's own** minted row for the identical
 `(digest, artifactType)` is *also* ordinary, and reaches the same receiver independently via
 ordinary full-scope sync, whenever that receiver syncs at `full` scope (routine, not an edge case).
-Two different ids, one identity — `objects_artifact_one_per_digest_type` (0094) refuses the second
+Two different ids, one identity — `objects_artifact_one_per_digest_type` (0095) refuses the second
 row outright, and `federation/import-repo.ts`'s pre-check (built alongside the type-registration
 skip-and-record it sits beside) caught this the same way: drop the entry, record it as
 `federation.import.entry_dropped`.

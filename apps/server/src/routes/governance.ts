@@ -132,6 +132,66 @@ async function assertMayEditFederatingFreeze(
 }
 
 /**
+ * ============================================================================================
+ * M25.9 / OWNER RULING D1 (2026-08-25) — TAKING PROTECTION AWAY FROM A FREEZE YOU DID NOT DECLARE
+ * ============================================================================================
+ * `freeze:override` on top of `freeze:write`, and ONLY when the acting subject is not the freeze's
+ * `created_by_actor_id`. The full reasoning, the three artifacts that disagreed and which of
+ * `campaigns-rework.md` §1.7's three exits the owner took, is in the lift route's docblock below;
+ * this is the one place the rule is spelled.
+ *
+ * ONE FUNCTION, TWO CALLERS, DELIBERATELY. `DELETE` (lift) and a SHORTENING `PATCH` are the same
+ * act — both end a protection early for everyone the freeze covers — and `freezes-repo.ts`'s
+ * `lockFreezeRow` header records what the asymmetric version of a freeze refusal costs: "a lift
+ * that is refused while a window edit is not lets an outpost push a commander's `ends_at` to a past
+ * instant and achieve the retraction it was refused, through a verb nobody thought to guard." The
+ * same sentence is true one authority-model over. A third loosening verb must call this too.
+ *
+ * COMPARED ON `created_by_actor_id`, READ FROM THE ROW. Never inferred from who holds what, and
+ * never from `lifted_by_actor_id` (which is null until the very write being authorized). For any
+ * freeze these routes can write, the column is set once by `createFreeze` and never updated: the
+ * only other writer is `governance/freeze-object.ts`'s rebuild, whose update arm is fenced to
+ * `object_id = <the peer object>` — a REPLICA row, which `freezes-repo.ts`'s `lockFreezeRow`
+ * already refuses both write verbs on with a 409 before authorship could matter. So the value
+ * cannot drift out from under an authorization decision made on it, which is what makes the
+ * comparison safe against the lift route's unlocked read.
+ *
+ * ADDED, NEVER SUBSTITUTED: `freeze:write` at the freeze's own scope is authorized by the time this
+ * runs, on both verbs, for every caller. This is a second bar, and it is demanded at THE FREEZE'S
+ * OWN SCOPE — the same scope as the `freeze:write` check it sits beside, and the scope DESIGN §10.3
+ * already demands `freeze:override` at for a per-change override ("at that freeze's own scope"), so
+ * one permission means one thing on both of its doors. `hasPermission` expands upward only, so an
+ * Owner bound at service S can retract an S-scoped freeze a colleague declared and CANNOT reach the
+ * org-root freeze that covers everyone — the same bound `freeze:write` gets here, for the same
+ * reason. Demanding the override at `auth.orgId` instead would not be a hole (it is strictly
+ * narrower: only an org-root Owner would ever clear it), but it would make this bar's reach
+ * disagree with the reach of the permission it is stacked on, and would leave a service Owner
+ * unable to retract a colleague's freeze inside their own service.
+ *
+ * AND THAT PARAGRAPH IS PINNED, NOT MERELY ARGUED — `coordination/freeze-admission.integration.
+ * test.ts`, the `M25.9 ladder` case "the override is demanded at THE FREEZE'S OWN SCOPE": a
+ * SERVICE-bound Owner lifts a service-scoped freeze an org-root Administrator declared, with a
+ * service-bound ADMINISTRATOR refused on the same freeze as its control. Rewrite `scopeObjectId`
+ * below to `auth.orgId` and that one case goes red. It exists because review found this claim
+ * unmeasured: every OTHER actor in that block is bound at the ORG ROOT, where the two spellings
+ * name the same scope, so all of them passed under either. A claim about a second parameter needs a
+ * case in which that parameter is the only thing that moved.
+ */
+async function assertMayRetractAnothersFreeze(
+  tx: TenantTx,
+  auth: { orgId: string; subjectObjectId: string },
+  freeze: FreezeRow
+): Promise<void> {
+  if (freeze.createdByActorId === auth.subjectObjectId) return;
+  await authorize(tx, {
+    orgId: auth.orgId,
+    subjectObjectId: auth.subjectObjectId,
+    permission: "freeze:override",
+    scopeObjectId: freeze.scopeObjectId
+  });
+}
+
+/**
  * M4 governance sub-resources that aren't plain typed-registry objects (BUILD_AND_TEST.md §8 M4):
  * control bindings + runs, approval quorum, freezes, and `scp policy evaluate`'s dry-run endpoint.
  * Registered from app.ts alongside `GOVERNANCE_TYPED_REGISTRY_RESOURCES` (routes/typed-registries.ts).
@@ -707,36 +767,79 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
   // — checking only `active[0]`, at one scope, was a shipped bug (CRITICAL #2). Checking at
   // `auth.orgId` here would have been the same bug wearing different clothes.
   //
-  // WHY `freeze:write` AND NOT `freeze:override`. The asymmetry is real and worth naming: an
-  // override is per-change (it lets ONE change past and leaves the freeze standing for everyone
-  // else) and is Owner-only; a lift is per-freeze (it retracts the protection for EVERYONE covered)
-  // and this route asks only for Administrator-tier `freeze:write`. So the wider-reaching verb
-  // takes the narrower permission. That is deliberate, on two grounds:
+  // ===========================================================================================
+  // AND `freeze:override` ON TOP, FOR A FREEZE YOU DID NOT DECLARE — M25.9, OWNER RULING D1
+  // ===========================================================================================
+  // SETTLED 2026-08-25 by owner ruling (decision D1, option a-ii). This block previously read
+  // "OPEN, PENDING AN OWNER RULING"; it is now closed, and the exit taken is (b) of the three
+  // `docs/proposals/campaigns-rework.md` §1.7 offered:
+  //
+  //   `freeze:override` is required to LIFT or SHORTEN a freeze YOU DID NOT DECLARE, compared on
+  //   `freezes.created_by_actor_id` against the acting subject. Retracting or shortening YOUR OWN
+  //   freeze stays `freeze:write` alone.
+  //
+  // WHAT WAS WRONG WITH `freeze:write` ALONE. An override is per-CHANGE: it lets ONE change past
+  // and leaves the freeze standing for everyone else, and `drizzle/0010` grants it to Owner only. A
+  // lift is per-FREEZE: it retracts the protection for EVERYONE the freeze covers. Demanding only
+  // Administrator-tier `freeze:write` for the lift made the strictly wider-reaching verb take the
+  // strictly narrower permission — an Administrator at service S could retract an Owner's S-scoped
+  // freeze for everyone with a permission they already held, where the Owner-only override would
+  // have admitted exactly one change. Three artifacts disagreed about that: `drizzle/0010`'s
+  // comment calls `freeze:override` and `change:emergency` "the two highest-blast-radius bypass
+  // permissions (DESIGN §10.3), deliberately NOT granted to Administrator by default", DESIGN §10.3
+  // says getting past a freeze "requires an explicit `freeze:override` permission", and this file
+  // argued the opposite from first principles. The ruling makes 0010's comment and DESIGN §10.3
+  // AGREE with this file rather than the reverse: `freeze:override` is once again what it costs to
+  // take protection away from a freeze someone else declared, whether by bypassing it for one
+  // change or by retracting it for all of them.
+  //
+  // AND THE DOCS WERE ACTUALLY EDITED, which is the only thing that makes the sentence above true.
+  // The point of the ruling was to stop three artifacts contradicting each other, so naming
+  // agreement without producing it would have been the same defect one layer down. What changed,
+  // and it is checkable: DESIGN §10.3's **retraction** bullet ("A freeze can be retracted") stated
+  // the rule flatly as `freeze:write` at the freeze's own scope with no mention of the override —
+  // it now carries the override clause, the actor comparison, and the shorten/extend split.
+  // BUILD_AND_TEST.md §8's **M25.1 definition of done** carried the identical superseded wording
+  // and now carries the same clause, marked as a deliberate post-ship correction of a DoD rather
+  // than a quiet rewrite. §10.3's **Override** bullet already agreed and is untouched — it is the
+  // retraction bullet, describing the exact two verbs gated here, that did not. `drizzle/0010`'s
+  // comment needs no edit: it says only that the override is not granted to Administrator by
+  // default, which is precisely what this bar now relies on.
+  //
+  // BOTH PROPERTIES SURVIVE, WHICH IS WHY THE ACTOR IS IN THE RULE AT ALL:
   //
   //   * A SURFACE WITH AN ENTRANCE AND NO EXIT IS THE DEFECT M25.1 EXISTS TO REMOVE. `freeze:write`
-  //     is what declares a freeze. Requiring `freeze:override` to lift one would mean an
+  //     is what declares a freeze. Requiring `freeze:override` to lift EVERY freeze would mean an
   //     Administrator can create a governance object they cannot retract, and would put every
   //     mistyped `endsAt` on the estate in front of the Owner — reproducing, one level up, exactly
-  //     the "no way out" this increment is closing.
-  //   * REACH AND AUTHORITY ALREADY MATCH, VIA SCOPE. "Everyone covered by the freeze" is bounded
-  //     by the freeze's scope, and the permission is demanded at that same scope. Lifting an
-  //     org-root freeze needs `freeze:write` AT THE ORG ROOT — Administrator or Owner of the whole
-  //     org. There is no scope at which this route grants power over a broader freeze than the
-  //     authority being checked, which is the property `freeze:override`'s per-freeze loop
-  //     establishes for overrides and the one that actually constrains blast radius here.
+  //     the "no way out" M25.1 closed. Your own mistake stays yours to undo, at the same permission
+  //     that made it.
+  //   * NO ADMINISTRATOR SILENTLY UNDOING AN OWNER. Someone else's freeze is someone else's
+  //     protection. Scope alone did not give this: `freeze:write` at S covers every freeze at S, no
+  //     matter who declared it, so an Administrator and an Owner bound at the same service were
+  //     indistinguishable to this route. The actor comparison is the part scope cannot express.
   //
-  // OPEN, PENDING AN OWNER RULING — DO NOT READ THE TWO BULLETS ABOVE AS A SETTLED DECISION.
-  // `drizzle/0010_governance.sql`'s own comment already states the opposite conclusion: it calls
-  // `freeze:override` and `change:emergency` "the two highest-blast-radius bypass permissions
-  // (DESIGN §10.3), deliberately NOT granted to Administrator by default", and DESIGN §10.3 says
-  // getting past a freeze "requires an explicit `freeze:override` permission". After this route an
-  // Administrator at service S retracts an Owner's S-scoped freeze FOR EVERYONE with a permission
-  // they already hold, where the Owner-only override would have admitted exactly ONE change. The
-  // widening is bounded (scope, above) and not escalatable (`role_binding:write` has no write API,
-  // so an Administrator cannot mint themselves Owner), but it is a widening of a gate a migration
-  // calls deliberate, and that is a governance call rather than an implementation one.
-  // `docs/proposals/campaigns-rework.md` §1.7 carries it as an OPEN DECISION with the three exits;
-  // whichever way it lands, 0010's comment and DESIGN §10.3 must end up agreeing with this file.
+  // WHICH ACTS THE SECOND BAR COVERS, and this is the half that is easy to get wrong:
+  //
+  //   * LIFT (this route) — retracts the protection outright. Covered.
+  //   * PATCH that SHORTENS `endsAt` — ends the protection early for everyone covered. It is the
+  //     same act with a different record (`updateFreezeWindow`'s docblock: same effect on
+  //     admission, and deliberately not re-labelled a lift), so gating the lift alone would leave
+  //     the retraction one PATCH away — §1.7 exit (b)'s own caveat, "must cover PATCH-shortening
+  //     too, or it is bypassed in one call". Covered, in the PATCH route below.
+  //   * PATCH that EXTENDS `endsAt` — ADDS protection. Nothing is taken from anyone the freeze
+  //     covers, so it stays `freeze:write`, and extending someone else's freeze is deliberately NOT
+  //     an override-tier act. (A federating freeze is the one case where extending IS the sharper
+  //     direction, because it grows a block inside another security domain — that is
+  //     `assertMayEditFederatingFreeze`'s bar, a different permission for a different reason, and
+  //     both apply.)
+  //   * PATCH that moves `endsAt` NOWHERE (`direction === "unchanged"`) — nothing was weakened, so
+  //     nothing extra is demanded. Re-saving a form must not require the Owner.
+  //
+  // The three-way split is why the PATCH route authorizes on `direction` rather than on the verb.
+  //
+  // NOT ESCALATABLE FROM BELOW, unchanged by this ruling: `role_binding:write` has no write API, so
+  // an Administrator cannot mint themselves the Owner role and clear the new bar.
   //
   // An `authorize` failure throws a raw 403 rather than returning a `blocked` verdict, and that
   // differs from `checkFreeze` deliberately: `checkFreeze` runs inside a change's gate evaluation,
@@ -802,6 +905,11 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         // M25.7 — a lift of a FEDERATING freeze retracts a block in another security domain
         // (`syncFreezeObject` below re-snapshots the object). See the helper's docblock.
         await assertMayEditFederatingFreeze(tx, auth, before);
+        // M25.9 / owner ruling D1 — retracting a protection SOMEONE ELSE declared costs the
+        // Owner-only `freeze:override`. Safe against the unlocked `before`: `created_by_actor_id`
+        // is written once at create and never updated, so unlike `endsAt` it cannot move between
+        // this read and the locked write below. See the helper's docblock.
+        await assertMayRetractAnothersFreeze(tx, auth, before);
         const row = await liftFreeze(tx, {
           orgId: auth.orgId,
           id: request.params.id,
@@ -903,6 +1011,34 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           reason: request.body.reason,
           actorObjectId: auth.subjectObjectId
         });
+        // =====================================================================================
+        // M25.9 / OWNER RULING D1 — A SHORTENING IS A RETRACTION, AND THE SAME BAR APPLIES
+        // =====================================================================================
+        // Only `direction === "shortened"` takes protection away from the people this freeze
+        // covers; extending ADDS protection and `"unchanged"` moves nothing, and both of those stay
+        // `freeze:write`. See the lift route's docblock for the three-way split.
+        //
+        // AFTER `updateFreezeWindow`, NOT BEFORE, AND THAT PLACEMENT IS THE WHOLE CORRECTNESS OF
+        // THIS CHECK. `direction` is the authorization INPUT here, and it is only knowable against
+        // the row that is actually in force — which is what `lockFreezeRow`'s `FOR UPDATE` inside
+        // `updateFreezeWindow` establishes, and nothing else in this handler does. The unlocked
+        // `getFreeze` above returns the pre-transaction committed value under READ COMMITTED, so a
+        // check written against `existing.endsAt` is decidable on a window that is no longer live:
+        // with the freeze at +30d, a concurrent extension in flight and this request asking for
+        // +1d, the stale read says "+1d is later than the +0.5d I read, so this is an extension"
+        // and admits it — and the UPDATE, which does take the lock, then cuts a 30-day protection
+        // to a day for an actor holding no override. That is the exact staleness
+        // `freezes-repo.ts`'s `lockFreezeRow` header describes corrupting the audit record, one
+        // consequence worse: there it makes a governance record lie, here it decides a permission.
+        //
+        // A 403 THROWN HERE STILL HAS NO SIDE EFFECTS. `withTenantTx` is one `db.transaction`, so
+        // throwing aborts it and the UPDATE above is rolled back with the row lock — nothing is
+        // committed, no Decision, no audit event, no `syncFreezeObject` publish. The route's
+        // "an `authorize` failure throws a raw 403 with no side effects" note below still holds
+        // exactly as written. Splitting the difference — a cheap stale pre-check plus this one —
+        // was rejected on the repo's most-repeated defect: two copies of one refusal, free to
+        // disagree, where the copy that runs first is the one nobody re-reads.
+        if (direction === "shortened") await assertMayRetractAnothersFreeze(tx, auth, before);
         const decision = await insertDecision(tx, {
           kind: "freeze_window",
           orgId: auth.orgId,

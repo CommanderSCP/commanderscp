@@ -43,9 +43,45 @@ export type Permission =
   | "freeze:write"
   | "freeze:override"
   | "change:emergency"
-  // M6 federation (DESIGN.md §13) — pairing/export/import/hand-fill vs read-only status/self.
+  // M6 federation (DESIGN.md §13) — OPERATING the link (export/import/hand-fill/outposts/resync/
+  // poke) vs read-only status/self. Pairing still requires `federation:write` and ALSO requires
+  // `federation:pair` below, so `federation:write` alone no longer admits a peer.
   | "federation:read"
   | "federation:write"
+  // THE SECOND BAR ON PAIRING — adding a federation peer, or re-keying one (owner ruling D4,
+  // 2026-08-25; docs/proposals/role-model.md §4.1). Demanded by `POST /api/v1/federation/peers`
+  // (`routes/federation.ts`) ON TOP OF the `federation:write` that door already demanded — added,
+  // never substituted, so nothing that could pair before this permission existed can pair without it.
+  //
+  // THE CHAIN IT CLOSES. `POST /federation/peers` takes the peer's Ed25519 `publicKey` VERBATIM from
+  // the request body, and `POST /federation/imports` — same single `federation:write` — hands every
+  // entry of a bundle signed by that key to `applyEntry`, whose `object_upsert` branch resolves ANY
+  // registered `typeId` through `upsertObjectByUrn`. So on `federation:write` alone: pair a peer with
+  // a keypair you generated, import a bundle you signed with it, and you hold estate write authority
+  // having never held `object:write`. Pairing is the only link in that chain that can be gated — a
+  // throw on the IMPORT path wedges a legitimately paired peer's whole signed bundle, and an import
+  // from a legitimately paired peer writing what that peer sent IS the federation contract working.
+  //
+  // WHY NOT JUST `federation:write`. The two are different acts: operating a link that somebody with
+  // standing established, versus establishing one. Only the second decides WHOSE SIGNATURE this
+  // instance will believe, which is the trust anchor for every bundle that arrives afterwards. A
+  // FederationAdmin role — `federation:read` + `federation:write`, `object:write` deliberately
+  // withheld — is being written on exactly that split, so folding the two together would make the
+  // role a lie the day it is bound.
+  //
+  // NARROWS NOTHING LIVE. drizzle/0094 grants it to Administrator and Owner, which drizzle/0012
+  // already makes the only holders of `federation:write`; no principal that can pair today loses the
+  // ability. It is withheld from the future FederationAdmin, which is the whole point.
+  //
+  // SCOPED AT THE ORG ROOT, like every other check on these routes: `federation_peers` rows are an
+  // org-instance-wide concern with no containment scope of their own.
+  //
+  // NOT DEMANDED BY `PATCH /federation/peers/{id}`, which is transport-only: its request schema
+  // (`UpdateFederationPeerRequestSchema`) admits no key material at all, so that door cannot rotate,
+  // supersede or revoke a trust anchor — the capability is absent from the contract, not merely
+  // unused. Editing a peer's endpoint stays `federation:write`; the moment that body could carry a
+  // key, this permission belongs there too.
+  | "federation:pair"
   // The OPT-IN second bar on a containment MOVE (drizzle/0083,
   // docs/proposals/governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18). Demanded
   // at-or-above the moved object AND at-or-above the destination — and ONLY where a rung of the

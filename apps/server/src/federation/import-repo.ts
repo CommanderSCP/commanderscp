@@ -272,7 +272,7 @@ async function applyEntry(
       // promotion's `buildBundleToward` syncs the FIRST promotion's already-minted commander-side
       // artifact object toward a receiver that already minted its OWN row for the same digest at
       // the first import — two different ids, one identity, `objects_artifact_one_per_digest_type`
-      // (0094) refuses the second INSERT, and `upsertObjectByUrn` has no branch that expects it.
+      // (0095) refuses the second INSERT, and `upsertObjectByUrn` has no branch that expects it.
       //
       // A PRE-CHECK, NOT A `catch`, for the identical reason the type-registration guard above is
       // one: a failed INSERT poisons this transaction, and this switch has no try/catch around it.

@@ -188,6 +188,16 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
         .orderBy(auditEvents.seq)
     );
 
+  /** What is ACTUALLY STORED on the campaign object, read off `objects.properties` rather than off a
+   *  response body: a refused write that half-applied would be worse than one that 403s, and only the
+   *  row can say. */
+  const storedDeadlineOf = async (org: TestOrg, campaignObjectId: string): Promise<unknown> => {
+    const row = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.query.objects.findFirst({ where: (t, { eq: eqOp }) => eqOp(t.id, campaignObjectId) })
+    );
+    return (row!.properties as { deadline?: unknown }).deadline;
+  };
+
   /** Seed one manifest declaration — the same two verbs `dependencies/inventory-ingestion.ts` uses
    *  when it re-reads a repository, so these rows are the shape ingestion actually writes. */
   async function declare(
@@ -713,9 +723,187 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
 
     // ...and the deadline is still standing. A refused write that half-applied would be worse than
     // one that 403s.
-    const row = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.query.objects.findFirst({ where: (t, { eq: eqOp }) => eqOp(t.id, campaign.id as string) })
+    expect(await storedDeadlineOf(org, campaign.id as string)).toEqual(deadline);
+  });
+
+  // ===========================================================================================
+  // THE WIDENING GATE — owner ruling 2026-08-25 (decision D1, option b-i)
+  // ===========================================================================================
+
+  /**
+   * THE BYPASS THIS CLOSES, stated as the test's premise rather than left in a commit message.
+   *
+   * `POST /campaigns/{id}/deadline` shipped at plain `object:write` for all three of its acts, while
+   * the NARROWER per-target waiver one route down (`:deadline-override`) demands the Owner-only
+   * `campaign:deadline-override`. Clearing is a STRICT SUPERSET of waiving — every target rather than
+   * named ones, permanently rather than bounded by `until`, with no per-target `object:write` and no
+   * record naming who was excused — so an Operator refused a one-target waiver could simply clear the
+   * whole deadline instead, at a LOWER price. The widening acts therefore now demand that permission
+   * TOO; the tightenings do not.
+   *
+   * ONE SUBJECT, BOTH DIRECTIONS, and the 200s are what make the two 403s mean something: the same
+   * Operator, at the same campaign, in the same test, is admitted for the tightenings and refused for
+   * the widenings. So what it lacks is this permission, not authority over the campaign — the
+   * distinction a Viewer-based case (E4) cannot draw.
+   *
+   * MUTATION-PROVEN: delete the `if (widening) { await authorize(...) }` block from
+   * `routes/campaigns.ts` and this fails at the MOVE — the first of the two widenings it reaches —
+   * with
+   *   `AssertionError: moving the deadline later releases exactly the targets a clear would:
+   *    expected 200 to be 403`.
+   * The CLEAR half of the same mutation is caught in the sibling file, where `A1` is not shadowed by
+   * an earlier assertion: `expected 200 to be 403`, on
+   * `clearing excuses every target permanently — it cannot cost less than waiving one`.
+   */
+  it("E5: an Operator may SET and SHORTEN a deadline, but CLEARING it or MOVING IT LATER takes `campaign:deadline-override`", async () => {
+    const { org, componentIds } = await fixture("deadline-widening");
+    const [component] = componentIds as [string];
+    const campaign = await post(org, "/api/v1/campaigns", {
+      name: "campaign-an-operator-runs",
+      targets: [component]
+    });
+    const campaignId = campaign.id as string;
+    // `object:write` over every object in the org, and drizzle/0088 grants
+    // `campaign:deadline-override` to Owner ALONE — so this subject holds exactly the authority the
+    // verb used to require and nothing more.
+    const operator = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+
+    // A WHOLE-SECOND BASE, so every instant below renders with `.000` and the equal-value case can
+    // restate one of them without its milliseconds.
+    const base = Math.floor(Date.now() / 1000) * 1000;
+    const day = 24 * 60 * 60 * 1000;
+    const far = new Date(base + 90 * day).toISOString();
+    const near = new Date(base + 30 * day).toISOString();
+    const later = new Date(base + 120 * day).toISOString();
+
+    const asOperator = (payload: Record<string, unknown>) =>
+      server.app.inject({
+        method: "POST",
+        url: `/api/v1/campaigns/${campaignId}/deadline`,
+        headers: { authorization: `Bearer ${operator.token}` },
+        payload
+      });
+
+    // ---- SET, where there was none. A TIGHTENING: strictly more targets are withheld afterwards,
+    // so it cannot launder a waiver and it stays at `object:write`. Routine campaign hygiene must not
+    // need an Owner.
+    const set = await asOperator({ deadline: { at: far }, reason: "this migration needs a date" });
+    expect(set.statusCode, set.body).toBe(200);
+
+    // ---- SHORTEN. Likewise a tightening.
+    const shortened = await asOperator({
+      deadline: { at: near },
+      reason: "pulling it in, the vendor shipped early"
+    });
+    expect(shortened.statusCode, shortened.body).toBe(200);
+
+    // ---- RESTATE THE SAME INSTANT, without the milliseconds. NOT a widening: the comparison is on
+    // parsed instants, not on the ISO strings. This is the assertion that fails if anyone rewrites
+    // the check as a string comparison — `...T00:00:00Z` sorts AFTER `...T00:00:00.000Z`, so a
+    // string compare would call an unchanged deadline a slip and 403 an Operator restating it.
+    const restated = await asOperator({
+      deadline: { at: near.replace(".000Z", "Z") },
+      reason: "restating the same instant"
+    });
+    expect(restated.statusCode, restated.body).toBe(200);
+
+    // ---- MOVE LATER => 403. The act a laggard actually wants, and the one gating only the clear
+    // would have left open: "clear it" becomes "move it to 2099".
+    const movedLater = await asOperator({
+      deadline: { at: later },
+      reason: "we would like another three months"
+    });
+    expect(
+      movedLater.statusCode,
+      "moving the deadline later releases exactly the targets a clear would"
+    ).toBe(403);
+
+    // ---- CLEAR => 403. THE INVERSION ITSELF.
+    const cleared = await asOperator({
+      deadline: null,
+      reason: "let us just drop the whole thing"
+    });
+    expect(
+      cleared.statusCode,
+      "clearing the deadline excuses EVERY target permanently — it cannot cost less than waiving ONE"
+    ).toBe(403);
+
+    // ---- NEITHER REFUSAL HALF-APPLIED: what is stored is still the shortened deadline.
+    expect(await storedDeadlineOf(org, campaignId)).toEqual({ at: near.replace(".000Z", "Z") });
+
+    // ---- THE CONTROL, AFTER the refusals: the same subject can still TIGHTEN this very campaign's
+    // deadline. So the two 403s are about the direction of the write and not about the Operator
+    // having lost standing on the campaign somewhere along the way.
+    const shortenedAgain = await asOperator({
+      deadline: { at: new Date(base + 10 * day).toISOString() },
+      reason: "pulling it in again"
+    });
+    expect(shortenedAgain.statusCode, shortenedAgain.body).toBe(200);
+  });
+
+  /**
+   * THE OTHER HALF OF E5, and the reason the gate is an ADDITION rather than a substitution: an Owner
+   * still does all four acts, in one sequence, through the one verb. If the widening check were ever
+   * mis-scoped — checked at a target, say, or at some object the org-root binding does not reach —
+   * this is what would fail, and the failure would be "the exit is welded shut", which is the M25.1
+   * gap the deadline feature shipped its exit to avoid re-opening.
+   */
+  it("E6: an Owner does all four — set, shorten, move LATER and clear — through the same verb", async () => {
+    const { org, componentIds } = await fixture("deadline-widening-owner");
+    const [component] = componentIds as [string];
+    const campaign = await post(org, "/api/v1/campaigns", {
+      name: "campaign-an-owner-runs",
+      targets: [component]
+    });
+    const campaignId = campaign.id as string;
+    // The bootstrap admin is an org-root OWNER (`createTestOrg`), which is where drizzle/0088 put
+    // `campaign:deadline-override`, and `hasPermission` expands the checked scope upward from the
+    // campaign to reach it.
+    const base = Math.floor(Date.now() / 1000) * 1000;
+    const day = 24 * 60 * 60 * 1000;
+
+    const set = await post(org, `/api/v1/campaigns/${campaignId}/deadline`, {
+      deadline: { at: new Date(base + 90 * day).toISOString() },
+      reason: "set"
+    });
+    expect((set.deadline as CampaignDeadline).at).toBe(new Date(base + 90 * day).toISOString());
+
+    const shortened = await post(org, `/api/v1/campaigns/${campaignId}/deadline`, {
+      deadline: { at: new Date(base + 30 * day).toISOString() },
+      reason: "shorten"
+    });
+    expect((shortened.deadline as CampaignDeadline).at).toBe(
+      new Date(base + 30 * day).toISOString()
     );
-    expect((row!.properties as { deadline?: unknown }).deadline).toEqual(deadline);
+
+    const movedLater = await post(org, `/api/v1/campaigns/${campaignId}/deadline`, {
+      deadline: { at: new Date(base + 120 * day).toISOString() },
+      reason: "the migration slipped"
+    });
+    expect((movedLater.deadline as CampaignDeadline).at).toBe(
+      new Date(base + 120 * day).toISOString()
+    );
+
+    const cleared = await post(org, `/api/v1/campaigns/${campaignId}/deadline`, {
+      deadline: null,
+      reason: "abandoning the deadline"
+    });
+    expect(cleared.deadline).toBeNull();
+    expect(await storedDeadlineOf(org, campaignId)).toBeUndefined();
+
+    // ALL FOUR ARE ON THE RECORD, labelled by direction. The Decision's `loosening` flag and the
+    // permission gate are now ONE predicate, so this also asserts the gate's own reading of each act.
+    const rows = await decisionsOfKind(org, campaignId, CAMPAIGN_DEADLINE_SET_DECISION_KIND);
+    expect(
+      rows.map((r) => [
+        (r.inputContext as { action: string }).action,
+        (r.reasonTree as { loosening: boolean }).loosening
+      ])
+    ).toEqual([
+      ["set", false],
+      ["move", false],
+      ["move", true],
+      ["clear", true]
+    ]);
   });
 });

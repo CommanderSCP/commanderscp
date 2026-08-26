@@ -1166,6 +1166,20 @@ export async function prepareApplyChecks(
           actorObjectId,
           properties: entry.target?.properties
         });
+        // AND `properties.deadline` IS NOT CHECKED HERE, DELIBERATELY — stated so the absence reads
+        // as a decision rather than as the omission it used to be. `writePermissionFor("campaign")`
+        // returns plain `object:write` and the line above reads only `targets`, so until 2026-08-25
+        // a manifest that omitted `deadline` (or moved it to 2099) released every target this
+        // campaign was withholding changes from, at exactly the permission the owner ruling of that
+        // date raised the `POST /campaigns/{id}/deadline` route above.
+        //
+        // The refusal lives at `graph/objects-repo.ts`'s `updateObject`, which `executePlanDiff`
+        // writes through — `governance/campaign-deadline-widening-guard.ts`. Not repeated here for
+        // the reason this file's own header gives about the `policy` scope check's siblings: a
+        // per-door copy is how the route-only fix produced this hole in the first place, and the
+        // widening test needs the STORED instant, which `prepareApplyChecks` would have to re-read.
+        // A throw from there aborts inside the route's transaction exactly as an eager throw here
+        // would, so nothing partially applies either way.
       }
     }
   }

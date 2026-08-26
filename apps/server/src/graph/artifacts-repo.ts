@@ -21,7 +21,7 @@ import { appendAuditEvent } from "../audit/audit-repo.js";
 
 export interface ArtifactMintInput {
   /** `'oci' | 'blob'` today (`ArtifactRefSchema`), but read as a plain string here — the registered
-   *  `artifact` type's `artifactType` property is deliberately OPEN (0094's header; ADR-0045 D1),
+   *  `artifact` type's `artifactType` property is deliberately OPEN (0095's header; ADR-0045 D1),
    *  and this module must not narrow what its own caller already widened. */
   artifactType: string;
   digest: string;
@@ -40,7 +40,7 @@ export interface MintArtifactObjectsOptions {
   firstPromotedChangeId?: string;
 }
 
-/** One `artifact` row, keyed by its identity — read straight off the partial unique index 0094
+/** One `artifact` row, keyed by its identity — read straight off the partial unique index 0095
  *  installs, so this is the exact query that index makes an index probe rather than a scan.
  *  EXPORTED for `federation/import-repo.ts`'s ordinary `object_upsert` pre-check — see that
  *  module's "AN ARTIFACT IDENTITY COLLISION COSTS ONE ENTRY" section for why a second reader of
@@ -200,7 +200,7 @@ export interface AdoptArtifactIdentityInput {
  * carried the exporter's copy). That row is an ORDINARY object once minted (D3), so it journals —
  * and the exporter's OWN minted row for the identical `(digest, artifactType)` is ALSO ordinary and
  * WILL eventually arrive here via full-scope sync, independently of any promotion. Two different
- * ids, one identity: `objects_artifact_one_per_digest_type` (0094) refuses the second row outright.
+ * ids, one identity: `objects_artifact_one_per_digest_type` (0095) refuses the second row outright.
  *
  * The prior behavior (`import-repo.ts`'s pre-check) SKIPPED the incoming entry and recorded an
  * `federation.import.entry_dropped` audit event — correct for an accidental one-off collision

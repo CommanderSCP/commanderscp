@@ -15,7 +15,6 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { getOrgRootObjectId } from "../graph/objects-repo.js";
-import { createFreeze } from "./freezes-repo.js";
 import { evaluateGovernanceGate } from "./gate-orchestrator.js";
 import { getSharedCelSandbox } from "./cel-sandbox.js";
 
@@ -129,18 +128,23 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
       OPERATOR_TOKEN
     );
 
+  /** The ORG-tier freeze beside the platform one, authored through the ordinary operator door.
+   *
+   *  M25.9 MOVED THIS OFF THE REPO SEAM. It used to insert the row directly with
+   *  `createdByActorId: org.orgId` — the ORG object, which is nobody's subject — and cases F and I
+   *  below then retract it as `admin`. Owner ruling D1 made lifting a freeze you did not declare
+   *  cost `freeze:override`, so a fixture attributed to the org root turned both of those lifts into
+   *  a 403 for a reason neither case is about. Authored through `POST /api/v1/freezes` as `admin`,
+   *  the creator IS the retracting subject and the lift stays the plain `freeze:write` act the
+   *  cases mean it to be. The platform tier's fixture already went through its own shipped door for
+   *  the same reason (see `platformFreeze`). */
   const orgFreezeAt = (scopeObjectId: string, name: string) =>
-    withTenantTx(server.deps.db, org.orgId, (tx) =>
-      createFreeze(tx, {
-        orgId: org.orgId,
-        scopeObjectId,
-        name,
-        startsAt: new Date(Date.now() - 60_000),
-        endsAt: new Date(Date.now() + 3_600_000),
-        reason: `${name}: org-tier integration fixture`,
-        createdByActorId: org.orgId
-      })
-    );
+    admin.freezes.create({
+      ...openWindow(),
+      scopeObjectId,
+      name,
+      reason: `${name}: org-tier integration fixture`
+    });
 
   const waveGate = (targetObjectIds: string[], changeObjectId: string) =>
     withTenantTx(server.deps.db, org.orgId, (tx) =>

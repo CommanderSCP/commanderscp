@@ -349,9 +349,13 @@ export async function activeFreezesForScopes(
 // a mistyped year leaves a fleet split across two versions with no API exit. The only escapes
 // were `scp change cancel` / `scp change rollback`, which throw the RELEASE away, not the FREEZE.
 //
-// BOTH VERBS ARE `freeze:write` AT THE FREEZE'S OWN SCOPE, and the routes enforce that (this file
-// never authorizes — same split as everywhere else in the repo layer). See `routes/governance.ts`
-// for the reasoning about `freeze:write` vs `freeze:override`.
+// BOTH VERBS TAKE `freeze:write` AT THE FREEZE'S OWN SCOPE, and — M25.9 / owner ruling D1(a-ii),
+// 2026-08-25 — `freeze:override` ON TOP whenever the acting subject is not the freeze's
+// `created_by_actor_id`. That second bar covers the LIFT and a window edit that SHORTENS; extending
+// someone else's freeze ADDS protection and stays `freeze:write`, as does either verb on your own
+// freeze. The routes enforce all of it (this file never authorizes — same split as everywhere else
+// in the repo layer): see `assertMayRetractAnothersFreeze` in `routes/governance.ts`, which is the
+// one place the rule is spelled, and the lift route's docblock for the reasoning.
 // =============================================================================================
 
 export interface LiftFreezeInput {
@@ -417,8 +421,15 @@ export async function liftFreeze(tx: TenantTx, input: LiftFreezeInput): Promise<
 
 /** Which way a window edit moved, for the audit event and the Decision. A SHORTENING is a
  *  governance LOOSENING (the freeze stops protecting sooner); an EXTENSION is a TIGHTENING. Both
- *  need `freeze:write`; they are distinguished because "who made governance weaker, and when" is
- *  the question an audit log is read with.
+ *  need `freeze:write` at the freeze's own scope, and a SHORTENING additionally needs
+ *  `freeze:override` when the freeze was declared by another actor (M25.9 / owner ruling D1(a-ii) —
+ *  ending someone else's protection early is the same act as retracting it). An EXTENSION never
+ *  does: it takes nothing from anyone the freeze covers. THIS LABEL IS THEREFORE AN AUTHORIZATION
+ *  INPUT, not only a record — `routes/governance.ts`'s PATCH handler branches the second bar on it,
+ *  and computes it AFTER `updateFreezeWindow` has taken the row lock, because a direction computed
+ *  from an unlocked read is decidable against a window that is no longer live. Beyond that, the two
+ *  directions are distinguished because "who made governance weaker, and when" is the question an
+ *  audit log is read with.
  *
  *  `"unchanged"` IS A THIRD CASE AND NOT A ROUNDING ERROR. A comparison written as
  *  `endsAt < before.endsAt ? "shortened" : "extended"` — which is how this shipped — folds equality

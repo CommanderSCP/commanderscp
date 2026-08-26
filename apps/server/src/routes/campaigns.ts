@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import type { CampaignDeadlineInput } from "@scp/schemas";
 import {
   CampaignAdoptionResponseSchema,
   CampaignExplainResponseSchema,
@@ -36,7 +37,8 @@ import {
   CAMPAIGN_DEADLINE_OVERRIDE_AUDIT_ACTION,
   CAMPAIGN_DEADLINE_OVERRIDE_DECISION_KIND,
   CAMPAIGN_DEADLINE_SET_AUDIT_ACTION,
-  CAMPAIGN_DEADLINE_SET_DECISION_KIND
+  CAMPAIGN_DEADLINE_SET_DECISION_KIND,
+  resolveCampaignDeadline
 } from "../coordination/campaign-deadline-lock.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
@@ -51,6 +53,67 @@ import { badRequest } from "../errors.js";
  * verb a campaign DOES support beyond propose/list/get/explain is `:rollback`
  * (`coordination/campaign-rollback.ts`), mirroring `POST /changes/{id}/rollback` exactly.
  */
+/**
+ * ================================================================================================
+ * DOES THIS WRITE **WIDEN** THE CAMPAIGN'S DEADLINE — release targets it was withholding from?
+ * ================================================================================================
+ * OWNER RULING 2026-08-25 (decision D1, option b-i). `POST /campaigns/{id}/deadline` shipped with
+ * plain `object:write` behind all three of its acts, and that made the Owner-only per-target waiver
+ * one route down — `campaign:deadline-override`, drizzle/0088, Owner ALONE — bypassable by anyone
+ * who could not get an Owner to sign one. CLEARING THE DEADLINE IS A STRICT SUPERSET OF WAIVING IT:
+ * every target rather than named ones, permanently rather than bounded by `until`, with no per-target
+ * `object:write` and no recorded waiver naming who was excused. An Operator refused a one-target
+ * waiver simply cleared the whole deadline instead, at a lower price. A WIDER VERB CANNOT RUN AT THE
+ * NARROWER VERB'S PERMISSION — the same inversion §4.5 already refused when it declined to check the
+ * waiver at the target, applied one route over.
+ *
+ * WIDENING IS THE PROPERTY, NOT "CLEARING". A move to a LATER instant releases exactly the targets a
+ * clear would, for as long as the new date lasts. Gating only the clear would leave the move as the
+ * next bypass: "clear it" becomes "move it to 2099", and the Decision written afterwards would even
+ * label it `loosening: true` while it ran at `object:write`.
+ *
+ * SETTING A FIRST DEADLINE AND SHORTENING AN EXISTING ONE STAY AT `object:write`, deliberately: both
+ * withhold fan-out from strictly MORE targets, never fewer, so neither can launder a waiver, and
+ * demanding an Owner for them would push routine campaign hygiene into the escalation the ruling
+ * exists to protect.
+ *
+ * AN EQUAL VALUE IS NOT A WIDENING, and the comparison is on parsed INSTANTS rather than on the ISO
+ * strings — `resolveCampaignDeadline` hands back the `Date` it already parsed. The two renderings
+ * that actually reach here differ in their milliseconds (`...T00:00:00Z` vs `...T00:00:00.000Z`,
+ * both accepted by `z.string().datetime()`, which is why the stored form and a hand-typed one can
+ * disagree), and they sort the WRONG WAY as strings: `'Z' > '.'`, so a string comparison would read
+ * a restatement of an unchanged deadline as a slip and demand an Owner for it. Exercised in
+ * `campaign-deadline.integration.test.ts` (E5).
+ *
+ * A CLEAR IS ALWAYS THE ESCALATED ACT, including on a campaign with no readable deadline to clear.
+ * Deliberate: the alternative makes the status code for `deadline: null` depend on what is currently
+ * stored, which both leaks that state to a caller who was refused and gives an operator a rule they
+ * cannot hold in their head ("clearing needs an Owner, unless it would have done nothing").
+ *
+ * A MALFORMED STORED DEADLINE READS AS "NOTHING TO WIDEN" for a set or a move (the caller passes
+ * `null` for `beforeAt` in that case). That is honest rather than lenient: `campaign-reconcile.ts`
+ * fails open on a document it cannot parse — a malformed bag locks nothing — so replacing it excuses
+ * nobody. The clear over it is still escalated, by the flat rule above.
+ */
+function widensCampaignDeadline(
+  beforeAt: Date | null,
+  after: CampaignDeadlineInput | null
+): boolean {
+  // THE CLEAR — the widest act this verb has, and the one the ruling is about.
+  if (after === null) return true;
+  // Nothing readable was being enforced, so nothing can be released by replacing it.
+  if (beforeAt === null) return false;
+  const afterAt = Date.parse(after.at);
+  // FAILS CLOSED ON AN INSTANT NOBODY CAN COMPARE, and that is the opposite of the read-time
+  // predicate's deliberate fail-open one module over — this is a permission check, and an
+  // uncomparable value here would silently answer "not a widening" and hand back the bypass.
+  // Unreachable today: `CampaignDeadlineInputSchema` is `z.string().datetime()`, which this repo's
+  // zod validates the CALENDAR with (measured in `resolveCampaignDeadline`'s doc). It is written
+  // down because that schema is under standing pressure to loosen toward a bare string (§4.1's
+  // federation-wedge argument).
+  return Number.isNaN(afterAt) || afterAt > beforeAt.getTime();
+}
+
 export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
@@ -276,8 +339,17 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
    *
    * M25.6b has since added the FINER exit beside it: `POST /campaigns/{id}/deadline-override`
    * excuses NAMED targets, behind the Owner-only `campaign:deadline-override` at the campaign plus
-   * `object:write` at each target. This verb is still the blunt one — `object:write` alone, all
-   * targets at once — and the two are deliberately different prices for different radii.
+   * `object:write` at each target. This verb is the blunt one — all targets at once — and the two
+   * are deliberately different radii.
+   *
+   * THEY ARE NO LONGER DIFFERENT PRICES IN THE WRONG DIRECTION (owner ruling 2026-08-25, D1 b-i).
+   * As shipped, this verb ran at `object:write` for all three acts while the NARROWER waiver needed
+   * an Owner — so an Operator refused a one-target waiver could clear the whole deadline instead and
+   * excuse everybody, permanently, with no `until` and no per-target check. The WIDENING acts
+   * (clearing, and moving the deadline later) therefore now demand `campaign:deadline-override` TOO,
+   * on top of `object:write`; setting a first deadline and shortening an existing one are tightenings
+   * and stay where they were. `widensCampaignDeadline` at the top of this file carries the full
+   * argument, including why the property is "widening" and not "clearing".
    *
    * THAT IS WHY THIS VERB TAKES `CampaignDeadlineInputSchema` AND NOT `CampaignDeadlineSchema`: the
    * stored document carries `overrides[]`, and accepting them here would let an `object:write`
@@ -286,12 +358,14 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
    * tightening nobody expressed — and a clear takes them with it, because there is then nothing left
    * to be excused from.
    *
-   * `object:write` AT THE CAMPAIGN OBJECT, not at the org root and not at the targets. Not the org
+   * BOTH CHECKS ARE AT THE CAMPAIGN OBJECT, not at the org root and not at the targets. Not the org
    * root, because `hasPermission` expands the checked scope upward anyway, so checking at the
    * campaign admits everyone an org-root check would AND an Administrator bound at the campaign's
    * own containment domain — the person with the context. Not the targets, because the thing being
    * configured is this campaign's policy about its own fan-out, and a target-scoped check would hand
-   * the laggard their own waiver (§4.5's stated inversion, applied one verb over).
+   * the laggard their own waiver (§4.5's stated inversion, applied one verb over) — which is doubly
+   * true of the widening check, since a target-scoped `campaign:deadline-override` would let an Owner
+   * of one laggard clear the deadline for the entire campaign.
    *
    * `reason` IS MANDATORY on all three acts, INCLUDING THE CLEAR — `SetCampaignDeadlineRequestSchema`
    * enforces `min(1)`. Clearing is the LOOSENING, so if any of the three deserves a recorded
@@ -347,6 +421,52 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
           permission: "object:write",
           scopeObjectId: request.params.id
         });
+
+        // ==========================================================================================
+        // THE SECOND BAR ON THE WIDENING ACTS — ADDED, NEVER SUBSTITUTED (owner ruling 2026-08-25)
+        // ==========================================================================================
+        // `object:write` above still governs all three acts of this verb; a WIDENING one
+        // additionally demands the Owner-only `campaign:deadline-override` at the campaign. The
+        // reasoning — why clearing is a strict superset of the per-target waiver below, and why a
+        // move to a later instant is the same act by another name — is on `widensCampaignDeadline`.
+        // This is the established idiom (ADR-0043, drizzle/0088): a second, narrower bar beside the
+        // existing one, never a replacement for it, so nothing an `object:write` holder could do
+        // before becomes unavailable except the acts the ruling names.
+        //
+        // THE PREVIOUS VALUE HAS TO BE READ BEFORE THE PERMISSION IS DECIDED — "later than what?"
+        // has no answer otherwise. Read HERE rather than taken from `setCampaignDeadline`'s return,
+        // because that would decide the authority for a write only after performing it. Same
+        // transaction, and the same scope the check above already admitted the caller at, so this
+        // discloses nothing to anybody `object:write` did not already let read the campaign.
+        //
+        // THIS READ IS NOT LOCKED, AND THE CONSEQUENCE IS BOUNDED RATHER THAN ABSENT — stated,
+        // because `setCampaignDeadline` locks the SAME row `FOR UPDATE` a moment later and a reader
+        // is entitled to ask why this one does not. Under READ COMMITTED a concurrent writer can
+        // SHORTEN the deadline between this read and that lock, and this request's shortening then
+        // lands as a move LATER than the value it actually replaced. What that can produce is
+        // bounded by the value THIS caller already observed: the gate refuses anything later than
+        // `storedDeadline`, so the worst a race yields is a deadline no later than one that stood
+        // moments earlier — a lost update, undoing someone else's shortening, never a deadline
+        // nobody had authority to set. And it is not silent: `setCampaignDeadline` computes
+        // `before` under the lock, so the Decision records the true `from`, `loosening: true`, the
+        // actor and their mandatory reason. Taking the lock here instead would need a locked read
+        // exported from `coordination/campaign-repo.ts`; that is a repo-layer change, and the
+        // exposure above did not earn one.
+        const stored = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.id);
+        const storedDeadline = resolveCampaignDeadline(stored.properties);
+        const widening = widensCampaignDeadline(
+          storedDeadline.outcome === "deadline" ? storedDeadline.at : null,
+          request.body.deadline
+        );
+        if (widening) {
+          await authorize(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            permission: "campaign:deadline-override",
+            scopeObjectId: request.params.id
+          });
+        }
+
         const result = await setCampaignDeadline(tx, {
           orgId: auth.orgId,
           campaignObjectId: request.params.id,
@@ -354,6 +474,7 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
           requestId: request.id,
           deadline: request.body.deadline
         });
+
         const action = result.after === null ? "clear" : result.before === null ? "set" : "move";
         const decision = await insertDecision(tx, {
           orgId: auth.orgId,
@@ -382,9 +503,16 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
             // A clear, and a move to a later instant, both LOOSEN: strictly fewer targets are
             // withheld from afterwards. Labelled from the values rather than from which branch
             // matched, so the label stays true if the branches are ever reordered.
-            loosening:
-              result.after === null ||
-              (result.before !== null && Date.parse(result.after.at) > Date.parse(result.before.at))
+            //
+            // THE SAME PREDICATE THE PERMISSION GATE USED, called rather than restated. They were
+            // two copies of one rule until the 2026-08-25 ruling gave the rule teeth, and copies
+            // drift: the day they disagreed, this record would label an act `loosening` that the
+            // gate had admitted as a tightening — the Decision and the authority check telling two
+            // different stories about the same write, in the one record built to explain it.
+            loosening: widensCampaignDeadline(
+              result.before === null ? null : new Date(result.before.at),
+              result.after
+            )
           }
         });
         // The `freeze.lift` shape: high-severity, mandatory reason, pointing at the Decision that
@@ -443,9 +571,16 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
    * OMITTING `targets` MEANS EVERY TARGET — AND IT IS NOT A SYNONYM FOR CLEARING THE DEADLINE
    * ===========================================================================================
    * The deadline stands; each waiver is recorded per target with its own audit event; `until` still
-   * expires them individually; and the clear verb one route up needs only `object:write` while this
-   * needs the Owner-only permission at the campaign PLUS `object:write` at every single target. The
-   * broad form therefore demands broad standing, which is the property that makes offering it safe.
+   * expires them individually; and this needs the Owner-only permission at the campaign PLUS
+   * `object:write` at every single target. The broad form therefore demands broad standing, which is
+   * the property that makes offering it safe.
+   *
+   * THE CLEAR VERB ONE ROUTE UP NOW DEMANDS THE SAME OWNER-ONLY PERMISSION (owner ruling 2026-08-25,
+   * D1 b-i). It did not when this route shipped, and that was the bypass: clearing excuses every
+   * target permanently with no `until` and no per-target check, so the cheaper door was also the
+   * wider one. It still costs less than the broad waiver here — no `object:write` at each target,
+   * because it configures the campaign's own policy rather than minting a record about components —
+   * but it is no longer reachable by someone an Owner declined to give a one-target waiver.
    *
    * ===========================================================================================
    * ONE TRANSACTION: THE GRAPH WRITE, ONE DECISION, ONE AUDIT EVENT **PER TARGET**

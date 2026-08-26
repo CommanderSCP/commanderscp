@@ -66,18 +66,25 @@ describe("GET /events/stream: the declared route, consumed through the SDK", () 
         describe: `the SSE route to register a listener for org ${org.orgId}`
       });
 
+      // THE SUBJECT MUST BE AN OBJECT THIS CALLER CAN READ. The route admits each frame with an
+      // `object:read` check at `event.subject` (routes/events.ts), so the free-form probe string
+      // this used to publish is now refused before the pool — correctly: it names no object. The
+      // org root IS an object (`objects.id = orgId`) and this caller is the bootstrap admin, bound
+      // Owner there, so the frame is delivered on the strength of a real binding rather than on
+      // the absence of a check. `scp.object.updated` keeps the probe distinguishable from the
+      // org-root creation event `createTestOrg` itself wrote.
       await withTenantTx(server.deps.db, org.orgId, async (tx) => {
         await eventBus.publish(tx, {
           orgId: org.orgId,
-          type: "scp.object.created",
+          type: "scp.object.updated",
           source: "/events/event-stream-route.integration.test",
-          subject: "sse-route-probe",
+          subject: org.orgId,
           data: { probe: true }
         });
       });
 
       const event = await waitUntil(
-        async () => received.find((e) => e.subject === "sse-route-probe"),
+        async () => received.find((e) => e.type === "scp.object.updated"),
         {
           describe: `an SSE frame for org ${org.orgId} through client.events.stream()`,
           timeoutMs: 90_000
@@ -86,7 +93,7 @@ describe("GET /events/stream: the declared route, consumed through the SDK", () 
 
       // The whole envelope survived the round trip and passed the generated per-frame validator —
       // a frame that failed it would have dropped the connection instead of arriving here.
-      expect(event.type).toBe("scp.object.created");
+      expect(event.subject).toBe(org.orgId);
       expect(event.orgId).toBe(org.orgId);
       expect(event.id).toBeTruthy();
     } finally {

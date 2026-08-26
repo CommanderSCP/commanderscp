@@ -1123,30 +1123,58 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   // mirror-image actor for the mirror-image reason.
   // ============================================================================================
 
-  /** `freeze:write` at the org root and `federation:write` NOWHERE — the actor no built-in role can
-   *  express, and the only actor for which the D6 gate is observable at all. */
+  /** Every freeze permission there is — `freeze:write` AND `freeze:override` at the org root — and
+   *  `federation:write` NOWHERE. The actor no built-in role can express, and the only actor for
+   *  which the D6 gate is observable at all.
+   *
+   *  M25.9 ADDED `freeze:override` TO THIS ROLE, and it is what keeps the two D6 cases below
+   *  measuring `federation:write` and nothing else. Owner ruling D1 made lifting or shortening a
+   *  freeze SOMEONE ELSE DECLARED cost `freeze:override`, and the federating fixtures in those cases
+   *  must be authored by `admin` (nobody else here holds `federation:write` to create one). Without
+   *  the grant, both refusals would have a SECOND sufficient cause — and the mutation measurement
+   *  recorded below, "delete both `assertMayEditFederatingFreeze` calls and exactly these two cases
+   *  go red", would quietly stop being true while the cases stayed green. The grant is invisible to
+   *  the create-gate case above, which authorizes no override on any path. */
   async function createFreezeOnlyUser(): Promise<string> {
     // Viewer purely so the harness mints the auth row and a live token; `object:read` grants no
     // write anywhere and is no part of what is under test.
     const user = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
+    await grantOrgDefinedRole(user.objectId, ["freeze:write", "freeze:override"]);
+    return user.token;
+  }
+
+  /** Bind `subjectObjectId` to a FRESH ORG-DEFINED role holding exactly `permissions`, allow, at the
+   *  org root — `roles.org_id` exists for precisely this. It is the only instrument in the suite
+   *  that can express an actor the built-in role table cannot: drizzle/0010 lands `freeze:write` and
+   *  `federation:write` together on Administrator and Owner, and `freeze:override` on Owner alone,
+   *  so every permission-separating case here has to mint its own role or measure a coincidence
+   *  between two grant lists.
+   *
+   *  Bound at the ORG ROOT deliberately: `scopeExpandCte` expands the CHECKED scope upward, so an
+   *  org-root binding satisfies a check made at any object in the org — including the deployment
+   *  targets and services these fixtures scope their freezes to. A case that needs the two spellings
+   *  to DISAGREE must bind below the root instead (the M25.9 scope case at the end of this file). */
+  async function grantOrgDefinedRole(
+    subjectObjectId: string,
+    permissions: string[]
+  ): Promise<void> {
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const roleId = randomUUID();
       await tx.insert(roles).values({
         id: roleId,
         orgId: org.orgId,
-        name: `freeze-only-${randomUUID().slice(0, 8)}`,
-        permissions: ["freeze:write"]
+        name: `adhoc-${randomUUID().slice(0, 8)}`,
+        permissions
       });
       await tx.insert(roleBindings).values({
         id: randomUUID(),
         orgId: org.orgId,
-        subjectId: user.objectId,
+        subjectId: subjectObjectId,
         roleId,
         scopeObjectId: org.orgId,
         effect: "allow"
       });
     });
-    return user.token;
   }
 
   it("D6 door: `federate` is settable through POST /api/v1/freezes and reports the object it minted", async () => {
@@ -1171,7 +1199,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(created.objectId).toBeNull();
   });
 
-  it("D6 gate: `freeze:write` alone CANNOT author a federating freeze — and the same actor CAN author an ordinary one", async () => {
+  it("D6 gate: freeze permissions ALONE cannot author a federating freeze — and the same actor CAN author an ordinary one", async () => {
     const token = await createFreezeOnlyUser();
     const client = new ScpClient({ baseUrl: server.baseUrl, token });
     const body = {
@@ -1210,23 +1238,24 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
   //
   // Keyed on `objectId !== null` — on whether the publish will actually happen — so a
   // non-federating freeze is untouched, which is what the control half of each case measures. The
-  // actor is the same org-defined `freeze:write`-only role the create gate uses, and for the same
-  // reason: no built-in role separates these two permissions.
+  // actor is the same org-defined role the create gate uses, and for the same reason: no built-in
+  // role separates these permissions.
   //
   // MUTATION RUN 2026-08-24, MEASURED. Deleting BOTH `assertMayEditFederatingFreeze(tx, auth, …)`
   // calls from `routes/governance.ts` fails exactly these two cases and nothing else:
   //
-  //   × D6 gate: a `freeze:write`-only actor cannot LIFT a federating freeze …
+  //   × D6 gate: … cannot LIFT a federating freeze …
   //     → lifting a federating freeze retracts it downstream — that needs federation:write:
   //       expected 200 to be 403
-  //   × D6 gate: a `freeze:write`-only actor cannot EXTEND a federating freeze's window …
+  //   × D6 gate: … cannot EXTEND a federating freeze's window …
   //     → expected 200 to be 403
   //
   // The CREATE gate case stayed green through it, which is the point: the create check could not
-  // and did not cover these verbs.
+  // and did not cover these verbs. RE-MEASURED 2026-08-25 after M25.9 added the actor ladder, which
+  // is why `createFreezeOnlyUser` now also grants `freeze:override`: see its docblock.
   // ============================================================================================
 
-  it("D6 gate: a `freeze:write`-only actor cannot LIFT a federating freeze — and CAN lift a non-federating one", async () => {
+  it("D6 gate: an actor with every freeze permission and no `federation:write` cannot LIFT a federating freeze — and CAN lift a non-federating one", async () => {
     const token = await createFreezeOnlyUser();
     const client = new ScpClient({ baseUrl: server.baseUrl, token });
 
@@ -1261,7 +1290,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(lifted.liftedAt).not.toBeNull();
   });
 
-  it("D6 gate: a `freeze:write`-only actor cannot EXTEND a federating freeze's window — and CAN move a non-federating one", async () => {
+  it("D6 gate: an actor with every freeze permission and no `federation:write` cannot EXTEND a federating freeze's window — and CAN move a non-federating one", async () => {
     // THE SHARPER HALF. A lift is at least visibly a retraction; extending `endsAt` grows a block in
     // another security domain and reads, in an audit log, exactly like ordinary window maintenance.
     const token = await createFreezeOnlyUser();
@@ -1793,13 +1822,42 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     const service = await admin.services.create({
       name: `lift-authz-svc-${randomUUID().slice(0, 8)}`
     });
-    const orgWide = await freezeAt(org.orgId, "org-root-freeze");
-    const serviceWide = await freezeAt(service.id, "service-freeze");
 
     const serviceAdmin = await createTestUser(server, org, [
       { role: "Administrator", scope: service.id }
     ]);
     const scoped = new ScpClient({ baseUrl: server.baseUrl, token: serviceAdmin.token });
+
+    // BOTH FIXTURES ARE DECLARED BY `serviceAdmin` THEMSELVES, and after M25.9 that is what keeps
+    // this case about SCOPE and only scope. Owner ruling D1 added a second, independent bar —
+    // `freeze:override` to retract a freeze someone else declared — and if these rows were authored
+    // by `admin` (as they were pre-M25.9) the org-root refusal below would have TWO sufficient
+    // causes. Deleting the scope property (checking at `auth.orgId`) would then leave this case
+    // green on the actor bar alone: a scope test that no longer tests scope. Attributing both
+    // freezes to the acting subject clears the actor bar for both arms, so the only thing left that
+    // can produce the 403 is the scope the permission is demanded at.
+    //
+    // The service freeze goes through the route, since `serviceAdmin` really does hold
+    // `freeze:write` there. The ORG-ROOT one cannot — that is the whole point of the case — so it
+    // is inserted at the repo seam with `createdByActorId` set to the same subject.
+    const orgWide = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      createFreeze(tx, {
+        orgId: org.orgId,
+        scopeObjectId: org.orgId,
+        name: "org-root-freeze",
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 3_600_000),
+        reason: "org-root-freeze: integration fixture",
+        createdByActorId: serviceAdmin.objectId
+      })
+    );
+    const serviceWide = await scoped.freezes.create({
+      scopeObjectId: service.id,
+      name: "service-freeze",
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+      reason: "service-freeze: integration fixture"
+    });
 
     expect(
       await statusOf(scoped.freezes.lift(orgWide.id, { reason: "not mine to lift" })),
@@ -1816,11 +1874,12 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
           reason: "nor to shorten"
         })
       ),
-      "shortening someone else's freeze into the past is a lift by another name — same scope check"
+      "shortening a freeze at a scope you have no authority over is a lift by another name — same scope check"
     ).toBe(403);
 
-    // THE CONTROL. Same actor, same permission, a freeze at their own scope: allowed. Without this
-    // arm the case above would pass just as well against a route that refused everyone.
+    // THE CONTROL. Same actor, same permission, same authorship, a freeze at their own scope:
+    // allowed. Without this arm the case above would pass just as well against a route that refused
+    // everyone.
     const ok = await scoped.freezes.lift(serviceWide.id, {
       reason: "integration: this one IS mine"
     });
@@ -1828,14 +1887,37 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(ok.liftedByActorId).toBe(serviceAdmin.objectId);
   });
 
-  it("M25.1 authz: Viewer and Operator hold no `freeze:write` at all", async () => {
+  it("M25.1 authz: Viewer and Operator hold no `freeze:write` — and `freeze:override` is ADDED to it, never a substitute for it", async () => {
+    // THE M25.9 BAR IS CLEARED FOR THESE SUBJECTS ON PURPOSE, and that grant is the whole reason
+    // this case still measures its own title. `frozen` is declared by `admin` (`freezeAt`), so
+    // after owner ruling D1 a Viewer and an Operator are refused BOTH verbs for two independent
+    // reasons: no `freeze:write`, and not-the-declarer-plus-no-`freeze:override`. Review MEASURED
+    // the consequence on 2026-08-25 — with both `freeze:write` `authorize` blocks deleted from the
+    // `DELETE` and `PATCH` handlers in `routes/governance.ts`, this case stayed GREEN, carried
+    // entirely by a bar it never claimed to be about. Granting the override at the org root retires
+    // the second cause, leaving the missing `freeze:write` as the only thing that can produce a 403.
+    //
+    // RE-MEASURED after the grant, same mutation, both handlers: RED at the FIRST arm, with
+    //   → Viewer does not hold freeze:write …: expected 200 to be 403
+    // (the case aborts there, so the later arms and the closing `liftedAt` check never run). Each
+    // block was then deleted ALONE, and each reds only ITS OWN verb's arm — the `DELETE` block reds
+    // the lift with the message above, the `PATCH` block reds the window edit with the bare
+    // `expected 200 to be 403` of the second arm. That is why both verbs are asserted here: one
+    // arm would leave the other door's check unmeasured.
+    //
+    // It also turns the case into the positive statement its title now makes: an actor holding
+    // `freeze:override` and NOT `freeze:write` is refused, so the M25.9 bar is genuinely stacked on
+    // the older one rather than standing in for it (`routes/governance.ts`, "ADDED, NEVER
+    // SUBSTITUTED"). Nothing else in this file drives that direction — every other override-holder
+    // here holds `freeze:write` too.
     const frozen = await freezeAt(amer.id, "amer-role-freeze");
     for (const role of ["Viewer", "Operator"]) {
       const user = await createTestUser(server, org, [{ role, scope: org.orgId }]);
+      await grantOrgDefinedRole(user.objectId, ["freeze:override"]);
       const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
       expect(
         await statusOf(client.freezes.lift(frozen.id, { reason: `${role} tries to lift` })),
-        `${role} does not hold freeze:write (drizzle/0010 grants it to Administrator and Owner only)`
+        `${role} does not hold freeze:write (drizzle/0010 grants it to Administrator and Owner only), and the freeze:override they were just handed does not stand in for it`
       ).toBe(403);
       expect(
         await statusOf(
@@ -2087,5 +2169,298 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     // The original lift's record is intact, which is the whole reason both refusals exist.
     const row = await freezeRow(frozen.id);
     expect(row.liftReason).toBe("integration: retracted for good");
+  });
+
+  // ============================================================================================
+  // M25.9 — THE ACTOR LADDER. OWNER RULING D1 (2026-08-25), `campaigns-rework.md` §1.7 exit (b).
+  //
+  // `freeze:override` is required to LIFT or SHORTEN a freeze YOU DID NOT DECLARE (compared on
+  // `freezes.created_by_actor_id`); your own stays `freeze:write`. M25.1 shipped the lift on
+  // `freeze:write` alone, which made the WIDER-reaching verb take the NARROWER permission: an
+  // Administrator at service S could retract an Owner's S-scoped freeze FOR EVERYONE with a
+  // permission they already held, where the Owner-only `freeze:override` admits exactly ONE change.
+  //
+  // WHY THE SCOPE CASES ABOVE DID NOT ALREADY COVER THIS: `freeze:write` at S covers every freeze at
+  // S no matter who declared it, so an Administrator and an Owner bound at the same service are
+  // indistinguishable to a scope check. Authorship is the dimension scope cannot express, so every
+  // ACTOR case below puts TWO ACTORS AT THE SAME SCOPE — a one-actor version is green against a
+  // route with no actor comparison in it at all. The one deliberate exception is the final SCOPE
+  // case, whose two actors are bound at different scopes on purpose; see its own header.
+  //
+  // THE STANDING MUTATION GATES FOR THIS BLOCK. `assertMayRetractAnothersFreeze` in
+  // `routes/governance.ts` has TWO parameters that decide the verdict — WHO declared the freeze and
+  // WHICH SCOPE the override is demanded at — and each needs its own gate, because a suite that
+  // measures one of them is not measuring the other. All three were run ALONE against a passing
+  // suite on 2026-08-25 and the named cases are the ones that actually died:
+  //
+  //   1. DELETE the `freeze.createdByActorId === auth.subjectObjectId` early return — every
+  //      retraction then demands the override. This kills the ALLOW-YOUR-OWN arms, NOT the
+  //      refusals: "an Administrator lifts THEIR OWN freeze" and the second case's closing arm
+  //      (bob lifts a freeze he declared) both 403 where they require 200, and the pre-existing
+  //      `M25.1 authz` SCOPE case ("`freeze:write` at a service cannot lift the ORG-ROOT freeze")
+  //      dies with them, on its own closing control arm, for the same reason. RE-RUN 2026-08-25:
+  //      those THREE and nothing else. Named precisely because there are two `M25.1 authz` cases
+  //      and the OTHER one — the Viewer/Operator case — correctly survives: it asserts refusals
+  //      only, and a mutation that makes the route stricter cannot red a refusal. Note what that
+  //      means generally: deleting the guard makes the route STRICTER, so a block asserting only
+  //      refusals would survive it untouched. The own-freeze arms are the half of the ruling this
+  //      mutation measures.
+  //   2. INVERT it to `!==` — the override is then demanded of the DECLARING actor and of nobody
+  //      else, which is the mutation the refusals answer. Five of the six cases here go red:
+  //      "expected 200 to be 403" on the lift refusal, on the PATCH shortening arm, on the
+  //      locked-direction case, and on the scope case's service-Administrator control; the
+  //      own-freeze case 403s. Only "an OWNER holds `freeze:override`" survives, because the Owner
+  //      clears the bar under either spelling.
+  //   3. CHANGE `scopeObjectId: freeze.scopeObjectId` TO `auth.orgId` — the FINAL case ("the
+  //      override is demanded at THE FREEZE'S OWN SCOPE") goes red with a bare `Forbidden`, and it
+  //      is the ONLY case in the file that moves. Nothing else here can see that parameter: every
+  //      other actor in this block is bound at the ORG ROOT, where the two spellings name the same
+  //      scope, so all five of the others pass under EITHER. That gate was added after review found
+  //      the second parameter argued at length in a route comment and pinned by nothing.
+  // ============================================================================================
+
+  /** An Administrator at the ORG ROOT: `freeze:write` everywhere in the org, and `freeze:override`
+   *  nowhere (drizzle/0010 grants the override to Owner alone). Two of these, at the same scope, is
+   *  the whole fixture for the ACTOR cases — those are about WHO DECLARED IT, not about where
+   *  anyone is bound, and holding the scope constant is what leaves authorship as the only
+   *  difference. The final case in this block is the SCOPE one and mints its own service-bound
+   *  actors, because org-root bindings are exactly what makes the scope parameter invisible. */
+  async function orgAdministrator(): Promise<{ client: ScpClient; objectId: string }> {
+    const user = await createTestUser(server, org, [{ role: "Administrator", scope: org.orgId }]);
+    return {
+      client: new ScpClient({ baseUrl: server.baseUrl, token: user.token }),
+      objectId: user.objectId
+    };
+  }
+
+  /** An Owner at the org root — the one built-in role that holds `freeze:override` (drizzle/0010). */
+  async function orgOwner(): Promise<{ client: ScpClient; objectId: string }> {
+    const user = await createTestUser(server, org, [{ role: "Owner", scope: org.orgId }]);
+    return {
+      client: new ScpClient({ baseUrl: server.baseUrl, token: user.token }),
+      objectId: user.objectId
+    };
+  }
+
+  const declareFreeze = (client: ScpClient, scopeObjectId: string, name: string, endsAt?: Date) =>
+    client.freezes.create({
+      scopeObjectId,
+      name,
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: (endsAt ?? new Date(Date.now() + 3_600_000)).toISOString(),
+      reason: `${name}: M25.9 ladder fixture`
+    });
+
+  it("M25.9 ladder: an Administrator lifts THEIR OWN freeze with `freeze:write` alone", async () => {
+    // THE HALF THE RULING PROTECTS. `freeze:write` is what declares a freeze, so if retracting one
+    // needed the Owner-only override this actor could author a governance object they cannot remove
+    // — the entrance-with-no-exit M25.1 exists to close, rebuilt one permission tier up. A mistyped
+    // `endsAt` must stay undoable by the person who typed it.
+    const alice = await orgAdministrator();
+    const mine = await declareFreeze(alice.client, amer.id, "m259-own-freeze");
+    expect(mine.createdByActorId, "the premise: the row records THIS subject as its author").toBe(
+      alice.objectId
+    );
+
+    const lifted = await alice.client.freezes.lift(mine.id, {
+      reason: "m25.9: my own mistake, my own exit"
+    });
+    expect(lifted.liftedAt).not.toBeNull();
+    expect(lifted.liftedByActorId).toBe(alice.objectId);
+  });
+
+  it("M25.9 ladder: an Administrator CANNOT lift a freeze ANOTHER actor declared — that is the Owner-only `freeze:override`", async () => {
+    // THE DEFECT, in one call. Both actors are Administrators at the SAME scope, so `freeze:write`
+    // and every scope expansion above it are identical between them: the ONLY difference the route
+    // can see is `created_by_actor_id`. Pre-M25.9 this returned 200.
+    const alice = await orgAdministrator();
+    const bob = await orgAdministrator();
+    const hers = await declareFreeze(alice.client, amer.id, "m259-not-yours");
+
+    expect(
+      await statusOf(bob.client.freezes.lift(hers.id, { reason: "m25.9: not mine to retract" })),
+      "retracting someone else's protection for everyone it covers costs `freeze:override`, the same permission that admits one change past it"
+    ).toBe(403);
+    // A REFUSAL REACHED AFTER THE WRITE IS NOT A REFUSAL.
+    expect((await freezeRow(hers.id)).liftedAt).toBeNull();
+
+    // AND BOB IS NOT SIMPLY POWERLESS — the same token, the same scope, a freeze he declared
+    // himself: allowed. Without this arm the refusal above passes just as well against a route that
+    // stopped issuing lifts entirely, or against a `createTestUser` that granted nothing.
+    const his = await declareFreeze(bob.client, apac.id, "m259-bobs-own");
+    expect(
+      (await bob.client.freezes.lift(his.id, { reason: "m25.9: this one is mine" })).liftedAt
+    ).not.toBeNull();
+  });
+
+  it("M25.9 ladder: an OWNER holds `freeze:override` and lifts another actor's freeze", async () => {
+    // The permission the refusal above names must actually be sufficient, or the ruling has made
+    // someone else's freeze unliftable by anyone — a worse entrance-with-no-exit than the one M25.1
+    // closed, since the declaring actor could have left the org.
+    const alice = await orgAdministrator();
+    const owner = await orgOwner();
+    const hers = await declareFreeze(alice.client, emea.id, "m259-owner-can");
+
+    const lifted = await owner.client.freezes.lift(hers.id, {
+      reason: "m25.9: incident bridge — retracting a colleague's freeze"
+    });
+    expect(lifted.liftedAt).not.toBeNull();
+    // WHO retracted it is recorded as the OWNER, not as the declaring actor: the audit trail's whole
+    // job here is to say that these were two different people.
+    expect(lifted.liftedByActorId).toBe(owner.objectId);
+    expect(lifted.createdByActorId).toBe(alice.objectId);
+  });
+
+  it("M25.9 ladder: SHORTENING another actor's freeze needs `freeze:override`; EXTENDING it does not", async () => {
+    // THE THREE-WAY SPLIT, one freeze, one actor, three directions — the case that would be green
+    // against a route which simply applied the new bar to the whole PATCH verb, and equally green
+    // against one that applied it to none of it.
+    const alice = await orgAdministrator();
+    const bob = await orgAdministrator();
+    const hers = await declareFreeze(alice.client, govcloud.id, "m259-window-ladder");
+    const declaredEndsAt = (await freezeRow(hers.id)).endsAt;
+
+    // (a) SHORTENING — protection ends early for everyone covered. Same act as a lift, different
+    // record; gating only the DELETE would leave the retraction one PATCH away.
+    expect(
+      await statusOf(
+        bob.client.freezes.updateWindow(hers.id, {
+          endsAt: new Date(Date.now() + 60_000).toISOString(),
+          reason: "m25.9: cutting someone else's window short"
+        })
+      ),
+      "shortening someone else's freeze retracts their protection early — the same bar as a lift"
+    ).toBe(403);
+    expect(
+      (await freezeRow(hers.id)).endsAt.toISOString(),
+      "and the window is untouched: a 403 raised after the UPDATE must roll the UPDATE back with it"
+    ).toBe(declaredEndsAt.toISOString());
+
+    // (b) EXTENDING — ADDS protection. Nothing is taken from anyone the freeze covers, so the
+    // Owner-only bar would be pure friction; `freeze:write` alone is the rule and this arm pins it.
+    const extended = await bob.client.freezes.updateWindow(hers.id, {
+      endsAt: new Date(Date.now() + 7_200_000).toISOString(),
+      reason: "m25.9: the incident is not over — extending a colleague's freeze"
+    });
+    expect(new Date(extended.endsAt).getTime()).toBeGreaterThan(declaredEndsAt.getTime());
+
+    // (c) UNCHANGED — re-saving a form without touching the field. Nothing was weakened, so nothing
+    // extra is demanded; a rule written as `direction !== "extended"` fails exactly here.
+    const same = await bob.client.freezes.updateWindow(hers.id, {
+      endsAt: extended.endsAt,
+      reason: "m25.9: saving the form without touching the field"
+    });
+    expect(same.endsAt).toBe(extended.endsAt);
+
+    // (d) AND THE OWNER CAN SHORTEN IT, or (a) would be satisfied by a window nobody can ever cut.
+    const owner = await orgOwner();
+    const shortened = await owner.client.freezes.updateWindow(hers.id, {
+      endsAt: new Date(Date.now() + 60_000).toISOString(),
+      reason: "m25.9: owner cuts it short"
+    });
+    expect(new Date(shortened.endsAt).getTime()).toBeLessThan(new Date(extended.endsAt).getTime());
+  });
+
+  it("M25.9 ladder: the direction is judged against the window ACTUALLY IN FORCE, not the route's earlier unlocked read", async () => {
+    // WHY THE CHECK SITS AFTER `updateFreezeWindow` AND NOT BEFORE IT, made observable. `direction`
+    // is the authorization INPUT for the shortening bar, and it is only true against the row under
+    // `lockFreezeRow`'s `FOR UPDATE`. The handler's earlier `getFreeze` is UNLOCKED, so under READ
+    // COMMITTED it returns the pre-tx1 committed value no matter when tx2 lands — the same staleness
+    // `freezes-repo.ts`'s header describes corrupting the audit record, one consequence worse:
+    // there it makes a governance record lie, here it decides a permission.
+    //
+    // The interleaving is deterministic, not hoped for (the sibling overlapping-edit case above):
+    // tx1 holds the row lock while the HTTP PATCH is in flight, and the request is DEMONSTRABLY
+    // parked on that lock before tx1 commits.
+    const alice = await orgAdministrator();
+    const bob = await orgAdministrator();
+    const ORIGINAL = new Date(Date.now() + 3_600_000);
+    const EXTENDED = new Date(Date.now() + 3 * 3_600_000);
+    // LATER than what bob's request will read (ORIGINAL) and EARLIER than what is really in force
+    // (EXTENDED): the one value that a stale check calls an extension and a locked check calls a
+    // shortening. Pre-check the unlocked row and bob cuts two hours off a freeze he cannot lift.
+    const MIDDLE = new Date(Date.now() + 2 * 3_600_000);
+    const hers = await declareFreeze(alice.client, amer.id, "m259-stale-direction", ORIGINAL);
+
+    let refused!: Promise<unknown>;
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      await updateFreezeWindow(tx, {
+        orgId: org.orgId,
+        id: hers.id,
+        endsAt: EXTENDED,
+        reason: "m25.9: alice extends her own freeze",
+        actorObjectId: alice.objectId
+      });
+      refused = bob.client.freezes.updateWindow(hers.id, {
+        endsAt: MIDDLE.toISOString(),
+        reason: "m25.9: an extension against a window that is no longer in force"
+      });
+      // POSITIVE SIGNAL, not a sleep: bob's request has issued its `SELECT ... FOR UPDATE` and is
+      // parked behind this transaction. Without it this case could be green having raced nothing.
+      await waitForBlockedBackend(server.deps.db);
+    });
+
+    expect(
+      await statusOf(refused),
+      "MIDDLE is later than the stale read and earlier than the committed window — only a check made against the LOCKED row can tell that this shortens someone else's freeze"
+    ).toBe(403);
+    expect(
+      (await freezeRow(hers.id)).endsAt.toISOString(),
+      "and the protection that was actually in force is still standing"
+    ).toBe(EXTENDED.toISOString());
+  }, 60_000);
+
+  it("M25.9 ladder: the override is demanded at THE FREEZE'S OWN SCOPE — a SERVICE-bound Owner retracts a colleague's service freeze", async () => {
+    // THE SECOND PARAMETER OF THE NEW BAR, and the ONLY case in this file that can see it.
+    // `assertMayRetractAnothersFreeze` demands `freeze:override` at `freeze.scopeObjectId`; every
+    // other actor in this block is bound at the ORG ROOT, where `freeze.scopeObjectId` and
+    // `auth.orgId` are interchangeable — an org-root Owner clears the check under either spelling
+    // and an org-root Administrator clears it under neither, so those cases are green against BOTH.
+    // `scopeExpandCte` expands the CHECKED scope UPWARD, so a binding at service S is reached by a
+    // check at S and NOT by a check at the org root: binding an actor BELOW the root is what makes
+    // the two spellings disagree, and it takes an ALLOW arm to notice, because the org-root
+    // spelling is strictly narrower and therefore fails closed rather than open.
+    //
+    // This is also the behaviour the helper's docblock states in prose — "an Owner bound at service
+    // S can retract an S-scoped freeze a colleague declared" — which was argued and unmeasured
+    // until this case existed. See mutation gate 2 in this block's header.
+    const service = await admin.services.create({
+      name: `m259-scope-svc-${randomUUID().slice(0, 8)}`
+    });
+    const alice = await orgAdministrator();
+    const hers = await declareFreeze(alice.client, service.id, "m259-service-scoped");
+    expect(hers.scopeObjectId, "the premise: the freeze is scoped BELOW the org root").toBe(
+      service.id
+    );
+
+    // THE CONTROL, and it runs first: an ADMINISTRATOR bound at the SAME service — identical scope
+    // to the Owner below, `freeze:write` at the freeze's scope, no `freeze:override` anywhere — is
+    // refused. Without it the success below would be equally green against a route that had dropped
+    // the actor comparison, or one that admitted anyone bound at the freeze's scope.
+    const svcAdmin = await createTestUser(server, org, [
+      { role: "Administrator", scope: service.id }
+    ]);
+    const svcAdminClient = new ScpClient({ baseUrl: server.baseUrl, token: svcAdmin.token });
+    expect(
+      await statusOf(
+        svcAdminClient.freezes.lift(hers.id, { reason: "m25.9: service admin, no override" })
+      ),
+      "being bound AT the freeze's scope is `freeze:write`; retracting a colleague's freeze still costs `freeze:override`"
+    ).toBe(403);
+    expect((await freezeRow(hers.id)).liftedAt).toBeNull();
+
+    // THE CASE. An OWNER at the SERVICE: `freeze:override` at S and at nothing above S. Demanding
+    // the override at `auth.orgId` would refuse this actor — not a hole (it is strictly narrower),
+    // but it would leave a service Owner unable to retract a colleague's freeze inside their own
+    // service, and would make this bar's reach disagree with the reach of the `freeze:write` check
+    // it is stacked on.
+    const svcOwner = await createTestUser(server, org, [{ role: "Owner", scope: service.id }]);
+    const svcOwnerClient = new ScpClient({ baseUrl: server.baseUrl, token: svcOwner.token });
+    const lifted = await svcOwnerClient.freezes.lift(hers.id, {
+      reason: "m25.9: my service, my colleague's freeze"
+    });
+    expect(lifted.liftedAt).not.toBeNull();
+    expect(lifted.liftedByActorId).toBe(svcOwner.objectId);
+    expect(lifted.createdByActorId).toBe(alice.objectId);
   });
 });
