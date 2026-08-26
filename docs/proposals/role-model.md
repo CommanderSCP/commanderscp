@@ -405,10 +405,15 @@ work, before any role increment.** They are exploitable now and independent of t
 
 | # | Increment | Notes |
 |---|---|---|
-| **0a** | **SSE per-event `object:read` at fan-out** (§1.3a) | Moved up from step 7 — ungated today |
-| **0b** | **Campaign-deadline inversion** — demand `campaign:deadline-override` on clear-or-move-later (§1.3b) | Ruling D1(b-i) |
-| **0c** | **Freeze-lift inversion** — demand `freeze:override` to lift/shorten a freeze you did not declare (§1.3c) | Ruling D1(a-ii); supersedes the in-code open note |
-| **0d** | **Hand-fill door** — demand `object:write` at the resolved containment scope (§4.1) | Blocks FederationAdmin until fixed |
+| **0a** ✅ | **SSE per-event `object:read` at fan-out** (§1.3a), on an isolated `max:4` pool | Null subject fails closed; one allowlisted resync type, rebuilt with an empty `data` |
+| **0b** ✅ | **Campaign-deadline inversion** (§1.3b) — at the `updateObject` choke point, **and** as a delta over `deadline.overrides[]` | Ruling D1(b-i). The route-only fix was bypassable through IaC apply *twice* |
+| **0c** ✅ | **Freeze-lift inversion** (§1.3c) — `freeze:override` to lift or shorten a freeze you did not declare | Ruling D1(a-ii), shipped as **M25.9**; supersedes the in-code open note |
+| **0d** ✅ | **Hand-fill *and publish* doors** — `object:write` at the resolved scope (§4.1) | Publish had the identical property and was found by census, not by report |
+| **0e** ✅ | **`federation:pair`** — gates adding or re-keying a peer (§4.1), migration **0094** | Ruling D4. Narrows nothing today; makes FederationAdmin's invariant true |
+
+All of step 0 is built, mutation-proven and pushed on branch
+`permission-review-security-fixes` — 9 commits, `pnpm check` green, 199 tests passing across the 11
+affected suites. Steps 1–10 below are the role work proper and are **not** started.
 | 1 | **DDL hardening** — partial unique index `roles(name) WHERE org_id IS NULL`; UNIQUE on `role_bindings`; `CHECK (effect IN ('allow','deny'))`; `GRANT DELETE ON role_bindings TO scp_app`; add `roles.bindable_at`. | Must handle pre-existing duplicates — see §4.4 |
 | 2 | **Mutation-proven RBAC-across-assembly test** — a SERVICE binding reaches a component under an assembly. Prove it by deleting route 2's `contains` join and watching it fail. | Passes today; pure addition |
 | 2.5 | **Re-scope the read surface** (§4.2) | **New — blocker fix** |
