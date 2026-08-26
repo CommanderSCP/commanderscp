@@ -252,6 +252,32 @@ export async function listExecutorBindingsForTargets(
   return rows.map(toRow);
 }
 
+/**
+ * Resolves the bound target's `domainLocal` flag for the `subjectDomainLocal` argument every audit
+ * append below needs (ADR-0031 S2 / M20.2) — one cheap `objects` read by id, keyed exactly the way
+ * every write door here already keys its own row (`orgId`, `targetObjectId`). None of the four
+ * binding-identity write doors in this module load the target OBJECT for any other reason (they only
+ * ever touch `executor_bindings`, itself keyed by the target's id), so this is resolved HERE, at the
+ * one place the audit call already lives, rather than threaded as a parameter through every route and
+ * `iac/plans-repo.ts` call site — the same reasoning `UpsertExecutorBindingInput.actorObjectId`'s doc
+ * comment gives for centralizing the audit write itself: one door covered once, not five that could
+ * drift. Missing target (should not happen inside a transaction that is itself mutating that target's
+ * binding) reads `false` — the pre-existing behavior of journaling unconditionally — rather than
+ * inventing a new failure mode for an edge case that was never previously distinguished.
+ */
+async function targetDomainLocal(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string
+): Promise<boolean> {
+  const rows = await tx
+    .select({ domainLocal: objects.domainLocal })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), eq(objects.id, targetObjectId)))
+    .limit(1);
+  return rows[0]?.domainLocal ?? false;
+}
+
 export interface UpsertExecutorBindingInput {
   orgId: string;
   targetObjectId: string;
@@ -340,7 +366,10 @@ export async function upsertExecutorBinding(
     action: "executor.binding.put",
     subjectId: input.targetObjectId,
     reason: `${existing ? "updated" : "created"} '${row.type}' binding on '${input.targetObjectId}' -> plugin '${row.pluginModule}'${row.executionSystemId ? ` (execution-system '${row.executionSystemId}')` : ""}`,
-    requestId: input.requestId
+    requestId: input.requestId,
+    // ADR-0031 S2 / M20.2 — a domain-local target's binding lifecycle must not journal its id to
+    // peers, same as every other audited mutation of it.
+    subjectDomainLocal: await targetDomainLocal(tx, input.orgId, input.targetObjectId)
   });
   return row;
 }
@@ -387,6 +416,7 @@ export async function deleteExecutorBinding(
     action: "executor.binding.delete",
     subjectId: targetObjectId,
     reason: `deleted '${row.type}' binding on '${targetObjectId}' -> plugin '${row.pluginModule}'`,
+    subjectDomainLocal: await targetDomainLocal(tx, orgId, targetObjectId),
     requestId
   });
   return row;
@@ -438,6 +468,7 @@ export async function setExecutorBindingType(
     action: "executor.binding.retype",
     subjectId: targetObjectId,
     reason: `relabelled binding on '${targetObjectId}' from '${fromType}' to '${toType}' -> plugin '${updated.pluginModule}'`,
+    subjectDomainLocal: await targetDomainLocal(tx, orgId, targetObjectId),
     requestId
   });
   return updated;
@@ -450,30 +481,32 @@ export async function setExecutorBindingType(
  * auto-collision); this still catches a concurrent racer at `UNIQUE(org,target,type)` and surfaces
  * the same one-per-Type 409 rather than a raw unique-violation.
  *
- * NOT AUDITED THIS ROUND, DELIBERATELY LEFT SO, NOT SILENTLY (the 2026-08-25 binding-lifecycle
- * audit census's one open item): this is the FOURTH binding-identity write door, reached only from
- * `component-merge-repo.ts`'s `mergeComponents`. It is not being wired here because the gap it sits
- * in is bigger than this function — `POST /v1/components/{id}/merge` (routes/components.ts) writes
- * NO audit event at all today, for the merge OR any of its side effects (this repoint among them,
- * plus every relationship/placement the merge moves). Auditing the repoint alone would produce one
- * correct-looking row while the merge that caused it stays invisible beside it, which is worse than
- * leaving both silent — a reader would reasonably assume "audited" covers the whole action. Fixing
- * `mergeComponents`'s audit coverage is its own increment, not a rider on this one.
+ * AUDITED (`executor.binding.repoint`) — CORRECTING THE PREMISE THE PRIOR VERSION OF THIS COMMENT
+ * EXCUSED ITSELF ON. That version left this door silent on the claim that "`POST
+ * /v1/components/{id}/merge` writes NO audit event at all today, for the merge OR any of its side
+ * effects". That premise is false: `mergeComponents` (component-merge-repo.ts) already
+ * soft-deletes the loser through `deleteObject`, which writes a `component.delete` audit event in
+ * the SAME transaction, and records the merge itself as a `transition` Decision
+ * (`insertDecision`). The merge IS audit-visible. The binding REPOINT was the one genuinely
+ * invisible side effect — this is the FOURTH binding-identity write door (PUT/DELETE/PATCH being
+ * the other three, all audited), reached only from `mergeComponents`, and closing it beats
+ * excusing it now that the excuse it was left open on does not hold.
  */
 export async function repointExecutorBindingTarget(
   tx: TenantTx,
   orgId: string,
   bindingId: string,
-  newTargetObjectId: string
+  newTargetObjectId: string,
+  actorObjectId: string,
+  requestId: string
 ): Promise<ExecutorBindingRow> {
+  let row: typeof executorBindings.$inferSelect | undefined;
   try {
-    const [row] = await tx
+    [row] = await tx
       .update(executorBindings)
       .set({ targetObjectId: newTargetObjectId, updatedAt: new Date() })
       .where(and(eq(executorBindings.orgId, orgId), eq(executorBindings.id, bindingId)))
       .returning();
-    if (!row) throw notFound(`executor binding '${bindingId}' not found`);
-    return toRow(row);
   } catch (err) {
     if (isUniqueViolation(err, "executor_bindings_org_target_type_key")) {
       throw conflict(
@@ -482,6 +515,18 @@ export async function repointExecutorBindingTarget(
     }
     throw err;
   }
+  if (!row) throw notFound(`executor binding '${bindingId}' not found`);
+  const updated = toRow(row);
+  await appendAuditEvent(tx, {
+    orgId,
+    actorId: actorObjectId,
+    action: "executor.binding.repoint",
+    subjectId: newTargetObjectId,
+    reason: `re-pointed '${updated.type}' binding '${bindingId}' onto '${newTargetObjectId}' -> plugin '${updated.pluginModule}'`,
+    subjectDomainLocal: await targetDomainLocal(tx, orgId, newTargetObjectId),
+    requestId
+  });
+  return updated;
 }
 
 /**

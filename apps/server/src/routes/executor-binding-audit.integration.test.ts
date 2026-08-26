@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { syncJournal } from "../db/schema.js";
 import {
+  createOrphanComponent,
   createTestComponent,
   createTestOrg,
   listenTestServer,
-  type ListeningTestServer
+  type ListeningTestServer,
+  type TestOrg
 } from "../test-support/harness.js";
 
 /**
@@ -17,11 +22,24 @@ import {
  * apply-time create/update/prune, and `POST /discovery/accept`'s binding import) — the audit call
  * lives THERE, not duplicated at each call site, so this file exercises it through the routes and
  * trusts the single shared implementation for the non-route doors (a coverage note in
- * `executor-bindings-repo.ts`'s module comments; `component-merge-repo.ts`'s `repointExecutorBindingTarget`
- * is the one write door left deliberately unaudited, and says why beside it).
+ * `executor-bindings-repo.ts`'s module comments).
+ *
+ * `component-merge-repo.ts`'s `repointExecutorBindingTarget` — the FOURTH binding-identity write
+ * door — used to be left deliberately unaudited on the premise that the merge that reaches it wrote
+ * no audit event of its own either, so auditing the repoint alone would look like partial coverage.
+ * That premise was false (`mergeComponents` already writes `component.delete` for the loser via
+ * `deleteObject`, plus a `transition` Decision for the merge itself) and is now corrected; the
+ * repoint is audited too (`executor.binding.repoint`) — see the merge describe block below.
  *
  * `reason` is asserted to carry the Type and plugin module, and NEVER the config/secretRefs payload
  * a binding may carry (charter: audit rows are read by humans and must not become a secrets leak).
+ *
+ * ALSO EXERCISED HERE: `subjectDomainLocal` (ADR-0031 S2 / M20.2) on every one of these events — a
+ * domain-local target's binding lifecycle must write the LOCAL audit row same as any other, but
+ * withhold the `audit_segment` journal entry that would otherwise carry its id to a peer. Checked
+ * directly against `sync_journal` (single-domain — the withholding happens at `appendAuditEvent`,
+ * before export ever runs, so a real cross-domain round trip would only be re-proving M20.2's own
+ * test, not this gap).
  */
 describe("executor-binding lifecycle audit events", () => {
   let server: ListeningTestServer;
@@ -191,5 +209,114 @@ describe("executor-binding lifecycle audit events", () => {
     );
     expect(events).toHaveLength(1);
     expect(events[0]!.reason).toContain("fake-executor");
+  });
+
+  /** Every `audit_segment` journal row whose payload names `subjectId` AND an `executor.binding.*`
+   *  action — the withholding check has to read the PAYLOAD, not just count rows, since an
+   *  unrelated audit_segment naming the SAME subject (the component's own `component.create`,
+   *  which journals ahead of any binding write) would otherwise inflate a "shared" control's count
+   *  and make it indistinguishable from a real leak. */
+  async function auditSegmentJournalRowsNaming(org: TestOrg, subjectId: string) {
+    const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ entryKind: syncJournal.entryKind, payload: syncJournal.payload })
+        .from(syncJournal)
+        .where(eq(syncJournal.orgId, org.orgId))
+    );
+    return rows.filter((r) => {
+      if (r.entryKind !== "audit_segment") return false;
+      const payload = r.payload as { subjectId?: unknown; action?: unknown };
+      return (
+        payload.subjectId === subjectId &&
+        typeof payload.action === "string" &&
+        payload.action.startsWith("executor.binding.")
+      );
+    });
+  }
+
+  it("a domainLocal component's binding put+delete write audit events but withhold their audit_segment from the sync journal", async () => {
+    const org = await createTestOrg(server, "binding-audit-domainlocal");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const component = await createTestComponent(admin, {
+      name: `comp-local-${randomUUID().slice(0, 8)}`,
+      domainLocal: true
+    });
+    expect(component.domainLocal).toBe(true);
+
+    await admin.executors.putBinding(component.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`
+    });
+    await admin.executors.deleteBinding(component.id);
+
+    // The LOCAL audit trail is complete either way — locality withholds what LEAVES, not what this
+    // domain records about itself.
+    const page = await admin.auditEvents.list({ limit: 200 });
+    expect(
+      page.items.filter((e) => e.action === "executor.binding.put" && e.subjectId === component.id)
+    ).toHaveLength(1);
+    expect(
+      page.items.filter(
+        (e) => e.action === "executor.binding.delete" && e.subjectId === component.id
+      )
+    ).toHaveLength(1);
+
+    // But NEITHER wrote an audit_segment journal entry naming the domain-local component's id.
+    expect(await auditSegmentJournalRowsNaming(org, component.id)).toHaveLength(0);
+  });
+
+  it("a SHARED (non-domainLocal) component's binding put+delete DO journal their audit_segment — the negative control", async () => {
+    const org = await createTestOrg(server, "binding-audit-shared-control");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const component = await createTestComponent(admin, {
+      name: `comp-shared-${randomUUID().slice(0, 8)}`
+    });
+    expect(component.domainLocal).toBe(false);
+
+    await admin.executors.putBinding(component.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`
+    });
+    await admin.executors.deleteBinding(component.id);
+
+    // Proves the withholding test above is not merely "nothing ever journals" — a shared subject's
+    // two binding events both cross into the journal, same as any other audited mutation of it.
+    expect(await auditSegmentJournalRowsNaming(org, component.id)).toHaveLength(2);
+  });
+});
+
+describe("executor-binding lifecycle audit events: component merge's repoint (the fourth door)", () => {
+  let server: ListeningTestServer;
+
+  beforeAll(async () => {
+    server = await listenTestServer();
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("merging a component that carries a binding writes exactly one executor.binding.repoint event, named onto the SURVIVOR", async () => {
+    const org = await createTestOrg(server, "binding-audit-merge-repoint");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    // ORPHAN, not `createTestComponent` — `mergeComponents` requires a binding-only loser with no
+    // live relationships, and `createTestComponent` gives it a `contains` edge from a throwaway
+    // service (`components.integration.test.ts`'s own merge describe block uses the same helper).
+    const survivor = await createOrphanComponent(admin, `surv-${randomUUID().slice(0, 8)}`);
+    const loser = await createOrphanComponent(admin, `lose-${randomUUID().slice(0, 8)}`);
+    await admin.executors.putBinding(loser.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`
+    });
+
+    const result = await admin.components.merge(survivor.id, loser.id);
+    expect(result.movedBindingTypes).toEqual(["configuration"]);
+
+    const page = await admin.auditEvents.list({ limit: 200 });
+    const events = page.items.filter((e) => e.action === "executor.binding.repoint");
+    expect(events).toHaveLength(1);
+    expect(events[0]!.subjectId).toBe(survivor.id);
+    expect(events[0]!.reason).toContain("fake-executor");
+    expect(events[0]!.reason).toContain("configuration");
   });
 });
