@@ -515,7 +515,9 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
             targetObjectId: component.id,
             pluginModule: "github",
             pluginInstanceId: `gh-${uuidv7()}`,
-            config: { appId: "1", installationId: "2", owner: "acme", repo: "backfill" }
+            config: { appId: "1", installationId: "2", owner: "acme", repo: "backfill" },
+            actorObjectId: org.orgId,
+            requestId: "test-setup"
           });
         });
         await subscriptionPolicy(`backfill-enable-${uuidv7()}`, component.id, {
@@ -583,7 +585,9 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
             targetObjectId: target.id,
             pluginModule: "github",
             pluginInstanceId: `gh-${uuidv7()}`,
-            config: { appId: "1", installationId: "2", owner: "acme", repo: "backfill" }
+            config: { appId: "1", installationId: "2", owner: "acme", repo: "backfill" },
+            actorObjectId: org.orgId,
+            requestId: "test-setup"
           });
         });
         await subscriptionPolicy(`backfill-enable-stamp-${uuidv7()}`, target.id, { enabled: true });
@@ -627,7 +631,9 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
             targetObjectId: second.id,
             pluginModule: "github",
             pluginInstanceId: `gh-${uuidv7()}`,
-            config: { appId: "1", installationId: "2", owner: "acme", repo: "backfill" }
+            config: { appId: "1", installationId: "2", owner: "acme", repo: "backfill" },
+            actorObjectId: org.orgId,
+            requestId: "test-setup"
           });
         });
         await subscriptionPolicy(`backfill-enable2-${uuidv7()}`, second.id, {

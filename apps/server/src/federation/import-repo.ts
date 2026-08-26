@@ -34,6 +34,7 @@ import {
 } from "./unattached-change-status-repo.js";
 import { createRelationship, deleteRelationship } from "../graph/relationships-repo.js";
 import { deleteObject, isUuid, upsertObjectByUrn } from "../graph/objects-repo.js";
+import { adoptArtifactIdentity, findArtifactByIdentity } from "../graph/artifacts-repo.js";
 import { updateObject } from "../graph/objects-repo.js";
 import { findObjectByIdOrUrnAnyType, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import {
@@ -258,6 +259,53 @@ async function applyEntry(
           requestId
         });
         return;
+      }
+      // ==========================================================================================
+      // AN ARTIFACT IDENTITY COLLISION CONVERGES BY ADOPTION, NEVER DROPS (ADR-0045 D2a)
+      // ==========================================================================================
+      // An `artifact` object is minted OUTSIDE the ordinary sync path too — `mintArtifactObjects`
+      // (`graph/artifacts-repo.ts`), called from BOTH `exportPromotionBundle` and
+      // `importPromotionBundle` — and it is an ordinary (non-domain-local) object once minted
+      // (ADR-0045 D3), so it also journals and CAN arrive here, independently, via ordinary
+      // full-scope sync. Measured, not hypothetical: `federation.integration.test.ts`'s M17.4(a)
+      // suite reuses one peer pair and one digest across several `it()`s, and the SECOND
+      // promotion's `buildBundleToward` syncs the FIRST promotion's already-minted commander-side
+      // artifact object toward a receiver that already minted its OWN row for the same digest at
+      // the first import — two different ids, one identity, `objects_artifact_one_per_digest_type`
+      // (0095) refuses the second INSERT, and `upsertObjectByUrn` has no branch that expects it.
+      //
+      // A PRE-CHECK, NOT A `catch`, for the identical reason the type-registration guard above is
+      // one: a failed INSERT poisons this transaction, and this switch has no try/catch around it.
+      //
+      // ADOPT, NOT SKIP-AND-RECORD (D2a amendment — the prior behavior here, and why it changed).
+      // This collision is not an accidental one-off (0051/0043's precedent, still correct for THAT
+      // case): every promotion mints a receiver-local anchor (D2) that is GUARANTEED to collide
+      // with the exporter's own ordinary-synced copy (D3) the moment it also reaches this peer, so
+      // skip-and-record produced one `entry_dropped` audit per promotion per peer FOREVER and the
+      // receiver's own anchor never learned the shared base had arrived. Adoption keeps this
+      // receiver's existing id/urn (every local reference — this receiver's own promoted change's
+      // `sourceRef`, any `derived_from` edge — keeps resolving) and moves the row's AUTHORITY and
+      // `properties` onto the incoming, signature-verified entry; see `adoptArtifactIdentity`'s doc
+      // for the full reasoning, including why `firstPromotedChangeId` (receiver-local history)
+      // survives the adoption untouched and why a `domainLocal` anchor was considered and rejected.
+      if (typeId === "artifact") {
+        const digest = (payload.properties as Record<string, unknown> | undefined)?.digest;
+        const artifactType = (payload.properties as Record<string, unknown> | undefined)
+          ?.artifactType;
+        if (typeof digest === "string" && typeof artifactType === "string") {
+          const existingByIdentity = await findArtifactByIdentity(tx, orgId, artifactType, digest);
+          if (existingByIdentity && existingByIdentity.id !== payload.id) {
+            await adoptArtifactIdentity(tx, orgId, {
+              existingId: existingByIdentity.id,
+              originDomainId: exporterDomainId,
+              revision,
+              incomingProperties: (payload.properties as Record<string, unknown>) ?? {},
+              actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
+              requestId
+            });
+            return;
+          }
+        }
       }
       // Authority is the cryptographically-verified signer — NEVER the attacker-controlled
       // `payload.originDomainId` (validated identical to `exporterDomainId` by

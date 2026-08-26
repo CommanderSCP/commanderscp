@@ -203,6 +203,30 @@ describe("IaC executor bindings on placements", () => {
     ).toHaveLength(0);
   });
 
+  it("apply-time create AND prune each write their own audit event — IaC is a binding write door too (2026-08-25 census)", async () => {
+    // Same repo function (`upsertExecutorBinding`/`deleteExecutorBinding`) the typed routes call —
+    // this pins that `executePlanDiff` (apply) reaches it too, not only `PUT`/`DELETE /binding`.
+    const s = `pb-audit-${uuidv7().slice(0, 8)}`;
+    const { comp } = urns(s);
+    await apply(baseManifest(s, { executorBindings: [binding(s)] }));
+    const placementRows = await bindingsOnPlacementOf(comp);
+    const placementId = placementRows[0]!.targetObjectId;
+
+    await apply(baseManifest(s)); // prune
+
+    const page = await admin.auditEvents.list({ limit: 200 });
+    const putEvents = page.items.filter(
+      (e) => e.action === "executor.binding.put" && e.subjectId === placementId
+    );
+    const deleteEvents = page.items.filter(
+      (e) => e.action === "executor.binding.delete" && e.subjectId === placementId
+    );
+    expect(putEvents).toHaveLength(1);
+    expect(putEvents[0]!.reason).toContain("fake-executor");
+    expect(deleteEvents).toHaveLength(1);
+    expect(deleteEvents[0]!.reason).toContain("fake-executor");
+  });
+
   it("REFUSES a binding on a pair the manifest does not declare as a placement", async () => {
     // Without this, apply order destroys itself: binding-prune, placement-prune (removes the pair),
     // placement-create (does not, it was not declared), binding-create (resolves nothing) — dying

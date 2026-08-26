@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { ChangeStageDependencyVerdictSchema } from "./changes.js";
+import {
+  ChangeStageDependencyVerdictSchema,
+  WaveTargetObservedSchema,
+  type WaveTargetObserved
+} from "./changes.js";
 import {
   ExecutorCategorySchema,
   PipelineClassificationSchema,
@@ -161,9 +165,43 @@ export const ComponentPipelineCurrentSchema = z.object({
   waveName: z.string().nullable(),
   targetStatus: z.string().nullable(),
   type: z.string(),
-  category: ExecutorCategorySchema
+  category: ExecutorCategorySchema,
+  /** THE SAME `change_wave_targets.observed_state` SNAPSHOT `ChangeWaveTargetSchema.observed`
+   *  documents — read here from the identical column, per pipeline, so the stage's `version`
+   *  below can be derived rather than hardcoded (increment "per-stage version threading").
+   *  ADDITIVE-OPTIONAL: absent on responses emitted before this field existed; `null` means the
+   *  column itself was `null` (nothing observed yet), never fabricated. */
+  observed: WaveTargetObservedSchema.nullable().optional()
 });
 export type ComponentPipelineCurrent = z.infer<typeof ComponentPipelineCurrentSchema>;
+
+/**
+ * THE SHARED VERSION-PREFERENCE RULE (ADR-0008 signal 1) — extracted so the server's stage
+ * `version` derivation (`component-pipeline.ts`) and the web's per-target render
+ * (`PipelineWaveCard.tsx`) cannot silently diverge on which observed field wins. Mirrors
+ * `PipelineWaveCard.tsx`'s `realImages`/version-slot rules exactly: prefer the first REAL
+ * (non-marker) deployed image over the git-style `revision`, because an image tag/digest is a
+ * better human-facing version than an opaque SHA (decision 1). Returns `undefined` — never `""`
+ * or `null` — when neither is observed, so a caller's own "unknown" handling stays a single `if`.
+ *
+ * `realImages` strips the persistence bound's marker slot using the record's own `droppedEntries`
+ * COUNT, never by pattern-matching the stored value (M23.1g, the same rule `PipelineWaveCard.tsx`
+ * documents at length) — a cut that removed every real entry leaves the array holding the marker
+ * alone, and this must return `[]` for that case, not the marker string.
+ */
+export function realObservedImages(observed: WaveTargetObserved | null | undefined): string[] {
+  const images = observed?.images;
+  if (!images) return [];
+  const entry = observed?.truncation?.images;
+  if (typeof entry?.droppedEntries !== "number" || entry.droppedEntries <= 0) return images;
+  return images.slice(0, -1);
+}
+
+export function preferredObservedVersion(
+  observed: WaveTargetObserved | null | undefined
+): string | undefined {
+  return realObservedImages(observed)[0] ?? observed?.revision;
+}
 
 /**
  * WHERE A COMPONENT'S RELEASES COME FROM — one `source_mappings` rule: a push matching this repo
@@ -439,14 +477,14 @@ export const ComponentPipelineStageSchema = z.object({
    *  Decision query with no recency gate, and conflating a transient self-clearing wait with a
    *  permanent marker is the exact bug ADR-0028 wrote `verdict: "hold"` to avoid. */
   hold: ComponentPipelineHoldSchema.nullable().optional(),
-  /** ALWAYS null today, and ALWAYS listed in this stage's `unknownFields`.
-   *
-   *  The "version staircase" the design asks for needs a per-stage version/digest captured by
-   *  `observe()` — coordination-ui-views.md Phase 4a, unbuilt. The field ships now, always-unknown,
-   *  rather than being omitted: an absent field reads as "this view does not do versions", while an
-   *  explicitly-unknown one reads as "not observed yet", which is the truth. Same rule as the
-   *  service board's `unknownFields` and the graph health surfaces — absent renders `unknown`,
-   *  never a confident zero. */
+  /** THE "version staircase" the design asks for (coordination-ui-views.md Phase 4a) — derived
+   *  from this stage's newest `currents[0].observed` via `preferredObservedVersion`
+   *  (`realObservedImages`'s first entry, else the git-style `revision`), the SAME preference
+   *  `PipelineWaveCard.tsx`'s per-target render applies, so the two can never disagree about which
+   *  observed field wins. `null`, with `"version"` listed in `unknownFields` below, exactly when
+   *  the stage has never had a wave target report `observed` at all — a real absence, not a
+   *  confident zero. Once observed, this stays populated even after the change that produced it
+   *  moves on: it is the newest OBSERVED value, not a property of the change in flight. */
   version: z.string().nullable(),
   /** Dotted paths on THIS stage whose values are not observations. See `version`. */
   unknownFields: z.array(z.string())

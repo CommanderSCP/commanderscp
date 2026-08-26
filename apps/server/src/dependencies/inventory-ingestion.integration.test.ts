@@ -1529,7 +1529,9 @@ require (
             installationId: "2",
             owner: repo.split("/")[0],
             repo: repo.split("/")[1]
-          }
+          },
+          actorObjectId: org.orgId,
+          requestId: "test-setup"
         })
       );
       return component;

@@ -666,6 +666,13 @@
       "when": 1788154000000,
       "tag": "0094_federation_pair_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1788155000000,
+      "tag": "0095_artifact_object_type",
+      "breakpoints": true
     }
   ]
 }

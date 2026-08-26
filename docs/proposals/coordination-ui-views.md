@@ -48,6 +48,17 @@ A service's components in one scannable table: per-stage **version + status**, a
 > Per-stage VERSION remains the one genuinely missing signal (Phase 4a); the view must render
 > honestly without it rather than wait for it, per the `unknownFields` convention the service board
 > already follows.
+>
+> **BUILT, 2026-08-25** (commit `33c3e3a`, "per-stage version threading (Phase 4a) — derive, never
+> hardcode"): `component-pipeline.ts`'s `currentsByPlacement` now selects each stage's newest
+> `change_wave_targets.observed_state` and derives its version through a shared
+> `preferredObservedVersion` helper (`@scp/schemas`) — the same real-deployed-image-over-git-revision
+> preference `PipelineWaveCard.tsx` already applied per target, extracted once so server and web
+> cannot silently diverge. `version` still reads `null` with `"version"` in `unknownFields` exactly
+> when nothing has ever been observed at a stage — the honesty rule the paragraph above states is
+> unchanged, only the derivation is new. ADR-0045's Context section treats this as already-landed
+> groundwork it builds a further gap analysis on top of (the artifact object type, minted at the
+> promotion boundary) — this line is no longer that gap.
 Component-scoped, two lanes **top-to-bottom**:
 - **App release** — `Build & test` → `Image registry` → `Config bump` → `Gamma` → `Prod`. Each stage **links to its source or executor** (git source repo, image registry, git config repo, Argo CD app). `Build & test` carries a `Build → Test` sub-track (test optional). `Image registry` shows the **scan result**; the promotion after it is the **scan gate**.
 - **Infra · correlated** — an infra change directly correlated to the component runs as a **parallel lane** beside the app release.

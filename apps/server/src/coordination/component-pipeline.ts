@@ -1,12 +1,13 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { categoryOfType } from "@scp/schemas";
+import { categoryOfType, preferredObservedVersion } from "@scp/schemas";
 import type {
   ComponentPipelineCorrelatedInfraChange,
   ComponentPipelineHold,
   ComponentPipelineResponse,
   ComponentPipelineStage,
   ComponentPipelineTargetOutpost,
-  ComponentPipelineUnplacedStage
+  ComponentPipelineUnplacedStage,
+  WaveTargetObserved
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import {
@@ -93,12 +94,16 @@ import { namesForObjectIds } from "../dependencies/producer-declaration.js";
  * `topology-waves.ts`'s header is about.
  *
  * ============================================================================================
- * WHAT IS DELIBERATELY NOT OBSERVED
+ * PER-STAGE VERSION (Phase 4a) — DERIVED, NEVER RE-OBSERVED
  * ============================================================================================
- * Per-stage VERSION (the design's "version staircase") needs an `observe()`-captured version/digest
- * — coordination-ui-views.md Phase 4a, unbuilt. Every stage therefore carries `version: null` AND
- * lists `"version"` in its `unknownFields`, so a client renders "not observed" rather than a blank
- * that reads as "no version". Same rule the service board and the graph health surfaces follow.
+ * The design's "version staircase" comes from state `observe()` already writes —
+ * `change_wave_targets.observed_state` — read here a second time (`currentsByPlacement` selects
+ * `t.observed_state` alongside the rest of the row) and reduced with `preferredObservedVersion`
+ * (`@scp/schemas`): the first REAL deployed image, else the git-style revision. A stage whose
+ * newest current has never had `observed` written carries `version: null` and lists `"version"`
+ * in `unknownFields`, so a client renders "not observed" rather than a blank that reads as "no
+ * version" — same rule the service board and the graph health surfaces follow for every other
+ * unobserved field.
  */
 
 /**
@@ -133,6 +138,7 @@ async function currentsByPlacement(
     target_status: string | null;
     type: string;
     created_at: string;
+    observed_state: unknown;
   }>(sql`
     SELECT DISTINCT ON (t.target_object_id, t.type)
       t.target_object_id,
@@ -142,7 +148,8 @@ async function currentsByPlacement(
       w.name   AS wave_name,
       t.status AS target_status,
       t.type   AS type,
-      c.created_at AS created_at
+      c.created_at AS created_at,
+      t.observed_state AS observed_state
     FROM ${changeWaveTargets} t
     JOIN ${changeWaves} w  ON w.id = t.wave_id AND w.org_id = t.org_id
     JOIN ${changePlans} p  ON p.id = w.plan_id AND p.org_id = w.org_id
@@ -184,7 +191,11 @@ async function currentsByPlacement(
         waveName: r.wave_name,
         targetStatus: r.target_status,
         type: r.type,
-        category
+        category,
+        // Same jsonb column, same cast idiom `plan-service.ts`'s `toChangeWaveTargetShape` uses
+        // for `ChangeWaveTargetSchema.observed` — this is that column read a second time, per
+        // pipeline, for the stage's derived `version` below.
+        observed: (r.observed_state as WaveTargetObserved | null) ?? null
       });
     }
     out.set(placementId, currents);
@@ -821,6 +832,17 @@ export async function getComponentPipeline(
       placementCurrents[0]?.changeId ?? null
     );
 
+    // THE VERSION STAIRCASE (Phase 4a) — derived from the stage's newest current (`current`,
+    // `placementCurrents[0]`), never from a per-pipeline scan: `current` already IS "the most
+    // recent change to touch this stage in any pipeline", so the version rendered beside it must
+    // read the SAME wave target's `observed`, not a different pipeline's. `preferredObservedVersion`
+    // is the ONE preference rule (`@scp/schemas`, shared with `PipelineWaveCard.tsx`'s per-target
+    // render) — undefined only when nothing has ever been observed here, in which case the field
+    // stays `null` and `"version"` stays in `unknownFields`, exactly as before Phase 4a existed.
+    const derivedVersion: string | undefined = preferredObservedVersion(
+      placementCurrents[0]?.observed
+    );
+
     stages.push({
       placement: seed.placement,
       order,
@@ -839,10 +861,8 @@ export async function getComponentPipeline(
       // one case that looks unobservable (an outpost's stripped-on-import declaration) genuinely is
       // not held here rather than unknown here.
       hold: holds.get(seed.placement.id) ?? null,
-      version: null,
-      // See the module header: always unknown until Phase 4a, and said so explicitly rather than
-      // shipped as a confident blank.
-      unknownFields: ["version"]
+      version: derivedVersion ?? null,
+      unknownFields: derivedVersion === undefined ? ["version"] : []
     });
   }
 

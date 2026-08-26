@@ -4,6 +4,7 @@ import { ScpClient } from "@scp/sdk";
 import type { GraphObject } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { compileAndPersistPlan } from "./plan-service.js";
+import { updateWaveTargetObserved } from "./wave-targets-repo.js";
 import {
   createOrphanComponent,
   createTestOrg,
@@ -293,17 +294,65 @@ describe("a component's pipeline is continuous", () => {
     ).toBeNull();
   });
 
-  it("reports the per-stage version as UNKNOWN, never as a confident blank", async () => {
+  it("reports the per-stage version as UNKNOWN, never as a confident blank, when nothing has been observed", async () => {
+    // Phase 4a's derivation reads `currents[0].observed` — a stage with NO current at all (this
+    // placement has never had a wave target) has nothing to derive from, so `version` stays null
+    // and the absence is stated, never fabricated. The observed-and-derives case is the next test.
     const component = await createOrphanComponent(admin, `version-honesty-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
 
     const p = await pipelineOf(component.id);
 
-    expect(p.stages[0]!.version, "Phase 4a observe-enrichment is unbuilt").toBeNull();
+    expect(p.stages[0]!.version, "no release has ever touched this stage").toBeNull();
     expect(
       p.stages[0]!.unknownFields,
       "a null that is NOT listed as unknown reads as an observation — the service board's rule"
     ).toContain("version");
+  });
+
+  it("derives the per-stage version from observed state — the real deployed image over the git revision", async () => {
+    // Per-stage version threading (Phase 4a): `currentsByPlacement` now selects
+    // `t.observed_state`, and the stage's `version` is `preferredObservedVersion` of the newest
+    // current's `observed` — the SAME preference rule `PipelineWaveCard.tsx`'s per-target render
+    // applies (`@scp/schemas`'s `preferredObservedVersion`, extracted so server and web cannot
+    // disagree). Both `images` and `revision` are set here so the assertion pins the PREFERENCE,
+    // not just "some string came back".
+    const component = await createOrphanComponent(admin, `version-derived-${uuidv7()}`);
+    await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
+    const topo = await attachTopology(component.id, [{ name: "gamma", target: gamma.id }]);
+    const change = await admin.changes.propose({
+      name: `ver-${uuidv7()}`,
+      targets: [component.id],
+      type: "configuration"
+    });
+    const plan = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      compileAndPersistPlan(tx, {
+        orgId: org.orgId,
+        changeObjectId: change.id,
+        targetObjectIds: [component.id],
+        topologyObjectId: topo.id,
+        topologyVersion: null
+      })
+    );
+    const targetId = plan.waves[0]!.targets[0]!.id;
+    // Direct DB write of the snapshot reconcile would have persisted from `status()` — the same
+    // shortcut the per-pipeline-currents test above takes around the reconcile loop itself.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      updateWaveTargetObserved(tx, org.orgId, targetId, "succeeded", {
+        revision: "abc1234567",
+        images: ["ghcr.io/acme/checkout-api:1.4.2"]
+      })
+    );
+
+    const p = await pipelineOf(component.id);
+
+    expect(
+      p.stages[0]!.version,
+      "the deployed image is a better human-facing version than an opaque git SHA (ADR-0008 signal 1)"
+    ).toBe("ghcr.io/acme/checkout-api:1.4.2");
+    expect(p.stages[0]!.unknownFields, "an observed version is no longer unknown").not.toContain(
+      "version"
+    );
   });
 
   it("shows what executes at a stage, and says so plainly when nothing does", async () => {

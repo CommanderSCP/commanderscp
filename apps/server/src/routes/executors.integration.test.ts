@@ -619,7 +619,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
           targetObjectId: component.id,
           pluginModule: "managed-iac",
           pluginInstanceId: "inst-inject",
-          config: { runnerImage: "attacker/evil", networkMode: "host", workspaceRoot: "/" }
+          config: { runnerImage: "attacker/evil", networkMode: "host", workspaceRoot: "/" },
+          actorObjectId: org.orgId,
+          requestId: "test-setup"
         });
         return resolveExecutorPluginInstance(tx, {
           orgId: org.orgId,
@@ -715,7 +717,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
             pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
             // The tenant's own attempt at choosing the executable, to prove the server value WINS
             // rather than merely filling a gap.
-            config: { dockerBinary: "/tmp/tenant-chosen-binary" }
+            config: { dockerBinary: "/tmp/tenant-chosen-binary" },
+            actorObjectId: org.orgId,
+            requestId: "test-setup"
           });
           return resolveExecutorPluginInstance(tx, {
             orgId: org.orgId,

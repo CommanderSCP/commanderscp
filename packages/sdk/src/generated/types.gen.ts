@@ -6565,6 +6565,24 @@ export type GetComponentPipelineResponses = {
                 targetStatus: string | null;
                 type: string;
                 category: 'build' | 'infrastructure' | 'configuration';
+                observed?: {
+                    revision?: string;
+                    images?: Array<string>;
+                    rollout?: {
+                        phase?: string;
+                        step?: number;
+                        weight?: number;
+                        message?: string;
+                    };
+                    truncation?: {
+                        [key: string]: {
+                            dropped: boolean;
+                            droppedCharacters?: number;
+                            droppedEntries?: number;
+                            droppedFields?: number;
+                        };
+                    };
+                } | null;
             } | null;
             currents: Array<{
                 changeId: string;
@@ -6574,6 +6592,24 @@ export type GetComponentPipelineResponses = {
                 targetStatus: string | null;
                 type: string;
                 category: 'build' | 'infrastructure' | 'configuration';
+                observed?: {
+                    revision?: string;
+                    images?: Array<string>;
+                    rollout?: {
+                        phase?: string;
+                        step?: number;
+                        weight?: number;
+                        message?: string;
+                    };
+                    truncation?: {
+                        [key: string]: {
+                            dropped: boolean;
+                            droppedCharacters?: number;
+                            droppedEntries?: number;
+                            droppedFields?: number;
+                        };
+                    };
+                } | null;
             }>;
             gate: {
                 policies: Array<{

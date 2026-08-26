@@ -73,7 +73,9 @@ describe("observe()-driver: pull-based change detection (no inbound webhook)", (
         targetObjectId: component.id,
         pluginModule: "fake-executor",
         pluginInstanceId: INSTANCE,
-        config: { observeEvents: [event] }
+        config: { observeEvents: [event] },
+        actorObjectId: org.orgId,
+        requestId: "test-setup"
       });
     });
 

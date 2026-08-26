@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import pg from "pg";
 import type { SyncBundle, SyncScope } from "@scp/schemas";
@@ -12,6 +12,8 @@ import { ProblemError } from "../errors.js";
 import { changes, decisions, objects, roleBindings, roles, sourceMappings } from "../db/schema.js";
 import { createSourceMapping } from "../coordination/source-mappings-repo.js";
 import { createObject, getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
+import { findArtifactByIdentity } from "../graph/artifacts-repo.js";
+import { createRelationship } from "../graph/relationships-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
 import { pairPeer, listPeers, getPeerByIdOrName, markPokeReceived } from "./peers-repo.js";
@@ -1631,6 +1633,206 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(blob?.format).toBe("cyclonedx");
   });
 
+  // -----------------------------------------------------------------------------------------
+  // ADR-0045 — `artifact` as a first-class object type, minted at the promotion boundary.
+  // Reuses this describe's own domainA/domainB E5/E6-paired harness (`proposeApprovedChangeInA`,
+  // `exportBundleA`) rather than a new one — the promotion machinery IS the minting machinery.
+  // -----------------------------------------------------------------------------------------
+
+  it("ADR-0045 D2: export mints artifact objects with EXACT identity (digest, artifactType), never fabricated", async () => {
+    const digest = "sha256:" + randomUUID().replace(/-/g, "").padEnd(64, "0");
+    const { changeId } = await proposeApprovedChangeInA({ artifact_digest: digest });
+    await exportBundleA(changeId);
+
+    const minted = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      findArtifactByIdentity(tx, domainA.orgId, "oci", digest)
+    );
+    expect(minted).toBeDefined();
+    expect(minted!.properties).toMatchObject({
+      digest,
+      artifactType: "oci",
+      mintedBy: "export"
+    });
+    // The identity properties are OPEN (ADR-0045 D1) — no enum, no additionalProperties:false —
+    // so an extra provenance field on a registered-open type is accepted, never refused.
+    expect((minted!.properties as Record<string, unknown>).firstPromotedChangeId).toBe(changeId);
+  });
+
+  it("ADR-0045 D2: RE-EXPORT of the same digest is idempotent — one row, the unique index holds", async () => {
+    const digest = "sha256:" + randomUUID().replace(/-/g, "").padEnd(64, "0");
+    const { changeId: firstChangeId } = await proposeApprovedChangeInA({ artifact_digest: digest });
+    await exportBundleA(firstChangeId);
+    const before = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      findArtifactByIdentity(tx, domainA.orgId, "oci", digest)
+    );
+    expect(before).toBeDefined();
+
+    // A SECOND, independent change tracking the SAME digest, exported again — the realistic
+    // "re-promote the same build" case, not a literal re-export of one bundle.
+    const { changeId: secondChangeId } = await proposeApprovedChangeInA({
+      artifact_digest: digest
+    });
+    await exportBundleA(secondChangeId);
+
+    const rows = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      tx
+        .select()
+        .from(objects)
+        .where(
+          and(
+            eq(objects.orgId, domainA.orgId),
+            eq(objects.typeId, "artifact"),
+            isNull(objects.deletedAt),
+            sql`${objects.properties} ->> 'digest' = ${digest}`
+          )
+        )
+    );
+    expect(rows, "the unique index refuses a second row for the same identity").toHaveLength(1);
+    expect(rows[0]!.id).toBe(before!.id);
+    // `firstPromotedChangeId` is stamped ONLY on the row this call itself created — convergence
+    // must not overwrite it with the second, unrelated change.
+    expect((rows[0]!.properties as Record<string, unknown>).firstPromotedChangeId).toBe(
+      firstChangeId
+    );
+  });
+
+  it("ADR-0045 D2: import mints artifact objects on the RECEIVING org — the receiver's own anchor", async () => {
+    const digest = "sha256:" + randomUUID().replace(/-/g, "").padEnd(64, "0");
+    const { changeId } = await proposeApprovedChangeInA({ artifact_digest: digest });
+    const bundle = await exportBundleA(changeId);
+
+    // Not yet minted at B — the mint happens at IMPORT, not before.
+    const beforeImport = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      findArtifactByIdentity(tx, domainB.orgId, "oci", digest)
+    );
+    expect(beforeImport).toBeUndefined();
+
+    const result = await importPromotionBundle(domainB.db, domainB.orgId, bundle);
+
+    const mintedAtB = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      findArtifactByIdentity(tx, domainB.orgId, "oci", digest)
+    );
+    expect(mintedAtB).toBeDefined();
+    expect(mintedAtB!.properties).toMatchObject({
+      digest,
+      artifactType: "oci",
+      mintedBy: "import"
+    });
+    // The receiver's own local change, not the exporter's — "the receiver's own anchor" (ADR-0045).
+    expect((mintedAtB!.properties as Record<string, unknown>).firstPromotedChangeId).toBe(
+      result.localChangeObjectId
+    );
+    // And it minted under B's OWN org, as an ORDINARY object (not domain-local) — a fresh id, never
+    // the exporter's `minted!.id` from domain A (different orgs entirely; no row could be shared).
+    expect(mintedAtB!.orgId).toBe(domainB.orgId);
+  });
+
+  it("ADR-0045 D4: derived_from is registered artifact->artifact, many_to_one — REFUSES a second base for one derivative, and refuses a non-artifact endpoint", async () => {
+    const baseDigest = "sha256:" + randomUUID().replace(/-/g, "").padEnd(64, "0");
+    const otherBaseDigest = "sha256:" + randomUUID().replace(/-/g, "").padEnd(64, "0");
+    const { changeId } = await proposeApprovedChangeInA({ artifact_digest: baseDigest });
+    await exportBundleA(changeId);
+    const base = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      findArtifactByIdentity(tx, domainA.orgId, "oci", baseDigest)
+    );
+    expect(base).toBeDefined();
+
+    // Mint a second base and a derivative artifact directly (no promotion needed to prove the
+    // relationship type itself — `derived_from` is a generic graph fact, tested at that layer).
+    const otherBase = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        typeId: "artifact",
+        actorObjectId: domainA.orgId,
+        requestId: "t-artifact-other-base",
+        name: `other-base-${randomUUID()}`,
+        properties: { digest: otherBaseDigest, artifactType: "oci" }
+      })
+    );
+    const derivative = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        typeId: "artifact",
+        actorObjectId: domainA.orgId,
+        requestId: "t-artifact-derivative",
+        name: `derivative-${randomUUID()}`,
+        properties: {
+          digest: "sha256:" + randomUUID().replace(/-/g, "").padEnd(64, "0"),
+          artifactType: "oci"
+        }
+      })
+    );
+
+    // THE GENERIC RELATIONSHIPS API CAN CREATE A VALID derived_from EDGE — no new route was added
+    // for this (ADR-0045's "registry rows, not tables" mechanism): `createRelationship` is the
+    // exact function every typed `/relationships` write already funnels through.
+    const edge = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createRelationship(tx, {
+        orgId: domainA.orgId,
+        actorObjectId: domainA.orgId,
+        requestId: "t-derived-from",
+        typeId: "derived_from",
+        fromId: derivative.id,
+        toId: base!.id
+      })
+    );
+    expect(edge.typeId).toBe("derived_from");
+
+    // many_to_one — REFUSES a SECOND base for the SAME derivative (the from-side is singular).
+    await expect(
+      withTenantTx(domainA.db, domainA.orgId, (tx) =>
+        createRelationship(tx, {
+          orgId: domainA.orgId,
+          actorObjectId: domainA.orgId,
+          requestId: "t-derived-from-second-base",
+          typeId: "derived_from",
+          fromId: derivative.id,
+          toId: otherBase.id
+        })
+      )
+    ).rejects.toBeInstanceOf(ProblemError);
+
+    // A base MAY be the origin of MANY derivatives — the to-side is plural, unaffected by the above.
+    const secondDerivative = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        typeId: "artifact",
+        actorObjectId: domainA.orgId,
+        requestId: "t-artifact-second-derivative",
+        name: `derivative-2-${randomUUID()}`,
+        properties: {
+          digest: "sha256:" + randomUUID().replace(/-/g, "").padEnd(64, "0"),
+          artifactType: "oci"
+        }
+      })
+    );
+    const secondEdge = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createRelationship(tx, {
+        orgId: domainA.orgId,
+        actorObjectId: domainA.orgId,
+        requestId: "t-derived-from-second-derivative",
+        typeId: "derived_from",
+        fromId: secondDerivative.id,
+        toId: base!.id
+      })
+    );
+    expect(secondEdge.typeId).toBe("derived_from");
+
+    // REFUSES a non-artifact endpoint — `from_types`/`to_types` are both `['artifact']`.
+    await expect(
+      withTenantTx(domainA.db, domainA.orgId, (tx) =>
+        createRelationship(tx, {
+          orgId: domainA.orgId,
+          actorObjectId: domainA.orgId,
+          requestId: "t-derived-from-wrong-type",
+          typeId: "derived_from",
+          fromId: derivative.id,
+          toId: domainA.orgId // the org root — not an `artifact`
+        })
+      )
+    ).rejects.toBeInstanceOf(ProblemError);
+  });
+
   it("E3 FAIL-CLOSED: tampering with artifactDigests still fails the existing bundle checksum", async () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
     const bundle = await exportBundleA(changeId);
@@ -2773,6 +2975,133 @@ describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () 
     const badSig: PromotionBundle = { ...bundle, manifestSignature: other.manifestSignature };
     const blocked = await expectImportBlocked(outpostWithKey, badSig);
     expect(blocked.decisionId).toBeTruthy();
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // ADR-0045 D2a — the D2/D3 artifact-identity collision converges by ADOPTION, never drops.
+  // ------------------------------------------------------------------------------------------
+
+  it("(h) D2a: promotion-import-mint THEN ordinary sync of the exporter's own copy converges to ONE object, adopted origin, no entry_dropped", async () => {
+    const digest = "sha256:" + "6".repeat(64);
+    const bundle = await buildBundleToward(outpostWithKey, { artifact_digest: digest });
+    const result = await importPromotionBundle(outpostWithKey.db, outpostWithKey.orgId, bundle);
+    expect(result.localChangeObjectId).toBeTruthy();
+
+    // The receiver's own import-minted anchor exists immediately (D2), authored by ITSELF.
+    const receiverSelf = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      ensureFederationSelf(tx, outpostWithKey.orgId)
+    );
+    const anchorBeforeSync = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      findArtifactByIdentity(tx, outpostWithKey.orgId, "oci", digest)
+    );
+    expect(anchorBeforeSync).toBeDefined();
+    expect(anchorBeforeSync!.originDomainId).toBe(receiverSelf.domainId);
+
+    // An ORDINARY full sync — independent of any promotion — carries the commander's OWN minted
+    // row for the identical identity (D3: an artifact is an ordinary, non-domain-local object).
+    // This is exactly what a second `buildBundleToward` call does internally for a NEW promotion;
+    // triggered directly here so it is provable without needing a second change/target.
+    const cursor = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      getCursor(tx, outpostWithKey.orgId, selfCommander.domainId, selfCommander.domainId)
+    );
+    const syncBundle = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      exportSyncBundle(tx, commander.orgId, outpostWithKey.orgName, cursor.sequence)
+    );
+    await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      importSyncBundle(tx, outpostWithKey.orgId, syncBundle)
+    );
+
+    // ONE object, same id as before (never the incoming one), now authored by the COMMANDER.
+    const anchorAfterSync = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      findArtifactByIdentity(tx, outpostWithKey.orgId, "oci", digest)
+    );
+    expect(anchorAfterSync!.id).toBe(anchorBeforeSync!.id);
+    expect(anchorAfterSync!.originDomainId).toBe(selfCommander.domainId);
+
+    const allRows = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      tx
+        .select({ id: objects.id })
+        .from(objects)
+        .where(
+          and(
+            eq(objects.orgId, outpostWithKey.orgId),
+            eq(objects.typeId, "artifact"),
+            isNull(objects.deletedAt),
+            sql`${objects.properties} ->> 'digest' = ${digest}`
+          )
+        )
+    );
+    expect(allRows).toHaveLength(1);
+
+    const dropped = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      listAuditEvents(tx, outpostWithKey.orgId, { limit: 200 })
+    );
+    expect(
+      dropped.items.filter(
+        (e) =>
+          e.action === "federation.import.entry_dropped" && e.subjectId === anchorBeforeSync!.id
+      )
+    ).toHaveLength(0);
+    // Filtered to THIS anchor's id, not counted globally — this describe block's shared
+    // commander/outpostWithKey pair means the ordinary sync step above also carries every OTHER
+    // still-unsynced commander-minted artifact from earlier `it()`s in this suite, each of which
+    // may ALSO collide with its own already-imported anchor and adopt (correctly) — this
+    // assertion is about THIS digest's anchor specifically.
+    expect(
+      dropped.items.filter(
+        (e) => e.action === "artifact.update" && e.subjectId === anchorBeforeSync!.id
+      )
+    ).toHaveLength(1);
+  });
+
+  it("(i) D2a, reverse order: ordinary sync FIRST, then promotion import — no re-mint, the anchor IS the synced object", async () => {
+    const digest = "sha256:" + "7".repeat(64);
+    // Build (export) the bundle — this mints the COMMANDER's own artifact row — but do not import
+    // it at the receiver yet.
+    const bundle = await buildBundleToward(outpostWithKey, { artifact_digest: digest });
+
+    // Ordinary sync BEFORE the promotion import: the receiver has no local row yet, so this is an
+    // ORDINARY replica landing under the commander's own id — no collision, nothing to adopt.
+    const cursor = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      getCursor(tx, outpostWithKey.orgId, selfCommander.domainId, selfCommander.domainId)
+    );
+    const syncBundle = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      exportSyncBundle(tx, commander.orgId, outpostWithKey.orgName, cursor.sequence)
+    );
+    await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      importSyncBundle(tx, outpostWithKey.orgId, syncBundle)
+    );
+
+    const syncedAnchor = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      findArtifactByIdentity(tx, outpostWithKey.orgId, "oci", digest)
+    );
+    expect(syncedAnchor).toBeDefined();
+    expect(syncedAnchor!.originDomainId).toBe(selfCommander.domainId);
+
+    // NOW the promotion import: `mintArtifactObjects`'s upsert-by-identity finds the already-synced
+    // row and returns it unchanged — no mint, no new row.
+    const result = await importPromotionBundle(outpostWithKey.db, outpostWithKey.orgId, bundle);
+    expect(result.localChangeObjectId).toBeTruthy();
+
+    const anchorAfterImport = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      findArtifactByIdentity(tx, outpostWithKey.orgId, "oci", digest)
+    );
+    expect(anchorAfterImport!.id).toBe(syncedAnchor!.id);
+
+    const allRows = await withTenantTx(outpostWithKey.db, outpostWithKey.orgId, (tx) =>
+      tx
+        .select({ id: objects.id })
+        .from(objects)
+        .where(
+          and(
+            eq(objects.orgId, outpostWithKey.orgId),
+            eq(objects.typeId, "artifact"),
+            isNull(objects.deletedAt),
+            sql`${objects.properties} ->> 'digest' = ${digest}`
+          )
+        )
+    );
+    expect(allRows).toHaveLength(1);
   });
 });
 

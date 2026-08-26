@@ -163,7 +163,14 @@ export async function mergeComponents(
   // binding-free) loser. All inside the caller's tx — a collision mid-way (concurrent racer) rolls the
   // whole merge back at the index.
   for (const lb of loserBindings) {
-    await repointExecutorBindingTarget(tx, input.orgId, lb.id, survivor.id);
+    await repointExecutorBindingTarget(
+      tx,
+      input.orgId,
+      lb.id,
+      survivor.id,
+      input.actorObjectId,
+      input.requestId
+    );
   }
   await deleteObject(tx, {
     orgId: input.orgId,
