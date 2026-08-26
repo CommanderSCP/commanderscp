@@ -28,6 +28,7 @@ $ scp federation peer update commander \
                                                        # ordered dial list; the #xo-labeled
                                                        # entry is the DR fallback (ADR-0044 D3)
 $ scp connect argocd --name argocd-hq …                # per-domain, credential-holding
+$ scp connect argo-workflows --name workflows-hq …     # the test/build runner (D11)
 $ scp config-source register --repo-pattern 'git.corp.example/payments/*' \
     --team team-payments --path 'scp/manifest.json'   # ONE registration covers the team's
                                                        # whole fleet of component repos (D9)
@@ -205,91 +206,85 @@ export const widePod = (regions: string[]) => [
 | **retrans** | relay at the CDS boundary | nothing to declare — pairing + inbox/outbox delivery config only; relays signed bundles, validates, never terminates a promotion |
 | **airgap1 outpost** | air-gapped, `trustTier: il5` | WHAT arrives as `.scpbundle` via retrans (the M13.1a inbox loop — untouched by D1); its HOW stack applied locally from the same media run |
 
-## 7. The authoring surface in detail
+## 7. The authoring surface in detail — construct-first
 
-**Refs are real or the plan refuses.** Every `.ref()` compiles to a name/URN reference in the manifest; at plan time the **server** resolves each one against the live graph. An unresolvable ref refuses the whole plan — a Decision is recorded and the config-source status goes loud; nothing is created from a ref, ever (only entries a stack *declares* can create/adopt/prune, and create-strict still applies to those). Cross-repo ordering converges the same way: if `payments-api` syncs before the team repo has declared the `payments` service, that plan refuses loudly and the next sync after the service lands succeeds.
-
-**Sources.** The host prefix is imported, not retyped; the Type is a closed enum; the branch is the team's choice:
+Everything a team declares is a typed construct; the standards package exports **typed handles** for stages and menu targets, so a typo fails at compile time, not at plan time. Bare strings stay legal; the scaffolder emits handle-based code. The full-featured component file:
 
 ```ts
-import { repos } from "@corp/scp-standards"; // central git host + namespace defaults (D10)
+import { App, Stack, Service, Component } from "@scp/iac";
+import {
+  BuildSource, InfrastructureSource,          // (new) sources — the Type IS the construct
+  PostMergeTest, PostDeployTest, ContinuousTest, // (new) D11 test hooks
+  KubernetesRollout, InstanceGroupRollout,    // (new) D12 rollout per target class
+} from "@scp/iac";
+import { stages, targets, waves, repos } from "@corp/scp-standards"; // typed handles (D10)
 
-sources: [
-  {}, //                                      this repo, default branch, Type configuration
-  { repo: repos("payments/payments-infra"), //  team types only the org-relative part
-    type: "infrastructure" }, //               ExecutorType: closed TS literal union backed by
-  //                                           the same Zod enum on the wire — an untrusted
-  //                                           value fails at compile time AND at the contract
-  { branch: "release-2026" }, //               pick any branch: sugar for ref (ADR-0030)
-  { path: "services/api/**" }, //              monorepo path slice
-]
+const app = new App();
+const stack = new Stack(app, "payments-api");
+
+const api = new Component(stack, "payments-api", {
+  service: Service.ref("payments"),
+  pipeline: { waves: waves.standard },
+});
+
+// -- sources: one construct per pipeline lane (D13: artifact on build) -------
+new BuildSource(api, { artifact: "image" }); //   this repo, default branch
+new InfrastructureSource(api, {
+  repo: repos("payments/payments-infra"), //      host prefix imported, never retyped
+  branch: "main",
+});
+
+// -- where it lands: select from the domain-published menu (§14.9) -----------
+api.placeAt(targets.commercialAmerProd.payBlue); // a Cluster — refines the inferred placement
+api.placeAt(targets.govcloudAmerProd.payProdIg); // an InstanceGroup
+
+// -- dependencies: pending until the target exists (D14) ---------------------
+api.dependsOn(Component.ref("ledger-core"));
+
+// -- tests: SCP triggers, Argo Workflows executes (D11) ----------------------
+new PostMergeTest(api, { workflow: "payments-unit" });
+new PostDeployTest(api, { workflow: "payments-integration", stage: stages.commercialAmerStaging });
+new ContinuousTest(api, { workflow: "payments-canary-probe", every: "5m", maxAge: "15m" });
+
+// -- rollout per target class (D12) ------------------------------------------
+new KubernetesRollout(api, { strategy: "canary", steps: [10, 50, 100] });
+new InstanceGroupRollout(api, { strategy: "rolling", batch: "25%", pauseBetween: "5m" });
 ```
 
-**Targets: select, don't create.** The platform declares stages (§3); each domain declares the infrastructure *menu* beneath its stages — clusters, instance groups, accounts — as child deployment-targets (so a freeze, binding policy, or scan policy can scope to one cluster via the existing containment routes). Teams **select** from the menu per stage:
+**Refs and pending dependencies (D14).** Every `.ref()` resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the component/config-source status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
+
+**Sources are constructs.** `BuildSource` / `InfrastructureSource` / `ConfigurationSource` — the Type is the class, so it cannot be mistyped, and per-Type props are compile-checked: only `BuildSource` has (and requires) `artifact`, from the closed class enum (image, rpm, npm, maven, python, go, chart, vm-image). Omitted `repo` = the repo the manifest ships in; `branch:` picks any branch (ADR-0030 ref pattern under the hood); `path:` slices monorepos. Identity stays the (repo, path, ref) tuple, so edits diff cleanly.
+
+**The target menu is constructs too.** Domain operators publish it — sugar over child deployment-targets, so a freeze or binding policy can scope to a single cluster:
 
 ```ts
-pipeline: {
-  waves: standardRollout,
-  place: {
-    "commercial-amer-prod": { cluster: "pay-blue", account: "123456789012" },
-    "govcloud-amer-prod": { instanceGroup: "pay-prod-ig" },
-  },
-}
+// domains/govcloud — the menu stack FEDERATES (outpost-origin, §14.9): team
+// placements at the commander must resolve against it. Only the binding
+// policies stay domain-local.
+new Cluster(menu, "pay-blue", {
+  within: DeploymentTarget.ref("commercial-amer-prod"),
+  account: "123456789012",
+});
+new InstanceGroup(menu, "pay-prod-ig", {
+  within: DeploymentTarget.ref("govcloud-amer-prod"),
+});
 ```
 
-Selections are refs — naming a cluster the domain never declared refuses at plan. An org that wants teams creating their own sub-targets grants scoped write at a container (the authz model already supports it): selection is the default, creation is a deliberate delegation, and either way the estate menu stays governable.
+Teams then `placeAt()` handles the standards package re-exports (`targets.commercialAmerProd.payBlue` — regenerable from the live estate by `scp iac export --handles`). Selecting something the domain never declared fails at compile (no handle) or at plan (bad ref). Orgs that want a team creating its own sub-targets grant scoped write at a container — selection is the default, creation is deliberate delegation.
 
-**Dependencies (`dependsOn`).** Already a fluent method on every construct; it gains refs to objects the team does not own — components, assemblies, or services:
+**Tests (D11) — and yes, a new milestone.** No `argo-workflows` executor plugin exists today, so this is build increment 8 (main doc §13): the plugin (trigger + observe WorkflowTemplate/CronWorkflow), the hook contract, and the evidence controls. The three hook constructs above compile to: a trigger intent on the domain's Workflows instance (resolved by binding policy, like everything else) plus a gate/hold consuming the result — `PostMergeTest` gates the first wave, `PostDeployTest` gates promotion out of its stage, `ContinuousTest` is a CronWorkflow whose latest **fresh** result is a per-target hold (`maxAge` required; stale green reads as absent). The domain side is one more binding policy line:
 
 ```ts
-api.dependsOn(Component.ref("ledger-core")); // another team's component
-api.dependsOn(Service.ref("identity"));      // or a service / assembly
+new BindingPolicy(bindings, "tests", {
+  scope: DeploymentTarget.ref("commercial-amer-staging"),
+  type: "build", // dedicated test lane vs build lane: main doc §14.11
+  executionSystem: ExecutionSystem.ref("workflows-hq"),
+});
 ```
 
-`depends_on` is what the plan compiler topo-sorts by absent an explicit topology, and what drives ADR-0028 stage-dependency holds — a dependency holds *your* rollout behind theirs, never the reverse, which is why a component owner may declare one against anything visible. (Endpoint authorization: main doc §14.)
+SCP triggers, observes, and gates; Argo Workflows executes. The WorkflowTemplate definitions live in the team's own repos.
 
-**Tests (D11) — SCP triggers, Argo Workflows executes.** Three hook points, one contract: the run happens on the org's (or bundled) Argo Workflows, and the *result* is gate/hold evidence:
-
-```ts
-pipeline: {
-  waves: standardRollout,
-  tests: {
-    postMerge: workflows.run("payments-unit"), //        after merge on the mapped branch;
-    //                                                   gates the first wave
-    postDeploy: {
-      "commercial-amer-staging": workflows.run("payments-integration"),
-    }, //                                                after deploy into that env;
-    //                                                   gates promotion out of it
-    continuous: workflows.cron("payments-canary-probe", { every: "5m", maxAge: "15m" }),
-    //                                                   always running; latest fresh result
-    //                                                   is a per-target hold — stale = absent
-  },
-}
-```
-
-The WorkflowTemplate / CronWorkflow definitions live in the team's own repos; IaC names them; the domain binding policy resolves which Workflows instance runs them per stage. SCP never executes a test — it triggers, observes, and gates.
-
-**Rollout (D12) — declared in code, keyed by target class:**
-
-```ts
-rollout: {
-  kubernetes: { strategy: "canary", steps: [10, 50, 100] },
-  instanceGroup: { strategy: "rolling", batch: "25%", pauseBetween: "5m" },
-}
-```
-
-For SCP-managed executor classes (`scp-runner-*`) the declaration is **authoritative** — SCP instructs the batches. For coordinated executors it rides the trigger as parameters where the plugin declares support, and is otherwise **verified**: SCP observes actual weights (ADR-0008) and declared-vs-actual divergence is loud. SCP instructs or verifies the executor that moves traffic; it never moves traffic itself.
-
-**Type and artifact class (D13).** Type stays the closed taxonomy — `build` / `infrastructure` / `configuration`. A `build` source also declares **what it produces**, because the journey shape differs per artifact class:
-
-```ts
-sources: [
-  { type: "build", artifact: "image" }, // build → push → config bump → sync
-  { type: "build", artifact: "rpm" },   // build → publish → batch-install to instance groups
-]
-```
-
-Declared, then **verified** against build/registry evidence — a source that declares `rpm` while its builds publish images is a loud mismatch, never a silent relabel. Bindings stay 1:N per target keyed by Type; the domain binding policy resolves (target, Type) → executor, and the artifact class selects the journey template within it.
+**Rollout (D12) is constructs**, one per target class the component actually lands on — authoritative for `scp-runner-*` classes, trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8). Declared-vs-observed divergence is loud; SCP never moves traffic itself.
 
 ---
 
