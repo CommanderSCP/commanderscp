@@ -1276,6 +1276,16 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
     // per entry. That is the entire point of moving stack ownership out of tenant-writable `labels`.
     "iac/stack-ownership.ts":
       "sets managed_by_stack on already-resolved ids; no insert, no type_id",
+    // ADR-0045 D2a adoption: a signature-verified shared journal entry CONVERGES onto the
+    // receiver's import-minted artifact anchor (same urn, different id) instead of being
+    // skip-and-record-dropped forever. Sets originDomainId/revision/properties on ONE existing row
+    // selected `FOR UPDATE` by (type_id = 'artifact', urn) — no insert, no `type_id` in the `set`,
+    // and the row's type is pinned in the WHERE, so it cannot mint or retype anything. It is a raw
+    // write on purpose: the choke point's update path allocates a fresh journal sequence and
+    // revision, and adoption must take the PEER'S origin/revision verbatim (allocating our own
+    // would make the adopted copy diverge from the very entry it adopts).
+    "graph/artifacts-repo.ts":
+      "D2a adoption: origin/revision/properties onto one urn-locked artifact row; no insert, no type_id",
     // Raw SQL, and the ONE instance of that class in the tree — listed rather than filtered out
     // precisely because a raw statement is what layers 1 and 3 are structurally blind to. It is a
     // developer load-generator (not wired into any route or worker) and its `type_id` is the SQL
