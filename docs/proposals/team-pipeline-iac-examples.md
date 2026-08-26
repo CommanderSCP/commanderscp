@@ -278,6 +278,19 @@ const payBlue = new Cluster(sharedInfra, "pay-blue", {
 
 The graph object and the real cluster share one managing pipeline — provenance is honest, stack pruning applies, and "who owns this cluster" has exactly one answer. Consumers reference the product: `Cluster.fromName("pay-blue")` directly, or the generated `targets.*` handles — the `targets` module stays **codegen over the graph** (`scp iac export --handles`), regardless of who manages the objects. A placement refined onto a cluster whose managing pipeline has not yet released is **loud** (readiness surfaced, never fake success); whether the image waits for the infra stays the operator's choice (2026-07-15 ruling) — explicit dependency or topology naming, never an implicit gate. The estate declares *stages*; domain operators author only the *HOW* (binding policies); the sub-target layer between them belongs to the infra pipelines that build it.
 
+**Importing another pipeline's products (D20).** The infra pipeline's synth emits a typed products module beside its manifest; its CI publishes it to the org registry like any package (D10). Consumers import it for compile-time safety — the wire still carries only refs:
+
+```ts
+import { products } from "@corp/payments-infra"; // typed products of the infra pipeline
+
+image.placeAt(products.payBlue); // no such product → COMPILE error
+//                                  in graph but object missing → plan HARD-REFUSED (structural ref;
+//                                  D14 pending grace is dependsOn-only, never placements)
+//                                  exists but not yet provisioned → LOUD readiness (D19)
+```
+
+The ladder is compile → plan (hard) → readiness (loud), and a refused plan re-plans on every config-source sync, so infra-lands-then-image-succeeds converges without sequencing PRs.
+
 **Rollout: the strategy is the construct** (`CanaryRollout`, `RollingRollout` — no strategy strings), scoped to its pipeline and keyed to a `TargetClass` — an `RpmPipeline` would declare `new RollingRollout(rpm, { on: TargetClass.instanceGroup, batchPercent: 25, pauseBetween: Duration.minutes(5) })`. Authoritative for `scp-runner-*` classes; trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8) — declared-vs-observed divergence is loud, and SCP never moves traffic itself.
 
 
