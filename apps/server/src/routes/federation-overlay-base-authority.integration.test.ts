@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { and, eq } from "drizzle-orm";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { objects } from "../db/schema.js";
 import {
   buildTestServer,
   createTestOrg,
@@ -58,11 +61,33 @@ import {
  * ## How a test can see an ADDED check at all
  *
  * Both bars are ANDed, and `scopeExpandCte` walks upward — so anyone who clears the org-root bar
- * clears a check at any descendant of it too, and the addition is invisible to an ALLOW-only
- * fixture. `role_bindings.effect` is what makes it visible: a deny at ANY matching scope wins
- * (`authz/resolve.ts`), and a deny bound at the BASE is reached only by a check scoped AT the base.
- * The org-root check is unaffected by it — the org root object has no `domain_id` and no incoming
- * `contains` edge, so its scope expansion is the single row `{org root}`.
+ * ALMOST ALWAYS clears a check at any descendant of it too, and the addition is invisible to an
+ * ALLOW-only fixture. `role_bindings.effect` is what makes it visible: a deny at ANY matching scope
+ * wins (`authz/resolve.ts`), and a deny bound at the BASE is reached only by a check scoped AT the
+ * base. The org-root check is unaffected by it — the org root object has no `domain_id` and no
+ * incoming `contains` edge, so its scope expansion is the single row `{org root}`.
+ *
+ * "ALMOST": the upward walk joins every ANCESTOR `deleted_at IS NULL`, so a base whose containment
+ * parents have been tombstoned expands to the seed alone and matches NO binding — the added bar
+ * then refuses the org-root Owner too. That is a SECOND way this addition can refuse, it is
+ * ACCEPTED rather than deliberate, and the last case below pins it.
+ *
+ * ## Why that second case is accepted, and is not measured against the 2.5a pure-widening invariant
+ *
+ * Increment 2.5a re-scoped 21 get-by-id doors OFF the org root, and a re-scope must admit everyone
+ * it used to — `authz/org-root-arm.ts` exists to make that hold. THESE TWO DOORS ARE NOT IN THAT
+ * SET: nothing moved off the org root here, BAR 1 is the pre-2.5a check unchanged, and BAR 2 was
+ * added beside it. Adding a bar is a DELIBERATE NARROWING; by construction it refuses some of the
+ * principals one bar admitted, or it is not a bar. Judging it by a widening invariant is a category
+ * error, and it was made once on this branch before it was named.
+ *
+ * The org-root arm cannot be the answer here for the reason the route's block states: on a
+ * CONJUNCTION it is satisfied by everyone who just cleared BAR 1, so it would not fix case 2 — it
+ * would delete BAR 2 and the deny cases above with it, leaving this file green over one bar. So the
+ * consequence is accepted and named instead: **an overlay whose base has tombstoned containment
+ * ancestors cannot be created or read by anyone, org-root Owner included, until that base's chain is
+ * repaired.** Reachable via the federation-import path, where `deleteObject`'s orphan guard is
+ * deliberately not applied — which is where foreign-origin bases live.
  *
  * That is also why the deny actor is the sharpest available one: it holds `Operator` at the org
  * root, so every refusal below is the base-scoped check and nothing else. The control case beside
@@ -87,6 +112,23 @@ import {
  *       '<ghost uuid>'"`, expected 403 to be 404.
  *  M-5  Move the added `object:read` check ABOVE `getMergedOverlayView` => the GET half of the same
  *       case FAILED: `"lacks 'object:read' at scope '<ghost uuid>'"`, expected 403 to be 404.
+ *
+ * THE REFRAME, MEASURED (2026-08-26, baseline 7 passed). The tombstoned-ancestor case below was
+ * added, and with it the mutation that shows why the "obvious fix" for it is not one:
+ *
+ *  M-6  Give BAR 2 an ORG-ROOT ARM — `authorize(… scopeObjectId: base.id)` on the create door
+ *       replaced by `checkAtOrgRootOrScopes({ orgRootPermission: 'object:write', scopedPermission:
+ *       'object:write', quantifier: 'any', scopeObjectIds: [base.id] })`, i.e. exactly what
+ *       "fixing" case 2 the way the 21 re-scoped doors were fixed would mean => `Tests 2 failed |
+ *       5 passed (7)`. "a deny at the base object refuses the overlay CREATE" FAILED (expected 201
+ *       to be 403), and "ACCEPTED AND PINNED: a base whose ancestors are TOMBSTONED refuses
+ *       everyone" FAILED (expected 201 to be 403).
+ *
+ *       "a principal bound ONLY at the base is still refused" STAYS GREEN under the mutation, and
+ *       that is the point rather than a gap: it is refused by BAR 1, which the mutation does not
+ *       touch. BAR 2 is the only thing the arm deletes — so the deny-at-base refusal, which BAR 1
+ *       cannot express, is what is actually lost. The arm does not repair BAR 2; it deletes it.
+ *       That measurement is the argument for accepting case 2 rather than papering over it.
  */
 describe("federation overlay doors demand authority at the BASE object (role-model §8.6)", () => {
   let server: TestServer;
@@ -204,6 +246,89 @@ describe("federation overlay doors demand authority at the BASE object (role-mod
     expect(created.statusCode, created.body).toBe(201);
     const read = await readMerged(baseId, org.adminToken);
     expect(read.statusCode, read.body).toBe(200);
+  });
+
+  it("ACCEPTED AND PINNED: a base whose ancestors are TOMBSTONED refuses everyone, org-root Owner included", async () => {
+    // ============================================================================================
+    // THIS 403 IS INTENTIONAL. It is not the pure-widening regression the 21 RE-SCOPED doors had —
+    // see the docblock above: these two doors were TIGHTENED, BAR 1 is the pre-2.5a check unchanged
+    // and BAR 2 was added beside it, so a widening invariant never governed them. `scopeExpandCte`
+    // joins every ancestor `deleted_at IS NULL`, so a base whose containment parents are tombstoned
+    // expands to the seed alone and matches NO binding; BAR 2 therefore refuses everybody until the
+    // base's chain is repaired. Giving BAR 2 an org-root arm would not fix that — it is satisfied by
+    // everyone who cleared BAR 1, so it would delete BAR 2 and the two deny cases above with it.
+    //
+    // Pinned so this is a KNOWN state with a written reason rather than a surprise found in
+    // production, and so that a future change to either the arm or the walk has to come here and
+    // decide on purpose.
+    //
+    // WHY THE ANCESTOR IS TOMBSTONED WITH AN UPDATE, MEASURED RATHER THAN ASSERTED: `deleteObject`'s
+    // orphan guard refuses to delete a row with live containment children, and the base IS one —
+    // the API refusal is exercised below rather than described. The guard is skipped on the
+    // federation-import path and when removing a foreign shadow, which is exactly how a
+    // foreign-origin base ends up with a tombstoned parent; the ROW those paths leave behind is this
+    // one column on the parent, and that is all `scopeExpandCte` reads.
+    // ============================================================================================
+    const asAdmin = { authorization: `Bearer ${org.adminToken}` };
+    const domain = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/domains",
+      headers: asAdmin,
+      payload: { name: `overlay-tomb-domain-${randomUUID().slice(0, 8)}` }
+    });
+    expect(domain.statusCode, domain.body).toBe(201);
+    const domainId = (domain.json() as { id: string }).id;
+
+    const strandedBase = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/services",
+      headers: asAdmin,
+      payload: { name: `overlay-tomb-base-${randomUUID().slice(0, 8)}`, domainId }
+    });
+    expect(strandedBase.statusCode, strandedBase.body).toBe(201);
+    const { id: strandedBaseId, urn: strandedBaseUrn } = strandedBase.json() as {
+      id: string;
+      urn: string;
+    };
+
+    // Sanity BEFORE the tombstone, so the refusal below cannot be blamed on the fixture.
+    expect((await createOverlayVia(org.adminToken, overlayBody(strandedBaseId))).statusCode).toBe(
+      201
+    );
+    expect((await readMerged(strandedBaseId, org.adminToken)).statusCode).toBe(200);
+
+    // The orphan guard refuses the ordinary local route to this state — asserted, so that if it
+    // ever stops refusing, this test tells us rather than the comment above quietly going stale.
+    const refusedDelete = await server.app.inject({
+      method: "DELETE",
+      url: `/api/v1/domains/${domainId}`,
+      headers: asAdmin
+    });
+    expect(refusedDelete.statusCode, refusedDelete.body).toBe(409);
+    // The guard enumerates the offending rows by URN, and the base is the one it names.
+    expect(refusedDelete.body).toContain(strandedBaseUrn);
+
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      await tx
+        .update(objects)
+        .set({ deletedAt: new Date() })
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.id, domainId)));
+    });
+
+    const created = await createOverlayVia(org.adminToken, overlayBody(strandedBaseId));
+    expect(created.statusCode, created.body).toBe(403);
+    expect(created.body).toContain(strandedBaseId);
+    expect(created.body).toMatch(/object:write/);
+
+    const read = await readMerged(strandedBaseId, org.adminToken);
+    expect(read.statusCode, read.body).toBe(403);
+    expect(read.body).toContain(strandedBaseId);
+    expect(read.body).toMatch(/object:read/);
+
+    // BAR 1 is untouched by the tombstone — the org root's own expansion is a single depth-0 row —
+    // so the refusal above really is BAR 2 and not the door closing generally. The control is the
+    // LIVE base, which the same Owner still reaches in the same request sequence.
+    expect((await readMerged(baseId, org.adminToken)).statusCode).toBe(200);
   });
 
   it("a base that names nothing is 404, never 403 — the object is resolved before it is scoped", async () => {

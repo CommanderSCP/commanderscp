@@ -138,7 +138,8 @@ describe("graph integrity report", () => {
   });
 
   it("finds an orphan SOURCE MAPPING, and repairs it through the mappings door", async () => {
-    // The 12 rows the ADR-0026 §6 pair merges stranded on the live estate are exactly this shape.
+    // The 12 rows the post-import-configuration.md §6 pair merges stranded on the live estate are
+    // exactly this shape.
     // Detection of them was UNPROVEN until this test existed: dropping the `deleted_at` filter from
     // the mapping query failed nothing, because no case exercised it.
     const tag = `gi-map-${uuidv7().slice(0, 8)}`;

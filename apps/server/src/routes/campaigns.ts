@@ -19,8 +19,9 @@ import { resolveDeclaredContainmentParent } from "../graph/containment-parent-au
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
-import { withTenantTx } from "../db/tenant-tx.js";
+import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { checkAtOrgRootOrScopes } from "../authz/org-root-arm.js";
 import {
   getCampaign,
   listCampaignTargetObjectIds,
@@ -41,8 +42,8 @@ import {
   resolveCampaignDeadline
 } from "../coordination/campaign-deadline-lock.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
-import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
-import { badRequest } from "../errors.js";
+import { findObjectByIdOrUrnAnyType, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { badRequest, forbidden, notFound } from "../errors.js";
 
 /**
  * `/campaigns` (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5) — the campaign-scoped sibling of
@@ -112,6 +113,79 @@ function widensCampaignDeadline(
   // down because that schema is under standing pressure to loosen toward a bare string (§4.1's
   // federation-wedge argument).
   return Number.isNaN(afterAt) || afterAt > beforeAt.getTime();
+}
+
+/**
+ * THE BAR FOR THE FOUR CAMPAIGN GET-BY-ID DOORS: the requested permission at the ORG ROOT **or** at
+ * the campaign object itself. One place per file, composing the one place per SERVER
+ * ({@link checkAtOrgRootOrScopes}); the block above `GET /api/v1/campaigns/:id` says why the
+ * org-root arm is not redundant.
+ *
+ * `campaignObjectId` is always an id the caller has already RESOLVED — never a raw path param. That
+ * is what keeps an unknown id a 404 instead of the 403 that scoping at an id naming nothing
+ * produces for everybody, org-root Owner included. And "resolved" means resolved AS A CAMPAIGN:
+ * see {@link resolveCampaignForScope}, which the two doors that cannot get the campaign from their
+ * repo in time use, so the bar this function puts up can never land on some other object.
+ */
+async function assertCampaignAuthority(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    subjectObjectId: string;
+    permission: "object:read" | "object:write";
+    campaignObjectId: string;
+  }
+): Promise<void> {
+  const verdict = await checkAtOrgRootOrScopes(tx, {
+    orgId: input.orgId,
+    subjectObjectId: input.subjectObjectId,
+    orgRootPermission: input.permission,
+    scopedPermission: input.permission,
+    quantifier: "any",
+    scopeObjectIds: [input.campaignObjectId]
+  });
+  if (verdict.ok) return;
+  throw forbidden(
+    `subject '${input.subjectObjectId}' lacks '${input.permission}' at the org root and at ` +
+      `campaign '${input.campaignObjectId}'`
+  );
+}
+
+/**
+ * THE OBJECT A CAMPAIGN DOOR SCOPES AT — resolved first, and 404 unless it really IS a campaign.
+ *
+ * `GET /campaigns/{id}` and `:explain` get this for free: `getCampaign` goes through
+ * `fetchCampaignObject`, which pins `type_id = 'campaign'`. `:adoption` and `POST :rollback` cannot
+ * — their repo call resolves the campaign far too late to scope an authorization check on — so they
+ * used `getObjectByIdOrUrnAnyType`, which resolves ANY type. Two things followed from that, both
+ * closed here:
+ *
+ *  1. THE CAMPAIGN BAR WAS SATISFIABLE AT AN ARBITRARY NON-CAMPAIGN OBJECT. Pass a component's id
+ *     and `assertCampaignAuthority` checked `object:read`/`object:write` at that COMPONENT — so a
+ *     component-bound principal cleared a bar named "campaign", and only then did the repo answer
+ *     404/400. Nothing was disclosed and nothing was written, but the bar an operator reads in the
+ *     code was not the bar being run, which is exactly the class of comment-that-lies this codebase
+ *     keeps paying for.
+ *  2. IT WIDENED A PRE-AUTHORIZATION EXISTENCE ORACLE. The resolve necessarily runs before the
+ *     check, so an id that names ANY live object was distinguishable from one that names nothing,
+ *     to a caller who might hold nothing anywhere. Type-checking here collapses both to one 404.
+ *
+ * The 404 message is deliberately IDENTICAL to `fetchCampaignObject`'s, so "no such object", "an
+ * object, but not a campaign" and "a soft-deleted campaign" are indistinguishable on the wire —
+ * the same shape `routes/changes.ts`'s `resolveChangeForScope` uses for the change family.
+ *
+ * SOFT-DELETED ROWS ARE EXCLUDED, unlike the change resolver, and that is not an inconsistency:
+ * `fetchCampaignObject` filters `deleted_at IS NULL` and `getObjectByIdOrUrnAnyType` did too, so
+ * every campaign door 404'd a tombstoned campaign before this change and still does.
+ */
+async function resolveCampaignForScope(
+  tx: TenantTx,
+  orgId: string,
+  idOrUrn: string
+): Promise<{ id: string }> {
+  const object = await findObjectByIdOrUrnAnyType(tx, orgId, idOrUrn);
+  if (!object || object.typeId !== "campaign") throw notFound(`campaign '${idOrUrn}' not found`);
+  return { id: object.id };
 }
 
 export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): void {
@@ -208,17 +282,27 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
 
   /**
    * ==============================================================================================
-   * THE FOUR CAMPAIGN GET-BY-ID DOORS ARE SCOPED AT THE CAMPAIGN (role-model.md §8.7, step 2.5a)
+   * THE FOUR CAMPAIGN GET-BY-ID DOORS TAKE THE ORG ROOT **OR** THE CAMPAIGN (role-model.md §8.7,
+   * step 2.5a)
    * ==============================================================================================
    * `GET /campaigns/{id}`, `:explain`, `:adoption` and `POST :rollback` each ran at
    * `scopeObjectId: auth.orgId`. `authz/resolve.ts`'s `scope_expand` walks UPWARD only, so a check
    * pinned at the org root is satisfiable by an ORG-ROOT BINDING AND BY NOTHING ELSE — an actor
    * bound at the service a campaign lives in held `object:read` and was still 403'd reading it.
    *
-   * A PURE WIDENING, not a re-aiming. The same upward walk means an org-root binding still
-   * satisfies a check at any object below it, so every request that succeeded before succeeds
-   * identically; what changes is that a binding BELOW the org root now reaches the campaigns inside
-   * its own subtree, and only those.
+   * A PURE WIDENING, not a re-aiming — and it takes a DISJUNCTION to be one. "An org-root binding
+   * still satisfies a check at any object below it" is almost true, and the exception is the whole
+   * point of `authz/org-root-arm.ts`: `scopeExpandCte` joins every ANCESTOR `deleted_at IS NULL`,
+   * so a campaign whose containment parent has been tombstoned expands to the seed alone and
+   * matches NO binding, org-root Owner included. `deleteObject`'s orphan guard makes that hard to
+   * reach through ordinary local calls — a live campaign is a live `domain_id` child and blocks its
+   * parent's delete — but the guard is deliberately NOT applied on the federation-import path or
+   * when removing a foreign shadow, so a campaign declared under a REPLICA domain that its
+   * authoritative domain later deletes is exactly this state, and `graph/objects-repo.ts` records
+   * that orphaning as a known cost. These doors therefore compose the same
+   * `checkAtOrgRootOrScopes` the change and source-mapping doors do, rather than restating a
+   * fourth copy of the arm. What the scoped arm adds is that a binding BELOW the org root now
+   * reaches the campaigns inside its own subtree, and only those.
    *
    * A CAMPAIGN'S OWN ID IS A REAL SCOPE, WHERE A CHANGE'S IS NOT — the distinction that makes these
    * four the cheap fixes and the `change` doors a separate problem. §8.4 measured that no
@@ -262,11 +346,11 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
         // second query. Scoping at `found.id` rather than at `request.params.id` is deliberate for
         // the same reason: the id that is checked is the one that was proven to exist.
         const found = await getCampaign(tx, auth.orgId, request.params.id);
-        await authorize(tx, {
+        await assertCampaignAuthority(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
-          scopeObjectId: found.id
+          campaignObjectId: found.id
         });
         return found;
       });
@@ -301,11 +385,11 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
         // `getCampaign` call was already the first statement after the check; only the order and
         // the scope changed.
         const campaign = await getCampaign(tx, auth.orgId, request.params.id);
-        await authorize(tx, {
+        await assertCampaignAuthority(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
-          scopeObjectId: campaign.id
+          campaignObjectId: campaign.id
         });
         // `withFreezeHolds: true` — this response's `plan.waves[].targets[].hold` /
         // `heldTargetCount` is the campaign-side wave-target hold projection (M25.UI), the same
@@ -363,14 +447,16 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
         // the campaign itself (through `getCampaign`, which is also where "that uuid is not a
         // campaign" 404s), and that resolution happens far too late to scope an authorization
         // check on. A single indexed lookup is the price of not turning this route's 404 into a
-        // 403; `getObjectByIdOrUrnAnyType` is the cheap half of it — it filters tombstones and
-        // resolves nothing else.
-        const campaignObject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.id);
-        await authorize(tx, {
+        // 403; `resolveCampaignForScope` is the cheap half of it — it filters tombstones, pins
+        // `type_id = 'campaign'` and resolves nothing else. The TYPE check is not decoration: with
+        // a bare any-type lookup the campaign bar was satisfiable at whatever object the caller
+        // named (see that function's docblock).
+        const campaignObject = await resolveCampaignForScope(tx, auth.orgId, request.params.id);
+        await assertCampaignAuthority(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
-          scopeObjectId: campaignObject.id
+          campaignObjectId: campaignObject.id
         });
         return buildCampaignAdoptionReport(tx, auth.orgId, request.params.id);
       });
@@ -830,12 +916,17 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
         // re-scope and unchanged by it. Widening this door from the org root to the campaign is
         // therefore not a widening of blast radius: it changes who may ASK, not what the ask
         // reaches.
-        const campaignObject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.id);
-        await authorize(tx, {
+        //
+        // `resolveCampaignForScope`, not a bare any-type lookup: the bar below is named "campaign"
+        // and must be RUN at a campaign. It also turns this door's "not a campaign" answer from
+        // `triggerCampaignRollback`'s 400 into the same 404 every other campaign door gives, which
+        // is what keeps a non-campaign id indistinguishable from a typo.
+        const campaignObject = await resolveCampaignForScope(tx, auth.orgId, request.params.id);
+        await assertCampaignAuthority(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:write",
-          scopeObjectId: campaignObject.id
+          campaignObjectId: campaignObject.id
         });
         return triggerCampaignRollback(tx, {
           orgId: auth.orgId,

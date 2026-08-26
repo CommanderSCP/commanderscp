@@ -29,7 +29,8 @@ import type { AppDeps } from "../types.js";
 import type { GateDeps } from "../coordination/gates.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { authorize, hasPermission } from "../authz/resolve.js";
+import { authorize } from "../authz/resolve.js";
+import { checkAtOrgRootOrScopes } from "../authz/org-root-arm.js";
 import { badRequest, forbidden, notFound } from "../errors.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
@@ -37,7 +38,10 @@ import { targetObjectIdsOf } from "../coordination/changes-repo.js";
 // The change doors in THIS file are scoped by the same two helpers `routes/changes.ts` scopes its
 // own with, imported rather than restated so the read bar and the write bar cannot drift apart
 // across the two files (see their docblock for why a change's scope is its TARGETS).
-import { assertReadableAtSomeChangeTarget } from "./changes.js";
+// `resolveChangeForScope` comes with them: a door that scopes at a change's targets must first
+// establish that the id it was handed IS a change, or the target-set refusal turns "that is not a
+// change" into a 403 for a principal with full authority.
+import { assertReadableAtSomeChangeTarget, resolveChangeForScope } from "./changes.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { evaluateGovernanceGate } from "../governance/gate-orchestrator.js";
 import { upsertControlBinding, listControlRunsForChange } from "../governance/controls-repo.js";
@@ -67,20 +71,27 @@ import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
  * real scope). Shared by `GET /approvals/{id}` and its `/votes` sub-resource so the request and its
  * contents can never end up behind different bars.
  *
- * The change is resolved with the THROWING lookup on purpose: `approval_requests.change_object_id`
- * names a change that must exist for the request to mean anything, so an unresolvable one is an
- * honest 404 about a dangling row rather than a 403 that would read as missing standing.
+ * The change is resolved with the THROWING `resolveChangeForScope` on purpose:
+ * `approval_requests.change_object_id` names a change that must exist for the request to mean
+ * anything, so an unresolvable one is an honest 404 about a dangling row rather than a 403 that
+ * would read as missing standing.
+ *
+ * A SOFT-DELETED change is not "unresolvable" here, and neither door re-applies a tombstone 404.
+ * Before 2.5a these two resolved no change at all — they authorized at the org root and read the
+ * request — so an approval request whose change has since been tombstoned was served, and still is
+ * (`resolveChangeForScope`'s docblock has the full account). The 404 this function does produce is
+ * for a `change_object_id` that names nothing or names a non-change, which means the row is corrupt.
  */
 async function assertApprovalRequestReadable(
   tx: TenantTx,
   auth: { orgId: string; subjectObjectId: string },
   changeObjectId: string
 ): Promise<void> {
-  const changeObject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, changeObjectId);
+  const change = await resolveChangeForScope(tx, auth.orgId, changeObjectId);
   await assertReadableAtSomeChangeTarget(tx, {
     orgId: auth.orgId,
     subjectObjectId: auth.subjectObjectId,
-    change: { id: changeObject.id, properties: changeObject.properties }
+    change
   });
 }
 
@@ -307,21 +318,26 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         // `object:read` at ANY ONE of the change's targets, not at the org root — a change's own
         // `domain_id` is the org root, so nothing narrower than the targets is a real scope here.
         //
-        // Resolving the change first is what keeps an unknown id a 404 (scoping at an unresolved
-        // path param turns 404 into 403), and it is also a fix in its own right: the raw
-        // `idOrUrn` used to be handed straight to a uuid-typed column, so this door has never
-        // accepted the URN half of its own parameter.
-        const changeObject = await getObjectByIdOrUrnAnyType(
-          tx,
-          auth.orgId,
-          request.params.idOrUrn
-        );
+        // `resolveChangeForScope` does two things this door needs, both of them about keeping
+        // 404 and 403 apart. It resolves before the scope check, because scoping at an unresolved
+        // path param turns 404 into 403; and it 404s an id that resolves to something OTHER than a
+        // change. Without the type check this door 403s an org-root Owner who passes, say, a
+        // component id — the target-set refusal fires on an object that has no targets — where it
+        // used to answer `200 []` (`listControlRunsForChange` is a plain
+        // `change_object_id = $1` filter, so a non-change id simply matched no rows). Reporting an
+        // authorization failure to the one principal with authority over everything is the
+        // opposite of the widening this increment is; a 404 is the honest answer and a better one
+        // than `200 []`.
+        //
+        // Resolving is also a fix in its own right: the raw `idOrUrn` used to be handed straight to
+        // a uuid-typed column, so this door has never accepted the URN half of its own parameter.
+        const change = await resolveChangeForScope(tx, auth.orgId, request.params.idOrUrn);
         await assertReadableAtSomeChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          change: { id: changeObject.id, properties: changeObject.properties }
+          change
         });
-        return listControlRunsForChange(tx, auth.orgId, changeObject.id);
+        return listControlRunsForChange(tx, auth.orgId, change.id);
       });
       reply.status(200).send({
         items: runs.map((r) => ({
@@ -400,11 +416,11 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           where: (r, { and, eq }) => and(eq(r.orgId, auth.orgId), eq(r.id, request.params.id))
         });
         if (!run) throw notFound(`control run '${request.params.id}' not found`);
-        const changeObject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, run.changeObjectId);
+        const change = await resolveChangeForScope(tx, auth.orgId, run.changeObjectId);
         await assertReadableAtSomeChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          change: { id: changeObject.id, properties: changeObject.properties }
+          change
         });
         const page = await loadScanFindings(tx, auth.orgId, request.params.id, request.query);
         if (!page) throw notFound(`control run '${request.params.id}' not found`);
@@ -453,17 +469,32 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         // only way to reach the targets. (Consequence of moving the required-`changeId` 400 ahead
         // of the authorize: a caller who is BOTH unauthorized AND omits `changeId` now learns the
         // parameter is required before being refused. That leaks nothing about the estate.)
-        const changeObject = await getObjectByIdOrUrnAnyType(
-          tx,
-          auth.orgId,
-          request.query.changeId
-        );
+        //
+        // WHAT THE PRE-AUTHORIZATION RESOLVE DOES AND DOES NOT DISCLOSE. `changeId` is
+        // caller-supplied, so a principal with no binding anywhere can probe it — and the resolve
+        // necessarily runs first, because the targets are where the scope comes from. What it can
+        // learn is bounded by `resolveChangeForScope` answering an IDENTICAL 404 for "no such
+        // object" and for "an object, but not a change": the only bit distinguishable from outside
+        // is "this uuid names a change in my own org that I have no standing on" (403). Callers
+        // are already authenticated into that org, uuids are unguessable, and every change-scoped
+        // door in this family necessarily says the same thing — so this is the design's floor, not
+        // a leak specific to `/approvals`. Naming an arbitrary component id no longer distinguishes
+        // it from a typo.
+        const change = await resolveChangeForScope(tx, auth.orgId, request.query.changeId);
         await assertReadableAtSomeChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          change: { id: changeObject.id, properties: changeObject.properties }
+          change
         });
-        const requests = await listApprovalRequestsForChange(tx, auth.orgId, changeObject.id);
+        // THE ONE DOOR IN THIS FAMILY THAT GENUINELY 404'd A SOFT-DELETED CHANGE BEFORE 2.5a, and
+        // it keeps doing so. Its pre-2.5a resolve was `getObjectByIdOrUrnAnyType`, which filters
+        // tombstones; `resolveChangeForScope` deliberately does not (four OTHER doors resolved no
+        // change at all before 2.5a, and filtering there turned their 200s into 404s — see its
+        // docblock). So the tombstone 404 belongs to this door, not to the resolver, and it is
+        // re-applied HERE — AFTER the read check, because the pre-2.5a order was authorize-then-
+        // resolve, so an unauthorized caller was refused before learning anything about the row.
+        if (change.deletedAt) throw notFound(`change '${request.query.changeId}' not found`);
+        const requests = await listApprovalRequestsForChange(tx, auth.orgId, change.id);
         const items = await Promise.all(
           requests.map(async (r) => {
             const status = await quorumStatus(tx, auth.orgId, r);
@@ -1190,24 +1221,31 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         //
         // NOT `assertReadableAtSomeChangeTarget`, which refuses an empty/malformed target set: this
         // route deliberately accepts ANY object id, falling back to evaluating against the named
-        // object itself, and that fallback is the scope in that case. It is not a way around the
-        // refusal — an object's own scope walk reaches the org root, so the fallback is no weaker
-        // than the org-root pin it replaces.
+        // object itself, and that fallback is the scope in that case.
+        //
+        // THE ORG-ROOT ARM IS HERE FOR THE SAME REASON IT IS ON EVERY OTHER DOOR 2.5A RE-SCOPED,
+        // AND THIS SITE WAS EXCUSED ON A CLAIM THAT TURNED OUT TO BE FALSE. It read "an object's
+        // own scope walk reaches the org root, so the fallback is no weaker than the org-root pin
+        // it replaces". It does not always: `scopeExpandCte` joins every ANCESTOR
+        // `deleted_at IS NULL`, so a scope whose containment parents are tombstoned expands to the
+        // seed alone and matches NO binding, org-root Owner included. `targetObjectIds` here are
+        // read straight off `changeObject.properties` and never re-resolved — the same verbatim
+        // read `routes/changes.ts` documents — so a target deleted along with its service and its
+        // domain is exactly the reachable case. `authz/org-root-arm.ts` carries the full argument
+        // and is the single definition of the arm.
         const evaluationScope = targetObjectIds.length > 0 ? targetObjectIds : [changeObject.id];
-        let permitted = false;
-        for (const scopeObjectId of evaluationScope) {
-          permitted = await hasPermission(tx, {
-            orgId: auth.orgId,
-            subjectObjectId: auth.subjectObjectId,
-            permission: "object:read",
-            scopeObjectId
-          });
-          if (permitted) break;
-        }
-        if (!permitted) {
+        const verdict = await checkAtOrgRootOrScopes(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          orgRootPermission: "object:read",
+          scopedPermission: "object:read",
+          quantifier: "any",
+          scopeObjectIds: evaluationScope
+        });
+        if (!verdict.ok) {
           throw forbidden(
-            `subject '${auth.subjectObjectId}' lacks 'object:read' at any object this dry run ` +
-              `would evaluate (${evaluationScope.join(", ")})`
+            `subject '${auth.subjectObjectId}' lacks 'object:read' at the org root and at any ` +
+              `object this dry run would evaluate (${evaluationScope.join(", ")})`
           );
         }
         const outcome = await evaluateGovernanceGate(tx, gateDeps.sandbox, null, {

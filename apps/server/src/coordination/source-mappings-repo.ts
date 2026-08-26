@@ -10,7 +10,6 @@ import {
   type PipelineClassification
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { hasPermission } from "../authz/resolve.js";
 import { objects, sourceMappings } from "../db/schema.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
@@ -222,39 +221,25 @@ export interface BackfillSourceMappingsResult {
  * is ambiguous (>1 live component), or an identical mapping already exists — reporting each skip with a
  * reason so the operator can see exactly what was and wasn't backfilled (no silent drops).
  *
- * ==============================================================================================
- * AUTHORITY IS CHECKED HERE, PER COMPONENT — NOT ONCE AT THE ORG ROOT ON THE WAY IN
- * ==============================================================================================
- * The route used to hold a single `object:write` check at `auth.orgId`, which — because scope
- * expansion runs strictly UPWARD (`authz/resolve.ts`) — could be satisfied by an org-root binding
- * and by nothing else. A source mapping decides what a push CORRELATES to, so the authority that
- * should govern creating one is authority over the component it names. The check therefore moved
- * in here, where the matched component is known, and the actor is REQUIRED (not optional) so no
- * future caller can reach this loop without one.
+ * AUTHORIZATION IS THE CALLER'S, AND IT IS NOT DUPLICATED HERE. The only caller is
+ * `POST /api/v1/discovery/backfill-source-mappings`, whose door holds one org-root `object:write`
+ * check — role-model.md §8.6 lists that door among those increment 2.5a must NOT re-scope, and the
+ * comment at that call site records why a per-component check inside this loop was tried, reverted,
+ * and not re-added as a second bar. This function therefore takes no actor: adding one back would
+ * put the only bar somewhere a proposal with zero matched components never reaches.
  *
- * WHY A SKIP AND NOT A REFUSAL OF THE WHOLE CALL. `assertCoordinationTargetsWithinAuthority` is
- * the in-tree refuse-everything precedent, and it is the right shape THERE: its targets are the
- * declared targets of ONE change/campaign, so a partial application would leave a half-formed
- * coordination object. Nothing here is atomic. Each entry is an independent row, the operation is
- * documented and tested as idempotently re-runnable, and this function ALREADY answers three other
- * per-entry outcomes with a reported skip. Refusing the batch would also make the widening inert in
- * practice: the input is a whole `discovery run` proposal (50 apps on the homelab estate), so one
- * name belonging to another team's component would refuse the other 49 — for an actor who was never
- * going to get that one row either way. `campaign-rollback.ts` is the precedent this follows.
- *
- * THE SKIP IS NOT SILENT — the reason names the permission and the component, and it rides the same
- * response array the operator already reads to see what was and wasn't backfilled. That does let an
- * authenticated caller with no standing tell "a component of this exact name exists" from "it does
- * not", which is the same existence oracle the get-by-id doors accept by resolving the object before
- * they scope the check (role-model.md §8.7); honest diagnostics are worth more than closing a
- * confirm-an-exact-guess channel that the ordinary component read doors leave open anyway.
+ * A CONSEQUENCE WORTH NAMING, because it is the reason to think twice before adding one later: no
+ * permission check runs inside the loop, so ADR-0037's truncation probe cannot fire mid-batch.
+ * `hasPermission` THROWS `walkDepthExceeded` rather than returning false when a refusal cannot be
+ * trusted, so a per-entry check would let ONE deeply-nested component abort a 50-entry backfill
+ * after some rows were already created — a per-entry outcome escalating to a whole-batch failure,
+ * which is the opposite of the skip-and-report contract above. The door's single check runs before
+ * any row is written, so the same throw there is a clean refusal with nothing half-applied.
  */
 export async function backfillSourceMappings(
   tx: TenantTx,
   input: {
     orgId: string;
-    /** The acting subject — the `object:write` check below is run against it, per component. */
-    actorObjectId: string;
     mappings: BackfillSourceMappingInput[];
   }
 ): Promise<BackfillSourceMappingsResult> {
@@ -289,22 +274,6 @@ export async function backfillSourceMappings(
       continue;
     }
     const componentId = matches[0]!.id;
-
-    // The per-component bar (see the header). Checked BEFORE the duplicate probe below so the
-    // answer never depends on whether an identical row happens to exist already.
-    const authorized = await hasPermission(tx, {
-      orgId: input.orgId,
-      subjectObjectId: input.actorObjectId,
-      permission: "object:write",
-      scopeObjectId: componentId
-    });
-    if (!authorized) {
-      skipped.push({
-        objectName: m.objectName,
-        reason: `not backfilled — 'object:write' is required at component '${componentId}'`
-      });
-      continue;
-    }
 
     // Idempotent: skip an identical (component, sourceKind, repo, path, ref) mapping — re-running is
     // a no-op. `refPattern` is part of the comparison because it is a ROUTING discriminator: without

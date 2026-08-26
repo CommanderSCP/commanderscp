@@ -24,7 +24,8 @@ import { hasPermission } from "../authz/resolve.js";
  * `deleteObject` tombstoned the object ROW alone. Every `relationships` row touching it kept
  * `deleted_at IS NULL` — a live edge to a dead node.
  *
- * Measured on the live homelab (2026-08-02) during the ADR-0026 §6 pair merge: soft-deleting one
+ * Measured on the live homelab (2026-08-02) during the `docs/proposals/post-import-configuration.md`
+ * §6 pair merge: soft-deleting one
  * absorbed component took the estate from 0 dangling `contains` edges to 1, and it had to be removed
  * by hand. §6's own verification list demands "the absorbed component is soft-deleted with no live
  * `contains` edge", which says the hazard was anticipated and never enforced anywhere in code.

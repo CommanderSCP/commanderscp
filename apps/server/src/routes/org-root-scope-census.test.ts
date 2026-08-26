@@ -198,10 +198,12 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     cls: "org-level",
     why: "the audit chain is one hash-linked sequence per org and is not sliceable by containment, so reading it is an org-level act"
   },
+
+  // ---- the WIDE ARM of every 2.5a disjunction, defined once -------------------------------------
   {
-    site: "routes/changes.ts :: assertDecisionReadable() :: audit:read",
+    site: "authz/org-root-arm.ts :: checkAtOrgRootOrScopes() :: check.orgRootPermission",
     cls: "org-level",
-    why: "the WIDE arm of §8.6's deliberate disjunction — org-root audit:read OR object:read at the decision's own subject; only the first arm is org-root by design"
+    why: "THE ONE DEFINITION of the WIDE arm every door increment 2.5a re-scoped composes — 'at the org root OR at the object this door governs'. It is org-root BY CONSTRUCTION: the narrow arm beside it, in the same function, is the scoped half. It is what makes the re-scope a PURE WIDENING, because scopeExpandCte joins every ANCESTOR deleted_at IS NULL and so reaches nothing at all from an object whose parents have been tombstoned — which an org-root pin could never do to anybody. On the change doors the arm is also evaluated BEFORE the persisted target set is read at all (checkAtOrgRootOrChangeTargets), so a row a federation import mangled cannot 403 an org-root principal while the trap-4 refusal still stops a scoped one. It is deliberately NOT composed by the two federation OVERLAY doors: those ADDED a bar rather than re-scoping one, so an org-root arm there would be inert and would delete the bar — see their entries below. Composed by routes/changes.ts (assertReadableAtSomeChangeTarget, assertWritableAtEveryChangeTarget, assertDecisionReadable — where the wide arm is audit:read and the narrow one object:read, §8.6's deliberate disjunction, whose SUBJECT arm resolves a change to its TARGETS rather than checking the change itself, because a change's own chain runs to the org root and a direct check there would be inert), routes/campaigns.ts (assertCampaignAuthority), routes/change-sources.ts (assertSourceMappingWritable) and routes/governance.ts (POST /policy-evaluate). This entry existing exactly once is the point: three hand-written copies is how graph/containment.ts drifted"
   },
 
   // ---- CI ingress and credential doors: role-model.md §8.6's explicit no-sweep list --------------
@@ -244,6 +246,11 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     site: "routes/executors.ts :: POST /api/v1/discovery/accept :: object:write",
     cls: "escalation-bar",
     why: "role-model.md §8.6 — accepting a discovery proposal creates objects the caller never named, from a run that used the org's credentials"
+  },
+  {
+    site: "routes/executors.ts :: POST /api/v1/discovery/backfill-source-mappings :: object:write",
+    cls: "escalation-bar",
+    why: "role-model.md §8.6 names this door beside /discovery/run and /accept as one that must NOT be swept; it was briefly replaced by a per-component check inside backfillSourceMappings, which authorized NOTHING for an empty or fully-skipped proposal — a door's bar cannot live in a per-entry loop"
   },
 
   // ---- federation: identity and link operation are instance-level acts ---------------------------
@@ -330,12 +337,12 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
   {
     site: "routes/federation.ts :: POST /api/v1/federation/overlays :: object:write",
     cls: "org-level",
-    why: "an overlay is ALWAYS created at org-root containment, so its own scope IS the org root; the governance-managed sub-case adds overlay-repo.ts's policy:write bar on top"
+    why: "BAR 1 of a CONJUNCTION, and the only one this census can see. An overlay is ALWAYS created at org-root containment, so its own scope IS the org root; the governance-managed sub-case adds overlay-repo.ts's policy:write bar on top. 2.5a ADDED a second bar at the resolved BASE object beside this one — it did NOT re-scope this one, which is why this entry stays. The pair is a deliberate TIGHTENING and the pure-widening invariant that governs the 21 re-scoped doors does not apply to it; the accepted consequence (a base with tombstoned ancestors is unreachable to everyone until its chain is repaired) is argued at the doors and pinned by routes/federation-overlay-base-authority.integration.test.ts"
   },
   {
     site: "routes/federation.ts :: GET /api/v1/federation/overlays/:idOrUrn :: object:read",
     cls: "org-level",
-    why: "overlays live at the org root, so re-scoping to the overlay's own id would expand to the same set"
+    why: "BAR 1 of the same conjunction as the create door above — overlays live at the org root, so re-scoping to the overlay's own id would expand to the same set. The base-scoped BAR 2 was added beside it, never substituted for it, and deliberately carries NO org-root arm: on a conjunction that arm is satisfied by everyone who just cleared this bar, so composing authz/org-root-arm.ts there would delete BAR 2 rather than fix anything (measured — mutation M-6 in the overlay test turns three cases red at once)"
   },
   {
     site: "routes/federation.ts :: POST /api/v1/federation/hand-fill :: federation:write",

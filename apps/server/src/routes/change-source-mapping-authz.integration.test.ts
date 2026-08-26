@@ -11,41 +11,55 @@ import {
 } from "../test-support/harness.js";
 
 /**
- * SOURCE-MAPPING WRITE DOORS ARE AUTHORIZED AT THE COMPONENT THE MAPPING BELONGS TO — and the
- * CREDENTIAL doors next to them are NOT.
+ * THE THREE `source_mappings` MUTATION DOORS TAKE `object:write` AT THE ORG ROOT **OR** AT THE
+ * MAPPING'S OWN COMPONENT — and the credential/discovery doors next to them still take the org root
+ * and nothing else.
  *
  * ============================================================================================
  * WHY THIS FILE EXISTS
  * ============================================================================================
  * `authz/resolve.ts` expands a checked scope strictly UPWARD, so a check pinned at `auth.orgId` can
- * be satisfied by an org-root binding and by NOTHING else. Every write door on `source_mappings`
- * was pinned that way, which made the mappings of a component unreachable to the very role that
- * administers the component (docs/proposals/role-model.md §4.2/§8). Re-scoping each door to the
- * object that actually carries the authority — the mapping's `component_object_id` — is a PURE
- * WIDENING: an org-root binding still satisfies a check at any object below it, so everything that
- * worked before still works, identically. The org-root cases below are here to hold that line.
+ * be satisfied by an org-root binding and by NOTHING else. The pause switch, the scope label and
+ * the delete-by-tuple door were all pinned that way, which made the mappings of a component
+ * unreachable to the very role that administers the component (docs/proposals/role-model.md
+ * §4.2/§8). Increment 2.5a adds the component as a second arm.
+ *
+ * IT IS A DISJUNCTION, NOT A MOVE, and that is the whole subtlety. Replacing the org-root arm with
+ * the component would NOT have been a pure widening, because `scopeExpandCte` is liveness-blind on
+ * its SEED row only: it joins every ANCESTOR `deleted_at IS NULL`, so a component whose containment
+ * parents have been tombstoned expands to the seed alone and matches no binding at all — the
+ * org-root Owner's included. `authz/org-root-arm.ts`'s `checkAtOrgRootOrScopes` carries the full
+ * argument and is the ONE definition every door 2.5a re-scoped composes; the stranded-mapping case
+ * below is this family's two-API-call reproduction of it, and it is the merge-loser case the DELETE
+ * door was built for.
  *
  * ============================================================================================
  * AND WHY IT ALSO TESTS DOORS THAT WERE DELIBERATELY LEFT ALONE
  * ============================================================================================
- * The re-scope above is a `object:write`-plus-`auth.orgId` pattern, and the same two files hold
- * four more instances of that pattern that MUST NOT be re-scoped (role-model.md §8.6): the
- * encrypted-secret doors, the webhook-secret door, and the two discovery doors that make SCP dial
- * an execution system with stored credentials. Sweeping them mechanically would hand a
- * component-scoped administrator the org's execution-system credentials. Nothing in the tree
- * pinned their org-root requirement — all 334 `403` assertions in `apps/server` were enumerated and
- * ZERO covered any of these doors — so the next person running this census could sweep them and
- * ship green. The last case below is that pin.
+ * The re-scope above is an `object:write`-plus-`auth.orgId` pattern, and the same two files hold
+ * five more instances of that pattern that MUST NOT be re-scoped (role-model.md §8.6): the
+ * encrypted-secret doors, the webhook-secret door, and the THREE discovery doors — `/discovery/run`
+ * and `/accept`, which make SCP dial an execution system with stored credentials, and
+ * `/discovery/backfill-source-mappings`, which consumes what such a dial returned. Sweeping them
+ * mechanically would hand a component-scoped administrator the org's execution-system credentials.
+ * Nothing in the tree pinned their org-root requirement — all 334 `403` assertions in `apps/server`
+ * were enumerated and ZERO covered any of these doors — so the next person running this census
+ * could sweep them and ship green. The last two cases below are that pin.
+ *
+ * The backfill door is the sharpest instance and the reason it is asserted separately from the
+ * others: 2.5a briefly SUBSTITUTED its org-root check with a per-component `hasPermission` inside
+ * `backfillSourceMappings`, which authorizes once per MATCHED component — so an empty proposal, or
+ * one whose every name resolved to nothing, authorized nothing whatsoever and any authenticated
+ * principal reached the handler. The empty-proposal case below is what holds that closed.
  *
  * ============================================================================================
  * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
  * ============================================================================================
  * | Mutation | Result |
  * |---|---|
- * | revert `PATCH .../mappings/:id` to `scopeObjectId: auth.orgId` | the pause-switch case FAILS: 403 where 200 was expected |
- * | revert `PATCH .../mappings/:id/scope` to `scopeObjectId: auth.orgId` | the scope-label case FAILS: 403 where 200 was expected |
- * | revert `DELETE .../mappings` to `scopeObjectId: auth.orgId` | the delete case FAILS: 403 where 200 was expected |
- * | drop the per-component `hasPermission` inside `backfillSourceMappings` | the backfill case FAILS: 2 mappings created instead of 1 — it writes the OTHER team's row |
+ * | drop `assertSourceMappingWritable`'s COMPONENT arm (check the org root only, i.e. today's pin) | ALL THREE widening cases FAIL — pause switch, scope label and delete-by-tuple each stop at their FIRST assertion, the component-bound admin acting on their own row, with `403 ... lacks 'object:write' at the org root and at source-mapping component '<id>'` where 200 was expected. The tombstoned-ancestor and backfill cases stay green, so this mutation isolates the widening and nothing else |
+ * | drop `assertSourceMappingWritable`'s ORG-ROOT arm (check the component only) | the tombstoned-ancestor case FAILS at its first door, the pause switch: `403 ... lacks 'object:write' at the org root and at source-mapping component '<id>'` where 200 was expected. Nothing else in the file moves — which is exactly why this case had to be written: the ordinary org-root assertions elsewhere all sit on components with LIVE ancestors |
+ * | delete the `authorize` at `POST /discovery/backfill-source-mappings` | the backfill case FAILS: the component-bound admin gets `200 {"createdSourceMappingIds":[2 ids],"skipped":[]}` where 403 was expected. Re-run with that first expectation relaxed and the EMPTY proposal from the unbound principal ALSO returns `200 {"createdSourceMappingIds":[],"skipped":[]}` — the case no per-entry bar can catch. The org-root-scope census fails in the same run with `STALE routes/executors.ts :: POST /api/v1/discovery/backfill-source-mappings :: object:write` |
  * | delete the `authorize` at `PUT /secrets/{key}` (a credential door has no object to re-scope TO, so a sweep can only weaken it) | the credential-door case FAILS: 200 where 403 was expected |
  */
 describe("source-mapping write doors are scoped at the component, credential doors are not", () => {
@@ -59,6 +73,8 @@ describe("source-mapping write doors are scoped at the component, credential doo
   let theirsName: string;
   /** Bearer token whose ONLY binding is `Administrator` at `mineId`. */
   let mineToken: string;
+  /** Bearer token for a real, authenticated user with NO role bindings at all. */
+  let unboundToken: string;
 
   beforeAll(async () => {
     // `withPluginHost` for one reason only: `POST /discovery/run` fail-closes on `deps.pluginHost`
@@ -77,6 +93,9 @@ describe("source-mapping write doors are scoped at the component, credential doo
     // legitimate authority over that component, and none at all over its sibling.
     mineToken = (await createTestUser(server, org, [{ role: "Administrator", scope: mineId }]))
       .token;
+    // Authenticated, and holding nothing anywhere — the principal a door with no bar of its own
+    // would admit. `requireAuth` passes for this token; only `authorize` stops it.
+    unboundToken = (await createTestUser(server, org, [])).token;
   }, 180_000);
 
   afterAll(async () => {
@@ -224,6 +243,124 @@ describe("source-mapping write doors are scoped at the component, credential doo
     expect(asOwner.json().deleted).toBe(1);
   });
 
+  it("the org-root Owner still reaches a STRANDED mapping whose component's ancestors are all tombstoned", async () => {
+    // ==========================================================================================
+    // THE CASE THAT MAKES THE RE-SCOPE A DISJUNCTION RATHER THAN A MOVE.
+    //
+    // `scopeExpandCte` seeds its walk with the raw uuid (no liveness filter), but joins every
+    // ANCESTOR `deleted_at IS NULL`. So the chain is CUT at the first tombstone and `scope_expand`
+    // collapses to the seed alone, which matches NO binding — including the org-root Owner's. A
+    // component-only check would therefore 403 the Owner on the very rows this DELETE door exists
+    // to remove: a component merge (M12 P5d, `docs/proposals/organize-after.md` §2.4 — ADR-0026 is
+    // about PLACEMENTS and says nothing about merges) soft-deletes the loser component and does not
+    // re-point its `source_mappings`, and `deleteObject`'s orphan guard counts only children with
+    // `deleted_at IS NULL`, so the loser's containment parents become deletable straight after.
+    //
+    // Built here with ordinary API calls in the same order an operator would: delete the component,
+    // then its service, then its domain. Nothing below reaches into the database.
+    // ==========================================================================================
+    const kind = `stranded-${randomUUID().slice(0, 8)}`;
+    const label = randomUUID().slice(0, 8);
+
+    const domain = await call("POST", org.adminToken, "/api/v1/domains", {
+      name: `stranded-domain-${label}`
+    });
+    expect(domain.status, domain.body).toBe(201);
+    const domainId = domain.json().id as string;
+
+    const service = await call("POST", org.adminToken, "/api/v1/services", {
+      name: `stranded-svc-${label}`,
+      domainId
+    });
+    expect(service.status, service.body).toBe(201);
+    const serviceId = service.json().id as string;
+
+    // `domainId` AND `service`: route 1 (`objects.domain_id`) and route 2 (the `contains` edge) are
+    // separate arms of the upward walk, so both have to be cut for the chain to dead-end. Pointing
+    // the component's containment parent at the DOMAIN, and deleting the service too, cuts both.
+    const component = await call("POST", org.adminToken, "/api/v1/components", {
+      name: `stranded-comp-${label}`,
+      service: serviceId,
+      domainId
+    });
+    expect(component.status, component.body).toBe(201);
+    const componentId = component.json().id as string;
+
+    // TWO mappings, both created BEFORE the deletions — `createSourceMapping` resolves its
+    // component live, so a stranded mapping can only ever come into being this way (which is
+    // precisely how a merge strands one). The second is the control for the refusal at the end.
+    const mapping = await admin.changeSources.createMapping(kind, {
+      component: componentId,
+      repoPattern: `acme/${kind}`,
+      type: "configuration"
+    });
+    const stray = await admin.changeSources.createMapping(kind, {
+      component: componentId,
+      repoPattern: `acme/${kind}-stray`,
+      type: "configuration"
+    });
+
+    const delComponent = await call("DELETE", org.adminToken, `/api/v1/components/${componentId}`);
+    expect(delComponent.status, delComponent.body).toBe(200);
+    const delService = await call("DELETE", org.adminToken, `/api/v1/services/${serviceId}`);
+    expect(delService.status, delService.body).toBe(200);
+    // The orphan guard permits this precisely because every child is already a tombstone. If it
+    // ever stopped permitting it, this test would stop covering the case it names — so assert it.
+    const delDomain = await call("DELETE", org.adminToken, `/api/v1/domains/${domainId}`);
+    expect(delDomain.status, delDomain.body).toBe(200);
+
+    // The mappings outlived all three, which is the whole problem.
+    expect((await admin.changeSources.listMappings(kind)).items.map((m) => m.id).sort()).toEqual(
+      [mapping.id, stray.id].sort()
+    );
+
+    // All three re-scoped doors, as the org-root Owner. Without the org-root arm every one of
+    // these is a 403 — the walk from `componentId` reaches nothing at all.
+    const pause = await call(
+      "PATCH",
+      org.adminToken,
+      `/api/v1/change-sources/${kind}/mappings/${mapping.id}`,
+      { enabled: false }
+    );
+    expect(pause.status, pause.body).toBe(200);
+
+    const scope = await call(
+      "PATCH",
+      org.adminToken,
+      `/api/v1/change-sources/${kind}/mappings/${mapping.id}/scope`,
+      { scope: "domain" }
+    );
+    expect(scope.status, scope.body).toBe(200);
+
+    const removed = await call(
+      "DELETE",
+      org.adminToken,
+      `/api/v1/change-sources/${kind}/mappings`,
+      {
+        component: componentId,
+        repoPattern: `acme/${kind}`,
+        pathPattern: null,
+        type: "configuration"
+      }
+    );
+    expect(removed.status, removed.body).toBe(200);
+    expect(removed.json().deleted).toBe(1);
+    expect((await admin.changeSources.listMappings(kind)).items.map((m) => m.id)).toEqual([
+      stray.id
+    ]);
+
+    // And the widening did not leak the other way: a principal with no bindings anywhere is still
+    // refused at the surviving stranded mapping. A cut chain reaches NO binding, so a check that
+    // had simply stopped refusing would look identical to the fix from the Owner's side alone.
+    const refused = await call(
+      "PATCH",
+      unboundToken,
+      `/api/v1/change-sources/${kind}/mappings/${stray.id}`,
+      { enabled: false }
+    );
+    expect(refused.status, refused.body).toBe(403);
+  });
+
   it("an unknown mapping id stays 404 for BOTH — resolving the row before scoping is what keeps it from becoming 403", async () => {
     // `scopeExpandCte` seeds its CTE with the raw uuid and never checks existence, so scoping at an
     // id that names nothing expands to a one-row set no binding matches — including the org root
@@ -248,7 +385,11 @@ describe("source-mapping write doors are scoped at the component, credential doo
     expect(asNarrow.status, asNarrow.body).toBe(404);
   });
 
-  it("POST /discovery/backfill-source-mappings creates only the components the caller can write, and says so", async () => {
+  // -------------------------------------------------------------------------------------------
+  // The doors §8.6 excludes — org-root `object:write`/`object:read`, deliberately
+  // -------------------------------------------------------------------------------------------
+
+  it("POST /discovery/backfill-source-mappings keeps its org-root bar AT THE DOOR — an empty proposal is refused too", async () => {
     const kind = `backfill-${randomUUID().slice(0, 8)}`;
     const proposal = {
       objects: [],
@@ -264,26 +405,46 @@ describe("source-mapping write doors are scoped at the component, credential doo
       ]
     };
 
+    // A component-bound Administrator holds `object:write` at `mineId` and nowhere else. The door
+    // is org-root by §8.6, so it refuses — and refuses the WHOLE call, writing nothing at all,
+    // rather than partially applying the half it has standing for.
     const narrow = await call("POST", mineToken, "/api/v1/discovery/backfill-source-mappings", {
       proposal
     });
-    expect(narrow.status, narrow.body).toBe(200);
-    const narrowBody = narrow.json() as {
-      createdSourceMappingIds: string[];
-      skipped: Array<{ objectName: string; reason: string }>;
-    };
-    expect(narrowBody.createdSourceMappingIds).toHaveLength(1);
-    expect(narrowBody.skipped).toEqual([
-      { objectName: theirsName, reason: expect.stringContaining("object:write") }
-    ]);
+    expect(narrow.status, narrow.body).toBe(403);
+    expect((await admin.changeSources.listMappings(kind)).items).toHaveLength(0);
 
-    // The skip is a real refusal to write, not a cosmetic report.
-    const created = await admin.changeSources.listMappings(kind);
-    expect(created.items).toHaveLength(1);
-    expect(created.items[0]!.componentObjectId).toBe(mineId);
+    // THE CASE A PER-ENTRY CHECK CANNOT CATCH, and the reason this bar has to be at the door: an
+    // EMPTY proposal from a principal with no bindings whatsoever. A check that runs once per
+    // MATCHED component runs zero times here, so the handler would be reached, and its per-name
+    // report is a component-existence oracle. Both of these must be a flat 403.
+    for (const body of [
+      { proposal: { objects: [], relationships: [], sourceMappings: [] } },
+      {
+        proposal: {
+          objects: [],
+          relationships: [],
+          sourceMappings: [
+            {
+              objectName: `absent-${randomUUID().slice(0, 8)}`,
+              sourceKind: kind,
+              repoPattern: "acme/nowhere",
+              type: "configuration"
+            }
+          ]
+        }
+      }
+    ]) {
+      const res = await call(
+        "POST",
+        unboundToken,
+        "/api/v1/discovery/backfill-source-mappings",
+        body
+      );
+      expect(res.status, res.body).toBe(403);
+    }
 
-    // PURE WIDENING: the org-root Owner still backfills everything — here, the one row the narrow
-    // actor was refused (the other is now a duplicate, and stays idempotently skipped).
+    // The org-root Owner is the principal this door is for, and it still backfills everything.
     const asOwner = await call(
       "POST",
       org.adminToken,
@@ -295,14 +456,10 @@ describe("source-mapping write doors are scoped at the component, credential doo
       createdSourceMappingIds: string[];
       skipped: Array<{ objectName: string; reason: string }>;
     };
-    expect(ownerBody.createdSourceMappingIds).toHaveLength(1);
-    expect(ownerBody.skipped).toEqual([{ objectName: mineName, reason: "already mapped" }]);
+    expect(ownerBody.createdSourceMappingIds).toHaveLength(2);
+    expect(ownerBody.skipped).toEqual([]);
     expect((await admin.changeSources.listMappings(kind)).items).toHaveLength(2);
   });
-
-  // -------------------------------------------------------------------------------------------
-  // The doors §8.6 excludes — org-root `object:write`/`object:read`, deliberately
-  // -------------------------------------------------------------------------------------------
 
   it("the credential doors still demand org-root authority: a component-bound admin is refused at every one", async () => {
     const key = `cred-${randomUUID().slice(0, 8)}`;

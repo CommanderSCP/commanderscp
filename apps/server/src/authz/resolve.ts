@@ -15,11 +15,13 @@ import {
  *  - **Subject expansion**: the acting subject (a `user`/`service-account` graph object) plus
  *    every group/team it transitively belongs to via built-in `member_of` relationships.
  *  - **Scope (containment) expansion**: the target object plus every containing ancestor, by two
- *    routes — `objects.domain_id` up to the org root (every object's chain terminates there —
- *    graph/objects-repo.ts defaults `domainId` to the org root object at creation time, so this
- *    walk never needs NULL special-casing beyond the root itself), AND the `contains` edge from a
- *    component to its service (migration 0021), which is what finally makes DESIGN §7's documented
- *    `component -> service -> domain -> organization` chain real. See `scopeExpandCte`.
+ *    routes — `objects.domain_id` up to the org root (every object's chain is BUILT to terminate
+ *    there — graph/objects-repo.ts defaults `domainId` to the org root object at creation time, so
+ *    this walk never needs NULL special-casing beyond the root itself; a TOMBSTONED ancestor cuts
+ *    it short, which is the caveat on route 1 in `scopeExpandCte`'s doc and matters more than it
+ *    reads), AND the `contains` edge from a component to its service (migration 0021), which is
+ *    what finally makes DESIGN §7's documented `component -> service -> domain -> organization`
+ *    chain real. See `scopeExpandCte`.
  *
  * `role_bindings` rows whose `(subject, scope)` pair matches either expansion, and whose role
  * grants the requested permission, are collected; an explicit `deny` at ANY matching scope wins
@@ -125,7 +127,13 @@ export interface PermissionCheck {
  * Walks the target object plus every containing ancestor, by THREE routes:
  *
  *  1. `objects.domain_id` — up to the org root (objects-repo.ts defaults `domainId` to the org root at
- *     creation, so every chain terminates there).
+ *     creation, so every chain STARTS OUT terminating there). It does not always END there: the
+ *     ancestor JOIN below filters `deleted_at IS NULL`, so the walk STOPS at the first tombstoned
+ *     ancestor and `scope_expand` is then whatever it reached below that point — the seed row alone
+ *     when the immediate parent is the tombstone. Such a set matches no org-root binding at all,
+ *     the Owner's included. That is deliberate (see the JOIN's own comment) and it is why every
+ *     door re-scoped off an org-root pin needs `authz/org-root-arm.ts`'s disjunction rather than a
+ *     bare check at the object it governs.
  *  2. `contains` — a component's SERVICE is a containing scope (migration 0021,
  *     docs/proposals/service-component-model.md). DESIGN §7 has always described the chain as
  *     `component -> service -> domain -> organization`; until 0021 there was no service edge to walk,

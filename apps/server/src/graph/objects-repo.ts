@@ -1798,7 +1798,8 @@ export async function deleteObject(
   //
   // Deleting an object used to tombstone the object ROW alone, leaving every `relationships` row
   // touching it with `deleted_at IS NULL` — a live edge to a dead node. Measured on the live homelab
-  // (2026-08-02): soft-deleting one component during the ADR-0026 §6 pair merge took the estate from
+  // (2026-08-02): soft-deleting one component during the post-import-configuration.md §6 pair merge
+  // took the estate from
   // 0 such edges to 1, and it had to be cleaned up by hand.
   //
   // It is not cosmetic, because the containment walk is built out of those edges.

@@ -1307,12 +1307,53 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
    * sweep. Keeping the org-root bar first also keeps these doors' 403 for an unbound caller
    * byte-identical to today's, and keeps the base resolution behind an authorization check.
    *
-   * NET EFFECT TODAY: none, deliberately. `scope_expand` walks upward, so anyone who clears the
-   * org-root bar clears a check at any descendant of it — the addition can only ever REFUSE, and
-   * today only via an explicit `deny` binding at the base. It is built now because the increment
-   * that gives out bindings below the org root is the one where it starts mattering, and because a
-   * later sweep that relaxes the org-root pin here would otherwise leave the door with no bar at
-   * all.
+   * ============================================================================================
+   * THESE TWO DOORS WERE **TIGHTENED**, NOT RE-SCOPED — SO THE PURE-WIDENING INVARIANT DOES NOT
+   * GOVERN THEM (owner-level judgement, 2026-08-26)
+   * ============================================================================================
+   * Increment 2.5a re-scoped 21 get-by-id doors OFF `scopeObjectId: auth.orgId` and ONTO the object
+   * each governs, and that re-scope carries a strict invariant: every request that succeeded before
+   * must still succeed. `authz/org-root-arm.ts` exists to make it hold, because `scopeExpandCte`
+   * joins every ancestor `deleted_at IS NULL` and so reaches nothing at all from an object whose
+   * parents are tombstoned — something an org-root pin could never do to anybody.
+   *
+   * THESE TWO DOORS ARE NOT IN THAT SET. Nothing was moved off the org root here: BAR 1 is the
+   * pre-2.5a check, unchanged, and BAR 2 was ADDED beside it. Adding a bar is a DELIBERATE
+   * NARROWING — it is the entire point of the change (§8.6, and the hand-fill/publish precedent from
+   * PR #286) — so measuring it against an invariant written for a widening is a category error, and
+   * it was made once already on this branch. The right question for a conjunction is "does the new
+   * bar refuse the right things", not "does it refuse anyone the old bar admitted"; by construction
+   * it does refuse some of them, or it would not be a bar.
+   *
+   * WHAT BAR 2 REFUSES — TWO CASES, both accepted, neither a defect:
+   *
+   *   1. an explicit `deny` binding AT THE BASE. The bar's purpose, and pinned by
+   *      `federation-overlay-base-authority.integration.test.ts` — a deny is reached only by a check
+   *      scoped at the base, which is what makes the added bar observable at all.
+   *   2. A BASE WHOSE CONTAINMENT ANCESTORS ARE TOMBSTONED. `scopeExpandCte` joins every ancestor
+   *      `deleted_at IS NULL`, so the walk from such a base reaches NOTHING — not even the org root
+   *      — and BAR 2 then refuses EVERYONE, an org-root Owner included. Stated plainly, because it
+   *      is a real operational state and not a footnote: **an overlay whose base has tombstoned
+   *      containment ancestors cannot be created or read by anybody until that base's containment
+   *      chain is repaired.** Reachability is narrow but real — `deleteObject`'s orphan guard stops
+   *      a LIVE base from having a tombstoned parent locally, and is deliberately skipped on the
+   *      federation-import path, which is precisely where a foreign-origin base lives. The remedy is
+   *      to repair the chain (re-import or re-parent the base), not to hold an overlay door open
+   *      over an object nothing can currently establish authority over.
+   *
+   * AND THE ORG-ROOT ARM IS DELIBERATELY NOT APPLIED TO BAR 2. `checkAtOrgRootOrScopes` composes
+   * "at the org root OR at the governed object", which is the right shape for a re-scope and the
+   * wrong shape here: BAR 1 has already established that the caller holds the permission at the org
+   * root, so an org-root arm on BAR 2 is satisfied by every principal that reaches it. That does not
+   * "fix case 2" — it deletes BAR 2 entirely, case 1 with it, and would leave two mutation-proven
+   * tests green over a door with one bar. Distinguishing "explicitly denied" from "nothing reached"
+   * is the only fix that would preserve case 1, and that is a new authz primitive and an owner
+   * decision, not a comment. Case 2 is therefore a KNOWN, ACCEPTED state, pinned by a test that
+   * asserts the 403 so it is discovered here rather than in production.
+   *
+   * The bar is built now because the increment that gives out bindings below the org root is the
+   * one where it starts mattering, and because a later sweep that relaxes the org-root pin here
+   * would otherwise leave the door with no bar at all.
    *
    * THE BASE IS RESOLVED BEFORE IT IS SCOPED. `scopeExpandCte` seeds its CTE with the raw uuid and
    * never checks existence, so a check scoped at an unresolved caller-supplied value refuses
@@ -1358,7 +1399,10 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           permission: "object:write",
           scopeObjectId: auth.orgId
         });
-        // BAR 2 — ADDED, at the object being annotated. `createOverlay` resolves the base again a
+        // BAR 2 — ADDED, at the object being annotated: a deliberate NARROWING, not a re-scope, so
+        // it carries no org-root arm (the block above says why one would delete the bar). A base
+        // whose ancestors are tombstoned refuses everybody here, by design and pinned by test.
+        // `createOverlay` resolves the base again a
         // moment later (it is the choke point every one of its type refusals is written against,
         // and moving the resolution out of it would put those refusals behind a route that could
         // drift); one indexed lookup buys an authorization decision that cannot be made from the
@@ -1419,7 +1463,9 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           permission: "object:read",
           scopeObjectId: auth.orgId
         });
-        // BAR 2 — ADDED, at the object being read. The merge is computed FIRST because it is what
+        // BAR 2 — ADDED, at the object being read: the same deliberate narrowing as on the create
+        // door, and with the same accepted consequence for a base whose ancestors are tombstoned.
+        // The merge is computed FIRST because it is what
         // resolves (and 404s on) the base; it is a pure computed view that writes nothing, and it
         // is already behind BAR 1, so nothing reaches it that today's door would have refused. The
         // response is withheld until authority at the base itself is established.

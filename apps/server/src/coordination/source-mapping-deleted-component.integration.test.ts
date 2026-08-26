@@ -39,7 +39,8 @@ import {
  * makes the unfixed half worse, because it turns "no binding" into "nothing was meant to deploy".
  *
  * Measured on the live homelab 2026-08-02: FIVE mappings pointed at components soft-deleted that
- * same day by the ADR-0026 §6 pair merges, on repo patterns as broad as `AgentKitProject/agentkit`
+ * same day by the `docs/proposals/post-import-configuration.md` §6 pair merges, on repo patterns as
+ * broad as `AgentKitProject/agentkit`
  * with no path pattern. Every remaining pair merge creates more.
  *
  * ============================================================================================
