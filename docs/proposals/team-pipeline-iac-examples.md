@@ -111,70 +111,56 @@ new BindingPolicy(bindings, "prod-configuration", {
 
 ## 5. `teams/payments/stack.ts` — the team's WHAT (the headline surface)
 
+Component-level pipelines by default, inference at synth (D8): pipeline attachment comes from construct scope, placements from the stages a component's waves name, the source mapping from `repo` (default branch, default Type), the service owner from the stack's registered team. The synthesized manifest still spells all of it out — inference never reaches the server.
+
 ```ts
-import { App, Stack, Service, Component, Placement, Team, DeploymentTarget } from "@scp/iac";
-import { Pipeline, waves } from "@scp/iac"; // (new) composite construct + helpers
+import { App, Stack, Service, Component } from "@scp/iac";
 
 const app = new App();
 const stack = new Stack(app, "team-payments");
 
-// -- the service and its components -----------------------------------------
-const payments = new Service(stack, "payments", {
-  owner: Team.ref("team-payments"),
-});
-const api = new Component(stack, "payments-api", { service: payments });
-const worker = new Component(stack, "payments-worker", { service: payments });
+const payments = new Service(stack, "payments"); // owner inferred: the stack's team
 
-// -- where they run: placements = component × stage --------------------------
-const stages = [
-  DeploymentTarget.ref("commercial-amer-staging"),
-  DeploymentTarget.ref("commercial-amer-prod"),
-  DeploymentTarget.ref("commercial-emea-prod"),
-  DeploymentTarget.ref("govcloud-amer-prod"),
-  DeploymentTarget.ref("airgap1-prod"),
+// one wave shape, reused as a plain TS value
+const rollout = [
+  "commercial-amer-staging",
+  "commercial-amer-prod",
+  "commercial-emea-prod",
+  // one wave, two security domains: ordinary promotion into govcloud, cross-domain
+  // promotion into airgap1 — the CDS gate applies per crossing, not per wave
+  ["govcloud-amer-prod", "airgap1-prod"],
 ];
-for (const component of [api, worker])
-  for (const target of stages)
-    new Placement(stack, `${component.id}@${target.id}`, { component, target });
 
-// -- the pipeline: waves of stages, attached once at the service rung ---------
-new Pipeline(stack, "payments-pipeline", {
-  attachTo: payments, // releases_via at the service rung — both components inherit
-  waves: [
-    { name: "staging", targets: ["commercial-amer-staging"] },
-    { name: "prod-amer", targets: ["commercial-amer-prod"] },
-    { name: "prod-emea", targets: ["commercial-emea-prod"] },
-    // one wave, two stages, two security domains: advancing it is an ordinary
-    // promotion into govcloud and a cross-domain promotion into airgap1 — the
-    // CDS gate (scan/sign at the commander) applies per crossing, not per wave.
-    { name: "regulated", mode: "parallel", targets: ["govcloud-amer-prod", "airgap1-prod"] },
-  ],
+new Component(payments, "payments-api", {
+  repo: "git.corp.example/payments/payments-api", // source mapping inferred: default branch, Type configuration
+  pipeline: { waves: rollout }, // placements inferred: payments-api × every stage named above
 });
 
-// -- routing: which pushes drive this pipeline (source_mappings) --------------
-stack.sourceMapping({
-  repo: "git.corp.example/payments/payments-api",
-  ref: "refs/heads/main",
-  component: api,
-  type: "configuration",
+new Component(payments, "payments-worker", {
+  repo: "git.corp.example/payments/payments-worker",
+  pipeline: { waves: rollout }, // same shape, still its own component-level pipeline
 });
-// The dev branch is NOT mapped here: dev pipelines are domain-local (ADR-0030)
-// and belong to a domain-local stack, not the global promotion path.
 ```
 
-Team members never mention an executor, a credential, or an outpost: the WHAT above federates everywhere, and §4's per-domain policies supply the HOW.
+That is the whole file. Wave shorthand: a bare string is a sequential single-stage wave; an array is a parallel wave; the full `{ name, mode, targets, requiresFanIn }` object stays available when the shorthand isn't enough. The `dev` branch is deliberately unmapped here — dev pipelines are domain-local (ADR-0030) and belong to a domain-local stack.
 
-**The widening pattern (1 → 2 → 4 → 8):** when prod is many targets rather than three, the helper builds the fan-out:
+**The shared exception (D8):** only when components genuinely release as one unit does a pipeline move up a rung — and it is explicit:
 
 ```ts
-const prodTargets = regions.map((r) => DeploymentTarget.ref(`commercial-${r}-prod`));
-new Pipeline(stack, "payments-pipeline", {
-  attachTo: payments,
-  waves: [
-    { name: "staging", targets: ["commercial-amer-staging"] },
-    ...waves.widening(prodTargets, { start: 1, factor: 2 }), // 1, 2, 4, 8, … targets/wave
-    { name: "regulated", mode: "parallel", targets: ["govcloud-amer-prod", "airgap1-prod"] },
-  ],
+// deliberate: one shared pipeline at the service rung (releases_via nearest-rung
+// ladder, ADR-0027/0029). A component that declares its own pipeline still wins by rung.
+new Pipeline(payments, "payments-release", { waves: rollout });
+```
+
+**The widening pattern (1 → 2 → 4 → 8):** when prod is many targets, the helper builds the fan-out:
+
+```ts
+const prod = regions.map((r) => `commercial-${r}-prod`);
+new Component(payments, "payments-api", {
+  repo: "git.corp.example/payments/payments-api",
+  pipeline: {
+    waves: ["commercial-amer-staging", ...waves.widening(prod, { start: 1, factor: 2 })],
+  },
 });
 ```
 
@@ -182,7 +168,7 @@ new Pipeline(stack, "payments-pipeline", {
 
 ## 6. Synth output and delivery, node by node
 
-`teams/payments/manifest.json` (committed by the team's CI, D2 — excerpt):
+`teams/payments/manifest.json` (committed by the team's CI, D2 — excerpt). Every entry §5's inference produced — placements, per-component topology, source mapping — appears here explicitly; inference is synth-time only (D8):
 
 ```json
 {
@@ -190,7 +176,7 @@ new Pipeline(stack, "payments-pipeline", {
   "objects": [
     { "typeId": "service", "name": "payments", "…": "…" },
     { "typeId": "component", "name": "payments-api", "…": "…" },
-    { "typeId": "release-topology", "name": "payments-pipeline",
+    { "typeId": "release-topology", "name": "payments-api-pipeline",
       "properties": { "waves": [
         { "name": "staging", "targets": ["commercial-amer-staging"] },
         { "name": "regulated", "mode": "parallel",
