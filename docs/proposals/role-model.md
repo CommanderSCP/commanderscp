@@ -673,6 +673,27 @@ Also flagged, out of scope here: **`/graph/traverse` and `/graph/subgraph` are a
 bypass** — they authorize `graph:query` at one `objectId` and then return many objects with no row
 filtering.
 
+### 8.6a The same property, 138 times, pre-existing — tracked, not swept
+
+**Owner ruling 2026-08-26: track it, fix opportunistically.** A filterless census
+(`grep -rna 'scopeObjectId'` over `apps/server/src`, 300 assignment sites) found **138 non-test checks
+scoped at something other than the org id**, all carrying the tombstoned-ancestor property
+([[scp-rescoping-tombstoned-ancestor]]) **independently of 2.5a**. Confirmed by `git blame` as
+pre-existing: `PUT /controls/{idOrUrn}/binding` at `control.id` (2026-07-10), the freeze write doors
+at `freeze.scopeObjectId`, five target-scoped executor doors,
+`assertCoordinationTargetsWithinAuthority` at propose time, `triggerCampaignRollback`'s per-member
+check.
+
+This is **existing behaviour, not a regression** — nobody has hit it — which is why it does not block
+the role programme. `authz/org-root-arm.ts`'s `checkAtOrgRootOrScopes` is the instrument that fixes
+any of them; apply it when a site is touched for another reason.
+
+> ⚠️ **Two sites compound the trap and are worth fixing first if anyone is in that file:** the
+> campaign deadline pair scopes at `request.params.id` — a **raw, unresolved path param** — so it
+> carries the 404-becomes-403 trap (§8.7) *as well as* the tombstone one. `scopeExpandCte` seeds the
+> CTE with the raw uuid and never checks existence, so a nonexistent id expands to a one-row set
+> matching no binding.
+
 ### 8.7 Sequencing
 
 **Split step 2.5 at the LIST boundary.**
