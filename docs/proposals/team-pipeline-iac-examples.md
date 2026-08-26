@@ -205,43 +205,91 @@ export const widePod = (regions: string[]) => [
 | **retrans** | relay at the CDS boundary | nothing to declare — pairing + inbox/outbox delivery config only; relays signed bundles, validates, never terminates a promotion |
 | **airgap1 outpost** | air-gapped, `trustTier: il5` | WHAT arrives as `.scpbundle` via retrans (the M13.1a inbox loop — untouched by D1); its HOW stack applied locally from the same media run |
 
-## 7. Sources, targets, dependencies, gates, and Types
+## 7. The authoring surface in detail
 
-**Dependencies (`dependsOn`).** Already a fluent method on every `@scp/iac` construct; it stays, and gains refs to objects the team does not own — components, assemblies, or services:
+**Refs are real or the plan refuses.** Every `.ref()` compiles to a name/URN reference in the manifest; at plan time the **server** resolves each one against the live graph. An unresolvable ref refuses the whole plan — a Decision is recorded and the config-source status goes loud; nothing is created from a ref, ever (only entries a stack *declares* can create/adopt/prune, and create-strict still applies to those). Cross-repo ordering converges the same way: if `payments-api` syncs before the team repo has declared the `payments` service, that plan refuses loudly and the next sync after the service lands succeeds.
+
+**Sources.** The host prefix is imported, not retyped; the Type is a closed enum; the branch is the team's choice:
 
 ```ts
-const api = new Component(stack, "payments-api", { service: Service.ref("payments"), pipeline: { waves: standardRollout } });
+import { repos } from "@corp/scp-standards"; // central git host + namespace defaults (D10)
+
+sources: [
+  {}, //                                      this repo, default branch, Type configuration
+  { repo: repos("payments/payments-infra"), //  team types only the org-relative part
+    type: "infrastructure" }, //               ExecutorType: closed TS literal union backed by
+  //                                           the same Zod enum on the wire — an untrusted
+  //                                           value fails at compile time AND at the contract
+  { branch: "release-2026" }, //               pick any branch: sugar for ref (ADR-0030)
+  { path: "services/api/**" }, //              monorepo path slice
+]
+```
+
+**Targets: select, don't create.** The platform declares stages (§3); each domain declares the infrastructure *menu* beneath its stages — clusters, instance groups, accounts — as child deployment-targets (so a freeze, binding policy, or scan policy can scope to one cluster via the existing containment routes). Teams **select** from the menu per stage:
+
+```ts
+pipeline: {
+  waves: standardRollout,
+  place: {
+    "commercial-amer-prod": { cluster: "pay-blue", account: "123456789012" },
+    "govcloud-amer-prod": { instanceGroup: "pay-prod-ig" },
+  },
+}
+```
+
+Selections are refs — naming a cluster the domain never declared refuses at plan. An org that wants teams creating their own sub-targets grants scoped write at a container (the authz model already supports it): selection is the default, creation is a deliberate delegation, and either way the estate menu stays governable.
+
+**Dependencies (`dependsOn`).** Already a fluent method on every construct; it gains refs to objects the team does not own — components, assemblies, or services:
+
+```ts
 api.dependsOn(Component.ref("ledger-core")); // another team's component
 api.dependsOn(Service.ref("identity"));      // or a service / assembly
 ```
 
-`depends_on` is what the plan compiler topo-sorts by when no explicit topology is given, and what drives ADR-0028 stage-dependency holds — declaring a dependency holds *your* rollout behind theirs, never the reverse, which is why a component owner may declare one against anything visible. Open (§14): whether relationship writes require `relationship:write` at both endpoints today; this proposal's position is that `depends_on` should need it only at the **from** endpoint, since the edge burdens the depender.
+`depends_on` is what the plan compiler topo-sorts by absent an explicit topology, and what drives ADR-0028 stage-dependency holds — a dependency holds *your* rollout behind theirs, never the reverse, which is why a component owner may declare one against anything visible. (Endpoint authorization: main doc §14.)
 
-**Sources.** The common case is inferred (D9): the repo the manifest ships in, default branch, one mapping. The explicit form covers everything else — additional repos (the infra/software split), monorepo path slices, ref patterns:
+**Tests (D11) — SCP triggers, Argo Workflows executes.** Three hook points, one contract: the run happens on the org's (or bundled) Argo Workflows, and the *result* is gate/hold evidence:
 
 ```ts
-new Component(stack, "payments-api", {
-  service: Service.ref("payments"),
-  pipeline: { waves: standardRollout },
-  sources: [
-    {}, //                                                  this repo (inferred), Type configuration
-    { repo: "git.corp.example/payments/payments-infra", //  the component's IaC/tofu pipeline
-      type: "infrastructure" },
-    { path: "services/api/**", ref: "refs/heads/release-*" }, // monorepo / ref slicing
-  ],
-});
+pipeline: {
+  waves: standardRollout,
+  tests: {
+    postMerge: workflows.run("payments-unit"), //        after merge on the mapped branch;
+    //                                                   gates the first wave
+    postDeploy: {
+      "commercial-amer-staging": workflows.run("payments-integration"),
+    }, //                                                after deploy into that env;
+    //                                                   gates promotion out of it
+    continuous: workflows.cron("payments-canary-probe", { every: "5m", maxAge: "15m" }),
+    //                                                   always running; latest fresh result
+    //                                                   is a per-target hold — stale = absent
+  },
+}
 ```
 
-These synthesize to `sourceMappings`; identity is the (repo, path, ref) tuple (ADR-0030), so edits diff cleanly instead of delete+recreate. The git *connection* — credentials, webhook secret — stays an operator ceremony (§1): teams declare routing, never credentials.
+The WorkflowTemplate / CronWorkflow definitions live in the team's own repos; IaC names them; the domain binding policy resolves which Workflows instance runs them per stage. SCP never executes a test — it triggers, observes, and gates.
 
-**Targets.** Teams never create targets; they **name** them. Deployment-targets (stages) are estate topology, declared once in the platform stack (§3) with `properties.environment`/`region`; the domain binding policy (§4) decides which executor serves each target. A team needing per-stage configuration declares an explicit `Placement` with properties — explicit beats inferred (D8).
+**Rollout (D12) — declared in code, keyed by target class:**
 
-**Tests and rollout strategies** — two layers, deliberately split:
+```ts
+rollout: {
+  kubernetes: { strategy: "canary", steps: [10, 50, 100] },
+  instanceGroup: { strategy: "rolling", batch: "25%", pauseBetween: "5m" },
+}
+```
 
-- *Gates between waves* are SCP's: controls and scoped policies (CI-evidence `github-check` control, scan thresholds ADR-0016, approvals) evaluated at the wave boundary. In IaC these are Policy/Control declarations at a scope (org / service / component / stage). A per-wave `gates:` shorthand that compiles to scoped declarations is proposed sugar — open in §14, because the wave document schema loudly rejects unknown keys today, so a native per-wave field is a parser change, not a given.
-- *Rollout strategy within a target* (canary weight, bake time, analysis) belongs to the rollout executor: Argo Rollouts config lives in the team's own deploy manifests; SCP observes and mirrors weights (ADR-0008) and can couple co-placed components on `minWeight` (ADR-0028), but never orchestrates traffic. Waves are SCP's rollout strategy **across** targets; the executor owns it **within** one.
+For SCP-managed executor classes (`scp-runner-*`) the declaration is **authoritative** — SCP instructs the batches. For coordinated executors it rides the trigger as parameters where the plugin declares support, and is otherwise **verified**: SCP observes actual weights (ADR-0008) and declared-vs-actual divergence is loud. SCP instructs or verifies the executor that moves traffic; it never moves traffic itself.
 
-**Pipeline Type.** Declared, never inferred from repo contents: each source carries a `type` from the executor-Type taxonomy (ADR-0007 — `build` / `infrastructure` / `configuration`), defaulting `configuration`. Mapping the everyday words: Config → `configuration` (Argo CD deploys), IaC → `infrastructure` (plan→gate→apply), RPMs/Images → **artifact classes produced by `build`-Type pipelines**, not Types — what a build produces is read from registry/build evidence per the artifact model, never guessed from the repo. A component with an app pipeline and an infra pipeline is one component with two sources of different Types; bindings are 1:N per target keyed by Type, and the domain binding policy resolves (target, Type) → executor.
+**Type and artifact class (D13).** Type stays the closed taxonomy — `build` / `infrastructure` / `configuration`. A `build` source also declares **what it produces**, because the journey shape differs per artifact class:
+
+```ts
+sources: [
+  { type: "build", artifact: "image" }, // build → push → config bump → sync
+  { type: "build", artifact: "rpm" },   // build → publish → batch-install to instance groups
+]
+```
+
+Declared, then **verified** against build/registry evidence — a source that declares `rpm` while its builds publish images is a loud mismatch, never a silent relabel. Bindings stay 1:N per target keyed by Type; the domain binding policy resolves (target, Type) → executor, and the artifact class selects the journey template within it.
 
 ---
 
