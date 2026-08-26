@@ -11,6 +11,7 @@
 - **D4 — outpost binding policy.** The repo declares the WHAT (services, components, placements, wave topologies — ordinary federating objects). Each security domain authors the HOW once — a binding policy mapping deployment-targets to its local execution systems — and a domain-local reconciler joins the two into `executor_bindings`. Teams never author bindings. ADR-0031 stands unamended.
 - **D5 — adoption and export are required** (assumed; owner did not object). plan/apply gains explicit *adopt* semantics (take an existing unmanaged object into a stack), and `scp iac export` reverse-generates manifest/construct scaffolds from live state, so existing estates can onboard.
 - **D6 — environment vocabulary: `staging` replaces `gamma`** in all guidance, examples, scaffold output, and templates, as the industry-accepted term. `dev` exists as an environment but normally belongs to **domain-local dev pipelines** (ADR-0030), not the global promotion path. Environment strings remain operator data — SCP does not enforce names, so live estates using `gamma` keep working; a docs sweep updates GLOSSARY/diagram examples.
+- **D7 — CLI-push remains a first-class delivery path.** Registering a repo is something an org *can* do, never something it must: `scp plan`/`scp apply` from a terminal or a team's own CI stay fully supported, unchanged. The config source is additive delivery on the same `/plans` engine. The one new rule is **single ownership per stack**: a stack bound to a config source is repo-owned, and a direct CLI apply against it is refused (409 naming the owning config source) — otherwise the next sync would silently revert the push. Removing the stack from the config-source registration returns it to CLI-push.
 
 ## 1. The ask
 
@@ -51,7 +52,7 @@ Consequences: teams never file per-outpost binding tickets; adding an outpost to
 
 A **config-source** registry object (graph-native: registry data, not a new table) declared at the instance that owns the repo:
 
-- `repo` (provider + identity, resolved against a registered git execution-system/binding, same repo-identity matching as `manifest-reader.ts` — never "the org's first github binding"), `ref` (branch), `paths` (globs selecting stack manifests), and per-stack ownership: `stackName → team` (the team the apply runs *as*, via a service-account subject bound to that team's roles).
+- `repo` (provider + identity, resolved against a registered git execution-system/binding, same repo-identity matching as `manifest-reader.ts` — never "the org's first github binding"), `ref` (branch), `paths` (globs selecting stack manifests), and per-stack ownership: `stackName → team` (the team the apply runs *as*, via a service-account subject bound to that team's roles). Binding a stack here marks it repo-owned (D7).
 - Registered at the **commander** → the stacks it applies are global config, federating as usual.
 - Registered at an **outpost** (for ADR-0017 domain-owned repos, dev pipelines) → the config source and everything it applies is declared `domainLocal` and never journals.
 
@@ -64,7 +65,7 @@ Failure honesty: a manifest that fails validation or an apply that is refused (a
 - Merge to `ref` is the approval. Every sync produces a plan; every plan persists as a Decision with the manifest content hash and repo commit SHA in `inputContext` (deterministic — the boundary goes in the Decision, never `now`).
 - **Freezes hold, not block:** if an active freeze's scope covers any affected object, the apply parks (re-evaluated each sync/tick, ADR-0028 hold shape) and applies when lifted. Freeze semantics for *config* applies reuse `checkFreeze` unchanged.
 - Idempotent: re-syncing an unchanged manifest is a no-op (existing `/plans` behavior).
-- `scp plan --manifest` from a team's CI remains available for PR-time dry-runs (post the diff as a PR comment); nothing about push-from-CLI is removed — the config source is additive delivery, not a replacement for the API path.
+- **Both delivery modes, one engine (D7):** CLI-push (`scp plan`/`scp apply`, interactively or from a team's own CI) and repo-watching are peers over the same `/plans` diff/apply path — same Decisions, same freezes, same authz. PR-time dry-runs (`scp plan --manifest`, diff posted as a PR comment) work in both modes. Repo-owned stacks refuse direct CLI applies per D7's single-ownership rule; every other stack behaves exactly as today.
 
 ## 6. Binding policy and the domain reconciler
 
