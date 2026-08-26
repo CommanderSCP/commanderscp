@@ -135,13 +135,13 @@ const home = new Stack("payments-team");
 const payments = new Service(home, "payments"); // owner inferred: the registered team (D8)
 ```
 
-And a component's **entire** declaration, in its own repo — the file *is* the pipeline (D15), so it roots at `Pipeline`; `App` and `Stack` never appear:
+And a component's **entire** declaration, in its own repo — the file *is* the pipeline (D15) and says what kind it is (D17), so it roots at the typed pipeline class; `App` and `Stack` never appear:
 
 ```ts
-import { Pipeline, Service } from "@scp/iac";
+import { ImagePipeline, Service } from "@scp/iac";
 import { waves } from "@corp/scp-standards"; // inherited repo (D10)
 
-new Pipeline("payments-api", {
+new ImagePipeline("payments-api", {
   service: Service.fromName("payments"),
   waves: waves.standard,
 });
@@ -152,7 +152,7 @@ That is the whole file: the component takes the pipeline's name, the source is t
 **The shared exception (D8)** is the same class at a different scope — a `Pipeline` scoped to a *service* is the deliberate rung exception, in the team repo:
 
 ```ts
-new Pipeline(payments, "payments-release", { waves: waves.standard });
+new ImagePipeline(payments, "payments-release", { waves: waves.standard });
 // components that declare their own pipeline still win by rung (ADR-0027/0029)
 ```
 
@@ -199,60 +199,49 @@ export const widePod = (regions: string[]) => [
 | **retrans** | relay at the CDS boundary | nothing to declare — pairing + inbox/outbox delivery config only; relays signed bundles, validates, never terminates a promotion |
 | **airgap1 outpost** | air-gapped, `trustTier: il5` | WHAT arrives as `.scpbundle` via retrans (the M13.1a inbox loop — untouched by D1); its HOW stack applied locally from the same media run |
 
-## 7. The authoring surface in detail — the D15 grammar
+## 7. The authoring surface in detail — the D15–D17 grammar
 
-Three grammar rules (D15) plus the CDK idiom pack (D16): the file roots at **`Pipeline`**; **composition over configuration** — a prop that names another declared thing takes a construct, and scope chains carry the context; **closed vocabularies are closed types** — `Artifact.image`, `TargetClass.kubernetes`, `ExecutorType.build`, strategy-as-class, `Duration.minutes(5)` and prop-named percents (`batchPercent: 25`) instead of `"5m"`/`"25%"` strings. References use CDK's `fromXxx()` statics and return interface types (`IService`), so owned and referenced objects are interchangeable. The L1 escape hatch is guaranteed (`pipeline.addManifestEntry(...)` — raw manifest entries when no L2 construct fits), and synth/plan errors carry the construct tree path (`payments-api/build/unit`) so a refusal maps back to the line a team wrote. Free text survives only where the value is genuinely operator data (names, paths, environment strings per D6). The full-featured file:
+The grammar: the file roots at the **typed pipeline class** (or at `Component` when one repo holds several pipelines); **composition over configuration** — a prop that names another declared thing takes a construct, and scope chains carry the context; **closed vocabularies are closed types**, with references via CDK's `fromXxx()` statics returning interface types (`IService`) so owned and referenced objects are interchangeable. The L1 escape hatch is guaranteed (`pipeline.addManifestEntry(...)`), synth/plan errors carry the construct tree path (`payments-api/image/unit`), and every construct exports its named props interface (D16). Free text survives only where the value is genuinely operator data (names, paths, environment strings per D6). The full-featured file — one component, two pipelines, one repo:
 
 ```ts
 // payments/payments-api/scp/stack.ts — the component's entire SCP footprint
-import { Pipeline, Service, Component, Artifact, TargetClass, Duration } from "@scp/iac";
-import {
-  BuildSource, InfrastructureSource, Workflow,
-  PostMergeTest, PostDeployTest, ContinuousTest,
-  CanaryRollout, RollingRollout,
-} from "@scp/iac";
-import { stages, targets, waves, repos } from "@corp/scp-standards"; // typed handles (D10)
+import { Component, Service, ImagePipeline, InfrastructurePipeline } from "@scp/iac";
+import { TargetClass, Duration, Workflow } from "@scp/iac";
+import { PostMergeTest, PostDeployTest, ContinuousTest, CanaryRollout } from "@scp/iac";
+import { stages, targets, waves } from "@corp/scp-standards"; // typed handles (D10)
 
-const pipeline = new Pipeline("payments-api", {
-  service: Service.fromName("payments"),
-  waves: waves.standard,
-});
+const api = new Component("payments-api", { service: Service.fromName("payments") });
 
-// -- sources: the Type is the class; this repo is the default (D13) ----------
-const build = new BuildSource(pipeline, { artifact: Artifact.image });
-new InfrastructureSource(pipeline, { repo: repos("payments/payments-infra") });
+// -- the image pipeline: what this repo builds and ships (D17) ---------------
+const image = new ImagePipeline(api, { waves: waves.standard }); // source: this repo, default branch
 
-// -- where it lands: typed menu handles (§14.9) ------------------------------
-pipeline.placeAt(targets.commercialAmerProd.payBlue); // a Cluster
-pipeline.placeAt(targets.govcloudAmerProd.payProdIg); // an InstanceGroup
+image.placeAt(targets.commercialAmerProd.payBlue); //  refine prod to a Cluster (§14.9)
+image.dependsOn(Component.fromName("ledger-core")); // pending until it exists (D14)
 
-// -- dependencies: pending until the target exists (D14) ---------------------
-pipeline.dependsOn(Component.fromName("ledger-core"));
+// workflows scope to their pipeline — repo + branch come from it (D11/D15)
+const unit = new Workflow(image, "unit", { path: "ci/unit.yaml" });
+const integration = new Workflow(image, "integration", { path: "ci/integration.yaml" });
+const probe = new Workflow(image, "canary-probe", { path: "ci/canary-probe.yaml" });
 
-// -- tests: a Workflow scopes to a SOURCE — that is how it knows where the
-//    code and the template live (D11/D15). path is within the source's repo.
-const unit = new Workflow(build, "unit", { path: "ci/unit.yaml" });
-const integration = new Workflow(build, "integration", { path: "ci/integration.yaml" });
-const probe = new Workflow(build, "canary-probe", { path: "ci/canary-probe.yaml" });
-
-new PostMergeTest(unit); //                       fires on merge to build's branch; gates wave 1
+new PostMergeTest(unit); //                       merge to image's branch; gates wave 1
 new PostDeployTest(integration, { stage: stages.commercialAmerStaging }); // gates promotion out
-new ContinuousTest(probe, { every: Duration.minutes(5), maxAge: Duration.minutes(15) }); //   per-target hold
+new ContinuousTest(probe, { every: Duration.minutes(5), maxAge: Duration.minutes(15) });
 
-// -- rollout: the strategy is the class; the target class is an enum (D12) ---
-new CanaryRollout(pipeline, { on: TargetClass.kubernetes, steps: [10, 50, 100] });
-new RollingRollout(pipeline, {
-  on: TargetClass.instanceGroup,
-  batchPercent: 25,
-  pauseBetween: Duration.minutes(5),
+new CanaryRollout(image, { on: TargetClass.kubernetes, steps: [10, 50, 100] });
+
+// -- the infra pipeline: the component's own infrastructure (D17) ------------
+// Same repo because it is component-scoped — a path slice, its own cadence.
+new InfrastructurePipeline(api, {
+  path: "infra/**",
+  waves: waves.standard, // share the shape by value, or diverge freely
 });
 ```
 
+**One pipeline, one source, typed by what it delivers (D17).** `ImagePipeline`, `RpmPipeline`, `NpmPipeline`, …, `InfrastructurePipeline`, `ConfigurationPipeline` — generated from the closed kind vocabulary; the class implies the journey template (D13: an image builds → pushes → bumps config → syncs; an RPM builds → publishes → batch-installs) and the wire Type. The pipeline carries its own source props: omitted `repo` = the repo this manifest ships in; `branch:` picks any branch (ADR-0030); `path:` slices the repo — which is exactly how the infra pipeline shares the component's repo without colliding with it. Identity stays the (repo, path, ref) tuple, so edits diff cleanly. A single-pipeline repo roots at the pipeline class (component inferred, §5); a multi-pipeline repo roots at `Component`.
+
 **Refs and pending dependencies (D14).** Every `fromName()` / `fromUrn()` reference resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the pipeline's status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
 
-**Sources.** `BuildSource` / `InfrastructureSource` / `ConfigurationSource` — the Type cannot be mistyped because it is the class, and per-Type props are compile-checked: only `BuildSource` has (and requires) `artifact`, from the closed `Artifact` enum (image, rpm, npm, maven, python, go, chart, vmImage). Omitted `repo` = the repo the manifest ships in; `branch:` picks any branch (ADR-0030 ref pattern under the hood); `path:` slices monorepos. Identity stays the (repo, path, ref) tuple, so edits diff cleanly.
-
-**Tests know where the code is through their scope chain.** A `Workflow` scopes to a source, so it inherits the repo and branch the source already declares — `path:` names the WorkflowTemplate *within that repo*; a hook scopes to its `Workflow`. Nothing is repeated: `PostMergeTest(unit)` fires on merges to `build`'s branch and runs `ci/unit.yaml` from `build`'s repo, because that is what its scope chain says. SCP **triggers** the run on the domain's Argo Workflows (resolved by binding policy, one line on the domain side) and consumes the result as gate/hold evidence — stale continuous green reads as absent (`maxAge` required). No `argo-workflows` plugin exists yet: this is build increment 8 (main doc §13).
+**Tests know where the code is through their pipeline.** A `Workflow` scopes to a pipeline, so it inherits the repo and branch the pipeline already declares — `path:` names the WorkflowTemplate *within that repo*; a hook scopes to its `Workflow`. `PostMergeTest(unit)` fires on merges to `image`'s branch and runs `ci/unit.yaml` from `image`'s repo, because that is what its scope chain says. SCP **triggers** the run on the domain's Argo Workflows (resolved by binding policy) and consumes the result as gate/hold evidence — stale continuous green reads as absent (`maxAge` required). No `argo-workflows` plugin exists yet: build increment 8 (main doc §13).
 
 ```ts
 new BindingPolicy(bindings, "tests", {
@@ -276,7 +265,7 @@ new InstanceGroup(menu, "pay-prod-ig", {
 
 Teams `placeAt()` handles the standards package re-exports (`targets.commercialAmerProd.payBlue`, regenerable via `scp iac export --handles`) — selecting something the domain never declared fails at compile (no handle) or at plan (bad ref). Sub-target *creation* by a team is a scoped write grant: selection is the default, creation is deliberate delegation.
 
-**Rollout: the strategy is the construct** (`CanaryRollout`, `RollingRollout` — no strategy strings), keyed to a `TargetClass`. Authoritative for `scp-runner-*` classes; trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8) — declared-vs-observed divergence is loud, and SCP never moves traffic itself.
+**Rollout: the strategy is the construct** (`CanaryRollout`, `RollingRollout` — no strategy strings), scoped to its pipeline and keyed to a `TargetClass` — an `RpmPipeline` would declare `new RollingRollout(rpm, { on: TargetClass.instanceGroup, batchPercent: 25, pauseBetween: Duration.minutes(5) })`. Authoritative for `scp-runner-*` classes; trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8) — declared-vs-observed divergence is loud, and SCP never moves traffic itself.
 
 ---
 
