@@ -493,25 +493,30 @@ Full reasoning and the attack chain in §4.1. FederationAdmin's purpose narrows 
 **operates** the federation link, it does not **establish** trust relationships. The import path stays
 ungated by design — a throw there wedges a peer's signed bundle.
 
-### 7.2 Still open
-2. **Instance-tier credential redesign in this programme, or does `SCP_OPERATOR_TOKEN` stand?**
+**D5 — Administrator is DEPRECATED on arrival.** When the role-binding write door ships it refuses
+**new** bindings to the built-in `Administrator`. The row stays (`role_bindings.role_id` is an FK and
+`scp_app` holds no DELETE on `roles`) and every existing binding resolves unchanged — this is a
+refusal at the write door, not a removal. Chosen over "leave grantable", so the purpose roles are
+**the** migration path rather than a parallel option: Administrator's grab-bag is exactly what makes
+"SecOps implies type-registry authority" true today, and leaving it grantable would keep it the path
+of least resistance and the least-privilege story aspirational.
+
+*Consequence to build for:* the write door needs a clear refusal message naming the purpose role to
+use instead, and `GET /roles` should mark it deprecated so the UI can grey it. Deprecating before any
+purpose-role binding exists means the obvious migration target 403s from day one — so **D5 makes the
+role seed and the write door a single shippable unit**, not two increments.
+
+**Sequencing, ruled 2026-08-26:** after step 0, the next work is the **read-surface blocker** (§4.2) —
+not the cheap preconditions. Steps 1 and 2 follow it rather than preceding it.
+
+### 7.3 Still open
+1. **Instance-tier credential redesign in this programme, or does `SCP_OPERATOR_TOKEN` stand?**
    *Recommend:* keep the token for now, schedule the redesign as its own milestone — but **record it
    as a decision with consequences named, not inherited as a default.** Explicitly reject "bind
    FederationAdmin at every org root" as a substitute.
-3. **Does SecurityOfficer both author scan rules and approve waivers, or does a sixth role
-   (`ScanWaiverApprover`) make two-person waiver mandatory?** *Recommend:* SecurityOfficer holds both;
-   the SoD that matters is between the estate administrator and the security officer, and withholding
-   `scan:override` from OrgAdmin delivers it.
-4. **Is Administrator deprecated (write door refuses NEW bindings), or fully grantable?** *Recommend:*
-   leave grantable — but commit that **no future migration appends a permission to Administrator**, so
-   the ladder stops accumulating authority while the purpose roles carry it.
-5. **Reopen owner decision D2?** `component.properties.security.declarations` is writable at plain
-   `object:write` at that component — so the beneficiary of a scan-exclusion declaration is its author,
-   at a weaker permission than the `policy:write` that authored the constraint. *Recommend:* leave D2
-   standing — but flag that **ComponentAdmin makes "the principal who benefits" a named, bindable role
-   for the first time**, which is materially new since D2 was taken (2026-07-23). Splitting
-   `security:declare` is cheap now and expensive once ComponentAdmin bindings exist in the field.
-6. **Do custom roles ship at all?** The charter carries two flat imperatives — *"Roles should be
+2. **Do custom roles ship at all?** The charter carries two flat imperatives — *"Roles should be
    customizable"* and *"Organizations should be able to define additional roles"* — and this design
    satisfies neither. *Recommend:* later, gated. "Never" means amending the charter, which is a
    charter-level act and should be made deliberately rather than by omission.
+   **D5 sharpens this:** with Administrator deprecated, an org that wants a broad general-purpose role
+   has no built-in to bind and no API to author one.
