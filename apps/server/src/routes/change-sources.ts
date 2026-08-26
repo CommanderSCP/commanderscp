@@ -23,13 +23,15 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { checkAtOrgRootOrScopes } from "../authz/org-root-arm.js";
 import { assertStageDependenciesWithinAuthority } from "../coordination/campaign-scope-authz.js";
 import { extractHint } from "../coordination/webhook-processor.js";
-import { unauthorized } from "../errors.js";
+import { forbidden, unauthorized } from "../errors.js";
 import { changeSourceEvents, changeSourceWebhookSecrets } from "../db/schema.js";
 import {
   createSourceMapping,
   deleteSourceMappingsMatching,
+  getSourceMapping,
   listSourceMappingsForSource,
   setSourceMappingEnabled,
   setSourceMappingScope
@@ -132,6 +134,46 @@ async function persistSourceEvent(
     )
     .limit(1);
   return existing[0]?.id ?? id;
+}
+
+/**
+ * THE WRITE BAR FOR THE THREE `source_mappings` MUTATION DOORS below (pause switch, scope label,
+ * delete-by-tuple): `object:write` at the ORG ROOT **or** at the mapping's own COMPONENT.
+ *
+ * ONE definition of that disjunction serves every door 2.5a re-scoped —
+ * {@link checkAtOrgRootOrScopes} in `authz/org-root-arm.ts`, which is where the argument for the
+ * arm and for its ORDER lives. Restated here only in the part that is specific to this family:
+ *
+ * THE ORG-ROOT ARM IS LOAD-BEARING FOR EXACTLY THE ROWS THE DELETE DOOR EXISTS FOR. A component
+ * merge (M12 P5d, `docs/proposals/organize-after.md` §2.4/§4 — implemented in
+ * `coordination/component-merge-repo.ts`, whose header records that the general graph rewrite,
+ * `source_mappings` included, is deliberately out of scope) soft-deletes the loser component and
+ * leaves its mappings pointing at it. `deleteObject`'s orphan guard counts children with
+ * `isNull(objects.deletedAt)` (`graph/objects-repo.ts`), so the loser's containment parents, having
+ * no LIVE children left, are then perfectly deletable. A couple of ordinary API calls later the
+ * stranded mapping's component has an upward chain that dead-ends at a tombstone, `scope_expand`
+ * collapses to the seed alone, and a component-only check would lock the org-root Owner out of the
+ * one door that can clean it up.
+ *
+ * The 403 names both arms, so an operator reading it can tell which authority they are missing.
+ */
+async function assertSourceMappingWritable(
+  tx: TenantTx,
+  input: { orgId: string; subjectObjectId: string; componentObjectId: string }
+): Promise<void> {
+  const verdict = await checkAtOrgRootOrScopes(tx, {
+    orgId: input.orgId,
+    subjectObjectId: input.subjectObjectId,
+    orgRootPermission: "object:write",
+    scopedPermission: "object:write",
+    quantifier: "any",
+    scopeObjectIds: [input.componentObjectId]
+  });
+  if (verdict.ok) return;
+  throw forbidden(
+    `subject '${input.subjectObjectId}' lacks 'object:write' at the org root and at source-mapping ` +
+      `component '${input.componentObjectId}'`
+  );
 }
 
 export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps): void {
@@ -457,11 +499,25 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const mapping = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // READ THE ROW, THEN BAR AT ITS COMPONENT (or the org root — `assertSourceMappingWritable`
+        // is a disjunction, and its docblock is where the reasoning lives). A source mapping has no
+        // containment scope of its own; the authority that governs it is authority over the
+        // component it binds a repo/path pattern to, which is only knowable once the row is loaded.
+        // Reading first is also what keeps an unknown id answering 404 (`getSourceMapping` throws
+        // it) instead of the 403 that scoping at an id naming nothing would produce for every
+        // caller, org-root Owner included. `component_object_id` is immutable (the setter below
+        // writes `enabled`/`disabled_until` only), so there is nothing for the second statement to
+        // have moved out from under.
+        const existing = await getSourceMapping(
+          tx,
+          auth.orgId,
+          request.params.sourceKind,
+          request.params.id
+        );
+        await assertSourceMappingWritable(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
-          scopeObjectId: auth.orgId
+          componentObjectId: existing.componentObjectId
         });
         return setSourceMappingEnabled(
           tx,
@@ -508,11 +564,19 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const mapping = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // Same read-then-bar shape, and the same reasons, as the pause switch above: the row's
+        // component is the object that carries the authority, and resolving it first is what keeps
+        // an unknown id a 404. `component_object_id` is not writable by this setter either.
+        const existing = await getSourceMapping(
+          tx,
+          auth.orgId,
+          request.params.sourceKind,
+          request.params.id
+        );
+        await assertSourceMappingWritable(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
-          scopeObjectId: auth.orgId
+          componentObjectId: existing.componentObjectId
         });
         return setSourceMappingScope(
           tx,
@@ -531,8 +595,9 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
    * only way to remove a mapping was an IaC apply's prune, so a mapping created by
    * `discovery accept` or by hand could never be taken back through the API.
    *
-   * That gap has a cost beyond inconvenience. An ADR-0026 pair merge soft-deletes the absorbed
-   * component and STRANDS its mappings; they are neutralised at read time (they no longer match a
+   * That gap has a cost beyond inconvenience. A component merge (M12 P5d,
+   * `docs/proposals/organize-after.md` §2.4) soft-deletes the absorbed component and STRANDS its
+   * mappings; they are neutralised at read time (they no longer match a
    * dead component) but they stay in the table, keep appearing in `GET /mappings`, and cannot be
    * cleaned. On the live homelab that is 5 rows from three merges.
    *
@@ -564,17 +629,30 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const deleted = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
-          orgId: auth.orgId,
-          subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
-          scopeObjectId: auth.orgId
-        });
         // Resolved with `includeDeleted`: the mappings most in need of deleting belong to a
         // SOFT-DELETED component (a merged-away pair half), and refusing to resolve it would make
         // exactly those rows undeletable — the gap this route exists to close.
+        //
+        // RESOLVED BEFORE THE BAR, AND THE BAR IS SCOPED AT IT. This door addresses rows by the
+        // identity tuple, whose component is the object that carries the authority over every row
+        // the tuple can reach — so that component is one arm of the check. Resolving first also
+        // keeps an unresolvable `component` a 404 rather than the 403 that scoping at a
+        // caller-supplied string would produce for everyone.
+        //
+        // THE ORG-ROOT ARM IS LOAD-BEARING PRECISELY HERE, and the reason is subtle enough that it
+        // is written out in full in `assertSourceMappingWritable`'s docblock: a soft-deleted
+        // component still SEEDS the scope walk (the seed row is unfiltered), but `scopeExpandCte`
+        // joins each ANCESTOR `deleted_at IS NULL`, so once the merge loser's domain has itself
+        // been deleted — which the orphan guard permits, because its only children are already
+        // tombstones — the walk from the component reaches nothing, and a component-only check
+        // would refuse the org-root Owner the exact rows this route was built to remove.
         const component = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.component, {
           includeDeleted: true
+        });
+        await assertSourceMappingWritable(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          componentObjectId: component.id
         });
         return deleteSourceMappingsMatching(tx, {
           orgId: auth.orgId,

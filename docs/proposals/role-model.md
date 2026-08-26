@@ -635,6 +635,28 @@ cover `federation:read`, which is not being re-scoped.
 
 ### 8.6 Doors that must NOT be swept
 
+> **Correction, 2026-08-26 — the pure-widening invariant is scoped to the 21 doors that were
+> RE-SCOPED, and never governed the two that were TIGHTENED.**
+>
+> The federation overlay pair (`POST /federation/overlays`, `GET /federation/overlays/{idOrUrn}`) is
+> not a re-scope: the org-root bar was **kept** and a base-scoped bar **added** beside it — the same
+> "added, never substituted" shape as the hand-fill and publish fixes in PR #286. Adding a bar is a
+> deliberate **narrowing**, so by construction it refuses some principals the single bar admitted.
+> Judging it against a widening invariant was a category error on my part, and it nearly cost a real
+> security property: the "obvious fix" (give the second bar an org-root arm) makes that bar satisfied
+> by everyone who already cleared the first — inert — which measurably deletes the deny-at-base
+> refusal two mutation-proven cases pin.
+>
+> **Accepted consequence, now pinned by a test rather than discovered later:** an overlay whose base
+> object has tombstoned containment ancestors cannot be created or read by anyone, org-root Owner
+> included, until the base's chain is repaired. Fixing that properly needs an authz primitive that
+> distinguishes "explicitly denied" from "nothing reached" — a separate decision, not a comment.
+>
+> Same section, same date: `GET /decisions/:id`'s wide arm ships as `audit:read` at the org root, not
+> the `object:read` it replaced. That is a narrowing with **no possible holder today** — a roles-table
+> test asserts every built-in role carrying `object:read` also carries `audit:read`, so it goes red
+> the day a migration or a custom-role API creates a victim.
+
 A mechanical rewrite of every `object:write` + `auth.orgId` pair is wrong. Explicitly excluded:
 
 | Door | Why |
@@ -650,6 +672,27 @@ A mechanical rewrite of every `object:write` + `auth.orgId` pair is wrong. Expli
 Also flagged, out of scope here: **`/graph/traverse` and `/graph/subgraph` are an enumeration
 bypass** — they authorize `graph:query` at one `objectId` and then return many objects with no row
 filtering.
+
+### 8.6a The same property, 138 times, pre-existing — tracked, not swept
+
+**Owner ruling 2026-08-26: track it, fix opportunistically.** A filterless census
+(`grep -rna 'scopeObjectId'` over `apps/server/src`, 300 assignment sites) found **138 non-test checks
+scoped at something other than the org id**, all carrying the tombstoned-ancestor property
+([[scp-rescoping-tombstoned-ancestor]]) **independently of 2.5a**. Confirmed by `git blame` as
+pre-existing: `PUT /controls/{idOrUrn}/binding` at `control.id` (2026-07-10), the freeze write doors
+at `freeze.scopeObjectId`, five target-scoped executor doors,
+`assertCoordinationTargetsWithinAuthority` at propose time, `triggerCampaignRollback`'s per-member
+check.
+
+This is **existing behaviour, not a regression** — nobody has hit it — which is why it does not block
+the role programme. `authz/org-root-arm.ts`'s `checkAtOrgRootOrScopes` is the instrument that fixes
+any of them; apply it when a site is touched for another reason.
+
+> ⚠️ **Two sites compound the trap and are worth fixing first if anyone is in that file:** the
+> campaign deadline pair scopes at `request.params.id` — a **raw, unresolved path param** — so it
+> carries the 404-becomes-403 trap (§8.7) *as well as* the tombstone one. `scopeExpandCte` seeds the
+> CTE with the raw uuid and never checks existence, so a nonexistent id expands to a one-row set
+> matching no binding.
 
 ### 8.7 Sequencing
 

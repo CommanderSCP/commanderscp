@@ -14,7 +14,8 @@ import { ensureFederationSelf } from "../federation/self-repo.js";
  * SOURCE. It cannot close the BACKLOG, and by design it never will close two cases:
  *
  *   - rows stranded by a delete that ran BEFORE the cascade shipped. On the live homelab that is
- *     the ADR-0026 §6 pair merges: five components soft-deleted on 2026-08-02/03, leaving 52
+ *     the `docs/proposals/post-import-configuration.md` §6 pair merges: five components
+ *     soft-deleted on 2026-08-02/03, leaving 52
  *     dangling edges, 12 source mappings and 1 executor binding behind.
  *   - REPLICA edges (`origin_domain_id != self`). The cascade skips them deliberately — single-writer
  *     authority means only the authoring domain may tombstone them — so such an edge legitimately

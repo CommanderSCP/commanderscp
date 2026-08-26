@@ -144,6 +144,39 @@ export async function setSourceMappingScope(
   return toSourceMapping(row);
 }
 
+/**
+ * Reads ONE mapping by the same `(orgId, sourceKind, id)` addressing the two by-id setters above
+ * use, and throws the SAME 404 when it misses — so a caller that reads before it writes cannot
+ * change what a missing row answers.
+ *
+ * It exists for the AUTHORIZATION step in `routes/change-sources.ts`. A source mapping has no
+ * containment scope of its own; the object whose authority governs it is the COMPONENT it binds a
+ * repo/path pattern to, and that id can only be learned by reading the row. Reading first is also
+ * what keeps an unknown id answering 404 rather than 403: `authz/resolve.ts`'s `scopeExpandCte`
+ * seeds its CTE with the raw uuid and never checks existence, so scoping at an id that names
+ * nothing expands to a one-row set that no binding matches — not even the org root Owner's.
+ */
+export async function getSourceMapping(
+  tx: TenantTx,
+  orgId: string,
+  sourceKind: string,
+  id: string
+): Promise<SourceMapping> {
+  const [row] = await tx
+    .select()
+    .from(sourceMappings)
+    .where(
+      and(
+        eq(sourceMappings.orgId, orgId),
+        eq(sourceMappings.sourceKind, sourceKind),
+        eq(sourceMappings.id, id)
+      )
+    )
+    .limit(1);
+  if (!row) throw notFound(`no source mapping '${id}' for source kind '${sourceKind}'`);
+  return toSourceMapping(row);
+}
+
 export async function listSourceMappingsForSource(
   tx: TenantTx,
   orgId: string,
@@ -187,10 +220,28 @@ export interface BackfillSourceMappingsResult {
  * that already exist. Idempotent and safe to re-run: it SKIPS when there is no such component, the name
  * is ambiguous (>1 live component), or an identical mapping already exists — reporting each skip with a
  * reason so the operator can see exactly what was and wasn't backfilled (no silent drops).
+ *
+ * AUTHORIZATION IS THE CALLER'S, AND IT IS NOT DUPLICATED HERE. The only caller is
+ * `POST /api/v1/discovery/backfill-source-mappings`, whose door holds one org-root `object:write`
+ * check — role-model.md §8.6 lists that door among those increment 2.5a must NOT re-scope, and the
+ * comment at that call site records why a per-component check inside this loop was tried, reverted,
+ * and not re-added as a second bar. This function therefore takes no actor: adding one back would
+ * put the only bar somewhere a proposal with zero matched components never reaches.
+ *
+ * A CONSEQUENCE WORTH NAMING, because it is the reason to think twice before adding one later: no
+ * permission check runs inside the loop, so ADR-0037's truncation probe cannot fire mid-batch.
+ * `hasPermission` THROWS `walkDepthExceeded` rather than returning false when a refusal cannot be
+ * trusted, so a per-entry check would let ONE deeply-nested component abort a 50-entry backfill
+ * after some rows were already created — a per-entry outcome escalating to a whole-batch failure,
+ * which is the opposite of the skip-and-report contract above. The door's single check runs before
+ * any row is written, so the same throw there is a clean refusal with nothing half-applied.
  */
 export async function backfillSourceMappings(
   tx: TenantTx,
-  input: { orgId: string; mappings: BackfillSourceMappingInput[] }
+  input: {
+    orgId: string;
+    mappings: BackfillSourceMappingInput[];
+  }
 ): Promise<BackfillSourceMappingsResult> {
   const createdSourceMappingIds: string[] = [];
   const skipped: Array<{ objectName: string; reason: string }> = [];

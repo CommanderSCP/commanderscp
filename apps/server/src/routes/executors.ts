@@ -1247,6 +1247,34 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // ORG-ROOT, DELIBERATELY — role-model.md §8.6 lists this door beside `/discovery/run` and
+        // `/discovery/accept` as one that must NOT be swept by increment 2.5a's re-scope. It was
+        // briefly replaced by a per-component `hasPermission` inside `backfillSourceMappings`; that
+        // was reverted, and both halves of the reversal are worth recording.
+        //
+        // The narrow observation behind the replacement was TRUE and stays true: unlike its two
+        // siblings, THIS door holds no credential and makes no outbound call — it reads a
+        // caller-supplied proposal and writes correlation rows. It is simply not what decides the
+        // question, because:
+        //
+        //   1. A PER-ENTRY CHECK CANNOT BE A DOOR. That check ran once per MATCHED component. A
+        //      proposal with no `sourceMappings`, or one whose every name matched no live
+        //      component, therefore authorized NOTHING AT ALL, and any authenticated principal
+        //      reached the handler and got a 200. Where a name DID match, the refusal skip reported
+        //      the matched component's uuid — to a principal holding no binding anywhere. A second
+        //      bar may be ADDED inside a loop; a door's own bar may never be SUBSTITUTED by one.
+        //   2. The proposal this door consumes is the OUTPUT of `/discovery/run` — of a dial that
+        //      did use the org's stored credentials — and every row it writes decides what a future
+        //      push correlates to. Both of those are org-wide surfaces, which is the shape §8.6 is
+        //      protecting even where the outbound call itself has already happened.
+        //
+        // No second per-component bar was kept either. With this check restored, every principal
+        // reaching the loop already holds org-root `object:write`, which `hasPermission` satisfies
+        // at any component whose containment chain reaches the org root — so an inner check could
+        // only ever CHANGE the answer in two ways, and 2.5a is a widening: it would newly honour a
+        // `deny` bound below the org root (a narrowing nobody decided), and it would refuse the
+        // org-root Owner outright whenever the component's chain is cut by a tombstoned ancestor
+        // (`routes/change-sources.ts`'s `assertSourceMappingWritable` documents that cut).
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,

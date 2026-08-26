@@ -25,8 +25,8 @@ import type { AppDeps } from "../types.js";
  * `POST /discovery/run` answered 400 for every caller, and the message told the operator to set
  * `SCP_ROLE=all`, which would have started a second set of loops beside the worker's. Measured on
  * the live homelab on 2026-08-02: the route was unreachable there, which is what blocked the
- * ADR-0026 §6 migration's required verification step (re-resolving a moved binding against the real
- * Argo CD).
+ * post-import-configuration.md §6 migration's required verification step (re-resolving a moved
+ * binding against the real Argo CD).
  *
  * ============================================================================================
  * WHAT IS ASSERTED, AND WHY IT IS THE FAILURE MODE RATHER THAN A SUCCESS

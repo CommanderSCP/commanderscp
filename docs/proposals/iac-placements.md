@@ -16,7 +16,7 @@ What is missing is the **`placement`** type. And the gap is not cosmetic:
 | executor bindings on a deployment-target | 4 |
 | executor bindings on a component | 1 |
 
-After the ADR-0026 §6 migration, **92% of the estate's executor bindings hang off a placement**. A manifest's `executorBindings[].targetUrn` must name an object that exists, and IaC cannot create a placement — so C1's binding support, though real, cannot express 61 of 66 bindings on this estate. The one feature is blocked by the other's absence.
+After the [post-import-configuration.md](post-import-configuration.md) §6 migration, **92% of the estate's executor bindings hang off a placement**. A manifest's `executorBindings[].targetUrn` must name an object that exists, and IaC cannot create a placement — so C1's binding support, though real, cannot express 61 of 66 bindings on this estate. The one feature is blocked by the other's absence.
 
 The same is true of the estate's shape generally: 61 objects and every pipeline attachment the migration produced are unreproducible from a manifest. A stack that "declares the agentkit service" today describes its components and is silent about where any of them run.
 

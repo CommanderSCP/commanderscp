@@ -18,7 +18,8 @@ import {
  * Before this, the ONLY way to remove a `source_mappings` row was an IaC apply's prune. A mapping
  * created by `discovery accept` or by hand could never be taken back through the API.
  *
- * The cost is not inconvenience. An ADR-0026 pair merge soft-deletes the absorbed component and
+ * The cost is not inconvenience. A `docs/proposals/post-import-configuration.md` §6 pair merge
+ * soft-deletes the absorbed component and
  * STRANDS its mappings: they stop matching (a dead component is excluded at read time) but they stay
  * in the table and keep appearing in `GET /mappings`, with no way to clean them. On the live homelab
  * that is 5 rows left by three merges.
