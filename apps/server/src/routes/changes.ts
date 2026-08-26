@@ -22,12 +22,19 @@ import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { authorize } from "../authz/resolve.js";
+import { authorize, hasPermission } from "../authz/resolve.js";
 import {
   assertCoordinationTargetsWithinAuthority,
   assertStageDependenciesWithinAuthority
 } from "../coordination/campaign-scope-authz.js";
-import { getChange, listChanges, proposeChange, requiresOf } from "../coordination/changes-repo.js";
+import {
+  getChange,
+  listChanges,
+  proposeChange,
+  requiresOf,
+  targetObjectIdsOf
+} from "../coordination/changes-repo.js";
+import { findObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { requirementStatuses, listProvidedKeysAtScope } from "../coordination/coupling.js";
 import { transitionChange } from "../coordination/transition.js";
 import type { GateDeps } from "../coordination/gates.js";
@@ -41,7 +48,7 @@ import {
   listDecisionsForSubject
 } from "../coordination/decisions-repo.js";
 import { listControlRunsForChange } from "../governance/controls-repo.js";
-import { conflict, ProblemError } from "../errors.js";
+import { conflict, forbidden, ProblemError } from "../errors.js";
 import { serverOwnedSourceRefKeysIn } from "../federation/boundary-bundle-ref.js";
 
 /**
@@ -110,6 +117,205 @@ async function buildWaitStatus(
     // operator must be able to SEE them — surfaced verbatim, only when any exist.
     ...(malformed.length > 0 ? { malformed } : {})
   };
+}
+
+// ===========================================================================================
+// AUTHORIZATION SCOPE FOR A CHANGE — the change's TARGETS (role-model.md §4.2, §8.4)
+// ===========================================================================================
+//
+// WHY NOT `auth.orgId`, WHICH IS WHAT EVERY DOOR HERE USED TO PASS. `authz/resolve.ts`'s
+// `scopeExpandCte` expands a checked scope UPWARD only, so `scopeObjectId: auth.orgId` is
+// satisfiable by an ORG-ROOT binding and by nothing else. A principal who administers one service
+// or one component could therefore hold `object:read`/`object:write` and still be refused the read
+// and the accept of the release against their own estate — the read-surface blocker that made
+// every scoped role in role-model.md §3 unusable.
+//
+// WHY NOT THE CHANGE ITSELF, WHICH IS THE OBVIOUS RE-SCOPE AND IS INERT. A change has no scope of
+// its own: `objects.domain_id` for a change is the ORG ROOT for every one of the five internal
+// `proposeChange` callers (they pass no `domainId` at all), `scp change propose` has no `--domain`
+// flag, and route 1 of the scope walk goes from `change.id` straight back to that same
+// `domain_id`. `scopeObjectId: change.id` would READ as a narrowing to a reviewer and BE the
+// org-root pin it replaced. Measured in role-model.md §8.4, which also records why re-parenting
+// changes onto a nearest-common-ancestor was rejected.
+//
+// So: the targets, read back off the persisted `properties.targets`.
+//
+//   * READ doors — ANY ONE target. A principal who can see one target is already told the whole
+//     target list by `properties.targets` on the object they just read, so an every-target read
+//     bar buys nothing and would make reads strictly HARDER to satisfy than the writes they gate.
+//   * WRITE doors — EVERY target, so that the admin of one target of a five-target change cannot
+//     accept the release into the four they have no standing on.
+//
+// THIS IS A PURE WIDENING. An org-root binding satisfies a check at any object below it, so every
+// request that succeeded against the org-root pin still succeeds, identically.
+//
+// These live here rather than in `coordination/campaign-scope-authz.ts` (with the propose-time
+// target check) only because this increment's file set is these two route files; they are exported
+// so `routes/governance.ts`'s change-scoped doors use the SAME implementation and the read bar and
+// the write bar cannot drift apart. Moving them next to `assertCoordinationTargetsWithinAuthority`
+// is a mechanical follow-up.
+
+/**
+ * The target ids a change's authority is checked against — REFUSING an empty or malformed set.
+ *
+ * `assertCoordinationTargetsWithinAuthority` opens `if (!Array.isArray(input.targets)) return;`,
+ * a silent PASS. That is safe where it lives — it guards PROPOSE, whose schema pins `targets` to
+ * `.min(1)`, so the array is validated request input — and it would be a total authorization
+ * bypass here, where the array is read back off a PERSISTED row that nothing re-validates. A
+ * federation import writes a change object's `properties` verbatim (`import-repo.ts`'s
+ * `object_upsert` branch), so "the row says something other than a non-empty string[]" is
+ * reachable, not hypothetical. Refused for every principal including an org-root Owner: a change
+ * whose target set cannot be read is a change whose authority cannot be established.
+ *
+ * Returns the ids VERBATIM and does not re-resolve them to objects. `proposeChange` resolves each
+ * id-or-URN once at creation and stashes the resolved object ids here, so there is nothing left to
+ * resolve — and re-resolving would 404 the moment a target had since been deleted, turning "cancel
+ * the release against the component we just removed", the exact request an operator makes about
+ * such a change, from a 200 into a 404.
+ */
+function changeTargetScopeIds(change: {
+  id: string;
+  properties: Record<string, unknown>;
+}): string[] {
+  const raw = change.properties?.targets;
+  const ids = targetObjectIdsOf(change.properties);
+  if (!Array.isArray(raw) || raw.length === 0 || ids.length !== raw.length) {
+    throw forbidden(
+      `change '${change.id}' has no readable target set (properties.targets must be a non-empty ` +
+        `array of object ids), so authority over it cannot be established`
+    );
+  }
+  return ids;
+}
+
+/**
+ * READ bar: `object:read` at ANY ONE of the change's targets.
+ *
+ * `hasPermission` rather than `authorize` so a refusal at the first target falls through to the
+ * next; one clear 403 naming the whole set is thrown if none matched. Note that `hasPermission`
+ * can still THROW on a refusal it cannot trust (ADR-0037's depth-truncation probe) — a deep
+ * containment chain above one target makes the whole read loud rather than silently answering
+ * from the remaining targets, which is the direction that convention already chose.
+ *
+ * An org-root holder is matched by the FIRST target (the walk reaches the org root from any
+ * object), so the common case still costs exactly one query.
+ */
+export async function assertReadableAtSomeChangeTarget(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    subjectObjectId: string;
+    change: { id: string; properties: Record<string, unknown> };
+  }
+): Promise<void> {
+  const targetObjectIds = changeTargetScopeIds(input.change);
+  for (const scopeObjectId of targetObjectIds) {
+    const allowed = await hasPermission(tx, {
+      orgId: input.orgId,
+      subjectObjectId: input.subjectObjectId,
+      permission: "object:read",
+      scopeObjectId
+    });
+    if (allowed) return;
+  }
+  throw forbidden(
+    `subject '${input.subjectObjectId}' lacks 'object:read' at any target of change ` +
+      `'${input.change.id}' (${targetObjectIds.join(", ")})`
+  );
+}
+
+/**
+ * WRITE bar: `object:write` at EVERY one of the change's targets — the same per-target loop
+ * `assertCoordinationTargetsWithinAuthority` runs at propose time, so a change cannot be stopped,
+ * accepted or rolled back by a principal who could not have proposed it.
+ *
+ * `accept` and `rollback` keep `object:write` FOR NOW. The purpose-built `change:accept`
+ * permission is a LATER increment (role-model.md §5 step 3) and needs a migration to seed it onto
+ * the roles that should hold it; this increment fixes the SCOPE only. Do not read the presence of
+ * a per-target check here as evidence that the permission split has shipped.
+ */
+export async function assertWritableAtEveryChangeTarget(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    subjectObjectId: string;
+    change: { id: string; properties: Record<string, unknown> };
+  }
+): Promise<void> {
+  for (const scopeObjectId of changeTargetScopeIds(input.change)) {
+    await authorize(tx, {
+      orgId: input.orgId,
+      subjectObjectId: input.subjectObjectId,
+      permission: "object:write",
+      scopeObjectId
+    });
+  }
+}
+
+/**
+ * DECISIONS ARE A DISJUNCTION, NOT A RE-SCOPE (role-model.md §8.6).
+ *
+ * A Decision is the ACCOUNTABILITY RECORD for a verdict about its subject, so re-scoping the door
+ * to `decision.subjectId` the way the change doors above re-scope to their targets would hand the
+ * record to the party being held accountable — a component's own operator reading (and, once the
+ * list is filterable, enumerating) every refusal ever recorded against them, with no
+ * deployment-wide reader required. So the org-root arm is KEPT and the subject arm is ADDED:
+ *
+ *   `audit:read` at the ORG ROOT   — the auditor's read, deployment-wide, unchanged in reach
+ *   OR `object:read` at the SUBJECT — so a scoped principal can see the verdicts about the objects
+ *                                     they administer, which is the whole point of increment 2.5a
+ *
+ * The org-root arm demands `audit:read` where this door used to demand `object:read`. That narrows
+ * nobody who exists: all five built-in roles are seeded with `audit:read`
+ * (`drizzle/0002_rls_rbac_seed.sql`), there is no custom-role API to author one without it, and
+ * where a subject IS named the second arm admits any org-root `object:read` holder anyway (the
+ * scope walk reaches the org root from any object). It also puts this door on the permission
+ * role-model.md §5 step 3 wants it on, before five purpose roles start being bound in the field.
+ *
+ * `hasPermission`, not `authorize`, on BOTH arms — an arm that threw could not be fallen through —
+ * and one clear 403 naming both if neither holds.
+ *
+ * The subject is looked up with the NON-throwing `findObjectByIdOrUrnAnyType`: a decision outlives
+ * its subject (that is what an audit record is for), and a subject that no longer resolves must
+ * leave the org-root auditor's read working rather than 404 the accountability record away.
+ */
+async function assertDecisionReadable(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    subjectObjectId: string;
+    /** The Decision's own `subjectId`, or the requested `subjectId` filter — `null` for an
+     *  unfiltered list, where there is no subject to offer the second arm. */
+    decisionSubjectId: string | null;
+  }
+): Promise<void> {
+  const auditWide = await hasPermission(tx, {
+    orgId: input.orgId,
+    subjectObjectId: input.subjectObjectId,
+    permission: "audit:read",
+    scopeObjectId: input.orgId
+  });
+  if (auditWide) return;
+  if (input.decisionSubjectId) {
+    const subject = await findObjectByIdOrUrnAnyType(tx, input.orgId, input.decisionSubjectId);
+    if (
+      subject &&
+      (await hasPermission(tx, {
+        orgId: input.orgId,
+        subjectObjectId: input.subjectObjectId,
+        permission: "object:read",
+        scopeObjectId: subject.id
+      }))
+    ) {
+      return;
+    }
+  }
+  throw forbidden(
+    `subject '${input.subjectObjectId}' lacks 'audit:read' at the org root` +
+      (input.decisionSubjectId
+        ? ` and 'object:read' at decision subject '${input.decisionSubjectId}'`
+        : ` (an unfiltered Decision listing has no subject to scope to — name a 'subjectId')`)
+  );
 }
 
 export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void {
@@ -270,13 +476,17 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const change = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // LOADED BEFORE IT IS SCOPED, and that order is load-bearing: `scopeExpandCte` seeds its
+        // CTE with the raw uuid and never checks existence, so scoping at an unresolved path param
+        // expands a nonexistent id to a one-row set matching no binding — turning a 404 into a 403
+        // even for an org-root Owner, and paying for two truncation-probe queries on the way.
+        const found = await getChange(tx, auth.orgId, request.params.id);
+        await assertReadableAtSomeChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:read",
-          scopeObjectId: auth.orgId
+          change: found
         });
-        return getChange(tx, auth.orgId, request.params.id);
+        return found;
       });
       reply.status(200).send(change);
     }
@@ -304,13 +514,13 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // Resolved first, then scoped — see `GET /changes/{id}` above for why that order matters.
+        const change = await getChange(tx, auth.orgId, request.params.id);
+        await assertReadableAtSomeChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:read",
-          scopeObjectId: auth.orgId
+          change
         });
-        const change = await getChange(tx, auth.orgId, request.params.id);
         // The plan is awaited BEFORE the batch below rather than inside it, so the stage-dependency
         // status can be handed the plan this handler already loads instead of re-issuing its three
         // queries (ADR-0028 increment 4). Costs nothing: these all run on ONE tenant transaction,
@@ -422,11 +632,14 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const outcome = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // `object:write` at EVERY target. CANCEL IS NOT ACCEPT: it STOPS a release rather than
+        // authorizing one, so it deliberately stays on the generic write verb. Folding it into the
+        // future `change:accept` (role-model.md §5 step 3) would make a cancel-only role — the
+        // shape an incident responder wants — inexpressible.
+        await assertWritableAtEveryChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
-          scopeObjectId: auth.orgId
+          change: await getChange(tx, auth.orgId, request.params.id)
         });
         const result = await transitionChange(
           tx,
@@ -475,11 +688,14 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const outcome = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // `object:write` at EVERY target — one target's admin must not be able to accept the
+        // release into the other four. STILL `object:write`, NOT `change:accept`: that permission
+        // does not exist yet (role-model.md §5 step 3 seeds it in a migration). This increment
+        // fixes the SCOPE only.
+        await assertWritableAtEveryChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
-          scopeObjectId: auth.orgId
+          change: await getChange(tx, auth.orgId, request.params.id)
         });
         const result = await transitionChange(
           tx,
@@ -533,11 +749,14 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const outcome = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // `object:write` at EVERY target of the ORIGINAL change — a rollback proposes a NEW change
+        // carrying that same target set (`coordination/rollback.ts` reads it with the very same
+        // `targetObjectIdsOf`), so anything less would let one target's admin drive a release into
+        // the rest. Also still `object:write`, for the reason `accept` above records.
+        await assertWritableAtEveryChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
-          scopeObjectId: auth.orgId
+          change: await getChange(tx, auth.orgId, request.params.id)
         });
         return triggerRollback(tx, {
           orgId: auth.orgId,
@@ -577,11 +796,16 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // The subject arm is offered only when the caller PINNED a subject — an unfiltered listing
+        // spans every subject in the org, so nothing narrower than the org-root audit read can
+        // stand behind it. Row-level filtering of an unpinned listing is the LIST half of this
+        // blocker (role-model.md §8.2/§8.7, increment 2.5b) and is deliberately not attempted here:
+        // every list repo derives `nextCursor` from the last UNFILTERED row, so post-filtering a
+        // page silently shrinks it after the LIMIT.
+        await assertDecisionReadable(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:read",
-          scopeObjectId: auth.orgId
+          decisionSubjectId: request.query.subjectId ?? null
         });
         return listDecisions(tx, auth.orgId, request.query);
       });
@@ -606,13 +830,15 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const decision = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // Loaded before it is scoped: the subject arm needs the row's own `subjectId`, and
+        // resolving first is also what keeps an unknown decision id a 404 rather than a 403.
+        const found = await getDecision(tx, auth.orgId, request.params.id);
+        await assertDecisionReadable(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:read",
-          scopeObjectId: auth.orgId
+          decisionSubjectId: found.subjectId
         });
-        return getDecision(tx, auth.orgId, request.params.id);
+        return found;
       });
       reply.status(200).send(decision);
     }

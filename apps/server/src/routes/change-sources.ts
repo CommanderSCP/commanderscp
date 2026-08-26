@@ -30,6 +30,7 @@ import { changeSourceEvents, changeSourceWebhookSecrets } from "../db/schema.js"
 import {
   createSourceMapping,
   deleteSourceMappingsMatching,
+  getSourceMapping,
   listSourceMappingsForSource,
   setSourceMappingEnabled,
   setSourceMappingScope
@@ -457,11 +458,26 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const mapping = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // READ THE ROW, THEN SCOPE THE CHECK AT ITS COMPONENT. A source mapping has no containment
+        // scope of its own — the authority that governs it is authority over the component it binds
+        // a repo/path pattern to, which is only knowable once the row is loaded. Reading first is
+        // also what keeps an unknown id answering 404 (`getSourceMapping` throws it) instead of the
+        // 403 that scoping at an id naming nothing would produce for every caller including the org
+        // root Owner. A WIDENING, never a narrowing: an org-root binding still satisfies a check at
+        // any object below it, so everything that worked before this works identically.
+        // `component_object_id` is immutable (the setter below writes `enabled`/`disabled_until`
+        // only), so there is nothing for the second statement to have moved out from under.
+        const existing = await getSourceMapping(
+          tx,
+          auth.orgId,
+          request.params.sourceKind,
+          request.params.id
+        );
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:write",
-          scopeObjectId: auth.orgId
+          scopeObjectId: existing.componentObjectId
         });
         return setSourceMappingEnabled(
           tx,
@@ -508,11 +524,20 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const mapping = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // Same read-then-scope shape, and the same reasons, as the pause switch above: the row's
+        // component is the object that carries the authority, and resolving it first is what keeps
+        // an unknown id a 404. `component_object_id` is not writable by this setter either.
+        const existing = await getSourceMapping(
+          tx,
+          auth.orgId,
+          request.params.sourceKind,
+          request.params.id
+        );
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:write",
-          scopeObjectId: auth.orgId
+          scopeObjectId: existing.componentObjectId
         });
         return setSourceMappingScope(
           tx,
@@ -564,17 +589,27 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const deleted = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // Resolved with `includeDeleted`: the mappings most in need of deleting belong to a
+        // SOFT-DELETED component (a merged-away pair half), and refusing to resolve it would make
+        // exactly those rows undeletable — the gap this route exists to close.
+        //
+        // RESOLVED BEFORE THE CHECK, AND THE CHECK IS SCOPED AT IT. This door addresses rows by the
+        // identity tuple, whose component is the object that carries the authority over every row
+        // the tuple can reach — so that component, not the org root, is the scope. Resolving first
+        // also keeps an unresolvable `component` a 404 rather than the 403 that scoping at a
+        // caller-supplied string would produce for everyone. Still a widening: an org-root binding
+        // satisfies a check at any object below it. A soft-deleted component keeps its `domain_id`,
+        // and `scopeExpandCte` reads the seed row's `domain_id` without a liveness filter, so the
+        // org-root chain of a merged-away component still expands — the stranded-mapping case that
+        // motivated this route is unaffected.
+        const component = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.component, {
+          includeDeleted: true
+        });
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:write",
-          scopeObjectId: auth.orgId
-        });
-        // Resolved with `includeDeleted`: the mappings most in need of deleting belong to a
-        // SOFT-DELETED component (a merged-away pair half), and refusing to resolve it would make
-        // exactly those rows undeletable — the gap this route exists to close.
-        const component = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.component, {
-          includeDeleted: true
+          scopeObjectId: component.id
         });
         return deleteSourceMappingsMatching(tx, {
           orgId: auth.orgId,

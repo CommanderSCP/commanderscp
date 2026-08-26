@@ -1231,14 +1231,21 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
-          orgId: auth.orgId,
-          subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
-          scopeObjectId: auth.orgId
-        });
+        // THE AUTHORIZATION FOR THIS DOOR IS INSIDE `backfillSourceMappings`, NOT HERE — deliberate,
+        // and not an omission. This route writes one `source_mappings` row per NAME in the proposal,
+        // and each row is governed by the component that name resolves to, so the check belongs
+        // where that component is known: `object:write` at EVERY component the backfill touches,
+        // instead of one check at the org root that only an org-root binding could ever satisfy.
+        // Putting it in the repo function rather than repeating it here is what keeps a future
+        // caller from inheriting the door without the bar. The skip-vs-refuse-the-batch decision,
+        // and why it differs from `assertCoordinationTargetsWithinAuthority`, are argued there.
+        //
+        // Nothing here dials anything: unlike `/discovery/run` and `/accept` above, this door reads
+        // a caller-supplied proposal and writes correlation rows. It holds no credential and makes
+        // no outbound call, which is why it is scoped down while those two stay at the org root.
         return backfillSourceMappings(tx, {
           orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
           mappings: request.body.proposal.sourceMappings ?? []
         });
       });

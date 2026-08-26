@@ -10,6 +10,7 @@ import {
   type PipelineClassification
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
+import { hasPermission } from "../authz/resolve.js";
 import { objects, sourceMappings } from "../db/schema.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
@@ -144,6 +145,39 @@ export async function setSourceMappingScope(
   return toSourceMapping(row);
 }
 
+/**
+ * Reads ONE mapping by the same `(orgId, sourceKind, id)` addressing the two by-id setters above
+ * use, and throws the SAME 404 when it misses — so a caller that reads before it writes cannot
+ * change what a missing row answers.
+ *
+ * It exists for the AUTHORIZATION step in `routes/change-sources.ts`. A source mapping has no
+ * containment scope of its own; the object whose authority governs it is the COMPONENT it binds a
+ * repo/path pattern to, and that id can only be learned by reading the row. Reading first is also
+ * what keeps an unknown id answering 404 rather than 403: `authz/resolve.ts`'s `scopeExpandCte`
+ * seeds its CTE with the raw uuid and never checks existence, so scoping at an id that names
+ * nothing expands to a one-row set that no binding matches — not even the org root Owner's.
+ */
+export async function getSourceMapping(
+  tx: TenantTx,
+  orgId: string,
+  sourceKind: string,
+  id: string
+): Promise<SourceMapping> {
+  const [row] = await tx
+    .select()
+    .from(sourceMappings)
+    .where(
+      and(
+        eq(sourceMappings.orgId, orgId),
+        eq(sourceMappings.sourceKind, sourceKind),
+        eq(sourceMappings.id, id)
+      )
+    )
+    .limit(1);
+  if (!row) throw notFound(`no source mapping '${id}' for source kind '${sourceKind}'`);
+  return toSourceMapping(row);
+}
+
 export async function listSourceMappingsForSource(
   tx: TenantTx,
   orgId: string,
@@ -187,10 +221,42 @@ export interface BackfillSourceMappingsResult {
  * that already exist. Idempotent and safe to re-run: it SKIPS when there is no such component, the name
  * is ambiguous (>1 live component), or an identical mapping already exists — reporting each skip with a
  * reason so the operator can see exactly what was and wasn't backfilled (no silent drops).
+ *
+ * ==============================================================================================
+ * AUTHORITY IS CHECKED HERE, PER COMPONENT — NOT ONCE AT THE ORG ROOT ON THE WAY IN
+ * ==============================================================================================
+ * The route used to hold a single `object:write` check at `auth.orgId`, which — because scope
+ * expansion runs strictly UPWARD (`authz/resolve.ts`) — could be satisfied by an org-root binding
+ * and by nothing else. A source mapping decides what a push CORRELATES to, so the authority that
+ * should govern creating one is authority over the component it names. The check therefore moved
+ * in here, where the matched component is known, and the actor is REQUIRED (not optional) so no
+ * future caller can reach this loop without one.
+ *
+ * WHY A SKIP AND NOT A REFUSAL OF THE WHOLE CALL. `assertCoordinationTargetsWithinAuthority` is
+ * the in-tree refuse-everything precedent, and it is the right shape THERE: its targets are the
+ * declared targets of ONE change/campaign, so a partial application would leave a half-formed
+ * coordination object. Nothing here is atomic. Each entry is an independent row, the operation is
+ * documented and tested as idempotently re-runnable, and this function ALREADY answers three other
+ * per-entry outcomes with a reported skip. Refusing the batch would also make the widening inert in
+ * practice: the input is a whole `discovery run` proposal (50 apps on the homelab estate), so one
+ * name belonging to another team's component would refuse the other 49 — for an actor who was never
+ * going to get that one row either way. `campaign-rollback.ts` is the precedent this follows.
+ *
+ * THE SKIP IS NOT SILENT — the reason names the permission and the component, and it rides the same
+ * response array the operator already reads to see what was and wasn't backfilled. That does let an
+ * authenticated caller with no standing tell "a component of this exact name exists" from "it does
+ * not", which is the same existence oracle the get-by-id doors accept by resolving the object before
+ * they scope the check (role-model.md §8.7); honest diagnostics are worth more than closing a
+ * confirm-an-exact-guess channel that the ordinary component read doors leave open anyway.
  */
 export async function backfillSourceMappings(
   tx: TenantTx,
-  input: { orgId: string; mappings: BackfillSourceMappingInput[] }
+  input: {
+    orgId: string;
+    /** The acting subject — the `object:write` check below is run against it, per component. */
+    actorObjectId: string;
+    mappings: BackfillSourceMappingInput[];
+  }
 ): Promise<BackfillSourceMappingsResult> {
   const createdSourceMappingIds: string[] = [];
   const skipped: Array<{ objectName: string; reason: string }> = [];
@@ -223,6 +289,22 @@ export async function backfillSourceMappings(
       continue;
     }
     const componentId = matches[0]!.id;
+
+    // The per-component bar (see the header). Checked BEFORE the duplicate probe below so the
+    // answer never depends on whether an identical row happens to exist already.
+    const authorized = await hasPermission(tx, {
+      orgId: input.orgId,
+      subjectObjectId: input.actorObjectId,
+      permission: "object:write",
+      scopeObjectId: componentId
+    });
+    if (!authorized) {
+      skipped.push({
+        objectName: m.objectName,
+        reason: `not backfilled — 'object:write' is required at component '${componentId}'`
+      });
+      continue;
+    }
 
     // Idempotent: skip an identical (component, sourceKind, repo, path, ref) mapping — re-running is
     // a no-op. `refPattern` is part of the comparison because it is a ROUTING discriminator: without

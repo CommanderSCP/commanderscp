@@ -206,6 +206,40 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
+  /**
+   * ==============================================================================================
+   * THE FOUR CAMPAIGN GET-BY-ID DOORS ARE SCOPED AT THE CAMPAIGN (role-model.md §8.7, step 2.5a)
+   * ==============================================================================================
+   * `GET /campaigns/{id}`, `:explain`, `:adoption` and `POST :rollback` each ran at
+   * `scopeObjectId: auth.orgId`. `authz/resolve.ts`'s `scope_expand` walks UPWARD only, so a check
+   * pinned at the org root is satisfiable by an ORG-ROOT BINDING AND BY NOTHING ELSE — an actor
+   * bound at the service a campaign lives in held `object:read` and was still 403'd reading it.
+   *
+   * A PURE WIDENING, not a re-aiming. The same upward walk means an org-root binding still
+   * satisfies a check at any object below it, so every request that succeeded before succeeds
+   * identically; what changes is that a binding BELOW the org root now reaches the campaigns inside
+   * its own subtree, and only those.
+   *
+   * A CAMPAIGN'S OWN ID IS A REAL SCOPE, WHERE A CHANGE'S IS NOT — the distinction that makes these
+   * four the cheap fixes and the `change` doors a separate problem. §8.4 measured that no
+   * `proposeChange` caller in the tree passes a `domainId` and `scp change propose` has no
+   * `--domain` flag, so a change's containment parent is the org root in practice and re-scoping to
+   * it is INERT. `POST /campaigns` is the opposite: `domainId` is on the wire
+   * (`CreateCampaignRequestSchema`), it is resolved through `resolveDeclaredContainmentParent` and
+   * authorized at, so a campaign authored under a service genuinely lives under it and route 1 of
+   * the containment walk finds that service.
+   *
+   * THE OBJECT IS RESOLVED BEFORE IT IS SCOPED, ON ALL FOUR, AND THAT ORDER IS LOAD-BEARING.
+   * `scopeExpandCte` seeds its recursive CTE with the raw uuid and never checks that the object
+   * exists, so an id naming nothing expands to a one-row set matching no binding: authorizing at an
+   * unresolved path param turns every 404 on these routes into a 403 — for everybody, org-root
+   * Owner included — and adds two `assertDenyNotTruncated` probe queries to each. The reorder costs
+   * nothing on the two doors that already loaded the campaign on the very next line, and one cheap
+   * row read on the two that did not.
+   *
+   * PINNED BY `routes/campaign-scope-doors.integration.test.ts`, mutation-proven in both
+   * directions (the widening, and the 404-not-403 order).
+   */
   typed.route({
     method: "GET",
     url: "/api/v1/campaigns/:id",
@@ -223,13 +257,18 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const campaign = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // RESOLVE, THEN SCOPE — see the block above. `getCampaign` 404s on an id that is not a live
+        // campaign in this org; it was already the next statement, so this is a reorder, not a
+        // second query. Scoping at `found.id` rather than at `request.params.id` is deliberate for
+        // the same reason: the id that is checked is the one that was proven to exist.
+        const found = await getCampaign(tx, auth.orgId, request.params.id);
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
-          scopeObjectId: auth.orgId
+          scopeObjectId: found.id
         });
-        return getCampaign(tx, auth.orgId, request.params.id);
+        return found;
       });
       reply.status(200).send(campaign);
     }
@@ -258,13 +297,16 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // RESOLVE, THEN SCOPE, at the campaign — see `GET /campaigns/{id}`'s block above. The
+        // `getCampaign` call was already the first statement after the check; only the order and
+        // the scope changed.
+        const campaign = await getCampaign(tx, auth.orgId, request.params.id);
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
-          scopeObjectId: auth.orgId
+          scopeObjectId: campaign.id
         });
-        const campaign = await getCampaign(tx, auth.orgId, request.params.id);
         // `withFreezeHolds: true` — this response's `plan.waves[].targets[].hold` /
         // `heldTargetCount` is the campaign-side wave-target hold projection (M25.UI), the same
         // wire consumer `changes.ts`'s explain handler already opts into on the change side.
@@ -286,10 +328,12 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
    * response field optional is the oasdiff break this project has already paid for once, and nothing
    * here does that), and every schema this route names is new.
    *
-   * `object:read` at the org, the same scope `:explain` uses, and for the same reason: the answer is
-   * assembled from the campaign, its plan and its targets' own inventory/control rows, all of which
-   * are already readable at that scope. This route reads and writes nothing — the Decision that
-   * accompanies an `adopted` verdict is written by the reconciler's actuator, never by a GET.
+   * `object:read` AT THE CAMPAIGN, the same scope `:explain` uses, and for the same reason: the
+   * answer is assembled from the campaign, its plan and its targets' own inventory/control rows,
+   * all of which are already readable at that scope. This route reads and writes nothing — the
+   * Decision that accompanies an `adopted` verdict is written by the reconciler's actuator, never
+   * by a GET. (It said "at the org" until step 2.5a re-scoped all four get-by-id doors; the
+   * sentence's argument was always about being the SAME scope as `:explain`, which it still is.)
    */
   typed.route({
     method: "GET",
@@ -314,11 +358,19 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // RESOLVE, THEN SCOPE — see `GET /campaigns/{id}`'s block above. Unlike the two doors
+        // there, this one costs a genuine extra row read: `buildCampaignAdoptionReport` resolves
+        // the campaign itself (through `getCampaign`, which is also where "that uuid is not a
+        // campaign" 404s), and that resolution happens far too late to scope an authorization
+        // check on. A single indexed lookup is the price of not turning this route's 404 into a
+        // 403; `getObjectByIdOrUrnAnyType` is the cheap half of it — it filters tombstones and
+        // resolves nothing else.
+        const campaignObject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.id);
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
-          scopeObjectId: auth.orgId
+          scopeObjectId: campaignObject.id
         });
         return buildCampaignAdoptionReport(tx, auth.orgId, request.params.id);
       });
@@ -766,11 +818,24 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // RESOLVE, THEN SCOPE, at the campaign — see `GET /campaigns/{id}`'s block above. The extra
+        // row read is here for the same reason as on `:adoption`: `triggerCampaignRollback`
+        // resolves the campaign itself (and is where "not a campaign" 400s), which is after the
+        // authorization decision has to be made.
+        //
+        // A CAMPAIGN-SCOPED WRITER CANNOT REVERT INTO TARGETS THEY HAVE NO STANDING ON, and that is
+        // NOT what this check provides. The per-member bar lives inside `triggerCampaignRollback`,
+        // which re-checks `object:write` at EVERY member's own target and skips the ones it does
+        // not hold — the "every target for writes" rule §8.4 states, already built here before this
+        // re-scope and unchanged by it. Widening this door from the org root to the campaign is
+        // therefore not a widening of blast radius: it changes who may ASK, not what the ask
+        // reaches.
+        const campaignObject = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.params.id);
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:write",
-          scopeObjectId: auth.orgId
+          scopeObjectId: campaignObject.id
         });
         return triggerCampaignRollback(tx, {
           orgId: auth.orgId,

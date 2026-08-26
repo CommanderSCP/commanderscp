@@ -87,6 +87,9 @@ import {
 import { dialResync, resolveFederationClientMtls } from "../federation/federation-outbound.js";
 import { exportPromotionBundle, importPromotionBundle } from "../federation/promotion-repo.js";
 import { createOverlay, getMergedOverlayView } from "../federation/overlay-repo.js";
+// The overlay doors' SECOND bar is scoped at the base graph object, so they have to resolve it
+// before they can scope anything at it — see the block above `POST /api/v1/federation/overlays`.
+import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { handFillObject } from "../federation/handfill-repo.js";
 import {
   buildRelayTarball,
@@ -1277,6 +1280,47 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     }
   });
 
+  /**
+   * ==============================================================================================
+   * THE TWO OVERLAY DOORS ARE NOT FEDERATION DOORS (role-model.md §8.6)
+   * ==============================================================================================
+   * Every other `authorize()` in this file is correctly pinned at `auth.orgId`: a federation
+   * identity, a peer, a journal, an outpost topology and an import/export are org-level concepts,
+   * and a binding narrower than the org root holds authority over none of them. These two are the
+   * exception, and a census sorted BY FILE sweeps them into that bucket wrongly — what they write
+   * and read is an annotation ON a base graph object: a service, a component, a policy.
+   *
+   * SO EACH GAINS A SECOND CHECK AT THE RESOLVED BASE OBJECT — ADDED, NEVER SUBSTITUTED.
+   *
+   * WHY THE BASE. `getMergedOverlayView` is a READ-TIME merge (DESIGN §13), so an overlay on a
+   * component silently changes what every consumer of that component sees, without touching the
+   * component's own row. Authority over the thing being annotated is the bar that was missing.
+   *
+   * WHY THE ORG-ROOT BAR STAYS. `createOverlay` calls `createObject` with no `domainId`, so an
+   * overlay's row always lands at ORG-ROOT containment. That is a STORAGE fact, not an AUTHORITY
+   * fact, and it must not be read in either direction: it does not make org-root `object:write` the
+   * whole story (see above), and it does not make a base-scoped check a replacement for it.
+   * `federation/overlay-repo.ts`'s governance-managed guard demands `policy:write` AT THE ORG ROOT
+   * for exactly the storage reason, and its own doc explains why substituting a base-scoped check
+   * there would let a component-scoped principal mint overlays outranking a commander-origin
+   * object. §8.6 lists that guard among the deliberate escalation bars this increment must not
+   * sweep. Keeping the org-root bar first also keeps these doors' 403 for an unbound caller
+   * byte-identical to today's, and keeps the base resolution behind an authorization check.
+   *
+   * NET EFFECT TODAY: none, deliberately. `scope_expand` walks upward, so anyone who clears the
+   * org-root bar clears a check at any descendant of it — the addition can only ever REFUSE, and
+   * today only via an explicit `deny` binding at the base. It is built now because the increment
+   * that gives out bindings below the org root is the one where it starts mattering, and because a
+   * later sweep that relaxes the org-root pin here would otherwise leave the door with no bar at
+   * all.
+   *
+   * THE BASE IS RESOLVED BEFORE IT IS SCOPED. `scopeExpandCte` seeds its CTE with the raw uuid and
+   * never checks existence, so a check scoped at an unresolved caller-supplied value refuses
+   * everybody — including an org-root Owner, who would get a 403 where a 404 is the honest answer.
+   *
+   * PINNED BY `routes/federation-overlay-base-authority.integration.test.ts` (mutation-proven),
+   * with the no-regression half in `governance/governance-managed-write-doors.integration.test.ts`.
+   */
   typed.route({
     method: "POST",
     url: "/api/v1/federation/overlays",
@@ -1307,11 +1351,24 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // BAR 1 — unchanged: the overlay ROW lands at org-root containment. See the block above.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:write",
           scopeObjectId: auth.orgId
+        });
+        // BAR 2 — ADDED, at the object being annotated. `createOverlay` resolves the base again a
+        // moment later (it is the choke point every one of its type refusals is written against,
+        // and moving the resolution out of it would put those refusals behind a route that could
+        // drift); one indexed lookup buys an authorization decision that cannot be made from the
+        // caller-supplied string alone, and buys the 404 that scoping at that string would destroy.
+        const base = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.base);
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: base.id
         });
         return createOverlay(tx, {
           orgId: auth.orgId,
@@ -1355,13 +1412,25 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // BAR 1 — unchanged: the overlays this merges all live at org-root containment.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
           scopeObjectId: auth.orgId
         });
-        return getMergedOverlayView(tx, auth.orgId, request.params.idOrUrn);
+        // BAR 2 — ADDED, at the object being read. The merge is computed FIRST because it is what
+        // resolves (and 404s on) the base; it is a pure computed view that writes nothing, and it
+        // is already behind BAR 1, so nothing reaches it that today's door would have refused. The
+        // response is withheld until authority at the base itself is established.
+        const view = await getMergedOverlayView(tx, auth.orgId, request.params.idOrUrn);
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: view.base.id
+        });
+        return view;
       });
       reply.status(200).send(result);
     }
