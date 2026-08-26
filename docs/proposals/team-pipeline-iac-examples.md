@@ -272,6 +272,7 @@ new InfrastructurePipeline(api, {
  *             commander signs the journey manifest per crossing, ADR-0013)
  *   govcloud-registry ← on govcloud staging admission   (mTLS pull)
  *   airgap-registry   ← on airgap staging admission     (retrans media)
+ *   each transfer carries: image + test bundle (workflows @ built commit, D23)
  *
  * staging    commercial-amer-staging ∥ govcloud-amer-staging ∥ airgap-amer-staging
  *            [exit: integration ✓ · bake-alarms quiet 30m]
@@ -297,7 +298,7 @@ The trailing block is **generated, committed codegen** — `scp iac render --wri
 
 **Refs and pending dependencies (D14).** Every `fromName()` / `fromUrn()` reference resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the pipeline's status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
 
-**Tests know where the code is through their pipeline.** A `Workflow` scopes to a pipeline, so it inherits the repo and branch the pipeline already declares — `path:` names the WorkflowTemplate *within that repo*; a hook scopes to its `Workflow`. `PostMergeTest(unit)` fires on merges to `image`'s branch and runs `ci/unit.yaml` from `image`'s repo, because that is what its scope chain says. Per D21, `PostDeployTest` with no `stage:` gates **every** wave's exit (a `stage:` narrows it), and `BakeAlarms` holds each wave's exit until the declared quiet window passes alarm-free after deploy. SCP **triggers** the run on the domain's Argo Workflows (resolved by binding policy) and consumes the result as gate/hold evidence — stale continuous green reads as absent (`maxAge` required). No `argo-workflows` plugin exists yet: build increment 8 (main doc §13).
+**Tests know where the code is through their pipeline.** A `Workflow` scopes to a pipeline, so it inherits the repo and branch the pipeline already declares — `path:` names the WorkflowTemplate *within that repo*; a hook scopes to its `Workflow`. `PostMergeTest(unit)` fires on merges to `image`'s branch and runs `ci/unit.yaml` from `image`'s repo, because that is what its scope chain says. Per D21, `PostDeployTest` with no `stage:` gates **every** wave's exit (a `stage:` narrows it), and `BakeAlarms` holds each wave's exit until the declared quiet window passes alarm-free after deploy. SCP **triggers** the run on the domain's Argo Workflows (resolved by binding policy) and consumes the result as gate/hold evidence — stale continuous green reads as absent (`maxAge` required). Across security domains the `path:` is a build-time capture, not a runtime fetch: the named workflows are bundled **at the built commit**, signed, distributed with the image's own crossing (D22/D23), and every domain — commercial included — runs its local, digest-pinned copy; results ride the existing upward evidence path (return media sync for the air gap). No `argo-workflows` plugin exists yet: build increment 8 (main doc §13).
 
 ```ts
 new BindingPolicy(bindings, "tests", {
