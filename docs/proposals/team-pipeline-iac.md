@@ -1,0 +1,139 @@
+# Team-level pipeline IaC from a single config repo
+
+**Status:** Draft — proposed 2026-08-26. The six rulings in §0 were made by the owner in-session on 2026-08-26; the design built on them is pending owner review as a whole.
+**Relates to:** [ADR-0002](../adr/0002-execution-strategy.md) (three modes, ownership test), [ADR-0005](../adr/0005-component-create-strict.md) (create-strict / import-permissive), [ADR-0030](../adr/0030-dev-branch-pipelines.md) (dev pipelines selected by source ref), [ADR-0031](../adr/0031-domain-local-objects-never-federate.md) (pipeline routing is domain-local), [iac-placements.md](iac-placements.md) (ACCEPTED 2026-08-03), [iac-stack-ownership.md](iac-stack-ownership.md), [import-existing-executors.md](import-existing-executors.md), [post-import-configuration.md §8](post-import-configuration.md).
+
+## 0. Owner rulings (2026-08-26)
+
+- **D1 — discovery is demoted to a scaffolder.** `discover()` stays, but its output becomes IaC construct code / a manifest (optionally delivered as a PR to the config repo), never a graph write. `POST /discovery/accept` is deprecated now and removed later under the `api-v2-exception` process (`/v1` is additive-only). The `/connect` wizards become scaffolder UI. The M13.1a federation **inbox loop** — the only thing in the tree literally named "auto-import" — is unrelated (promotion-bundle replication) and is untouched.
+- **D2 — the config repo carries committed synthesized JSON.** Teams author TypeScript constructs; their own CI runs synth and commits the manifest JSON beside the source (the monorepo's own committed-codegen convention), with a drift check. SCP reads only the declarative JSON. **SCP never executes team-authored code.**
+- **D3 — auto-apply on merge.** Merge to the registered branch *is* the approval (CODEOWNERS + PR review gate authorship). SCP plans and applies on sync; every plan persists as a Decision. An active freeze whose scope covers an affected object holds the apply until lifted.
+- **D4 — outpost binding policy.** The repo declares the WHAT (services, components, placements, wave topologies — ordinary federating objects). Each security domain authors the HOW once — a binding policy mapping deployment-targets to its local execution systems — and a domain-local reconciler joins the two into `executor_bindings`. Teams never author bindings. ADR-0031 stands unamended.
+- **D5 — adoption and export are required** (assumed; owner did not object). plan/apply gains explicit *adopt* semantics (take an existing unmanaged object into a stack), and `scp iac export` reverse-generates manifest/construct scaffolds from live state, so existing estates can onboard.
+- **D6 — environment vocabulary: `staging` replaces `gamma`** in all guidance, examples, scaffold output, and templates, as the industry-accepted term. `dev` exists as an environment but normally belongs to **domain-local dev pipelines** (ADR-0030), not the global promotion path. Environment strings remain operator data — SCP does not enforce names, so live estates using `gamma` keep working; a docs sweep updates GLOSSARY/diagram examples.
+
+## 1. The ask
+
+A team should be able to define the pipeline for its service and components **as code**, in **one git repo that lives in the commander's security domain**, and have that definition take effect across **every outpost and security domain** — connected, disconnected, and air-gapped — with SCP syncing the repo and registering the IaC itself. Auto-import goes away; import happens through IaC. Optional, shipped guidance shows teams how to organize their waves (staging → prod; 1 → 2 → 4 → 8). CLI and SDK stay accurate to all of it. This is a headline product capability, not an internal convenience.
+
+## 2. What exists today (measured 2026-08-26)
+
+The foundation needs no recreation:
+
+- `@scp/iac` is a CDK-style construct library with **pure synth** (`packages/iac/src/construct.ts`) producing a `DesiredStateManifest` (`packages/schemas/src/iac.ts`) that `scp plan`/`scp apply` POST to `/plans` — the **server** diffs desired vs. actual (`apps/server/src/iac/plan-diff.ts`), with stack-scoped pruning keyed on the server-owned `managed_by_stack` column and per-diff-entry `authorize()` (`plans-repo.ts`). A role binding for a team at a service scope already confines a team's stack to its slice of the graph.
+- Manifests already express: objects (service/domain/team/policy/component/deployment-target/group/user/service-account), relationships, `placements` (ACCEPTED, iac-placements.md), `sourceMappings`, `executorBindings`, dependency producers, governance move rungs.
+- A "pipeline" is **derived, not a table**: a `release-topology` object (waves document) attached via `releases_via` (many_to_one, nearest-rung resolution in `pipeline-resolution.ts`) + placements + executor bindings + source mappings. There is no authoring UI and no dedicated pipeline route; creation today is generic `scp object create release-topology` + `scp rel create`.
+- Federation is **typeId-agnostic**: every non-domain-local object write journals in-transaction (`objects-repo.ts`), outposts pull over mTLS or import `.scpbundle` files through retrans, single-writer authority makes commander-origin objects structurally read-only at outposts. A new declared object reaches every domain with **zero federation-layer changes**.
+- ADR-0031: `source_mappings` and `executor_bindings` **never federate** — the routing layer is per-domain by design. This is the one real tension with the ask, resolved by D4.
+- Discovery (`discovery/run` + `discovery/accept`) is the only observation-driven graph-write path, and it bypasses strict create — the homelab's 50 imported components landed as orphans. Nothing else auto-creates objects: observe/webhook loops fail closed without a `source_mappings` row.
+- Repo watching exists (webhooks + observe poll via `@scp/git-provider-core`), and `readFileAtRef` (M21.2) is the read-only file-content precedent — deliberately not an executor verb. It is single-file, 1 MiB default / 4 MiB cap, with an open unbounded-buffering gap for Gitea/GitLab (tracked as M21.2 review MAJOR 5).
+
+## 3. Design overview — split WHAT from HOW
+
+```
+config repo (commander domain)          commander                    every outpost
+┌──────────────────────────┐   sync   ┌──────────────┐   journal   ┌──────────────────┐
+│ teams/payments/stack.ts  │ ───────▶ │ plan → apply │ ──────────▶ │ read-only WHAT   │
+│ teams/payments/          │  (JSON   │ (Decisions,  │  (mTLS or   │       ×          │
+│   manifest.json          │   only)  │  freezes)    │  .scpbundle │ binding policy   │
+└──────────────────────────┘          └──────────────┘  via retrans│ (domain-local)   │
+                                                       └───────────│ = executor_      │
+                                                                   │   bindings      │
+                                                                   └──────────────────┘
+```
+
+- **WHAT** (team-owned, in the repo, global): service, components, placements, release topology, source mappings for commander-domain repos. Ordinary graph objects and existing manifest collections — they federate today.
+- **HOW** (domain-owned, authored once per outpost, local): a **binding policy** — "targets in `commercial-amer-prod` are served by execution-system `argocd-amer` for Type `configuration`" — following the policy-effect precedent (`scanThreshold`, ADR-0016; `dependencySubscription`, ADR-0032 §3a) rather than a new object type. A domain-local reconciler joins federated placements against the local policy and materializes `executor_bindings`.
+
+Consequences: teams never file per-outpost binding tickets; adding an outpost to the promotion path is one local policy line; credentials never leave the domain; ADR-0031 needs no amendment.
+
+## 4. The config source (how the repo "registers")
+
+A **config-source** registry object (graph-native: registry data, not a new table) declared at the instance that owns the repo:
+
+- `repo` (provider + identity, resolved against a registered git execution-system/binding, same repo-identity matching as `manifest-reader.ts` — never "the org's first github binding"), `ref` (branch), `paths` (globs selecting stack manifests), and per-stack ownership: `stackName → team` (the team the apply runs *as*, via a service-account subject bound to that team's roles).
+- Registered at the **commander** → the stacks it applies are global config, federating as usual.
+- Registered at an **outpost** (for ADR-0017 domain-owned repos, dev pipelines) → the config source and everything it applies is declared `domainLocal` and never journals.
+
+Sync trigger: the provider webhook on push to `ref`, with the existing observe poll as the fallback — the same poll-vs-push equivalence as DESIGN §12. On trigger, SCP lists changed manifest paths, reads each via `readFileAtRef` (extended: see §12 pre-work), validates against `DesiredStateManifestSchema`, and runs plan/apply per stack **as that stack's team identity**. Authorization is therefore exactly the existing per-diff-entry `authorize()` — a team's stack cannot mutate another team's service no matter what its manifest claims. Stack pruning stays confined by `managed_by_stack` (iac-stack-ownership.md).
+
+Failure honesty: a manifest that fails validation or an apply that is refused (authz, freeze, strict-create) produces a visible config-source status (API/UI/CLI) and a Decision — never a silent skip. The repo being ahead of the graph must be a *displayed* state, not an inferred one.
+
+## 5. Plan/apply semantics under D3
+
+- Merge to `ref` is the approval. Every sync produces a plan; every plan persists as a Decision with the manifest content hash and repo commit SHA in `inputContext` (deterministic — the boundary goes in the Decision, never `now`).
+- **Freezes hold, not block:** if an active freeze's scope covers any affected object, the apply parks (re-evaluated each sync/tick, ADR-0028 hold shape) and applies when lifted. Freeze semantics for *config* applies reuse `checkFreeze` unchanged.
+- Idempotent: re-syncing an unchanged manifest is a no-op (existing `/plans` behavior).
+- `scp plan --manifest` from a team's CI remains available for PR-time dry-runs (post the diff as a PR comment); nothing about push-from-CLI is removed — the config source is additive delivery, not a replacement for the API path.
+
+## 6. Binding policy and the domain reconciler
+
+- Policy effect `executorBinding` (name final at ADR time): scope = a deployment-target, container, or containment domain; effect = `{ executionSystemUrn, type (ExecutorType), … }`. Authored by domain operators (`policy:write` at that scope), domain-local by default.
+- A domain-local reconciler (background loop, any role) walks placements visible in-domain, resolves the winning policy per (placement, Type), and creates/updates `executor_bindings` rows — using the executor-binding identity rules already in force (1:N per target keyed by purpose/type). Removal of a placement or policy prunes the derived binding.
+- **Unbound-placement honesty:** a placement no policy matches must surface loudly (config-source / pipeline-view status), because an unbound placement **fake-succeeds** under stage-shaped compilation (ADR-0006 case (a), the post-import hazard). The reconciler turning "no binding" from a silent state into a reported one is a safety improvement on its own.
+- Derived bindings are marked managed-by-reconciler so hand-authored bindings (which remain legal, e.g. one-offs) are never pruned by it.
+
+## 7. Scaffolder and discovery retirement (D1)
+
+- `scp iac scaffold --from <execution-system-urn> [--repo-pr]` runs the existing `discover()` and renders the proposal as construct code + synthesized manifest — grouped into services interactively/by flag (the orphan problem is solved at authoring time, where a human is present), optionally opening a PR against the config repo.
+- `POST /discovery/accept` is deprecated (docs + response header + UI removal) and disabled by default behind an operator flag for the transition; removal happens under `api-v2-exception`. `discovery/run` stays (it is the scaffolder's engine). `backfill-source-mappings` stays until the estate migration (§9) completes, then follows accept.
+- ADR-0005's "import surfaces stay permissive" is rewritten at ADR time: **scaffold permissively, land through review.** The spirit (never block a user from bringing their estate in) survives; the graph write is what moves behind review.
+
+## 8. Wave-organization guidance (D6 vocabulary)
+
+- `@scp/iac` wave helpers emitting ordinary topology documents: `waves.linear(stages)` (staging → prod), `waves.widening(targets, { start: 1, factor: 2 })` (1 → 2 → 4 → 8 targets per wave), `waves.byDomain(...)` (commercial before govcloud before air-gap, the CDS gate applying per crossing as GLOSSARY documents).
+- `docs/guides/organizing-waves.md`: the stage/wave grammar, the three worked patterns above in `staging`/`prod` vocabulary, and the explicit boundary that **canary percentages within a target belong to the rollout executor (Argo Rollouts, ADR-0008)** — SCP orders waves of stages; it does not orchestrate traffic weights.
+- The scaffolder emits a commented starter topology. Docs sweep replaces `gamma` with `staging` in GLOSSARY/diagram examples per D6.
+
+## 9. Estate adoption and export (D5)
+
+- **Adopt:** a manifest entry matching an existing object (by URN) that is *unmanaged* becomes an `adopt` plan action — sets `managed_by_stack`, applies the declared state. Plan output distinguishes adopt from create/update so a review can see a stack claiming existing estate. Adopting an object already managed by a *different* stack is refused (409) — stack theft is not a merge.
+- **Export:** `scp iac export --scope <service-urn> [--format ts|json]` walks a service's subtree (components, placements, topology attachment, mappings) and emits scaffold code — the onboarding path for the homelab's ~50 imported components and 61 placements, and for every existing org.
+
+## 10. Federation walkthrough
+
+1. Team edits `teams/payments/stack.ts`, CI synths + commits `manifest.json`, PR reviewed, merged.
+2. Commander config-source sync fires (webhook or poll) → reads JSON → plan (Decision) → freeze check → apply as the team's identity → objects land commander-origin, journal entries in the same transaction.
+3. Connected outposts pull the journal over mTLS; disconnected/air-gapped domains receive the same entries as signed `.scpbundle` files relayed by retrans through the CDS. **Neither outposts nor retrans ever touch the git repo.**
+4. Each outpost's reconciler joins the arrived WHAT against its local binding policy → domain-local `executor_bindings` → the team's pipeline is live against that domain's own Argo CD.
+5. Dev pipelines stay domain-local per ADR-0030/0031, optionally authored via an outpost-registered, domain-local config source.
+
+## 11. Charter check
+
+| Principle | Verdict |
+|---|---|
+| 1 Coordination, not execution | Holds. SCP reads declarative JSON (readFileAtRef precedent); it never executes team code (D2). No new credential classes. |
+| 2 Graph-native | Holds. Config-source = registry object; binding policy = policy effect; pipeline stays derived; no new top-level concept tables. |
+| 3 API-first parity | Improved. Config-source, scaffold, export, adopt each land API → SDK → CLI → IaC → UI; the audit in §12 closes existing pipeline-surface gaps. |
+| 4 PostgreSQL only | Holds. Sync/reconcile are existing loop shapes (pg-boss/tick); no new stateful service. |
+| 5 Air-gap first-class | Holds structurally: outposts consume the graph, not the repo; bundles/retrans unchanged. |
+| 6 Explainability | Holds. Every plan/apply/hold/refusal is a Decision; config-source status makes repo-ahead-of-graph visible. |
+| 7 Priorities | The WHAT/HOW split is the Simplicity/Federation trade taken deliberately: no federation-layer changes, one new policy effect, one reconciler. |
+
+## 12. Surface sketch and pre-work
+
+- **Schemas/API:** `config-source` registry object + status endpoint; `executorBinding` policy effect; `adopt` action in the plan wire shape; scaffold/export endpoints (or CLI-side over existing SDK reads where possible). All additive within `/v1` except the eventual accept removal (D1, exception process).
+- **@scp/iac:** `Pipeline` composite construct (topology + attachment + placements in one declaration), wave helpers, `ExecutionSystem.ref()` remains reference-only (creation stays an operator act — credentials).
+- **CLI/SDK accuracy sweep:** the recon found pipeline authoring has no dedicated CLI/UI surface at all; this proposal adds `scp config-source register|status`, `scp iac scaffold|export`, and (sugar) `scp pipeline …` over the generic routes, with the parity table verified per increment.
+- **Pre-work, blocking:** extend `git-provider-core` with bounded multi-file/tree reads, and close the M21.2 Gitea/GitLab unbounded-buffer gap **before** leaning harder on `readFileAtRef`.
+- **Known traps on file:** source-mapping identity is the (repo, path, ref) tuple (ADR-0030 — every new consumer must key on all three); startup kicks for any new loop are UNKEYED (pg-boss singleton swallow); the reconcile loop is a competing consumer (route, don't listen).
+- **Migrations:** `config_source` status/state if not pure-registry, reconciler bookkeeping if needed — numbers claimed at merge time (numbering is serial; reservations expire).
+
+## 13. Build increments (docs-first; milestone number claimed at merge)
+
+1. **ADRs** — WHAT/HOW split + binding policy; discovery retirement + ADR-0005 rewrite; D6 vocabulary sweep (docs-only).
+2. **Pipeline construct + wave helpers + guide** (no API change).
+3. **git-provider-core tree reads + buffer-gap close** (pre-work).
+4. **Config-source + sync at the commander** (API surface + migration slot).
+5. **Binding policy + domain reconciler** (API surface; the fake-success honesty fix rides along).
+6. **Scaffolder + accept deprecation** (UI follows: /connect becomes scaffold).
+7. **Adopt + export + estate migration** (homelab converts; backfill route then follows accept).
+
+Each increment lands with its own verification tests per BUILD_AND_TEST.md discipline; increments 4–7 serialize against other API-surface/migration sessions.
+
+## 14. Open questions
+
+1. Scope filtering: should a peer's `syncScope` narrow which teams' declarations reach which outposts, or does every outpost see all global WHAT (current default)? Recommend: default all, revisit if a tenant asks.
+2. Placement federation to outposts: placements are pair-bound (refused at generic doors) — verify the federation import path materializes them with derived edges intact before increment 5 (it should, via `createPlacement`-equivalent apply, but this is a verify-not-assume).
+3. Does the binding policy need a per-Type default at the org tier (a commander-side fallback for domains that haven't authored policy yet), or is unbound-and-loud the better default? Recommend: unbound-and-loud (a silent fallback is how fake-success returns).
+4. Transition window: how long does deprecated `discovery/accept` stay operable behind the operator flag before the exception removal?
