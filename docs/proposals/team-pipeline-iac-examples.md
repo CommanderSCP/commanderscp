@@ -93,17 +93,18 @@ stage("airgap1-prod", "prod");
 ```ts
 import { Stack, ExecutorType } from "@scp/iac";
 import { BindingPolicy, DeploymentTarget, ExecutionSystem } from "@scp/iac";
-// BindingPolicy (new): the D4 policy effect. .ref() (new): reference an existing
-// object without managing it — refs never create, update, or prune.
+// BindingPolicy (new): the D4 policy effect. fromName()/fromUrn() (new, CDK's
+// fromXxx idiom): reference an existing object without managing it — returns the
+// same interface type an owned construct implements; never creates or prunes.
 
 const bindings = new Stack("govcloud-bindings", { domainLocal: true });
 // domainLocal (new): everything in this stack is born domain-local (ADR-0031) —
 // it never journals, never leaves this domain.
 
 new BindingPolicy(bindings, "prod-configuration", {
-  scope: DeploymentTarget.ref("govcloud-amer-prod"),
+  scope: DeploymentTarget.fromName("govcloud-amer-prod"),
   type: ExecutorType.configuration,
-  executionSystem: ExecutionSystem.ref("argocd-govcloud"),
+  executionSystem: ExecutionSystem.fromName("argocd-govcloud"),
 });
 ```
 
@@ -141,7 +142,7 @@ import { Pipeline, Service } from "@scp/iac";
 import { waves } from "@corp/scp-standards"; // inherited repo (D10)
 
 new Pipeline("payments-api", {
-  service: Service.ref("payments"),
+  service: Service.fromName("payments"),
   waves: waves.standard,
 });
 ```
@@ -200,10 +201,10 @@ export const widePod = (regions: string[]) => [
 
 ## 7. The authoring surface in detail — the D15 grammar
 
-Three grammar rules (D15): the file roots at **`Pipeline`**; **composition over configuration** — a prop that names another declared thing takes a construct, and scope chains carry the context; **closed vocabularies are closed types** — `Artifact.image`, `TargetClass.kubernetes`, `ExecutorType.build`, strategy-as-class, `minutes(5)`/`percent(25)` instead of `"5m"`/`"25%"`. Free text survives only where the value is genuinely operator data (names, paths, environment strings per D6). The full-featured file:
+Three grammar rules (D15) plus the CDK idiom pack (D16): the file roots at **`Pipeline`**; **composition over configuration** — a prop that names another declared thing takes a construct, and scope chains carry the context; **closed vocabularies are closed types** — `Artifact.image`, `TargetClass.kubernetes`, `ExecutorType.build`, strategy-as-class, `Duration.minutes(5)` and prop-named percents (`batchPercent: 25`) instead of `"5m"`/`"25%"` strings. References use CDK's `fromXxx()` statics and return interface types (`IService`), so owned and referenced objects are interchangeable. The L1 escape hatch is guaranteed (`pipeline.addManifestEntry(...)` — raw manifest entries when no L2 construct fits), and synth/plan errors carry the construct tree path (`payments-api/build/unit`) so a refusal maps back to the line a team wrote. Free text survives only where the value is genuinely operator data (names, paths, environment strings per D6). The full-featured file:
 
 ```ts
-import { Pipeline, Service, Component, Artifact, TargetClass, minutes, percent } from "@scp/iac";
+import { Pipeline, Service, Component, Artifact, TargetClass, Duration } from "@scp/iac";
 import {
   BuildSource, InfrastructureSource, Workflow,
   PostMergeTest, PostDeployTest, ContinuousTest,
@@ -212,7 +213,7 @@ import {
 import { stages, targets, waves, repos } from "@corp/scp-standards"; // typed handles (D10)
 
 const pipeline = new Pipeline("payments-api", {
-  service: Service.ref("payments"),
+  service: Service.fromName("payments"),
   waves: waves.standard,
 });
 
@@ -225,7 +226,7 @@ pipeline.placeAt(targets.commercialAmerProd.payBlue); // a Cluster
 pipeline.placeAt(targets.govcloudAmerProd.payProdIg); // an InstanceGroup
 
 // -- dependencies: pending until the target exists (D14) ---------------------
-pipeline.dependsOn(Component.ref("ledger-core"));
+pipeline.dependsOn(Component.fromName("ledger-core"));
 
 // -- tests: a Workflow scopes to a SOURCE — that is how it knows where the
 //    code and the template live (D11/D15). path is within the source's repo.
@@ -235,18 +236,18 @@ const probe = new Workflow(build, "canary-probe", { path: "ci/canary-probe.yaml"
 
 new PostMergeTest(unit); //                       fires on merge to build's branch; gates wave 1
 new PostDeployTest(integration, { stage: stages.commercialAmerStaging }); // gates promotion out
-new ContinuousTest(probe, { every: minutes(5), maxAge: minutes(15) }); //   per-target hold
+new ContinuousTest(probe, { every: Duration.minutes(5), maxAge: Duration.minutes(15) }); //   per-target hold
 
 // -- rollout: the strategy is the class; the target class is an enum (D12) ---
 new CanaryRollout(pipeline, { on: TargetClass.kubernetes, steps: [10, 50, 100] });
 new RollingRollout(pipeline, {
   on: TargetClass.instanceGroup,
-  batch: percent(25),
-  pauseBetween: minutes(5),
+  batchPercent: 25,
+  pauseBetween: Duration.minutes(5),
 });
 ```
 
-**Refs and pending dependencies (D14).** Every `.ref()` resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the pipeline's status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
+**Refs and pending dependencies (D14).** Every `fromName()` / `fromUrn()` reference resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the pipeline's status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
 
 **Sources.** `BuildSource` / `InfrastructureSource` / `ConfigurationSource` — the Type cannot be mistyped because it is the class, and per-Type props are compile-checked: only `BuildSource` has (and requires) `artifact`, from the closed `Artifact` enum (image, rpm, npm, maven, python, go, chart, vmImage). Omitted `repo` = the repo the manifest ships in; `branch:` picks any branch (ADR-0030 ref pattern under the hood); `path:` slices monorepos. Identity stays the (repo, path, ref) tuple, so edits diff cleanly.
 
@@ -254,9 +255,9 @@ new RollingRollout(pipeline, {
 
 ```ts
 new BindingPolicy(bindings, "tests", {
-  scope: DeploymentTarget.ref("commercial-amer-staging"),
+  scope: DeploymentTarget.fromName("commercial-amer-staging"),
   type: ExecutorType.build, // dedicated test lane vs build lane: main doc §14.11
-  executionSystem: ExecutionSystem.ref("workflows-hq"),
+  executionSystem: ExecutionSystem.fromName("workflows-hq"),
 });
 ```
 
@@ -264,11 +265,11 @@ new BindingPolicy(bindings, "tests", {
 
 ```ts
 new Cluster(menu, "pay-blue", {
-  within: DeploymentTarget.ref("commercial-amer-prod"),
+  within: DeploymentTarget.fromName("commercial-amer-prod"),
   account: "123456789012",
 });
 new InstanceGroup(menu, "pay-prod-ig", {
-  within: DeploymentTarget.ref("govcloud-amer-prod"),
+  within: DeploymentTarget.fromName("govcloud-amer-prod"),
 });
 ```
 
