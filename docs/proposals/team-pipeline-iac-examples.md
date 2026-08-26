@@ -204,6 +204,7 @@ export const widePod = (regions: string[]) => [
 Three grammar rules (D15) plus the CDK idiom pack (D16): the file roots at **`Pipeline`**; **composition over configuration** — a prop that names another declared thing takes a construct, and scope chains carry the context; **closed vocabularies are closed types** — `Artifact.image`, `TargetClass.kubernetes`, `ExecutorType.build`, strategy-as-class, `Duration.minutes(5)` and prop-named percents (`batchPercent: 25`) instead of `"5m"`/`"25%"` strings. References use CDK's `fromXxx()` statics and return interface types (`IService`), so owned and referenced objects are interchangeable. The L1 escape hatch is guaranteed (`pipeline.addManifestEntry(...)` — raw manifest entries when no L2 construct fits), and synth/plan errors carry the construct tree path (`payments-api/build/unit`) so a refusal maps back to the line a team wrote. Free text survives only where the value is genuinely operator data (names, paths, environment strings per D6). The full-featured file:
 
 ```ts
+// payments/payments-api/scp/stack.ts — the component's entire SCP footprint
 import { Pipeline, Service, Component, Artifact, TargetClass, Duration } from "@scp/iac";
 import {
   BuildSource, InfrastructureSource, Workflow,
