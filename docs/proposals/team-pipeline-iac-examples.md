@@ -61,12 +61,11 @@ The component's declaration rides the same repo that already drives its releases
 ## 3. `platform/estate.ts` — the operator stack (applies at the commander, federates)
 
 ```ts
-import { App, Stack, Team, DeploymentTarget } from "@scp/iac";
+import { Stack, Team, DeploymentTarget, TrustTier } from "@scp/iac";
 import { Outpost } from "@scp/iac"; // (new) one-liner registry construct over the
                                     // `outpost` object type (migration 0043)
 
-const app = new App();
-const estate = new Stack(app, "platform-estate");
+const estate = new Stack("platform-estate"); // App is synth plumbing — gone from user code (D15)
 
 // -- teams ------------------------------------------------------------------
 const platformTeam = new Team(estate, "team-platform", {});
@@ -74,9 +73,9 @@ const paymentsTeam = new Team(estate, "team-payments", {});
 
 // -- outposts: commander-declared config only (ADR-0022 authority split) ----
 // trustTier etc. — transport/keys stay in §1's ceremonies.
-new Outpost(estate, "hq", { trustTier: "commercial" });
-new Outpost(estate, "govcloud", { trustTier: "govcloud" });
-new Outpost(estate, "airgap1", { trustTier: "il5" });
+new Outpost(estate, "hq", { trustTier: TrustTier.commercial });
+new Outpost(estate, "govcloud", { trustTier: TrustTier.govcloud });
+new Outpost(estate, "airgap1", { trustTier: TrustTier.il5 });
 
 // -- stages: deployment-targets, GLOSSARY grammar, D6 vocabulary ------------
 const stage = (id: string, environment: string, region?: string) =>
@@ -92,83 +91,76 @@ stage("airgap1-prod", "prod");
 ## 4. `domains/govcloud/bindings.ts` — one domain's HOW (domain-local, D4)
 
 ```ts
-import { App, Stack } from "@scp/iac";
+import { Stack, ExecutorType } from "@scp/iac";
 import { BindingPolicy, DeploymentTarget, ExecutionSystem } from "@scp/iac";
 // BindingPolicy (new): the D4 policy effect. .ref() (new): reference an existing
 // object without managing it — refs never create, update, or prune.
 
-const app = new App();
-const bindings = new Stack(app, "govcloud-bindings", { domainLocal: true });
+const bindings = new Stack("govcloud-bindings", { domainLocal: true });
 // domainLocal (new): everything in this stack is born domain-local (ADR-0031) —
 // it never journals, never leaves this domain.
 
 new BindingPolicy(bindings, "prod-configuration", {
   scope: DeploymentTarget.ref("govcloud-amer-prod"),
-  type: "configuration",
+  type: ExecutorType.configuration,
   executionSystem: ExecutionSystem.ref("argocd-govcloud"),
 });
 ```
 
 `domains/hq/bindings.ts` and `domains/airgap1/bindings.ts` are the same five lines pointing at `argocd-hq` / `argocd-airgap1`. This is the whole per-domain cost of joining every team's pipeline: the domain reconciler joins these policies against federated placements and materializes the `executor_bindings` itself. A placement no policy matches is **loud** (unbound status), never a silent fake-success.
 
-## 5. The component's own repo — the headline surface (D9/D10)
+## 5. The component's own repo — the headline surface (D9/D10/D15)
 
 The platform team publishes standards once, as a versioned package on the org's own registry:
 
 ```ts
 // platform/scp-standards → @corp/scp-standards (Gitea npm — air-gap-clean)
-export const standardRollout = [
-  "commercial-amer-staging",
-  "commercial-amer-prod",
-  "commercial-emea-prod",
-  // one wave, two security domains: ordinary promotion into govcloud, cross-domain
-  // promotion into airgap1 — the CDS gate applies per crossing, not per wave
-  ["govcloud-amer-prod", "airgap1-prod"],
-];
+export const waves = {
+  standard: [
+    "commercial-amer-staging",
+    "commercial-amer-prod",
+    "commercial-emea-prod",
+    // one wave, two security domains: ordinary promotion into govcloud, cross-domain
+    // promotion into airgap1 — the CDS gate applies per crossing, not per wave
+    ["govcloud-amer-prod", "airgap1-prod"],
+  ],
+};
 ```
 
 The team's thin home (`payments/payments-team/scp/stack.ts`) declares the service once:
 
 ```ts
-const stack = new Stack(app, "payments-team");
-new Service(stack, "payments"); // owner inferred: the registered team (D8)
+const home = new Stack("payments-team");
+const payments = new Service(home, "payments"); // owner inferred: the registered team (D8)
 ```
 
-And a component's **entire** declaration, in its own repo (`payments/payments-api/scp/stack.ts`):
+And a component's **entire** declaration, in its own repo — the file *is* the pipeline (D15), so it roots at `Pipeline`; `App` and `Stack` never appear:
 
 ```ts
-import { App, Stack, Service, Component } from "@scp/iac";
-import { standardRollout } from "@corp/scp-standards"; // inherited repo (D10)
+import { Pipeline, Service } from "@scp/iac";
+import { waves } from "@corp/scp-standards"; // inherited repo (D10)
 
-const app = new App();
-const stack = new Stack(app, "payments-api");
-
-new Component(stack, "payments-api", {
+new Pipeline("payments-api", {
   service: Service.ref("payments"),
-  pipeline: { waves: standardRollout },
-  // inferred (D8/D9): repo + source mapping = the repo this manifest ships in;
-  // placements = payments-api × every stage the waves name
+  waves: waves.standard,
 });
 ```
 
-Three hundred component repos are three hundred copies of that file with a different name — and when the platform team publishes a new `@corp/scp-standards`, the **dependency-subscription machinery (M21) delivers the bump to every subscribed repo as a PR**. Pipeline structure standards roll out like any other dependency.
+That is the whole file: the component takes the pipeline's name, the source is the repo this manifest ships in, and the placements are the stages the waves name (D8/D9). Extra components in a multi-component repo nest under the root with their own waves.
 
-Divergence is explicit and plain TypeScript: `waves: [...standardRollout, "one-more-stage"]`, or a fully local shape. Wave shorthand: a bare string is a sequential single-stage wave; an array is a parallel wave; the full `{ name, mode, targets, requiresFanIn }` object stays available. The `dev` branch is deliberately unmapped — dev pipelines are domain-local (ADR-0030).
-
-**The shared exception (D8):** only when components genuinely release as one unit does a pipeline move up a rung — explicitly, in the team repo:
+**The shared exception (D8)** is the same class at a different scope — a `Pipeline` scoped to a *service* is the deliberate rung exception, in the team repo:
 
 ```ts
-// deliberate: one shared pipeline at the service rung (releases_via nearest-rung
-// ladder, ADR-0027/0029). A component that declares its own pipeline still wins by rung.
-new Pipeline(payments, "payments-release", { waves: standardRollout });
+new Pipeline(payments, "payments-release", { waves: waves.standard });
+// components that declare their own pipeline still win by rung (ADR-0027/0029)
 ```
 
-**The widening pattern (1 → 2 → 4 → 8)** lives naturally in the standards repo too:
+**The widening pattern (1 → 2 → 4 → 8)** lives in the standards repo:
 
 ```ts
 export const widePod = (regions: string[]) => [
   "commercial-amer-staging",
-  ...waves.widening(regions.map((r) => `commercial-${r}-prod`), { start: 1, factor: 2 }),
+  ...widening(regions.map((r) => `commercial-${r}-prod`), { start: 1, factor: 2 }),
 ];
 ```
 
@@ -180,7 +172,7 @@ export const widePod = (regions: string[]) => [
 
 ```json
 {
-  "stackName": "team-payments",
+  "stackName": "payments-api",
   "objects": [
     { "typeId": "service", "name": "payments", "…": "…" },
     { "typeId": "component", "name": "payments-api", "…": "…" },
@@ -206,61 +198,71 @@ export const widePod = (regions: string[]) => [
 | **retrans** | relay at the CDS boundary | nothing to declare — pairing + inbox/outbox delivery config only; relays signed bundles, validates, never terminates a promotion |
 | **airgap1 outpost** | air-gapped, `trustTier: il5` | WHAT arrives as `.scpbundle` via retrans (the M13.1a inbox loop — untouched by D1); its HOW stack applied locally from the same media run |
 
-## 7. The authoring surface in detail — construct-first
+## 7. The authoring surface in detail — the D15 grammar
 
-Everything a team declares is a typed construct; the standards package exports **typed handles** for stages and menu targets, so a typo fails at compile time, not at plan time. Bare strings stay legal; the scaffolder emits handle-based code. The full-featured component file:
+Three grammar rules (D15): the file roots at **`Pipeline`**; **composition over configuration** — a prop that names another declared thing takes a construct, and scope chains carry the context; **closed vocabularies are closed types** — `Artifact.image`, `TargetClass.kubernetes`, `ExecutorType.build`, strategy-as-class, `minutes(5)`/`percent(25)` instead of `"5m"`/`"25%"`. Free text survives only where the value is genuinely operator data (names, paths, environment strings per D6). The full-featured file:
 
 ```ts
-import { App, Stack, Service, Component } from "@scp/iac";
+import { Pipeline, Service, Component, Artifact, TargetClass, minutes, percent } from "@scp/iac";
 import {
-  BuildSource, InfrastructureSource,          // (new) sources — the Type IS the construct
-  PostMergeTest, PostDeployTest, ContinuousTest, // (new) D11 test hooks
-  KubernetesRollout, InstanceGroupRollout,    // (new) D12 rollout per target class
+  BuildSource, InfrastructureSource, Workflow,
+  PostMergeTest, PostDeployTest, ContinuousTest,
+  CanaryRollout, RollingRollout,
 } from "@scp/iac";
 import { stages, targets, waves, repos } from "@corp/scp-standards"; // typed handles (D10)
 
-const app = new App();
-const stack = new Stack(app, "payments-api");
-
-const api = new Component(stack, "payments-api", {
+const pipeline = new Pipeline("payments-api", {
   service: Service.ref("payments"),
-  pipeline: { waves: waves.standard },
+  waves: waves.standard,
 });
 
-// -- sources: one construct per pipeline lane (D13: artifact on build) -------
-new BuildSource(api, { artifact: "image" }); //   this repo, default branch
-new InfrastructureSource(api, {
-  repo: repos("payments/payments-infra"), //      host prefix imported, never retyped
-  branch: "main",
-});
+// -- sources: the Type is the class; this repo is the default (D13) ----------
+const build = new BuildSource(pipeline, { artifact: Artifact.image });
+new InfrastructureSource(pipeline, { repo: repos("payments/payments-infra") });
 
-// -- where it lands: select from the domain-published menu (§14.9) -----------
-api.placeAt(targets.commercialAmerProd.payBlue); // a Cluster — refines the inferred placement
-api.placeAt(targets.govcloudAmerProd.payProdIg); // an InstanceGroup
+// -- where it lands: typed menu handles (§14.9) ------------------------------
+pipeline.placeAt(targets.commercialAmerProd.payBlue); // a Cluster
+pipeline.placeAt(targets.govcloudAmerProd.payProdIg); // an InstanceGroup
 
 // -- dependencies: pending until the target exists (D14) ---------------------
-api.dependsOn(Component.ref("ledger-core"));
+pipeline.dependsOn(Component.ref("ledger-core"));
 
-// -- tests: SCP triggers, Argo Workflows executes (D11) ----------------------
-new PostMergeTest(api, { workflow: "payments-unit" });
-new PostDeployTest(api, { workflow: "payments-integration", stage: stages.commercialAmerStaging });
-new ContinuousTest(api, { workflow: "payments-canary-probe", every: "5m", maxAge: "15m" });
+// -- tests: a Workflow scopes to a SOURCE — that is how it knows where the
+//    code and the template live (D11/D15). path is within the source's repo.
+const unit = new Workflow(build, "unit", { path: "ci/unit.yaml" });
+const integration = new Workflow(build, "integration", { path: "ci/integration.yaml" });
+const probe = new Workflow(build, "canary-probe", { path: "ci/canary-probe.yaml" });
 
-// -- rollout per target class (D12) ------------------------------------------
-new KubernetesRollout(api, { strategy: "canary", steps: [10, 50, 100] });
-new InstanceGroupRollout(api, { strategy: "rolling", batch: "25%", pauseBetween: "5m" });
+new PostMergeTest(unit); //                       fires on merge to build's branch; gates wave 1
+new PostDeployTest(integration, { stage: stages.commercialAmerStaging }); // gates promotion out
+new ContinuousTest(probe, { every: minutes(5), maxAge: minutes(15) }); //   per-target hold
+
+// -- rollout: the strategy is the class; the target class is an enum (D12) ---
+new CanaryRollout(pipeline, { on: TargetClass.kubernetes, steps: [10, 50, 100] });
+new RollingRollout(pipeline, {
+  on: TargetClass.instanceGroup,
+  batch: percent(25),
+  pauseBetween: minutes(5),
+});
 ```
 
-**Refs and pending dependencies (D14).** Every `.ref()` resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the component/config-source status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
+**Refs and pending dependencies (D14).** Every `.ref()` resolves **server-side** at plan time; a structural ref that doesn't resolve (the service, a wave's stage, a menu selection) refuses the plan loudly. `dependsOn` is the one graceful case: a target that doesn't exist yet becomes a **pending dependency** — listed in the plan, aging in the pipeline's status, excluded from wave ordering and ADR-0028 holds — and materializes as the real edge on the first sync after the target appears. Onboarding order stops mattering; nothing is ever silently fake.
 
-**Sources are constructs.** `BuildSource` / `InfrastructureSource` / `ConfigurationSource` — the Type is the class, so it cannot be mistyped, and per-Type props are compile-checked: only `BuildSource` has (and requires) `artifact`, from the closed class enum (image, rpm, npm, maven, python, go, chart, vm-image). Omitted `repo` = the repo the manifest ships in; `branch:` picks any branch (ADR-0030 ref pattern under the hood); `path:` slices monorepos. Identity stays the (repo, path, ref) tuple, so edits diff cleanly.
+**Sources.** `BuildSource` / `InfrastructureSource` / `ConfigurationSource` — the Type cannot be mistyped because it is the class, and per-Type props are compile-checked: only `BuildSource` has (and requires) `artifact`, from the closed `Artifact` enum (image, rpm, npm, maven, python, go, chart, vmImage). Omitted `repo` = the repo the manifest ships in; `branch:` picks any branch (ADR-0030 ref pattern under the hood); `path:` slices monorepos. Identity stays the (repo, path, ref) tuple, so edits diff cleanly.
 
-**The target menu is constructs too.** Domain operators publish it — sugar over child deployment-targets, so a freeze or binding policy can scope to a single cluster:
+**Tests know where the code is through their scope chain.** A `Workflow` scopes to a source, so it inherits the repo and branch the source already declares — `path:` names the WorkflowTemplate *within that repo*; a hook scopes to its `Workflow`. Nothing is repeated: `PostMergeTest(unit)` fires on merges to `build`'s branch and runs `ci/unit.yaml` from `build`'s repo, because that is what its scope chain says. SCP **triggers** the run on the domain's Argo Workflows (resolved by binding policy, one line on the domain side) and consumes the result as gate/hold evidence — stale continuous green reads as absent (`maxAge` required). No `argo-workflows` plugin exists yet: this is build increment 8 (main doc §13).
 
 ```ts
-// domains/govcloud — the menu stack FEDERATES (outpost-origin, §14.9): team
-// placements at the commander must resolve against it. Only the binding
-// policies stay domain-local.
+new BindingPolicy(bindings, "tests", {
+  scope: DeploymentTarget.ref("commercial-amer-staging"),
+  type: ExecutorType.build, // dedicated test lane vs build lane: main doc §14.11
+  executionSystem: ExecutionSystem.ref("workflows-hq"),
+});
+```
+
+**The target menu is constructs** published by domain operators — `Cluster` / `InstanceGroup`, sugar over child deployment-targets, so a freeze or binding policy can scope to one cluster. The menu stack **federates** (outpost-origin, §14.9): team placements at the commander must resolve against it; only the binding policies stay domain-local.
+
+```ts
 new Cluster(menu, "pay-blue", {
   within: DeploymentTarget.ref("commercial-amer-prod"),
   account: "123456789012",
@@ -270,21 +272,9 @@ new InstanceGroup(menu, "pay-prod-ig", {
 });
 ```
 
-Teams then `placeAt()` handles the standards package re-exports (`targets.commercialAmerProd.payBlue` — regenerable from the live estate by `scp iac export --handles`). Selecting something the domain never declared fails at compile (no handle) or at plan (bad ref). Orgs that want a team creating its own sub-targets grant scoped write at a container — selection is the default, creation is deliberate delegation.
+Teams `placeAt()` handles the standards package re-exports (`targets.commercialAmerProd.payBlue`, regenerable via `scp iac export --handles`) — selecting something the domain never declared fails at compile (no handle) or at plan (bad ref). Sub-target *creation* by a team is a scoped write grant: selection is the default, creation is deliberate delegation.
 
-**Tests (D11) — and yes, a new milestone.** No `argo-workflows` executor plugin exists today, so this is build increment 8 (main doc §13): the plugin (trigger + observe WorkflowTemplate/CronWorkflow), the hook contract, and the evidence controls. The three hook constructs above compile to: a trigger intent on the domain's Workflows instance (resolved by binding policy, like everything else) plus a gate/hold consuming the result — `PostMergeTest` gates the first wave, `PostDeployTest` gates promotion out of its stage, `ContinuousTest` is a CronWorkflow whose latest **fresh** result is a per-target hold (`maxAge` required; stale green reads as absent). The domain side is one more binding policy line:
-
-```ts
-new BindingPolicy(bindings, "tests", {
-  scope: DeploymentTarget.ref("commercial-amer-staging"),
-  type: "build", // dedicated test lane vs build lane: main doc §14.11
-  executionSystem: ExecutionSystem.ref("workflows-hq"),
-});
-```
-
-SCP triggers, observes, and gates; Argo Workflows executes. The WorkflowTemplate definitions live in the team's own repos.
-
-**Rollout (D12) is constructs**, one per target class the component actually lands on — authoritative for `scp-runner-*` classes, trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8). Declared-vs-observed divergence is loud; SCP never moves traffic itself.
+**Rollout: the strategy is the construct** (`CanaryRollout`, `RollingRollout` — no strategy strings), keyed to a `TargetClass`. Authoritative for `scp-runner-*` classes; trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8) — declared-vs-observed divergence is loud, and SCP never moves traffic itself.
 
 ---
 
