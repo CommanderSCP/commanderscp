@@ -55,6 +55,13 @@ interface RelationshipDecl {
 /**
  * Root scope holding one or more `Stack`s. `App` itself never appears in a manifest — it's purely
  * an in-memory aggregation point, mirroring real CDK's `App`.
+ *
+ * SYNTH PLUMBING, not authoring surface (team-pipeline-iac.md D15a): `new Stack("platform-estate")`
+ * auto-creates one of these internally, so no user-facing IaC file ever needs to write `new App()`.
+ * It stays exported (and constructible) for the two cases that still need it directly: synthesizing
+ * SEVERAL stacks together via `app.synth()` / `app.listStacks()`, and the pre-D15a two-argument
+ * `new Stack(app, stackName)` form that some existing callers still use (see `Stack`'s constructor
+ * doc) — both legitimate, neither the form any NEW authoring code should reach for.
  */
 export class App extends Construct {
   private readonly stacks: Stack[] = [];
@@ -123,7 +130,7 @@ export interface ExecutorBindingSpec {
 }
 
 /**
- * A named deployable unit (`new Stack(app, 'billing-platform')`) — this name becomes the row's
+ * A named deployable unit (`new Stack('billing-platform')`) — this name becomes the row's
  * server-written `managed_by_stack` (drizzle/0068), which is what scopes pruning, and the "org"
  * segment of every URN this stack's constructs derive (`urn.ts` — synth is offline and has no real
  * org id to key off). It is also mirrored into `labels` as `scp:stack`, for humans only.
@@ -139,7 +146,7 @@ export interface DependencyProducerSpec {
 }
 
 /**
- * A named deployable unit (`new Stack(app, 'billing-platform')`) — this name becomes the
+ * A named deployable unit (`new Stack('billing-platform')`) — this name becomes the
  * `scp:stack` managed-by marker (`apps/server/src/iac/plan-diff.ts`) that scopes pruning, and the
  * "org" segment of every URN this stack's constructs derive (`urn.ts` — synth is offline and has
  * no real org id to key off).
@@ -154,7 +161,21 @@ export class Stack extends Construct {
   private readonly dependencyProducerDecls: ManifestDependencyProducer[] = [];
   private readonly governanceMoveRungDecls: ManifestGovernanceMoveRung[] = [];
 
-  constructor(app: App, stackName: string) {
+  /**
+   * `new Stack("platform-estate")` is the authoring form (D15a): `App` is internal synth plumbing
+   * and is auto-created when omitted — nothing in a component's, team's, or estate's file ever
+   * writes `new App()`. The two-argument form (`new Stack(app, stackName)`) is kept for callers that
+   * already construct an `App` themselves to synthesize several stacks together (`app.synth()`);
+   * `apps/server`'s integration tests are the one place in this repo that still does, and this
+   * overload is what lets them keep compiling unmodified — it is not the form new authoring code
+   * should reach for.
+   */
+  constructor(stackName: string);
+  constructor(app: App, stackName: string);
+  constructor(appOrStackName: App | string, maybeStackName?: string) {
+    const explicitApp = appOrStackName instanceof App ? appOrStackName : undefined;
+    const stackName = explicitApp ? (maybeStackName ?? "") : (appOrStackName as string);
+    const app = explicitApp ?? new App();
     super(app, stackName);
     if (stackName.trim().length === 0) throw new Error("Stack name must be non-empty");
     this.stackName = stackName;

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 import {
-  App,
   Campaign,
   Domain,
   ReleaseTopology,
@@ -75,8 +74,7 @@ const treeSpecArb: fc.Arbitrary<TreeSpec> = fc.record({
 
 /** Builds a Stack from `spec`, constructing resources in `order` (a permutation of resource indices). */
 function buildStack(spec: TreeSpec, order: number[]): Stack {
-  const app = new App();
-  const stack = new Stack(app, spec.stackName);
+  const stack = new Stack(spec.stackName);
   const constructs: ResourceConstruct[] = new Array(spec.resources.length) as ResourceConstruct[];
 
   for (const i of order) {
@@ -135,12 +133,10 @@ describe("@scp/iac: synth determinism (fast-check)", () => {
         fc.string({ minLength: 1, maxLength: 15 }).filter((s) => s.trim().length > 0),
         fc.string({ minLength: 1, maxLength: 15 }).filter((s) => s.trim().length > 0),
         (stackName, resourceName) => {
-          const app1 = new App();
-          const stack1 = new Stack(app1, stackName);
+          const stack1 = new Stack(stackName);
           const svc1 = new Service(stack1, "fixed-id", { name: resourceName });
 
-          const app2 = new App();
-          const stack2 = new Stack(app2, stackName);
+          const stack2 = new Stack(stackName);
           const svc2 = new Service(stack2, "fixed-id", { name: resourceName });
 
           // Same (stack name, construct id) -> same URN, regardless of `name`/other props.
@@ -188,8 +184,7 @@ function buildCampaignTree(
   serviceOrder: ["a", "b"] | ["b", "a"],
   topologyOrder: "topology-first" | "campaign-first"
 ): Stack {
-  const app = new App();
-  const stack = new Stack(app, spec.stackName);
+  const stack = new Stack(spec.stackName);
 
   const services: { a?: ResourceConstruct; b?: ResourceConstruct } = {};
   for (const which of serviceOrder) {

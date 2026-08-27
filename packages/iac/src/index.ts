@@ -6,6 +6,8 @@
  * `packages/cli`), exactly like a CDK cloud assembly being `cdk deploy`'d separately from where
  * it was synthesized.
  */
+// `App` is synth plumbing (D15a), not the authoring form — `new Stack("name")` auto-creates one.
+// Kept exported for `app.synth()`-style multi-stack synth and the legacy `new Stack(app, name)` form.
 export { App, Stack, ResourceConstruct, Construct } from "./construct.js";
 export type { ResourceProps } from "./construct.js";
 export {

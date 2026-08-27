@@ -27,8 +27,7 @@ import { canonicalJson } from "./canonical.js";
  */
 describe("@scp/iac: example stack synth", () => {
   it("two services + a team owning both + one depends_on the other", () => {
-    const app = new App();
-    const stack = new Stack(app, "billing-platform");
+    const stack = new Stack("billing-platform");
 
     const billingApi = new Service(stack, "billing-api", {
       name: "Billing API",
@@ -78,8 +77,7 @@ describe("@scp/iac: example stack synth", () => {
   });
 
   it("an external URN string target (outside this stack) is a valid relationship endpoint", () => {
-    const app = new App();
-    const stack = new Stack(app, "consumer-stack");
+    const stack = new Stack("consumer-stack");
     const service = new Service(stack, "checkout", { name: "Checkout" });
     service.consumes("urn:scp:other-stack:service:payments");
 
@@ -94,8 +92,7 @@ describe("@scp/iac: example stack synth", () => {
   });
 
   it("a Component emits a `contains` edge from its service (strict create-in-service, M12 P5a)", () => {
-    const app = new App();
-    const stack = new Stack(app, "checkout-stack");
+    const stack = new Stack("checkout-stack");
     const checkout = new Service(stack, "checkout", { name: "Checkout" });
     const api = new Component(stack, "api", { name: "checkout-api", service: checkout });
 
@@ -113,8 +110,7 @@ describe("@scp/iac: example stack synth", () => {
   });
 
   it("a Component may belong to an EXTERNAL service by URN string (not just a construct)", () => {
-    const app = new App();
-    const stack = new Stack(app, "worker-stack");
+    const stack = new Stack("worker-stack");
     const worker = new Component(stack, "worker", {
       name: "checkout-worker",
       service: "urn:scp:platform-stack:service:checkout"
@@ -128,16 +124,14 @@ describe("@scp/iac: example stack synth", () => {
   });
 
   it("an explicit urn prop overrides the derived one", () => {
-    const app = new App();
-    const stack = new Stack(app, "explicit-urn-stack");
+    const stack = new Stack("explicit-urn-stack");
     const svc = new Service(stack, "svc", { name: "Svc", urn: "urn:scp:custom:service:my-svc" });
     expect(svc.urn).toBe("urn:scp:custom:service:my-svc");
     expect(stack.synth().objects[0]?.urn).toBe("urn:scp:custom:service:my-svc");
   });
 
   it("re-synthesizing the same tree twice is byte-identical (pure synth)", () => {
-    const app = new App();
-    const stack = new Stack(app, "idempotent-stack");
+    const stack = new Stack("idempotent-stack");
     new Service(stack, "svc", { name: "Svc", properties: { tier: "high" } });
 
     expect(canonicalJson(stack.synth())).toBe(canonicalJson(stack.synth()));
@@ -155,8 +149,7 @@ describe("@scp/iac: example stack synth", () => {
   });
 
   it("synthToFile writes canonical JSON that round-trips through DesiredStateManifestSchema", async () => {
-    const app = new App();
-    const stack = new Stack(app, "file-stack");
+    const stack = new Stack("file-stack");
     new Service(stack, "svc", { name: "Svc", properties: { b: 2, a: 1 } });
 
     const dir = await mkdtemp(path.join(os.tmpdir(), "scp-iac-test-"));
@@ -193,9 +186,8 @@ describe("@scp/iac: example stack synth", () => {
   });
 
   it("rejects an empty stack name", () => {
-    const app = new App();
-    expect(() => new Stack(app, "")).toThrow();
-    expect(() => new Stack(app, "   ")).toThrow();
+    expect(() => new Stack("")).toThrow();
+    expect(() => new Stack("   ")).toThrow();
   });
 });
 
@@ -206,8 +198,7 @@ describe("@scp/iac: example stack synth", () => {
  */
 describe("@scp/iac: campaign/release-topology synth", () => {
   it("a ReleaseTopology with a parallel wave and a sequential wave resolves construct-reference targets to URN strings", () => {
-    const app = new App();
-    const stack = new Stack(app, "release-platform");
+    const stack = new Stack("release-platform");
 
     const api = new Service(stack, "api", { name: "API" });
     const worker = new Service(stack, "worker", { name: "Worker" });
@@ -235,8 +226,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
   });
 
   it("a Campaign resolves construct-reference targets to URNs and carries description/topology", () => {
-    const app = new App();
-    const stack = new Stack(app, "release-platform-2");
+    const stack = new Stack("release-platform-2");
 
     const api = new Service(stack, "api", { name: "API" });
     const worker = new Service(stack, "worker", { name: "Worker" });
@@ -263,8 +253,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
   });
 
   it("a Campaign resolves a ReleaseTopology CONSTRUCT REFERENCE for `topology` to its URN, not just a raw string", () => {
-    const app = new App();
-    const stack = new Stack(app, "release-platform-3");
+    const stack = new Stack("release-platform-3");
 
     const api = new Service(stack, "api", { name: "API" });
     const topology = new ReleaseTopology(stack, "canary-topology", {
@@ -283,8 +272,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
   });
 
   it("a Campaign with no description/topology synthesizes only targets", () => {
-    const app = new App();
-    const stack = new Stack(app, "release-platform-3");
+    const stack = new Stack("release-platform-3");
     const api = new Service(stack, "api", { name: "API" });
 
     const campaign = new Campaign(stack, "bare-campaign", {
@@ -299,8 +287,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
   });
 
   it("no construct exposes a membership-edge method — `coordinates` is system-managed (M5 CRITICAL)", () => {
-    const app = new App();
-    const stack = new Stack(app, "modernization-platform");
+    const stack = new Stack("modernization-platform");
 
     const svcA = new Service(stack, "svc-a", { name: "Svc A" });
     const campaignA = new Campaign(stack, "campaign-a", { name: "Campaign A", targets: [svcA] });
@@ -333,8 +320,7 @@ describe("@scp/iac constructs: executor bindings on a placement", () => {
   /** Local to this block: the placements suite below defines its own, and reaching across describe
    *  scopes for a helper is how a shared fixture quietly acquires a second set of requirements. */
   function fixture(stackName: string) {
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
     const component = new Component(stack, "api", { name: "API", service });
     const gamma = new DeploymentTarget(stack, "gamma", { name: "gamma" });
@@ -382,8 +368,7 @@ describe("@scp/iac constructs: executor bindings on a placement", () => {
 
 describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
   function stackWithComponent(name: string) {
-    const app = new App();
-    const stack = new Stack(app, name);
+    const stack = new Stack(name);
     const service = new Service(stack, "billing", { name: "Billing" });
     const component = new Component(stack, "api", { name: "API", service });
     return { stack, service, component };
@@ -487,8 +472,7 @@ describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
   });
 
   it("stack.addSourceMapping / addExecutorBinding accept a bare URN for a component outside this program", () => {
-    const app = new App();
-    const stack = new Stack(app, "external-refs");
+    const stack = new Stack("external-refs");
     const external = "urn:scp:other-program:component:legacy";
     stack.addSourceMapping(external, { sourceKind: "gitea", repoPattern: "ops/legacy" });
     stack.addExecutorBinding(external, { pluginModule: "terraform", pluginInstanceId: "tf-1" });
@@ -511,8 +495,7 @@ describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
    * | have `placeAt` push a decl directly instead of constructing `Placement` | no test fails — the two forms are required to converge, so this is asserted by BOTH producing the identical manifest |
    */
   function fixture(stackName: string) {
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
     const component = new Component(stack, "api", { name: "API", service });
     const gamma = new DeploymentTarget(stack, "gamma", { name: "gamma" });
@@ -580,8 +563,7 @@ describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
  */
 describe("@scp/iac constructs: Policy (M21.6 — a dependency subscription is a policy effect)", () => {
   it("synthesizes a policy carrying a dependencySubscription effect as a `policy` object with the properties verbatim", () => {
-    const app = new App();
-    const stack = new Stack(app, "checkout-stack");
+    const stack = new Stack("checkout-stack");
     const svc = new Service(stack, "checkout", { name: "checkout" });
     const api = new Component(stack, "checkout-api", { name: "checkout-api", service: svc });
 
@@ -626,8 +608,7 @@ describe("@scp/iac constructs: Policy (M21.6 — a dependency subscription is a 
   });
 
   it("is uniform: an explicit urn/domainId/labels pass through like every other resource construct", () => {
-    const app = new App();
-    const stack = new Stack(app, "s");
+    const stack = new Stack("s");
     new Policy(stack, "p", {
       name: "p",
       urn: "urn:scp:acme:policy:hand-named",
@@ -667,8 +648,7 @@ describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
    * | have `producesDependency` push a decl directly instead of delegating to the stack | no test fails — the two spellings are required to converge, which the sugar-equivalence case asserts |
    */
   function fixture(stackName: string) {
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
     const component = new Component(stack, "api", { name: "API", service });
     return { stack, service, component };
@@ -766,8 +746,7 @@ describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
    * | resolve the subject to something other than its URN (e.g. the construct id) | "lands in the manifest…" and "accepts a container referenced by URN…" FAIL |
    */
   function fixture(stackName: string) {
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
     return { stack, service };
   }
