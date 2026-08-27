@@ -109,6 +109,7 @@ import { prewarmGovernanceForChange } from "../governance/gate-orchestrator.js";
 import { reconcileCampaignsOrgTick } from "./campaign-reconcile.js";
 import { runPreDeployArtifactGate } from "./pre-deploy-gate.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { pollNonTerminalHookRuns } from "./pipeline-hook-runs.js";
 
 /**
  * The resumable reconciliation loop (DESIGN.md §9.3/§9.4, BUILD_AND_TEST.md §8 M3): "pg-boss
@@ -2733,6 +2734,22 @@ export async function reconcileOrgTick(
   await advanceWaitingChanges(db, orgId, gateDeps, selfDomainId);
   await advanceExecutingChanges(db, orgId, host, sandbox, masterKey, selfDomainId);
   await advanceValidatingChanges(db, orgId, host, sandbox, selfDomainId);
+  // Increment 8: observe every in-flight pipeline hook run and, on the terminal edge, write the
+  // `pipeline_evidence` row the gate verdicts read (`coordination/pipeline-hook-runs.ts`).
+  //
+  // ON THIS TICK, DELIBERATELY, RATHER THAN ON A LOOP OF ITS OWN. A second `boss.work()` would be a
+  // COMPETING CONSUMER on the reconcile queue — taking ticks away from the engine rather than
+  // running beside it — and a second queue would be a second liveness surface with its own startup
+  // kick to get wrong. The work is also naturally sequenced here: a run's evidence must land before
+  // the next tick's wave-gate evaluation reads it, and "the next tick" is this loop.
+  //
+  // try/catch for the same reason `processChangeSourceEvents` and `reconcileCampaignsOrgTick` have
+  // one: an unreachable executor must not take down the rest of the org's tick.
+  try {
+    await pollNonTerminalHookRuns(db, { orgId, host, masterKey });
+  } catch (err) {
+    console.error(`[reconcile] org ${orgId} pipeline hook run poll failed:`, err);
+  }
   // M5 (DESIGN §9.5): campaigns fan out into real M3 Changes above already progress through the
   // exact same steps this tick just ran — this only sequences WHICH wave's member changes get
   // proposed next (coordination/campaign-reconcile.ts's module doc).

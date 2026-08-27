@@ -2953,3 +2953,111 @@ export const pipelineEvidence = pgTable(
     )
   ]
 );
+
+/**
+ * IN-FLIGHT AND CONCLUDED HOOK RUNS (migration 0098) — the state `pipelineEvidence` structurally
+ * cannot hold.
+ *
+ * `TestRunEvidenceSchema.outcome` is `passed|failed` and nothing else, on purpose: "Evidence is a
+ * record of something that FINISHED; an in-flight run is expressed by the ABSENCE of evidence." That
+ * leaves one fact with nowhere to live — THAT SCP ALREADY ASKED. Without it, the 1s reconcile tick
+ * looks for evidence of a postDeploy suite, correctly finds none, and dispatches the suite again;
+ * and again; because nothing in the database distinguishes "not started" from "started, running".
+ *
+ * This table is NOT a second evidence table and must never become one. `evaluatePostDeployGate` does
+ * not read it. Evidence records the answer; this records the question having been posed.
+ *
+ * ===========================================================================================
+ * `pipelineHookRunsIdentity` IS THE TRIGGER GUARD, AND IT IS `NULLS NOT DISTINCT`
+ * ===========================================================================================
+ * The claim row is inserted BEFORE `trigger()` fires, so winning or losing this constraint is what
+ * decides who dispatches — the crash-safe three-step shape `reconcile.ts`'s `triggerWaveTarget` uses
+ * for wave targets (PR #7 review CRITICAL #2), applied to hooks.
+ *
+ * `.nullsNotDistinct()` because `postMerge` is not target-specific and belongs to no wave, so its
+ * `waveIndex` is NULL — and under PostgreSQL's DEFAULT `NULLS DISTINCT`, NULL never equals NULL, so
+ * a plain UNIQUE would leave the guard applying to every hook kind EXCEPT that one. Nothing would
+ * error and nothing would log; the suite would simply run once per tick. Requires PostgreSQL 15+;
+ * DESIGN.md §3 pins the required floor at 16+.
+ */
+export const pipelineHookRuns = pgTable(
+  "pipeline_hook_runs",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** The component whose hook this run belongs to — AND the ownership pointer. NO `managedByStack`
+     *  column and none is ever added; ownership derives from the owning object, exactly as for
+     *  `pipelineHooks` / `sourceMappings` / `executorBindings` (packages/schemas/src/iac.ts). */
+    componentObjectId: uuid("component_object_id").notNull(),
+    /** NULLABLE, and load-bearing: `postMerge` runs before any artifact exists and is not
+     *  target-specific, so there is no target to name. See the constraint note above for what that
+     *  NULL does to a plain UNIQUE. */
+    targetObjectId: uuid("target_object_id"),
+    /** The Change this run gates. Part of the identity — a run for change A says nothing about
+     *  change B, even at the same wave index. */
+    changeObjectId: uuid("change_object_id").notNull(),
+    hookId: text("hook_id").notNull(),
+    /** 'postMerge'|'postDeploy'|'continuous'|'bakeAlarms'. Plain text, Zod-owned — see
+     *  `pipelineHooks.kind`. */
+    kind: text("kind").notNull(),
+    /** NULL for `postMerge`, which belongs to no wave. */
+    waveIndex: integer("wave_index"),
+    /** The binding this run's eventual evidence carries: `postMerge` -> commit, the other three ->
+     *  digest. Both nullable here; `PipelineEvidenceSubjectSchema`'s exactly-one refine is enforced
+     *  at the evidence write, where a mismatch must be a refusal rather than a widening. */
+    artifactDigest: text("artifact_digest"),
+    commitSha: text("commit_sha"),
+    /** NULLABLE, AND THAT IS THE WHOLE DESIGN. The row is claimed BEFORE `trigger()` is called, so
+     *  there is no external run to name yet. NOT NULL would force trigger-then-insert, and a crash
+     *  between the two would leave a running workflow in the estate with no record of it here — the
+     *  exact double-dispatch this table exists to prevent. NULL therefore means "durably claimed,
+     *  not yet dispatched OR did not survive to record the answer"; both recover identically by
+     *  re-deriving the SAME `idempotencyKey` and re-calling `trigger()`, which a conformant executor
+     *  dedups (`TriggerIntent.idempotencyKey`). */
+    externalRunId: text("external_run_id"),
+    externalUrl: text("external_url"),
+    /** Mirrors `ExecutionPhase` from `@scp/plugin-api` member for member. CHECKed in SQL — unlike
+     *  `kind` — because no Zod schema stands over this column: `ExecutionPhase` is a TS union in a
+     *  package deliberately free of a `@scp/schemas` dependency, so there is no parse door and the
+     *  constraint is the only guard. Same reasoning as `pipelineEvidence.source`. */
+    status: text("status").notNull(),
+    /** The instance the trigger used. Persisted, not re-resolved at poll time, for the reason
+     *  `changeWaveTargets.executorPluginId` is: a poll against a different instance polls a
+     *  different pipeline for this run's ref. */
+    pluginInstanceId: text("plugin_instance_id").notNull(),
+    /** Trigger-call retry count, so a refusing executor backs off instead of re-firing every tick. */
+    attempt: integer("attempt").notNull().default(0),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    /** NULL until the first `status()` poll — an un-polled run and a polled-and-still-pending run
+     *  are different operator situations. */
+    lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+    /** The D23 pin: `CapturedWorkflowRef` — declared (repo, branch, path) PLUS the BUILT `commitSha`
+     *  PLUS the digest-pinned `bundle`. Per-BUILD, so it belongs on the run rather than on the hook
+     *  declaration (which is only "a pointer into whatever the cluster happens to hold right now").
+     *
+     *  NULL FOR EVERY RUN TODAY, because D23's build-time capture step does not exist in this tree —
+     *  nothing produces a bundle repository or digest. The driver's response to NULL is to record the
+     *  terminal status and write NO evidence, loudly; NOT to synthesise a digest so the shape
+     *  type-checks. Fabricated, it would satisfy `evaluatePostDeployGate` while bound to bytes nobody
+     *  verified — the failure `evaluateScanCoverage`'s `not_digest_bound` refusal prevents one layer
+     *  down. */
+    capturedWorkflow: jsonb("captured_workflow"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("pipeline_hook_runs_identity")
+      .on(table.orgId, table.changeObjectId, table.hookId, table.waveIndex)
+      .nullsNotDistinct(),
+    /** The poll driver's only scan. PARTIAL on the non-terminal statuses so it stays proportional to
+     *  work outstanding rather than to every run ever dispatched. */
+    index("pipeline_hook_runs_non_terminal")
+      .on(table.orgId, table.startedAt)
+      .where(sql`${table.status} IN ('pending','running')`),
+    index("pipeline_hook_runs_by_change").on(table.orgId, table.changeObjectId, table.hookId),
+    check(
+      "pipeline_hook_runs_status_check",
+      sql`${table.status} IN ('pending','running','succeeded','failed','aborted')`
+    )
+  ]
+);
