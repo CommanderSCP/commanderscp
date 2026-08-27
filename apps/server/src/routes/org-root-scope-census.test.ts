@@ -401,6 +401,13 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     why: "reads that same org-wide vocabulary; a relationship type names endpoint types, not instances, so it has no containment scope"
   },
 
+  // ---- the roles catalogue: shared-singleton platform metadata, exactly like a type -------------
+  {
+    site: "routes/role-bindings.ts :: GET /api/v1/roles :: type_registry:read",
+    cls: "org-level",
+    why: "the roles catalogue is shared-singleton platform metadata with no containment scope of its own (its built-in rows are `org_id IS NULL`), so there is nothing narrower to re-scope onto — the same shape as the two type-registry reads above, and gated on the same permission at the same scope for that reason. The accepted cost is that a principal bound ONLY below the org root (a ComponentAdmin at a component) cannot read the role PICKER; role-model.md §5 step 6's `GET /authz/effective` is where a scoped principal learns what it holds. NOT the org-root arm: `authz/org-root-arm.ts` exists to rescue a door re-scoped onto an object, and this door governs no object. The role-binding WRITE door is deliberately absent from this list — it scopes at the binding's own `scope_object_id` (`authz/role-binding-door.ts` §1/§5), which is the whole point of it"
+  },
+
   // ---- org-scoped configuration with no per-object subject ---------------------------------------
   {
     site: "routes/doctor.ts :: GET /api/v1/doctor :: federation:read",

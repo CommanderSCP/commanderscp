@@ -18,6 +18,10 @@ import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { policyReachFor, recordGovernanceReachChange } from "../governance/governance-reach.js";
 import { assertMayWriteGovernanceLabels } from "../governance/governance-labels.js";
+import {
+  assertMayJoinRoleBearingSubject,
+  assertOrgRetainsAdministrativeFloor
+} from "../authz/role-binding-door.js";
 import { inArray } from "drizzle-orm";
 
 /**
@@ -371,6 +375,54 @@ export async function createRelationship(
     );
   }
 
+  // A `member_of` EDGE IS A ROLE GRANT — the no-escalation subset rule, at the choke point.
+  //
+  // `authz/resolve.ts`'s `subject_expand` walks `member_of` from_id -> to_id, so a role binding held
+  // by a GROUP or TEAM resolves for every member. Writing this edge therefore hands `toId`'s
+  // authority to `fromId` without a `role_bindings` row ever being written — which routes straight
+  // around `authz/role-binding-door.ts` §2, the rule that stops a `role_binding:write` holder minting
+  // themselves Owner. MEASURED before this guard: an org-root **Operator** — four rungs below
+  // Administrator — self-joined a group holding Owner and resolved as Owner, using only the
+  // `relationship:write` every org-root principal from Operator upward holds at every object.
+  //
+  // The both-endpoint `relationship:write` check in `routes/relationships.ts` was designed for
+  // exactly this attack and its docblock says so; it only constrains a principal whose
+  // `relationship:write` is NARROW, and an org-root binding is not narrow.
+  //
+  // HERE AND NOT AT THE ROUTE, because this function is where an edge is actually created: IaC apply
+  // (`iac/plans-repo.ts` replays the manifest diff's free-form `typeId`) and discovery-accept
+  // (`routes/executors.ts`) both reach it without passing through `POST /relationships`. A
+  // route-only guard is the shape the campaign-deadline fix in this same programme had to abandon
+  // twice. The full reasoning, the exploit chain and what this deliberately does NOT do (removal is
+  // a narrowing and stays ungated; bar §1 is not applied here) are in that module's §2a.
+  //
+  // THIS GUARDS ONE OF TWO ORDERINGS. Joining a group that ALREADY holds a binding is refused here;
+  // joining an empty group and having a binding written onto it afterwards is not, and must not be —
+  // the empty-group join is every ordinary team membership on the estate. The other ordering is
+  // `role-binding-door.ts` §2b, on the grant door, and §8 of that module lists what neither closes.
+  //
+  // AND THERE IS A THIRD ORDERING: NEITHER. Concurrently, this join and that grant each read before
+  // the other writes, so a request pair whose every SERIAL order refuses one of the two is admitted
+  // twice. `assertMayJoinRoleBearingSubject` takes the org's advisory lock as its own first
+  // statement to close that (`role-binding-door.ts` §0) — HERE and not at the route, and taken
+  // inside the guard and not beside it, because `createRelationship` has thirteen callers.
+  //
+  // The `federationImport` exemption is the one this file already applies to
+  // `assertMayWriteGovernanceLabels` above, for the identical reason: `federation/import-repo.ts`'s
+  // replay branch skips only a 400, so a 403 here would abort a peer's whole signed bundle rather
+  // than one edge. A replicated membership was decided at the authoring domain's own door.
+  //
+  // The type guard keeps this off every other relationship write in the system — a `contains`,
+  // `owns`, `places` or `depends_on` create short-circuits on a string comparison and costs nothing.
+  if (type.id === "member_of" && !input.federationImport) {
+    await assertMayJoinRoleBearingSubject(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      joinerObjectId: input.fromId,
+      groupObjectId: input.toId
+    });
+  }
+
   await assertCardinality(tx, input.orgId, type.id, type.cardinality, input.fromId, input.toId);
 
   // CONTAINMENT ROUTE 2 — a `contains` edge IS a containment parent (`graph/containment.ts` route
@@ -638,6 +690,41 @@ export async function deleteRelationship(
     .update(relationships)
     .set({ deletedAt: new Date(), revision: nextRevision })
     .where(eq(relationships.id, existing.id));
+
+  // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7) — DOOR B, AND THE CASCADE OF DOOR C.
+  //
+  // Removing the `member_of` edge under a group's administrative binding leaves the BINDING ROW
+  // INTACT while no live principal resolves through it any more. MEASURED, in four plain sequential
+  // requests with no concurrency and no special privilege: create a team, join it, bind Owner to it,
+  // revoke the bootstrap admin's binding (admitted — the team reaches a live member), then
+  // `DELETE /relationships/{that member_of edge}` -> 200, and the org is unadministrable with
+  // hand-written SQL the only recovery. The revoke-time guard counted the surviving row and reported
+  // success, because a check that models ONE verb is a check the other verbs route around.
+  //
+  // `deleteObject`'s edge cascade calls this function per edge, so tombstoning a group that HOLDS an
+  // administrative binding is refused here too, on the edge whose removal actually empties the floor
+  // rather than on the object tombstone that is merely its cause.
+  //
+  // AFTER the tombstone, on purpose: the predicate asks what is TRUE now rather than modelling what
+  // this write is about to do, which is what makes it blind to the verb and therefore complete over
+  // the cascade. It takes §0's org lock itself. See §7.
+  //
+  // `type_id = 'member_of'` is a statement about the floor's inputs, not a filter over callers: the
+  // closure it walks contains no other edge type, so no other edge tombstone can change its answer.
+  // Every other relationship delete in the system costs one string comparison.
+  //
+  // FEDERATION IMPORT IS EXEMPT, the mechanism this file already applies to
+  // `assertMayWriteGovernanceLabels` and `assertMayJoinRoleBearingSubject`: `import-repo.ts`'s replay
+  // branch re-throws anything but a 400, so a 409 here would abort a peer's whole signed bundle over
+  // one replicated membership this instance has no authority to keep.
+  if (existing.typeId === "member_of" && !input.federationImport) {
+    await assertOrgRetainsAdministrativeFloor(tx, {
+      orgId: input.orgId,
+      act:
+        `removing the 'member_of' edge '${existing.id}' ('${existing.fromId}' -> ` +
+        `'${existing.toId}')`
+    });
+  }
 
   // M20.3 (ADR-0031 §4) — the tombstone inherits locality the same way the create did, and it has to
   // be RE-RESOLVED here: the edge row itself carries no locality (locality belongs to the objects),

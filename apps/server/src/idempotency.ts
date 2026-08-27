@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { FastifyRequest } from "fastify";
 import type { TenantTx } from "./db/tenant-tx.js";
 import { idempotencyKeys } from "./db/schema.js";
 import { unprocessable } from "./errors.js";
@@ -7,6 +8,22 @@ import { isUniqueViolation } from "./db/pg-errors.js";
 export interface IdempotentResult<T> {
   status: number;
   body: T;
+}
+
+/**
+ * Reads the `Idempotency-Key` header, normalising a repeated header (which Fastify surfaces as an
+ * array) to "absent" the way every route in the tree already does.
+ *
+ * EXPORTED HERE 2026-08-27 rather than hand-typed a SEVENTH time. Six route modules carry a private
+ * `idempotencyKey(request)` with this body — `objects.ts`, `objects-generic.ts`, `type-registry.ts`,
+ * `typed-registries.ts`, `relationships.ts`, `ownership.ts` — and `routes/role-bindings.ts` was about
+ * to be the seventh. The six are NOT converted here: that is a sweep across six unrelated route
+ * files for no behaviour change, and this branch's diff is an authz change. They are named so the
+ * next census finds them listed rather than having to rediscover them.
+ */
+export function idempotencyKeyOf(request: FastifyRequest): string | undefined {
+  const header = request.headers["idempotency-key"];
+  return typeof header === "string" ? header : undefined;
 }
 
 function hashRequest(body: unknown): string {
@@ -26,7 +43,34 @@ function hashRequest(body: unknown): string {
  */
 export async function withIdempotency<T>(
   tx: TenantTx,
-  opts: { orgId: string; idempotencyKey: string | undefined; route: string; requestBody: unknown },
+  opts: {
+    orgId: string;
+    idempotencyKey: string | undefined;
+    route: string;
+    requestBody: unknown;
+    /**
+     * OPT-IN ACTOR SCOPING. `idempotency_keys` is keyed `(org_id, idempotency_key)` — ORG-scoped —
+     * so a replay is answered to whoever presents the key next, whatever they hold. On most routes
+     * that is merely surprising; on `POST /role-bindings` it is a read of an authority record by a
+     * principal who holds nothing: guess (or observe) an administrator's key, POST any body, and the
+     * stored 201 comes back with the binding id, subject, role and scope. Passing the acting
+     * principal here folds it into the request hash, so a second actor presenting the same key gets
+     * the 422 "already used for a different request" that a body mismatch gets — a refusal that
+     * discloses nothing — instead of the first actor's result.
+     *
+     * A HASH RATHER THAN A COLUMN, deliberately: the primary key is `(org_id, idempotency_key)` in
+     * `db/schema.ts`, so ACTUAL per-actor scoping is a migration (widening the PK) and would let two
+     * actors hold the same key at once. This narrows the disclosure without one, and it fails in the
+     * safe direction — a legitimate client retrying its own request has its own actor and replays
+     * normally.
+     *
+     * OPT-IN, not applied to the six other `withIdempotency` callers: their stored results are graph
+     * rows those callers already gate with their own `authorize` on the replay path's inputs, and
+     * changing the hash basis for a route invalidates any key in flight across an upgrade. Named
+     * here so the next census finds the choice rather than the omission.
+     */
+    actorObjectId?: string;
+  },
   fn: () => Promise<IdempotentResult<T>>
 ): Promise<IdempotentResult<T> & { replayed: boolean }> {
   if (!opts.idempotencyKey) {
@@ -34,7 +78,11 @@ export async function withIdempotency<T>(
     return { ...result, replayed: false };
   }
 
-  const requestHash = hashRequest(opts.requestBody);
+  const requestHash = hashRequest(
+    opts.actorObjectId === undefined
+      ? opts.requestBody
+      : { actor: opts.actorObjectId, body: opts.requestBody }
+  );
   const existing = await tx.query.idempotencyKeys.findFirst({
     where: (t, { eq: eqOp, and: andOp }) =>
       andOp(eqOp(t.orgId, opts.orgId), eqOp(t.idempotencyKey, opts.idempotencyKey as string))

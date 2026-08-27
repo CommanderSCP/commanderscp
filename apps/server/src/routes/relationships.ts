@@ -211,7 +211,14 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
         200: RelationshipSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7). Removing the `member_of` edge
+        // that makes an org's last administrative binding reachable is refused with 409 from
+        // `graph/relationships-repo.ts`'s `deleteRelationship` — a CHOKE POINT, so this route
+        // inherits the refusal and must declare it. Undeclared it would have been serialized as a
+        // bare Problem the generated SDK types as impossible. An added response code is additive
+        // under the oasdiff gate: `deleteRelationship` previously declared 200/401/403/404.
+        409: ProblemSchema
       }
     },
     config: {

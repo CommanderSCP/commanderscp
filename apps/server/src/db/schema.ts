@@ -328,9 +328,19 @@ export const roles = pgTable(
     /**
      * drizzle/0097 — object type ids this role may be bound at. NULL = ANY scope, which is what
      * the five built-in ladder rows carry and must keep carrying (their live bindings predate the
-     * column). NOT ENFORCED ANYWHERE YET: validation lands at the role-binding write door
-     * (role-model.md §5 step 5). Until then a binding at a nonsensical scope — a `user`, a
-     * `change` — is still accepted and still silently inert (§1.3h).
+     * column).
+     *
+     * **ENFORCED SINCE role-model.md §5 step 5** — `authz/role-binding-door.ts`'s
+     * `assertRoleBindableAtScope`, called by `POST /api/v1/role-bindings`. GRANT ONLY: a revoke
+     * deliberately does not re-check it, or every binding already written at a nonsensical scope
+     * would become permanent, and cleaning those up is half the reason the column exists.
+     *
+     * THE DATABASE STILL ENFORCES NOTHING and that is unchanged: `scope_object_id` is a bare
+     * `uuid NOT NULL REFERENCES objects(id)` with no type constraint, so a row written by hand SQL
+     * or restored from a dump can still point at a `user` or a `change`. Such a binding is inert —
+     * until `objects.domain_id`, which carries no type constraint either, parents something under
+     * it and it suddenly confers authority (role-model.md §1.3h). The door is the only layer that
+     * sees this, which is why the check is at the door and not here.
      */
     bindableAt: text("bindable_at").array()
   },

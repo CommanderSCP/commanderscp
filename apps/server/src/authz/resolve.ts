@@ -210,6 +210,118 @@ export interface PermissionCheck {
 }
 
 /**
+ * THE `member_of` CLOSURE — **ONE definition of the walk, emitted in either direction.**
+ *
+ * `member_of` is registered `from_id = the member`, `to_id = the group`. Reading it forwards answers
+ * "which groups does this principal count as" (`subjectExpandCte`); reading the SAME edges backwards
+ * answers "which principals does this group reach" (`memberExpandCte`). Everything else about the
+ * two is identical — the org predicate, the live-edge filter, the depth bound, and `UNION` rather
+ * than `UNION ALL` so a `member_of` cycle terminates instead of spinning — so the direction is a
+ * parameter here rather than a second body.
+ *
+ * That is not tidiness. The two directions are used to answer the two halves of ONE rule
+ * (`authz/role-binding-door.ts` §2a and §2b): the join door asks "what will this joiner inherit"
+ * and the grant door asks "who does this binding reach". If the walks disagreed about a live edge,
+ * about the bound, or about cycle termination, one ordering of the same two requests would be
+ * guarded and the other would not — which is the defect §2b exists to close, re-introduced one level
+ * down.
+ *
+ * `sql.raw` is used for the CTE and column NAMES only. Both are module-local string literals chosen
+ * by the two wrappers below; no caller supplies either.
+ */
+type MemberOfWalkDirection = "member-to-groups" | "group-to-members";
+
+function memberOfClosureCte(opts: {
+  orgId: string;
+  seedObjectId: string;
+  cteName: string;
+  columnName: string;
+  direction: MemberOfWalkDirection;
+  maxDepth: number;
+}) {
+  const cte = sql.raw(opts.cteName);
+  const column = sql.raw(opts.columnName);
+  const step =
+    opts.direction === "member-to-groups"
+      ? sql`SELECT r.to_id, w.depth + 1 FROM relationships r JOIN ${cte} w ON r.from_id = w.${column}`
+      : sql`SELECT r.from_id, w.depth + 1 FROM relationships r JOIN ${cte} w ON r.to_id = w.${column}`;
+  return sql`
+    ${cte} AS (
+      SELECT ${opts.seedObjectId}::uuid AS ${column}, 0 AS depth
+      UNION
+      ${step}
+      WHERE r.org_id = ${opts.orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
+        AND w.depth < ${opts.maxDepth}
+    )
+  `;
+}
+
+/**
+ * THE `member_of` SUBJECT EXPANSION — emitted as the `subject_expand` CTE term.
+ *
+ * "Who does this subject count as" — itself, plus every group/team it transitively belongs to,
+ * walked `from_id -> to_id` over live `member_of` edges. It is the reason a role binding held by a
+ * GROUP grants authority to that group's members, and therefore the reason `graph/relationships-repo.ts`
+ * has to apply the role-binding door's subset rule when a `member_of` edge is CREATED
+ * (`authz/role-binding-door.ts` §2a): writing this edge is what makes the binding reach a new
+ * principal.
+ *
+ * EXTRACTED 2026-08-27 BECAUSE IT WAS ABOUT TO BE HAND-TYPED FOR THE FIFTH TIME. The three copies in
+ * this file — `hasPermission`, `hasRoleAtScope` and `assertDenyNotTruncated` — were byte-identical
+ * apart from the depth bound, and they now compose this. Copies that are NOT converted here, named
+ * rather than left for the next census to rediscover: `authz/readable-scope.ts` (the LIST-door
+ * closure) and `governance/policy-resolve.ts` (`isMemberOf`, and `ownedByGroupOrItsMembers`'s
+ * downward group→members walk, which is `memberExpandCte`'s question with a different SELECT list
+ * and deliberately no depth bound). Those are out of this change's scope; this docblock is the
+ * record that they exist.
+ */
+export function subjectExpandCte(
+  orgId: string,
+  subjectObjectId: string,
+  // ADR-0037: the shared bound by default; the truncation PROBE passes one-past-the-bound so a deny
+  // can be told apart from a walk that was cut. Callers other than the probe never override.
+  maxDepth: number = CONTAINMENT_WALK_MAX_DEPTH
+) {
+  return memberOfClosureCte({
+    orgId,
+    seedObjectId: subjectObjectId,
+    cteName: "subject_expand",
+    columnName: "subject_id",
+    direction: "member-to-groups",
+    maxDepth
+  });
+}
+
+/**
+ * THE INVERSE WALK — emitted as the `member_expand` CTE term. Same edges, same bound, read the other
+ * way: the seed group/team, plus every principal (and nested group) that transitively reaches it.
+ *
+ * WHY A SECOND DIRECTION EXISTS AT ALL. `subjectExpandCte` is seeded at a KNOWN principal and finds
+ * the groups above it, which is what a permission check needs. `authz/role-binding-door.ts` §2b asks
+ * the opposite question — a binding is about to be written ON a group, and the door needs the
+ * principals BELOW it — and the group is the known end there. Seeding `subjectExpandCte` at the
+ * group would walk further UP into the groups the group belongs to, which is a different set and
+ * answers nothing about who the binding empowers.
+ *
+ * The seed row is included at depth 0, so a caller that also wants "the subject itself" gets it
+ * without a special case; a caller that wants members ONLY filters `depth > 0`.
+ */
+export function memberExpandCte(
+  orgId: string,
+  groupObjectId: string,
+  maxDepth: number = CONTAINMENT_WALK_MAX_DEPTH
+) {
+  return memberOfClosureCte({
+    orgId,
+    seedObjectId: groupObjectId,
+    cteName: "member_expand",
+    columnName: "member_id",
+    direction: "group-to-members",
+    maxDepth
+  });
+}
+
+/**
  * The scope (containment) expansion, shared by `hasPermission` and `hasRoleAtScope` so the two can
  * never drift — they answer different questions ("has permission P" vs "holds role R") but MUST agree
  * on what "at-or-above this scope" means, or an Approver bound at a service would be eligible for one
@@ -325,15 +437,7 @@ async function assertDenyNotTruncated(
   denialOf: string
 ): Promise<void> {
   const result = await tx.execute<{ kind: string }>(sql`
-    WITH RECURSIVE subject_expand AS (
-      SELECT ${subjectObjectId}::uuid AS subject_id, 0 AS depth
-      UNION
-      SELECT r.to_id, se.depth + 1
-      FROM relationships r
-      JOIN subject_expand se ON r.from_id = se.subject_id
-      WHERE r.org_id = ${orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
-        AND se.depth < ${WALK_TRUNCATION_PROBE_DEPTH}
-    ),
+    WITH RECURSIVE ${subjectExpandCte(orgId, subjectObjectId, WALK_TRUNCATION_PROBE_DEPTH)},
     ${scopeExpandCte(orgId, scopeObjectId, WALK_TRUNCATION_PROBE_DEPTH)}
     (SELECT 'subject' AS kind FROM subject_expand WHERE depth >= ${WALK_TRUNCATION_PROBE_DEPTH} LIMIT 1)
     UNION ALL
@@ -353,15 +457,7 @@ async function assertDenyNotTruncated(
 
 export async function hasPermission(tx: TenantTx, check: PermissionCheck): Promise<boolean> {
   const result = await tx.execute<{ effect: string }>(sql`
-    WITH RECURSIVE subject_expand AS (
-      SELECT ${check.subjectObjectId}::uuid AS subject_id, 0 AS depth
-      UNION
-      SELECT r.to_id, se.depth + 1
-      FROM relationships r
-      JOIN subject_expand se ON r.from_id = se.subject_id
-      WHERE r.org_id = ${check.orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
-        AND se.depth < ${CONTAINMENT_WALK_MAX_DEPTH}
-    ),
+    WITH RECURSIVE ${subjectExpandCte(check.orgId, check.subjectObjectId)},
     ${scopeExpandCte(check.orgId, check.scopeObjectId)}
     SELECT DISTINCT rb.effect
     FROM role_bindings rb
@@ -421,15 +517,7 @@ export interface RoleCheck {
  */
 export async function hasRoleAtScope(tx: TenantTx, check: RoleCheck): Promise<boolean> {
   const result = await tx.execute<{ effect: string }>(sql`
-    WITH RECURSIVE subject_expand AS (
-      SELECT ${check.subjectObjectId}::uuid AS subject_id, 0 AS depth
-      UNION
-      SELECT r.to_id, se.depth + 1
-      FROM relationships r
-      JOIN subject_expand se ON r.from_id = se.subject_id
-      WHERE r.org_id = ${check.orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
-        AND se.depth < ${CONTAINMENT_WALK_MAX_DEPTH}
-    ),
+    WITH RECURSIVE ${subjectExpandCte(check.orgId, check.subjectObjectId)},
     ${scopeExpandCte(check.orgId, check.scopeObjectId)}
     SELECT DISTINCT rb.effect
     FROM role_bindings rb

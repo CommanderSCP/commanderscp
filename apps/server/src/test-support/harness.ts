@@ -403,10 +403,17 @@ export interface TestUserBinding {
    *   the purpose roles      SecurityOfficer | FederationAdmin | OrgAdmin | ServiceAdmin |
    *                          ComponentAdmin (drizzle/0099, role-model.md §3)
    *
-   * A purpose role's `bindable_at` is NOT checked here, and that is faithful rather than lax: the
-   * column is advisory until the role-binding write door validates it (role-model.md §5 step 5),
-   * so a binding this helper writes at an unlisted scope behaves exactly as one written through
-   * hand SQL on a live deployment does today.
+   * A purpose role's `bindable_at` is NOT checked here, and neither is D5's `Administrator`
+   * deprecation or the no-escalation subset rule. That is DELIBERATE and it is what makes this
+   * helper still useful now that `routes/role-bindings.ts` exists (role-model.md §5 step 5): those
+   * three refusals live at the WRITE DOOR, not in the database, so a row written straight through
+   * the repo layer here behaves exactly as one written by hand SQL on a live deployment does — an
+   * `Administrator` binding that pre-dates the deprecation, or a binding at a scope the role does
+   * not list.
+   *
+   * Which means this helper is the ONLY way to build the fixtures the door's own tests need: an
+   * EXISTING Administrator binding that must keep resolving, and a binding that outranks the
+   * caller trying to revoke it. Tests that mean to exercise the door must go through the route.
    */
   role: string;
   /** Scope object id, or "self" for the user's own graph object. */

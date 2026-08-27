@@ -500,7 +500,13 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
         200: GraphObjectSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7). Tombstoning the principal that
+        // holds the org's last administrative binding — or the team that holds it — is refused with
+        // 409 from `graph/objects-repo.ts`'s `deleteObject`, a CHOKE POINT this route inherits. An
+        // added response code is additive under the oasdiff gate: `deleteObject` previously declared
+        // 200/401/403/404.
+        409: ProblemSchema
       }
     },
     config: {

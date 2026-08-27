@@ -421,10 +421,328 @@ auth.orgId`. A filterless census of `proposeChange` callers finds six — the fi
 at each named target. Needs no schema change and covers all five internal creation paths untouched.
 (Alternative: infer `domainId` from the nearest common containment ancestor of `targets` and backfill.)
 
+### 4.3a The `member_of` CREATE census (filterless, 2026-08-27) — every path that can create the edge
+
+> ⚠️ **THIS TABLE IS SCOPED TO EDGE CREATION, AND THAT SCOPING IS ITSELF A FINDING.** It answers "who
+> can write a `member_of` row", which is the right census for §2a's escalation guard and the WRONG
+> one for the administrator floor — a narrowing that hid three live bricking paths for a round. The
+> floor's census, by the property *"a write that can reduce the set of live principals reaching an
+> administrative binding"*, is **§4.3b**. Read them together.
+
+Censused by PROPERTY — *"code that can cause a `relationships` row with `type_id = 'member_of'` to
+exist"* — not by the string `member_of`, using `grep -rna` throughout. Two passes: every caller of
+`createRelationship`, and every raw `INSERT INTO relationships` / `tx.insert(relationships)` in the
+tree.
+
+| Path | Can it write `member_of`? | Verdict |
+|---|---|---|
+| `POST /relationships` (`routes/relationships.ts`) | Yes — free-form `typeId` | **Covered.** Calls `createRelationship`; the guard is inside it. |
+| **IaC apply** (`iac/plans-repo.ts:1495`) | Yes — the manifest diff's free-form `typeId` | **Covered, and PINNED** by `iac/iac-member-of-role-escalation.integration.test.ts`. Its own `prepareApplyChecks` mirrors only the both-endpoint `relationship:write`, so this was a live second door. |
+| **Discovery accept** (`routes/executors.ts:1168`) | Yes — `proposedRelationship.typeId` is free-form | **Covered** by the choke point. Not separately pinned: reaching it needs a discovery provider that proposes a `member_of`, which no shipped provider does. |
+| **Federation import** (`federation/import-repo.ts:420`) | Yes — `String(payload.typeId)` | **DELIBERATELY EXEMPT.** `if (!input.federationImport)`, the mechanism `assertMayWriteGovernanceLabels` and `assertValidCampaignRecipe` already use: that replay branch skips a 400 per entry but re-throws anything else, so a 403 would abort a peer's whole signed bundle. A replicated membership was decided at the authoring domain's own door. **Not pinned by a test.** |
+| **`routes/ownership.ts:156`** (`POST {base}/{id}/owners`) | **No** — `typeId: "owns"`, a literal | Out of reach by construction. **MISSED BY THE FIRST PASS OF THIS CENSUS** — see the re-run note below. |
+| **`routes/ownership.ts:348`** (`POST {base}/{id}/{consumes\|depends-on}`) | **No** — `typeId: relTypeId`, whose TypeScript type is the closed union `"consumes" \| "depends_on"` and whose two call sites (`:478`, `:484`) pass those literals | Out of reach by construction. **MISSED BY THE FIRST PASS.** |
+| `graph/components-repo.ts` (2 sites), `graph/placements-repo.ts`, `coordination/changes-repo.ts`, `coordination/campaign-reconcile.ts`, `coordination/correlation.ts`, `federation/overlay-repo.ts` | **No** — each passes a hard-coded `typeId` (`contains`, `places`/`placed_at`, `depends_on`, `coordinates`, `correlates`, `annotates`) | Out of reach by construction. |
+| `governance/approvals-repo.ts:317` — the one raw `tx.insert(relationships)` outside the repo | **No** — `const relTypeId = "approves"` | Out of reach by construction. It bypasses `createRelationship` entirely, which is worth knowing; it cannot write this edge. |
+| **Plugin host** (`plugin-host/`) | **No** | A filterless search finds no relationship write of any kind in that directory. |
+| **Seed / bootstrap** (`seed.ts`, `scripts/seed-*.mjs`) | Through the API only | `seed.ts` drives `@scp/sdk` against the real server, so it inherits the guard. `auth/local-auth.ts` and `auth/oidc.ts` write `role_bindings` and no edges; `oidc.ts` has **zero group handling**, so there is no IdP-group→`member_of` sync to cover. |
+| Raw `INSERT INTO relationships` in `load-test/graph-scale.ts` and three integration tests | Yes, trivially | Out of scope — not production paths, and the test harness writing state the door refuses is what makes the pre-deprecation fixtures possible at all. |
+
+**CENSUS RE-RUN 2026-08-27, and the first pass was incomplete.** It reported 12 of the 14 production
+`createRelationship` call sites and silently omitted both of `routes/ownership.ts`'s. Neither can
+write `member_of` — so the *verdict* was unaffected — but that is precisely the reasoning that makes
+an incomplete census invisible: a site left out of the table is indistinguishable from a site that was
+examined and cleared. The re-run command, with no filters, is
+
+```
+grep -rna "createRelationship(" apps/server/src | grep -v createRelationshipType
+```
+
+which lists 13 call sites plus the definition in `graph/relationships-repo.ts:309` (14 lines). Every
+one is now a row above. The omission is recorded rather than quietly patched because the property that
+produced it — censusing from the *previous table* instead of from the tree — is the one that produces
+the next one.
+
+**Still open after this change**, all stated in `authz/role-binding-door.ts` §8 rather than implied:
+the federation-import path (by design, and now pinned in both directions by
+`federation/federation-member-of-exemption.integration.test.ts`); the fact that §2a applies the subset
+rule but **not** bar §1, so a delegation without `role_binding:write` is possible for an actor who
+already holds the authority being delegated; and the blind grant §2b bounds and §2c witnesses but
+neither closes.
+
+### 4.3b The ADMINISTRATOR-FLOOR census (filterless, 2026-08-27) — every write that can falsify it
+
+The property, stated before the search rather than inferred from it: ***a write that can reduce the
+set of live principals reaching an org-root `allow` role binding whose role carries
+`role_binding:write`.***
+
+The predicate reads exactly four things, so the census is the census of writers to those four:
+`role_bindings` rows at the org root; `roles.permissions`; live `member_of` rows in `relationships`;
+and `objects.deleted_at` / `objects.type_id`. Commands, no filters, `grep -rna` throughout:
+
+```
+grep -rna "update(objects)\|UPDATE objects"           apps/server/src
+grep -rna "update(relationships)\|UPDATE relationships" apps/server/src
+grep -rna "update(roles)\|UPDATE roles"                apps/server/src
+grep -rna "\.delete(objects)\|\.delete(relationships)\|DELETE FROM objects\|DELETE FROM relationships\|DELETE FROM role_bindings" apps/server/src
+grep -rna "roleBindings)\|role_bindings"               apps/server/src
+grep -rna "deleteObject(\|deleteRelationship("         apps/server/src
+```
+
+| Write | Can it reduce the set? | Verdict |
+|---|---|---|
+| `deleteRoleBindingById` (`authz/roles-repo.ts:217`) — the ONLY `role_bindings` DELETE in the tree, one caller | Yes — door A | **Covered.** `routes/role-bindings.ts` calls `assertOrgRetainsAdministrativeFloor` AFTER the delete, gated by `revokeAffectsAdministrativeFloor`. |
+| `deleteRelationship` (`graph/relationships-repo.ts:687`) — the only `UPDATE relationships SET deleted_at` in the tree | Yes — door B, and door C's cascade | **Covered at the choke point,** for `type_id = 'member_of'`, non-federation. Pinned through the HTTP door AND through IaC prune (`iac/iac-administrative-floor.integration.test.ts`). Its 12 callers (routes, IaC apply, `deleteObject`'s cascade, ownership, placements, components, component-merge, federation import) all inherit it. |
+| `deleteObject` (`graph/objects-repo.ts:1840`) — the only `UPDATE objects SET deleted_at` in the tree | Yes — doors C and C′ | **Covered at the choke point,** after the tombstone AND after the edge cascade, gated by `objectTouchesRoleAuthority`. Its 9 callers (generic object route, components, typed registries, placements, component merge, outposts, IaC apply, federation import) all inherit it. |
+| **IaC apply** (`iac/plans-repo.ts:1490` relationship prune, `:1950` object prune) | Yes — it calls both functions directly, never through a route | **Covered** by the choke-point placement; the relationship arm is PINNED, the object arm is not (named in the IaC suite). |
+| **Federation import** (`federation/import-repo.ts:376`, `:457`) | Yes | **DELIBERATELY EXEMPT**, `!input.federationImport`, the mechanism §2a already uses: `import-repo.ts`'s replay branch re-throws anything but a 400, so a 409 would abort a peer's whole signed bundle over a replica this instance has no authority to keep. **Not pinned by a test.** |
+| Foreign-shadow removal (`deleteObject`'s `removedForeignShadow` arm) | Yes | **DELIBERATELY EXEMPT**, same carve-out the edge cascade and the orphan guard take. **Not pinned.** |
+| `roles.permissions` | Yes — dropping `role_binding:write` from the last administrative role empties the candidate set | **No runtime writer exists.** A filterless `UPDATE roles` search returns ZERO hits in `apps/server/src`; only migrations write it. Recorded as open in `role-binding-door.ts` §8: **step 10's custom-role authoring API is a fourth door onto this invariant** and must call the predicate. |
+| `objects.type_id` | Would matter (a `user` becoming something else stops counting) | **Not writable.** No `update(objects)` site sets it — `updateObject`, `artifacts-repo`, `stack-ownership`, `campaign-reconcile`, `publish-domain-local` set name/domain/properties/labels/provenance/`managed_by_stack`/`domain_local`/`updated_at` only. |
+| `upsertObjectByUrn`'s hand-fill reconciliation (`objects-repo.ts:1526`) — the one `UPDATE objects` that changes `id` | Yes in principle: `role_bindings.subject_id` has NO FK, so a re-identified principal would strand its binding | **FEDERATION-IMPORT ONLY** (the branch is inside `if (input.federationImport)`), so it inherits the exemption above. Recorded because it is the only id-rewriting write in the tree and a census by table alone would miss it. |
+| `createRelationship`, `insertRoleBinding`, `auth/local-auth.ts:84`, `auth/oidc.ts:178` | **No** — they only ADD reachability | Out of reach by construction. The grant door deliberately takes NO floor check. |
+| `iac/stack-ownership.ts:85`/`:133`, `graph/artifacts-repo.ts:292`, `coordination/campaign-reconcile.ts:1309`, `federation/publish-domain-local.ts:220` | **No** — none sets `deleted_at`, `type_id` or any `role_bindings`/`roles` column | Out of reach by construction. Each was opened and read, not inferred from its filename. |
+| Hard `DELETE FROM objects` / `relationships` / `role_bindings` | **No such statement in production code.** The only hits are three integration tests and `graph/rls.integration.test.ts`'s negative assertion | Out of reach by construction. |
+| `test-support/harness.ts:462`/`:555`/`:582`, `load-test/graph-scale.ts` | Yes, trivially | Out of scope — not production paths, and the harness writing state the doors refuse is what makes the pre-guard fixtures possible at all. |
+
+**What this census does NOT claim.** It is complete over the four inputs *as the predicate reads them
+today*. It says nothing about a future writer, and the honest guard against that is not this table but
+the after-the-write placement: a new caller of `deleteObject` or `deleteRelationship` inherits the
+check without being enumerated here, and only a brand-new writer of these tables (step 10's role
+authoring API is the known one) would escape it.
+
 ### 4.4 Notable non-blockers
 
 - The no-escalation subset rule is **bypassable via `member_of`** — the design never mentions group
   membership — and is **unsound for `effect='deny'` rows**.
+
+  > **CLOSED 2026-08-27, in step 5's own PR, on an owner ruling to fix it there.** A role binding held
+  > by a group resolves for every member (`authz/resolve.ts`'s `subject_expand`), so writing a
+  > `member_of` edge into a role-bearing group conferred that role with no `role_bindings` row for the
+  > joiner. Creating the edge takes `relationship:write` at both endpoints — a check designed for
+  > exactly this and load-bearing only against a NARROW holder — so **the escalation floor was
+  > Operator**, four rungs below Administrator. Pre-existing, but step 5 makes the precondition
+  > routine: it ships `group`/`team` as first-class binding subjects and 0099's purpose roles exist
+  > partly to be bound to teams.
+  >
+  > **The fix:** `authz/role-binding-door.ts` §2a applies the identical subset rule (composing the
+  > same `missingPermissionsFor` helper, so there is one definition of "a subset") at
+  > `graph/relationships-repo.ts`'s `createRelationship` — the CHOKE POINT, so IaC apply, discovery
+  > accept and every other edge writer inherit it — under the `federationImport` carve-out that
+  > function already takes for `assertMayWriteGovernanceLabels`. **Removal is untouched**: leaving a
+  > group is a narrowing. Pinned by `routes/rbac-role-binding-door.integration.test.ts` (the exploit
+  > chain, its admission pair, and the binding-free common case) and by
+  > `iac/iac-member-of-role-escalation.integration.test.ts`, which is the only case that goes red when
+  > the guard is moved from the repo function to the route.
+  >
+  > **THE FIX ABOVE CLOSED ONE ORDERING. The reversed one was measured the same day and needed a
+  > third door.** §2a guards the JOIN; nothing guarded the GRANT. Measured on a fresh org with one
+  > org-root Operator: the Operator joins an EMPTY team (201 — that is the common case and must stay
+  > one), an Owner then binds `Owner` to that team (201 — the canonical documented action, and the
+  > grant door never looked at who was in the group), and the Operator resolves as Owner.
+  >
+  > **What that ordering is, measured rather than asserted: a BLIND GRANT, not an escalation.** Step 2
+  > clears §1 and §2 in full — its actor must hold `role_binding:write` at the org root and every
+  > permission Owner carries there. **Every authority bar on the grant door is a question about the
+  > ACTOR, the ROLE and the SCOPE; none reads the subject's identity.** So "could the granter have
+  > granted this role to that principal directly?" has the same answer for every principal in the org,
+  > and a guard phrased that way admits every request it is ever asked — a refusal that can never fire,
+  > which reads as coverage and is worse than none. What is real is that the granter is empowering a
+  > membership list somebody else authored (here, the beneficiary) and the API shows them nothing.
+  >
+  > **`authz/role-binding-door.ts` §2b** is what shipped: when a grant's subject is a `group` or
+  > `team`, the door walks the membership DOWNWARD (`memberExpandCte` — the inverse of the walk §2a
+  > and `hasPermission` use, emitted by the same `memberOfClosureCte` definition so the two directions
+  > cannot disagree about a live edge, the bound, or cycle termination) and applies the two refusals
+  > that ARE subject-dependent: a member that is **soft-deleted** (a direct grant to one is a 404,
+  > through a group it was a 201 — the permission walk joins `relationships.deleted_at`, never
+  > `objects.deleted_at`) and a member whose type cannot hold a binding. Transitive both ways; an
+  > empty group stays a 201.
+  >
+  > **Still open, and stated rather than implied** — the full list is `role-binding-door.ts` §8:
+  > §2a applies the subset rule and NOT bar §1, so an actor holding everything a group's bindings
+  > carry may add a THIRD party without `role_binding:write` — a delegation the actor is not
+  > authorised for, never an elevation. Demanding `role_binding:write` on every `member_of` write
+  > would make ordinary team-membership management a role-administration privilege for any group
+  > holding a binding; wider than the escalation being closed, and it wants an owner ruling. **The
+  > blind grant itself** — **owner-ruled 2026-08-27 as D7 (§7.1) and BUILT in the same PR: informed,
+  > not refused.** `acknowledgedPrincipalIds` on `POST /role-bindings`, verified as a SET against the
+  > closure under §0's lock, 409 on any mismatch, `GET /role-bindings/grant-preview` to learn the
+  > value. **The `deny`
+  > unsoundness** above, unchanged — §2a reads `effect = 'allow'` rows only, because inheriting a deny
+  > NARROWS the joiner. **Soft-deleting a principal revokes nothing** — the tombstoned object keeps
+  > every `role_bindings` row naming it and `hasPermission` never joins `objects`, so it still
+  > resolves and the principal can re-login. That belongs to the DELETE door (it has its own audit and
+  > Decision records to write and its own undelete question), NOT to this one, which governs writes to
+  > `role_bindings`; what this door does is refuse to make it worse — §2b will not write a new binding
+  > that reaches a tombstoned principal and §7 will not count one as an administrator.
+  >
+  > **§7's 409 USED TO CONTRADICT THIS, and was corrected 2026-08-27.** It told the operator that a
+  > binding "on a group whose only members are soft-deleted, empowers nobody" — measurably false for
+  > exactly the reason above. The message now says what is true: those principals do still resolve and
+  > soft-delete revokes nothing today; they are excluded from the floor because the estate has
+  > recorded them as removed and this door refuses to write a new binding reaching one, so they are
+  > not an administrator an operator can be told to rely on.
+  >
+  > **The ROLE-NAME half — ONE SHAPE closed with §2b, and the general property left OPEN.**
+  > `hasRoleAtScope` resolves approval quorums by matching `rl.name` with no `org_id` predicate, so a
+  > zero-permission org row named `'Approver'` confers quorum eligibility while being vacuously a
+  > subset of everything. The grant door already refused binding such a row; §2a's permissions-only
+  > test did not refuse INHERITING one. Both now call the one `builtInNameCollisionReason` predicate.
+  >
+  > **CORRECTED 2026-08-27 — this bullet used to end "for built-in roles name and permissions travel
+  > together, so … no name check is added there", which reads as the whole story and is not.** Quorum
+  > eligibility is a property of the NAME for EVERY role, built-in included, and it is independent of
+  > the permission array. MEASURED: `Approver` is a strict permission-subset of `OrgAdmin`, so an
+  > OrgAdmin may grant it — and the grantee then resolves `hasRoleAtScope('Approver')` where the
+  > OrgAdmin who granted it does not. So a permissions-subset actor can seat a quorum voter for every
+  > policy naming a role it is not itself eligible for. Recorded as open in
+  > `authz/role-binding-door.ts` §2a and §8 and pinned as a MEASUREMENT (not a guard) in
+  > `routes/rbac-role-binding-door.integration.test.ts`, so the statement changes colour if anyone
+  > closes it. **Not closed here, and it wants an owner ruling:** the obvious bar — "the actor must
+  > itself hold role NAME R at that scope" — refuses OrgAdmin granting ServiceAdmin and
+  > ComponentAdmin, which is the delegation §3 is built around, and every narrower rule picks which
+  > delegations survive.
+  >
+  > **§2b's 422 was also reordered** to run AFTER both authority bars (2026-08-27). It was placed with
+  > the shape refusals "because it IS one"; its body names the ids, names and types of the principals
+  > inside a group, so ahead of bar §1 it answered "who is in this group?" for a caller with no
+  > standing at all. §7's 409 was already after the bars for the same reason; the rule is now "a
+  > refusal whose body is derived from rows the request does not name goes after the authority bars",
+  > and both follow it.
+
+- **The subset rule is a WRITE-time test and a granted role can outgrow its granter.** Confirmed by
+  measurement, not projected: OrgAdmin grants ComponentAdmin (a proper subset — admitted), a later
+  migration `array_append`s `governance:move` to ComponentAdmin, and the untouched binding now confers
+  a permission the granter may not hold at that scope. Five migrations (0010, 0012, 0083, 0088, 0094)
+  have appended to a built-in, so this is how the schema normally evolves. **Not fixable in the door**
+  — re-testing at resolve time would put ~20 `hasPermission` probes on every authorization in the
+  system and would make a subject's authority depend on the current authority of a granter who may
+  since have been revoked. **Recorded in `authz/role-binding-door.ts` §6, and it belongs to step 4:**
+  the permission-drift gate is the only place that observes a role's array CHANGE, which is the event.
+  The assertion worth adding there is that a migration widening built-in role R must state which
+  existing bindings of R it widens — computable, because every grant's Decision persists
+  `grantedPermissions` as the array stood at the grant.
+
+- **No last-administrator floor on revoke.** Measured on a fresh org with only its bootstrap admin:
+  `DELETE /role-bindings/<own Owner binding>` returned 200 and left ZERO bindings, after which every
+  endpoint 403s (`GET /roles` and `GET /role-bindings` included) with no recovery through the API,
+  because restoring a binding needs the `role_binding:write` nobody now holds. Both authority bars
+  pass legitimately, so it is an availability defect rather than an authz one. **Closed in step 5**:
+  `assertNotLastAdministrativeBinding` refuses with 409 when the row is the last `effect='allow'`
+  org-root binding of a role carrying `role_binding:write`, inside the same `withTenantTx` as the
+  delete.
+
+  > **CORRECTED 2026-08-27 (second time) — "inside the same `withTenantTx` … so the count and the
+  > delete cannot race" was FALSE, and the same sentence appeared in two code comments.** One
+  > transaction is necessary and is not sufficient: PostgreSQL's default READ COMMITTED gives every
+  > STATEMENT a fresh snapshot, so two concurrent revokes each read a survivor and both commit.
+  > MEASURED — fresh org, two actors, `Promise.all` of two `DELETE /role-bindings` for the last two
+  > org-root administrative bindings: `[200, 200]` with zero administrative bindings left and
+  > `GET /roles` 403 (attempt 1), `[200, 409]` (attempt 2), `[409, 200]` (attempt 3). **Strictly
+  > easier to reach than the two-request empty-group bypass the reachable-principal rewrite closed**,
+  > because it needs no group and no second grant.
+  >
+  > **The same unserialized shape defeated §2a/§2b**, and differently: a `member_of` write and a
+  > `POST /role-bindings` touch different tables and each reads rows the other has not written yet,
+  > so no `SELECT ... FOR UPDATE` can serialize them — a row lock cannot lock a row that does not
+  > exist, and there is no predicate locking outside SERIALIZABLE.
+  >
+  > **Closed with one instrument: `lockOrgRoleAuthority`**, a transaction-scoped advisory lock on
+  > `hashtext(org_id)` — deliberately the SAME key `audit/audit-repo.ts` already takes per org, since
+  > a second per-org key would be acquired authority-then-audit by these doors and audit-then-
+  > authority by any transaction that audits before writing a `member_of` edge (an IaC apply), which
+  > is a deadlock. Taken at three entry points: both role-binding handlers, as the first statement of
+  > their transaction (a read taken before the lock is a read the lock does not protect), and inside
+  > `assertMayJoinRoleBearingSubject` itself, because `createRelationship` has thirteen callers.
+  > Pinned by two `Promise.all` cases in `routes/rbac-role-binding-door.integration.test.ts`, each
+  > mutation-proven from BOTH sides; the sequential cases that already pinned §7 and §2a/§2b all
+  > stayed green against the racy code, which is why a sequential test cannot be the pin. Full
+  > reasoning, cost, and what it does not cover: `authz/role-binding-door.ts` §0.
+
+  > **CORRECTED 2026-08-27 — the first version counted ROWS and was bypassable in two requests.**
+  > A binding on an EMPTY group is a row that resolves for nobody, so: bind a `role_binding:write`
+  > role to a team nobody is in, then revoke the real Owner. The floor saw two rows, permitted the
+  > delete, and left the org unadministrable — recoverable only by hand-written SQL, verbatim the
+  > failure mode the guard exists to eliminate. It now counts **reachable principals**: a surviving
+  > binding counts only when some live principal actually resolves through it, walked with the shared
+  > `memberExpandCte` (one walk per surviving subject, short-circuiting on the first live hit, still
+  > inside the delete's transaction). A tombstoned member does not count, for the same reason §2b
+  > refuses to write a binding that reaches one. (The *reachable-principal* test as first written
+  > asked for a live `user` or `service-account`; the correction four paragraphs down replaces that
+  > type test with the credential.)
+
+  > **CORRECTED 2026-08-27 (third time) — THE FLOOR GUARDED ONE OF FOUR DOORS, AND THE OTHER THREE
+  > NEEDED NO CONCURRENCY.** `assertNotLastAdministrativeBinding` was a REVOKE-TIME rule owned by
+  > `routes/role-bindings.ts` and phrased as "what would be left if I removed THIS binding". Measured,
+  > four plain sequential requests each:
+  >
+  > | Door | What it does | Before |
+  > |---|---|---|
+  > | `DELETE /role-bindings/{id}` | revoke the binding | **guarded** |
+  > | `DELETE /relationships/{id}` | remove the `member_of` edge under a group's administrative binding — **the binding row survives**, so the revoke-time rule never runs and counts a row that resolves for nobody | **200, org bricked** |
+  > | `DELETE /objects/team/{id}` | tombstone the group holding it; the edge cascade is the row above, in bulk, from a door that never mentions RBAC | **200, org bricked** |
+  > | `DELETE /objects/user/{id}` | tombstone the principal holding it DIRECTLY — removes no edge at all, so even a cascade-aware guard misses it | **200, org bricked** |
+  >
+  > **The fix makes the floor an INVARIANT OF THE ORG, enforced wherever it can be falsified, from
+  > ONE predicate.** `assertOrgRetainsAdministrativeFloor` — "does at least one LIVE principal THAT
+  > CAN AUTHENTICATE resolve an org-root `allow` binding of a role carrying `role_binding:write`" —
+  > is evaluated **AFTER** the write, inside the write's transaction, at the CHOKE POINTS
+  > (`graph/objects-repo.ts`'s `deleteObject`, `graph/relationships-repo.ts`'s `deleteRelationship`,
+  > and the revoke handler), taking the same `lockOrgRoleAuthority` key. The after-the-write ordering
+  > is the design: a before-check must MODEL the write, and every door then needs its own model — which
+  > is exactly what produced three disagreeing rules. An after-check asks the database what is true and
+  > is blind to which verb ran, so a CASCADE, a bulk path or a door nobody has written yet is covered by
+  > construction rather than by a census staying complete. Pinned by
+  > `routes/rbac-administrative-floor.integration.test.ts` (eleven mutations) and, for the
+  > choke-point placement, by `iac/iac-administrative-floor.integration.test.ts`: moving the guard up
+  > into `routes/relationships.ts` leaves the route suite 8/8 green while `POST /plans/{id}/apply`
+  > goes on pruning the membership. Federation import stays exempt by the same mechanism §2a uses.
+  > Accepted consequence, stated in `role-binding-door.ts` §7: an org ALREADY below the floor is
+  > refused a floor-relevant write; it is not wedged, because a soft-deleted principal still resolves
+  > and can still grant.
+
+  > **CORRECTED 2026-08-27 (fourth time) — THE PREDICATE COUNTED GRAPH OBJECTS, NOT PRINCIPALS THAT
+  > CAN AUTHENTICATE.** Measured with three plain sequential requests, all 2xx, no concurrency and no
+  > privilege beyond the bootstrap admin's:
+  >
+  > | # | Request | Result |
+  > |---|---|---|
+  > | 1 | `POST /api/v1/objects/user {"name":"phantom"}` | **201** — a `user` GRAPH object with **no row in `users`**, so no credential exists and none can be created |
+  > | 2 | `POST /api/v1/role-bindings {phantom, Owner, org root}` | **201** — correctly; D7 exempts a `user` subject from the acknowledgement by design |
+  > | 3 | `DELETE /api/v1/role-bindings/{the bootstrap admin's own}` | **200** — the floor ran, found the phantom, and PASSED |
+  > | 4 | `GET /api/v1/roles` | **403. ORG BRICKED**, hand-written SQL the only recovery |
+  >
+  > **This predicate had then been bypassable three times in the same direction** — binding ROWS (an
+  > empty group satisfied it), live OBJECTS OF A PRINCIPAL TYPE (the phantom above) — so the fix
+  > states the PROPERTY rather than another test of it: *at least one live principal **that can
+  > authenticate** resolves an org-root `allow` binding of a role carrying `role_binding:write`*.
+  >
+  > **THE ANCHOR IS `users.object_id`,** joined per reached principal inside the same
+  > `memberExpandCte` walk (so the credential fact and the liveness fact cannot disagree about a
+  > concurrent write). A filterless census of every way an `AuthContext` is produced:
+  > `auth/require-auth.ts` is the one seam, its two branches (`auth/pat.ts`, `auth/local-auth.ts`)
+  > both end at `resolveAuthContext`, which reads a `users` row and returns
+  > `subjectObjectId = users.object_id`; the four credential kinds — password, OIDC, PAT, device flow
+  > — all funnel through it. No `users` row for an object ⇒ that object can never be the actor of any
+  > request at any door.
+  >
+  > **THE TYPE TEST IS GONE, and dropping it is what keeps a SERVICE ACCOUNT counting.**
+  > `resolveAuthContext` reads no `type_id`, so a `users` row naming a `service-account` object
+  > authenticates and resolves RBAC exactly like one naming a `user`. Measured: **a service account
+  > has no credential shape of its own** — `POST /api/v1/service-accounts` is a plain typed registry
+  > that creates the graph object and nothing else, there is no service-account token table, and
+  > `personal_access_tokens` is keyed on `users.id`. A `user`/`service-account` type test is therefore
+  > wrong in BOTH directions: it counts a phantom of the right type, and it refuses a real
+  > administrator of any other. Both directions are pinned by separate cases in
+  > `routes/rbac-administrative-floor.integration.test.ts` and mutation-proven against each other's
+  > bug (mutations 12 and 13).
+  >
+  > **KNOWN LIMIT, deliberately not closed:** `credentialed` means "a `users` row names this object",
+  > not "a usable secret exists for it". A row with no password, no `oidc_subject` and no live PAT
+  > counts. Every tighter anchor is time-varying — an expiring PAT would drop an org below the floor
+  > with no write involved, and the floor is only ever evaluated ON a write — so the secret half
+  > belongs to a credential-lifecycle door. `authz/role-binding-door.ts` §8 records it.
 - **`OrgAdmin` is a strict subset of Administrator** after the proposed Migration B, so four of the
   five points in its rationale are false as written. It still earns its place via what it *withholds*,
   but the justification needs rewriting.
@@ -459,7 +777,7 @@ affected suites. Steps 1–10 below are the role work proper and are **not** sta
 | 2 | **Mutation-proven RBAC-across-assembly test** — a SERVICE binding reaches a component under an assembly. Prove it by deleting route 2's `contains` join and watching it fail. | Passes today; pure addition |
 | 2.5 | **Re-scope the read surface** (§4.2) | **New — blocker fix** |
 | 3 | **Permission splits + role seed** — `change:accept` / `secret:write` / `scan:override`; rewire six call sites; re-scope accept/cancel/rollback; `GET /decisions` → `audit:read`; close the campaign-deadline inversion; delete `org:admin`; seed the five roles. | **Breaking:** 403s live Operator accept/rollback. Announce. |
-| 4 | **Permission drift test in CI** — exported `PERMISSIONS` array vs seeded role arrays vs a filterless call-site census, failing in **both** directions. | No such array exists today |
+| 4 | **Permission drift test in CI** — exported `PERMISSIONS` array vs seeded role arrays vs a filterless call-site census, failing in **both** directions. **Plus the post-grant widening assertion (§4.4):** a migration that `array_append`s to a built-in must state which existing bindings of that role it widens. | No such array exists today |
 | 5 | **Role + role-binding API** — `GET /roles`, `GET/POST/DELETE /role-bindings`, gated on `role_binding:write` at-or-above the binding's scope, **plus** the no-escalation subset rule, **plus** `bindable_at` validation, **plus** an audit event per grant/revoke. | Voids the three in-tree safety arguments (§1.2) |
 | 6 | **Effective-permissions read surface** — roles+permissions on `GET /auth/me`, plus `GET /authz/effective?scopeObjectId=`. Plus `fromRole` authoring-time validation. | With five purpose roles the UI is unusable without it |
 | 7 | **SSE per-event `object:read` at fan-out** (§1.3a) | Must land before any scoped binding exists in the field |
@@ -569,6 +887,99 @@ than guessing, which was the right instinct — adding a permission later is an 
 removing one from a shared singleton row narrows every org on every deployment at once and has no safe
 shape (§2). When two clauses of this document disagree, fail-closed and escalate; do not let a seed
 literal silently pick a side.
+
+**D7 — THE BLIND GRANT IS MADE INFORMED, NOT REFUSED (owner ruling 2026-08-27).** Binding a role to a
+group empowers whoever is in it, including a principal who self-joined while it was empty. That is
+**not** an escalation — the granter already holds the role — and a previous round measured that no
+membership-shape-blind rule separates it from the legitimate "bind SecurityOfficer to the security
+team", while edge-authorship would refuse the legitimate case. **The owner ruled: make the grant
+informed.**
+
+`POST /api/v1/role-bindings` takes **`acknowledgedPrincipalIds`** — the granter's statement of whom
+the binding will empower. What was decided, and why:
+
+- **AN ID LIST, not a count and not a digest.** A count is producible without ever reading the
+  membership (the exact blindness being fixed) and is unchanged by a substitution. A digest needs the
+  same input an id list needs and destroys the server's ability to name the DIFFERENCE. An id list is
+  the only shape in which the caller has demonstrably handled every principal, and it lets the
+  mismatch be reported in both directions.
+- **THE VALUE IS THE FULL `member_of` CLOSURE at `depth > 0`** — nested groups included, since a
+  nested group is itself empowered — computed by the same `memberExpandCte` walk §2b uses, so the
+  field can never mean something different from what the binding does.
+- **409 ON MISMATCH, NAMING BOTH DIRECTIONS:** reached-but-not-acknowledged (a member joined between
+  the caller's read and its write — the case the field exists for) and acknowledged-but-not-reached.
+  409 rather than 422 because the body is well formed and re-reading fixes it. The ONE 422 is the
+  absent field, which no retry of the same body fixes.
+- **OPTIONAL IN THE CONTRACT, REQUIRED AT THE DOOR.** The requirement is conditional on the subject
+  being a `group`/`team`, which a schema-level `required` cannot express — it would force `[]` on
+  every grant to a user, the common case the ruling says not to burden. It is additive either way
+  here (the operation is new in this PR, so oasdiff sees a path addition), but optional-with-refusal
+  is the shape that stays true if the operation is ever cut and re-landed.
+- **THE EMPTY GROUP: `[]` IS EXPRESSIBLE AND MEANS "I looked and it is empty".** `undefined` means "I
+  did not look" and is refused. `[]` is admitted because acknowledging zero is TRUE at the moment of
+  the grant, and because seating the team afterwards runs §2a's subset rule at the choke point — an
+  empty group can only be filled by a principal who already holds everything it carries.
+- **`GET /api/v1/role-bindings/grant-preview?subjectId=…`** returns the value ready to paste, plus
+  per-principal detail (`deleted`, `bindable`, `depth`) for a UI. Without it the field is unusable
+  from a CLI: the closure is transitive, so `GET /relationships` cannot answer it and a client would
+  have to re-implement the walk. Gated on `audit:read` from the same `checkAtOrgRootOrScopes`
+  disjunction `GET /role-bindings` uses — group membership is the same class of accountability data.
+
+  **THE AFFORDANCE LEAKED TWICE, AND BOTH FIXES ARE PART OF D7 RATHER THAN FOOTNOTES TO IT.** The
+  bar is *the preview must not tell a caller anything they could not already read.*
+  1. **THE GATE.** It shipped taking a caller-chosen `scopeObjectId` and authorizing at it, so any
+     holder of a scoped `audit:read` anywhere could name their own service and read any group's
+     transitive membership. The parameter is GONE and the check is anchored to the SUBJECT.
+  2. **THE PROJECTION, which anchoring could never have fixed — the principals disclosed are not the
+     subject.** A member is a separate graph object on its own containment chain and the scope walk
+     expands upward, so `audit:read` at a TEAM says nothing about that team's members. MEASURED: a
+     team-scoped Viewer got a **200** carrying a member's id, type and name while the same token's
+     `GET /objects/user/{id}` answered **403**. `principals` and `acknowledgedPrincipalIds` now
+     contain only principals the caller holds `object:read` at (composed from
+     `authz/readable-scope.ts`, not re-derived), and the rest is a bare `withheldPrincipalCount`.
+
+  **D7 STILL WORKS, AND WHO IT WORKS FOR IS MEASURED.** Every built-in role carrying `audit:read`
+  also carries `object:read` (asserted against the live catalogue), so a caller admitted by the
+  ORG-ROOT arm — the granter who binds an administrative role at the org root — reads every rooted
+  object and gets `acknowledgementComplete: true`. The residual population is a caller admitted only
+  by the SCOPED arm whose `object:read` does not reach the members; they get
+  `acknowledgementComplete: false`, and they are **not** handed a field that 409s forever, because
+  `POST /role-bindings`'s own 409 names every id missing from the acknowledgement — behind
+  `role_binding:write` plus the full subset rule, a strictly stronger bar than this operation's
+  `audit:read`. Pinned end to end (403 on the member, filtered preview, 409 naming the member, 201
+  on the retry) in `routes/rbac-administrative-floor.integration.test.ts`.
+- **THE ACKNOWLEDGED SET IS PERSISTED** on the grant's Decision alongside `grantedPermissions`, so the
+  estate can afterwards say not just what authority was handed over but to whom the granter believed
+  they were handing it.
+
+**What it is not:** it refuses nothing an informed granter may do, and it is a point-in-time witness —
+somebody joining the group tomorrow is empowered by this binding and no acknowledgement is asked for,
+because the JOIN door (§2a) judges that, by the subset rule rather than by consent. Recorded in
+`role-binding-door.ts` §8 rather than implied.
+
+**Operations touched (for the oasdiff gate — `pnpm gen` NOT run in this round).** MEASURED by
+building the document from the live `routeRegistry` — the same `buildOpenApiDocument` path `pnpm gen`
+writes `tools/openapi/openapi.v1.json` from — and diffing it against the committed file, rather than
+listed from the source diff. **The source diff would have said "four routes", and the answer is 18
+operations**, because `routes/typed-registries.ts`'s DELETE is one template behind ten resources:
+
+- **5 NEW operations**, absent from the committed document entirely, so additive by construction:
+  `listRoles` (`GET /roles`), `listRoleBindings` (`GET /role-bindings`), `previewRoleBindingGrant`
+  (`GET /role-bindings/grant-preview`), `createRoleBinding` (`POST /role-bindings`),
+  `deleteRoleBinding` (`DELETE /role-bindings/{id}`).
+- **13 EXISTING operations, each gaining exactly `409` and nothing else** — no response code removed,
+  **no request body changed and no parameter changed on any of them** (diffed field by field):
+  `deleteObject`, `deleteRelationship`, `deleteComponent`, and the ten typed-registry deletes
+  `deleteDomain`, `deleteService`, `deleteAssembly`, `deleteDeploymentTarget`, `deleteTeam`,
+  `deleteGroup`, `deleteUser`, `deleteServiceAccount`, `deletePolicy`, `deleteControl`. An added
+  response code is additive on this repo's gate. Declared because they can now return the
+  administrator floor's 409, and pinned by `routes/rbac-administrative-floor.integration.test.ts`'s
+  contract case.
+- **`acknowledgedPrincipalIds` IS OPTIONAL IN THE EMITTED SCHEMA — confirmed from the document, not
+  from the Zod source.** `POST /role-bindings`'s request `required` array is
+  `["subjectId","roleId","scopeObjectId","reason"]`; the field is absent from it. No existing client
+  breaks even if the operation is later cut and re-landed.
+- No existing response field changed, and nothing was made optional.
 
 ### 7.3 Still open
 1. **Instance-tier credential redesign in this programme, or does `SCP_OPERATOR_TOKEN` stand?**

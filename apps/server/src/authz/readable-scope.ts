@@ -95,7 +95,12 @@ import type { Permission } from "./resolve.js";
  * holder who ALSO carries a deny lower down. `authz/org-root-arm.ts`'s org-root arm is evaluated
  * first and never consults such a deny (that is deliberate: "a deny bound below the org root, which
  * the org-root pin never consulted and which this increment therefore must not start honouring"),
- * so get-by-id admits those objects — and `null` means the list shows them. The two doors agree.
+ * so the LIST doors show those objects via `null`. **get-by-id does NOT admit them** — an earlier
+ * version of this paragraph claimed it did, and that was measured false (org-root allow + a deny at
+ * the object: `GET /objects/user/{id}` -> 403, while the list returns the row). Do not "repair" the
+ * LIST door to match get-by-id on the strength of a comment: `role-binding-door.ts` §2d's projection
+ * bar is stated against the LIST behaviour, and that repair would silently make the grant preview the
+ * only door showing the row. No test pins this parity today — it is named in §8's open list.
  * `hasPermission()` called in ISOLATION at that object returns false, so the drift test below
  * deliberately measures scoped subjects, and pins the org-root-with-deny case as its own named
  * short-circuit assertion rather than folding it into the sample.

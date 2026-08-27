@@ -923,8 +923,60 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
   //
   // The three-way split is why the PATCH route authorizes on `direction` rather than on the verb.
   //
-  // NOT ESCALATABLE FROM BELOW, unchanged by this ruling: `role_binding:write` has no write API, so
-  // an Administrator cannot mint themselves the Owner role and clear the new bar.
+  // NOT ESCALATABLE FROM BELOW — but the REASON changed on 2026-08-27, and the old one has expired.
+  //
+  // This comment used to read "`role_binding:write` has no write API, so an Administrator cannot
+  // mint themselves the Owner role and clear the new bar." That was true, and it was load-bearing
+  // safety resting on an UNBUILT FEATURE — the kind of argument that expires silently the day
+  // somebody ships the obvious missing CRUD. `routes/role-bindings.ts` (role-model.md §5 step 5)
+  // ships it: there is now a `POST /api/v1/role-bindings`, and `role_binding:write` is seeded onto
+  // Administrator, Owner and OrgAdmin.
+  //
+  // THE PROPERTY SURVIVES, ON A DIFFERENT FOOTING. That door applies the NO-ESCALATION SUBSET RULE
+  // (`authz/role-binding-door.ts` §2): a binding may be written only if every permission the granted
+  // role carries is one the acting subject already holds AT THAT SCOPE, computed by running
+  // `hasPermission` per member of the target role's array. `Owner` holds `freeze:override`,
+  // `change:emergency` and `campaign:deadline-override`; Administrator deliberately holds none of
+  // the three (drizzle/0010's comment says so in as many words, and this bar rests on it). So an
+  // Administrator granting themselves Owner fails the subset rule on exactly the permission this
+  // route demands, and the refusal names it.
+  //
+  // AND THE SUBSET RULE HAS TO BOUND *BOTH* DOORS, because there were two. The paragraph above was
+  // correct about `POST /role-bindings` and incomplete about everything else: a role binding held by
+  // a GROUP resolves for every member (`authz/resolve.ts`'s `subject_expand` walks `member_of`), so
+  // until 2026-08-27 an Administrator could bind Owner to a group and then join it — and so could an
+  // ORG-ROOT OPERATOR, four rungs lower, since creating that edge needed only the `relationship:write`
+  // every org-root principal holds at every object. `authz/role-binding-door.ts` §2a closes it by
+  // applying the SAME subset rule at `graph/relationships-repo.ts`'s `createRelationship`, so the
+  // rule now bounds the membership door as well as the binding door, on every caller of that
+  // function — IaC apply included.
+  //
+  // WHAT IS CHECKED, STATED WITHOUT A CLOSURE CLAIM. The previous version of this paragraph ended
+  // "the only thing that would break it now is somebody granting Administrator `freeze:override`" —
+  // and the reversed ordering of the same two requests disproved it within the day, which is the
+  // second time a comment here has closed on an exhaustiveness claim its author could not verify.
+  // So: three doors apply the subset rule — `POST /role-bindings` (§2), a `member_of` create (§2a),
+  // and a grant whose subject is a group/team (§2b, added for that reversed ordering). Pinned by
+  // `routes/rbac-role-binding-door.integration.test.ts` and, for the choke-point placement,
+  // `iac/iac-member-of-role-escalation.integration.test.ts`.
+  //
+  // PATHS KNOWN TO BE OPEN, named here rather than implied, with the full list and the reasoning in
+  // `authz/role-binding-door.ts` §8:
+  //
+  //   * §2a applies the subset rule and NOT bar §1, so an actor who already holds everything a
+  //     group's bindings carry may add a THIRD party to that group without `role_binding:write`.
+  //     That is an unauthorised DELEGATION of authority the actor already has; it cannot elevate the
+  //     actor, and it cannot give anyone `freeze:override` the delegator does not already hold.
+  //   * A grant to a group is BLIND — §2b refuses on the membership's shape and cannot refuse on the
+  //     members' standing, because no authority bar on that door reads the subject's identity. An
+  //     Owner binding Owner to a team empowers whoever is in it, including a principal who put
+  //     themselves there. That is the Owner's own grant reaching further than the Owner looked; it
+  //     is not reachable by a principal who does not already hold `freeze:override`, so it does not
+  //     clear THIS bar, but it is not closed either.
+  //   * `member_of` edges arriving on the FEDERATION IMPORT path are exempt from §2a by design.
+  //
+  // Granting Administrator `freeze:override` would also break the property, and remains the loudest
+  // way to do it — a migration rather than an absence.
   //
   // An `authorize` failure throws a raw 403 rather than returning a `blocked` verdict, and that
   // differs from `checkFreeze` deliberately: `checkFreeze` runs inside a change's gate evaluation,

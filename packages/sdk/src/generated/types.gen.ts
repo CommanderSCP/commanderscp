@@ -375,6 +375,378 @@ export type PollDeviceAuthTokenResponses = {
 
 export type PollDeviceAuthTokenResponse = PollDeviceAuthTokenResponses[keyof PollDeviceAuthTokenResponses];
 
+export type ListRolesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/roles';
+};
+
+export type ListRolesErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListRolesError = ListRolesErrors[keyof ListRolesErrors];
+
+export type ListRolesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            orgId: string | null;
+            name: string;
+            permissions: Array<string>;
+            bindableAt: Array<string> | null;
+            deprecated: boolean;
+            deprecationReason: string | null;
+        }>;
+    };
+};
+
+export type ListRolesResponse = ListRolesResponses[keyof ListRolesResponses];
+
+export type ListRoleBindingsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        subjectId?: string;
+        scopeObjectId?: string;
+    };
+    url: '/role-bindings';
+};
+
+export type ListRoleBindingsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListRoleBindingsError = ListRoleBindingsErrors[keyof ListRoleBindingsErrors];
+
+export type ListRoleBindingsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            subjectId: string;
+            roleId: string;
+            roleName: string;
+            scopeObjectId: string;
+            effect: 'allow' | 'deny';
+            createdAt: string;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListRoleBindingsResponse = ListRoleBindingsResponses[keyof ListRoleBindingsResponses];
+
+export type CreateRoleBindingData = {
+    body: {
+        subjectId: string;
+        roleId: string;
+        scopeObjectId: string;
+        reason: string;
+        acknowledgedPrincipalIds?: Array<string>;
+    };
+    path?: never;
+    query?: never;
+    url: '/role-bindings';
+};
+
+export type CreateRoleBindingErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    422: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateRoleBindingError = CreateRoleBindingErrors[keyof CreateRoleBindingErrors];
+
+export type CreateRoleBindingResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        subjectId: string;
+        roleId: string;
+        roleName: string;
+        scopeObjectId: string;
+        effect: 'allow' | 'deny';
+        createdAt: string;
+    };
+};
+
+export type CreateRoleBindingResponse = CreateRoleBindingResponses[keyof CreateRoleBindingResponses];
+
+export type PreviewRoleBindingGrantData = {
+    body?: never;
+    path?: never;
+    query: {
+        subjectId: string;
+    };
+    url: '/role-bindings/grant-preview';
+};
+
+export type PreviewRoleBindingGrantErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PreviewRoleBindingGrantError = PreviewRoleBindingGrantErrors[keyof PreviewRoleBindingGrantErrors];
+
+export type PreviewRoleBindingGrantResponses = {
+    /**
+     * Success
+     */
+    200: {
+        subjectId: string;
+        subjectTypeId: string;
+        acknowledgementRequired: boolean;
+        acknowledgementComplete: boolean;
+        withheldPrincipalCount: number;
+        acknowledgedPrincipalIds: Array<string>;
+        principals: Array<{
+            id: string;
+            typeId: string;
+            name: string | null;
+            depth: number;
+            deleted: boolean;
+            bindable: boolean;
+        }>;
+    };
+};
+
+export type PreviewRoleBindingGrantResponse = PreviewRoleBindingGrantResponses[keyof PreviewRoleBindingGrantResponses];
+
+export type DeleteRoleBindingData = {
+    body: {
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/role-bindings/{id}';
+};
+
+export type DeleteRoleBindingErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteRoleBindingError = DeleteRoleBindingErrors[keyof DeleteRoleBindingErrors];
+
+export type DeleteRoleBindingResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        subjectId: string;
+        roleId: string;
+        roleName: string;
+        scopeObjectId: string;
+        effect: 'allow' | 'deny';
+        createdAt: string;
+    };
+};
+
+export type DeleteRoleBindingResponse = DeleteRoleBindingResponses[keyof DeleteRoleBindingResponses];
+
 export type ListServiceObjectsData = {
     body?: never;
     path?: never;
@@ -1327,6 +1699,17 @@ export type DeleteObjectErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type DeleteObjectError = DeleteObjectErrors[keyof DeleteObjectErrors];
@@ -1875,6 +2258,17 @@ export type DeleteRelationshipErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type DeleteRelationshipError = DeleteRelationshipErrors[keyof DeleteRelationshipErrors];
@@ -2182,6 +2576,17 @@ export type DeleteDomainErrors = {
      * Error
      */
     404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
         type: string;
         title: string;
         status: number;
@@ -2744,6 +3149,17 @@ export type DeleteServiceErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type DeleteServiceError = DeleteServiceErrors[keyof DeleteServiceErrors];
@@ -3292,6 +3708,17 @@ export type DeleteAssemblyErrors = {
      * Error
      */
     404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
         type: string;
         title: string;
         status: number;
@@ -3854,6 +4281,17 @@ export type DeleteDeploymentTargetErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type DeleteDeploymentTargetError = DeleteDeploymentTargetErrors[keyof DeleteDeploymentTargetErrors];
@@ -4402,6 +4840,17 @@ export type DeleteTeamErrors = {
      * Error
      */
     404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
         type: string;
         title: string;
         status: number;
@@ -4964,6 +5413,17 @@ export type DeleteGroupErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type DeleteGroupError = DeleteGroupErrors[keyof DeleteGroupErrors];
@@ -5519,6 +5979,17 @@ export type DeleteUserErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type DeleteUserError = DeleteUserErrors[keyof DeleteUserErrors];
@@ -6067,6 +6538,17 @@ export type DeleteServiceAccountErrors = {
      * Error
      */
     404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
         type: string;
         title: string;
         status: number;
@@ -7137,6 +7619,17 @@ export type DeleteComponentErrors = {
      * Error
      */
     404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
         type: string;
         title: string;
         status: number;
@@ -13893,6 +14386,17 @@ export type DeletePolicyErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type DeletePolicyError = DeletePolicyErrors[keyof DeletePolicyErrors];
@@ -14441,6 +14945,17 @@ export type DeleteControlErrors = {
      * Error
      */
     404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
         type: string;
         title: string;
         status: number;
