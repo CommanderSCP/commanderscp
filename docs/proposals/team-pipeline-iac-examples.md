@@ -457,6 +457,41 @@ new InfrastructurePipeline(api, {
 
 Reading it for completeness: every stage a wave names is declared in block 1; every cluster a `placeAt` refines to is the declared **product of the infrastructure pipeline that manages it** (block 3), sitting `within` a block-1 stage; every executor the pipelines run against resolves through a block-4 policy — the team never names one; the registry the image publishes to is block 1, referenced rather than retyped; the service and its ownership are block 2; and the single reference to something not on this screen — `ledger-core`, another team's component — is exactly the case D14 makes safe. The `targets.*` / `stages.*` handles used in §5/§7 are nothing more than generated names for what blocks 1 and 3 declare.
 
+
+## 9. The static fleet — infra + Ansible as coupled pipelines (D25)
+
+Not a multi-source pipeline: two pipelines, one repo, one product seam. Inventory does not exist as a file anywhere.
+
+```ts
+// payments/payments-fleet/scp/stack.ts
+const fleet = new Component("payments-fleet", { service: Service.fromName("payments") });
+
+const infra = new InfrastructurePipeline(fleet, {
+  repo: repos("payments/payments-fleet"),
+  path: "terraform/**", //  EC2 instances + their ASG
+  waves: waves.standard,
+});
+const ig = new InstanceGroup(infra, "pay-prod-ig", {
+  within: DeploymentTarget.fromName("commercial-amer-production"),
+});
+
+const config = new ConfigurationPipeline(fleet, {
+  repo: repos("payments/payments-fleet"),
+  path: "ansible/**", //    roles + group_vars — the WHAT; never inventory
+  waves: waves.standard,
+});
+config.placeAt(ig); // configuration → instance group (D24 row). Inventory DERIVES from the
+//                     product's observed membership. Convergence is ON by default (D25):
+//                     ASG churn re-applies the released state to the changed instances,
+//                     batched by the rollout below, held loudly by freezes.
+new RollingRollout(config, {
+  on: TargetClass.instanceGroup,
+  batchPercent: 25,
+  pauseBetween: Duration.minutes(5),
+});
+```
+
+A terraform change releases through `infra`'s waves; the apply mutates the product; membership observation triggers convergence on `config` for the affected target only — already-released, already-gated state, no wave re-entry, one Decision per run. Launch-time configuration belongs to a vm-image pipeline (baked AMIs); convergence is day-2 and static fleets. Ansible execution is whatever the domain's binding policy names — BYO today, `scp-runner-ops` when its charter preconditions close.
 ---
 
 A component team merged one PR in its own repo. The commander applied it once. Every domain the service is placed in — including the one behind the CDS — runs the pipeline against its own executor, and no repo, credential, or binding crossed any boundary to make that true.
