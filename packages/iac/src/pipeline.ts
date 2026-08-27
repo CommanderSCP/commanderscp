@@ -110,6 +110,24 @@ export interface PipelineWavesProps {
    *  inferred placement as an explicit entry, and an explicit `component.placeAt(...)` declaration
    *  for the same pair is never duplicated. */
   readonly waves: readonly WaveItem[];
+  /**
+   * AN ADOPTION AFFORDANCE, not a greenfield-authoring prop: overrides this pipeline's
+   * auto-created `release-topology` object's URN with an EXISTING one (team-pipeline-iac.md §9/D5).
+   *
+   * Without this, the topology object is ALWAYS a fresh, synth-derived URN
+   * (`deriveConstructUrn(stack, "release-topology", "${id}-topology")`) — correct for a program
+   * authoring a topology for the first time, but WRONG for `scp iac export`: applying an exported
+   * program against an estate whose component already has a live `release-topology` would create a
+   * SECOND topology object beside the original, repoint `releases_via` at the new one, and leave
+   * the real object unmanaged — a plan that *looks* like a clean set of creates while silently
+   * duplicating the very thing export exists to bring under management (D5: "a manifest entry
+   * matching an existing object by URN that is unmanaged becomes an `adopt` plan action").
+   *
+   * A hand-authored program has no existing topology to name, so this stays `undefined` in every
+   * ordinary case — `scp iac export` is the one caller that sets it, using the live topology's own
+   * URN so `scp apply` adopts it instead of creating a duplicate.
+   * @default undefined — a fresh, synth-derived URN (ordinary authoring). */
+  readonly adoptTopologyUrn?: string;
 }
 
 /** Build-kind-only publish-destination props (D18's second clause: "the publish destination... is
@@ -281,7 +299,12 @@ export abstract class PipelineBase<K extends ExecutorType> extends Construct {
     const normalizedWaves = normalizeWaveItems(resolved.props.waves);
     this.topology = new ReleaseTopology(this.stack, `${this.id}-topology`, {
       name: `${lastUrnSegment(resolved.attachedTo)}-${kind}-pipeline`,
-      waves: normalizedWaves
+      waves: normalizedWaves,
+      // `adoptTopologyUrn` (this file's own doc) — set only by an adopting caller (`scp iac
+      // export`), so `scp apply` matches the LIVE topology object instead of creating a duplicate.
+      ...(resolved.props.adoptTopologyUrn !== undefined
+        ? { urn: resolved.props.adoptTopologyUrn }
+        : {})
     });
 
     this.stack.addRelationship("releases_via", resolved.attachedTo, this.topology, { type: kind });

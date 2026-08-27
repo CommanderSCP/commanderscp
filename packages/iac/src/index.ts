@@ -120,6 +120,27 @@ export {
 } from "./render.js";
 export type { RenderedPipeline } from "./render.js";
 
+// team-pipeline-iac.md §9/§7: the shared emitter behind `scp iac export` and `scp iac scaffold` —
+// walks a normalized `ServiceSpec` (built by the CLI from SDK reads / a discovery proposal) into
+// either a synthesized manifest or TypeScript construct source, guaranteed to agree by construction
+// (see `estate-program.ts`'s module doc).
+export {
+  PLACEHOLDER_REPO_MARKER,
+  WAVE_TOPOLOGY_GUIDANCE,
+  buildEstateManifest,
+  renderEstateProgram
+} from "./estate-program.js";
+export type {
+  BuiltEstateProgram,
+  ComponentSpec,
+  PipelineSourceSpec,
+  PipelineSpec,
+  PlacementSpec,
+  PublishSpec,
+  RenderedEstateProgram,
+  ServiceSpec
+} from "./estate-program.js";
+
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Stack } from "./construct.js";

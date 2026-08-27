@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { Command } from "commander";
 import { reconcileStaleClaimants, ScpApiError, ScpClient } from "@scp/sdk";
 import type { ListObjectsQuery, ListQuery } from "@scp/sdk";
@@ -103,6 +104,9 @@ import {
 import { verifyAuditChain } from "@scp/schemas/audit-chain";
 import {
   MANIFEST_ONLY_DISCLAIMER,
+  buildEstateManifest,
+  canonicalJson,
+  renderEstateProgram,
   renderManifestPipelines,
   renderManifestSection,
   updateGeneratedSection,
@@ -110,6 +114,11 @@ import {
 } from "@scp/iac";
 import { saveCredentials } from "./config-store.js";
 import { clientFromStoredCredentials, resolveLoginBaseUrl } from "./client-factory.js";
+import { readServiceExportSpec } from "./iac-estate-reader.js";
+import {
+  discoveryRequestForExecutionSystem,
+  groupDiscoveryProposal
+} from "./iac-scaffold-reader.js";
 import { promptLine } from "./prompt.js";
 import { printResult, type OutputFormat } from "./output.js";
 
@@ -3363,6 +3372,164 @@ export function buildProgram(): Command {
       }
       console.log(section);
     });
+
+  // -------------------------------------------------------------------------------------
+  // `scp iac export` (team-pipeline-iac.md §9/D5) — reverse-generates `@scp/iac` construct code (or
+  // the synthesized manifest) from a service's LIVE subtree, over the already-generated SDK's own
+  // read verbs (`services.get`, `relationships.list`, `components.get`, `placements.list`,
+  // `deploymentTargets.get`, `changeSources.listMappings`, the generic `object(type).get`) — the
+  // onboarding path for the homelab's ~50 imported components and 61 placements, and for any org
+  // bringing an existing estate in (D5). ONLINE (reads the live graph); `--format` picks the shape.
+  // -------------------------------------------------------------------------------------
+
+  iacCmd
+    .command("export")
+    .description(
+      "Reverse-generate @scp/iac construct code (or the synthesized manifest) from a service's live subtree (§9/D5) — the onboarding path for an existing estate"
+    )
+    .requiredOption(
+      "--scope <serviceIdOrUrn>",
+      "the service whose subtree (components, placements, pipeline attachments, source mappings) to export"
+    )
+    .option("--format <format>", "ts|json", "ts")
+    .option(
+      "--source-kind <kinds>",
+      "comma-separated source kinds to probe for source_mappings (D9's registration side is by pattern; export cannot know which kinds an org uses) — default: every known git provider (github, gitea, gitlab)"
+    )
+    .option("--output <path>", "write to this file instead of stdout")
+    .option("--base-url <url>", "API base URL override")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          scope: string;
+          format: string;
+          sourceKind?: string;
+          output?: string;
+        }
+      ) => {
+        if (opts.format !== "ts" && opts.format !== "json") {
+          throw new Error(`--format must be "ts" or "json", got "${opts.format}"`);
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const spec = await readServiceExportSpec(client, opts.scope, {
+          ...(opts.sourceKind !== undefined ? { sourceKinds: parseList(opts.sourceKind) } : {})
+        });
+
+        let content: string;
+        let placeholderCount: number;
+        if (opts.format === "json") {
+          const built = buildEstateManifest(spec);
+          content = canonicalJson(built.manifest) + "\n";
+          placeholderCount = built.placeholderCount;
+        } else {
+          const rendered = renderEstateProgram(spec);
+          content = rendered.source;
+          placeholderCount = rendered.placeholderCount;
+        }
+
+        if (opts.output) {
+          await writeFile(opts.output, content, "utf8");
+          console.log(
+            `Wrote ${opts.format === "ts" ? "construct code" : "the synthesized manifest"} to ${opts.output}`
+          );
+        } else {
+          console.log(content);
+        }
+        const componentCount = spec.components.length;
+        console.log(
+          `Exported ${componentCount} component(s) from service "${spec.serviceName}". ` +
+            `${placeholderCount} pipeline(s) had no source mapping in the live estate and got a loud, ` +
+            `non-typechecking placeholder instead of an invented repo — search for "SCP-EXPORT PLACEHOLDER" ` +
+            `before applying.`
+        );
+      }
+    );
+
+  // -------------------------------------------------------------------------------------
+  // `scp iac scaffold` (team-pipeline-iac.md §7/D1, ADR-0047) — runs the existing `discovery/run`
+  // (unchanged; only `discovery/accept` is retired, and not by this increment) and renders the
+  // proposal as construct code, GROUPED into services BY FLAG (ADR-0047: "the grouping decision...
+  // requires a human, and accept is the one point in the flow where no human is present" — this
+  // command is where that human acts instead). `--repo-pr` (opening a PR against the config repo) is
+  // OUT OF SCOPE here — it needs a git-provider WRITE path, a different capability class; this command
+  // only ever writes local files or stdout.
+  // -------------------------------------------------------------------------------------
+
+  iacCmd
+    .command("scaffold")
+    .description(
+      "Run discovery against an execution system and render the proposal as @scp/iac construct code, grouped into services (§7/ADR-0047) — ungrouped components are reported loudly, never silently dumped into a default"
+    )
+    .requiredOption("--from <executionSystemIdOrUrn>", "the execution-system to discover from")
+    .option(
+      "--group <name=service>",
+      "map one discovered component's name to a service; repeatable",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[]
+    )
+    .option(
+      "--group-file <path>",
+      "a JSON file of {componentName: serviceName}; merged with --group, which takes precedence on a conflict"
+    )
+    .option("--output-dir <dir>", "write one file per service here instead of stdout")
+    .option("--base-url <url>", "API base URL override")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          from: string;
+          group: string[];
+          groupFile?: string;
+          outputDir?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const executionSystem = await client.object("execution-system").get(opts.from);
+        const request = discoveryRequestForExecutionSystem(executionSystem);
+        const proposal = await client.discovery.run(request);
+
+        let group: Record<string, string> = {};
+        if (opts.groupFile) {
+          const raw = await readFile(opts.groupFile, "utf8");
+          group = { ...group, ...(JSON.parse(raw) as Record<string, string>) };
+        }
+        for (const entry of opts.group) {
+          const eq = entry.indexOf("=");
+          if (eq <= 0) {
+            throw new Error(`--group must be "<name>=<service>", got "${entry}"`);
+          }
+          group[entry.slice(0, eq)] = entry.slice(eq + 1);
+        }
+
+        const { specs, ungrouped } = groupDiscoveryProposal(proposal, group);
+
+        if (opts.outputDir) await mkdir(opts.outputDir, { recursive: true });
+        for (const spec of specs) {
+          const rendered = renderEstateProgram(spec, { waveGuidance: true });
+          if (opts.outputDir) {
+            const filePath = path.join(opts.outputDir, `${spec.stackName}.scaffold.ts`);
+            await writeFile(filePath, rendered.source, "utf8");
+            console.log(
+              `Wrote ${filePath} (${spec.components.length} component(s), ${rendered.placeholderCount} placeholder(s))`
+            );
+          } else {
+            console.log(`// ---- service: ${spec.serviceName} ----`);
+            console.log(rendered.source);
+          }
+        }
+
+        if (specs.length === 0 && ungrouped.length === 0) {
+          console.log("Discovery proposed no components.");
+        }
+        if (ungrouped.length > 0) {
+          console.log("");
+          console.log(
+            `!!! UNGROUPED (${ungrouped.length}) — NOT included above; a component cannot be constructed ` +
+              `without a service (ADR-0047). Map each with --group "<name>=<service>" and re-run:`
+          );
+          for (const u of ungrouped) console.log(`  - ${u.name}`);
+        }
+      }
+    );
 
   // -------------------------------------------------------------------------------------
   // change / decision (M3 Change Coordination Engine — DESIGN.md §9, §10.4, BUILD_AND_TEST.md

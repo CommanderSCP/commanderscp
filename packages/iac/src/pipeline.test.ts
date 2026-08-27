@@ -223,6 +223,58 @@ describe("@scp/iac: repo is required (D18) — mutation-proved guard", () => {
   // throw) instead of failing this test — confirming the guard, and this test, are both live.
 });
 
+describe("@scp/iac: adoptTopologyUrn (§9/D5) — the export/adopt affordance", () => {
+  it("without it, the topology gets a fresh, synth-derived URN (ordinary authoring, unchanged)", () => {
+    const stack = new Stack("payments-api");
+    const svc = new Service(stack, "payments", { name: "Payments" });
+    const api = new Component(stack, "payments-api", { name: "payments-api", service: svc });
+    new ImagePipeline(api, { repo: "payments/payments-api", waves: [] });
+    const manifest = stack.synth();
+    const topology = manifest.objects.find((o) => o.typeId === "release-topology");
+    expect(topology?.urn).toBe("urn:scp:payments-api:release-topology:image-topology");
+  });
+
+  // MUTATION-PROVED (restored before commit): reverting `pipeline.ts`'s `ReleaseTopology(...)` call
+  // to drop the `...(resolved.props.adoptTopologyUrn !== undefined ? { urn: ... } : {})` spread makes
+  // this case fail — the synthesized topology's URN reverts to the derived one instead of the live
+  // URN supplied here, which is exactly the silent-duplication bug this prop exists to close (a
+  // second `scp apply` of an exported estate would create a SECOND topology object beside the real
+  // one and repoint `releases_via` at it).
+  it("WITH it, the topology adopts the caller-supplied (live) URN instead of a derived one", () => {
+    const stack = new Stack("payments-api");
+    const svc = new Service(stack, "payments", { name: "Payments" });
+    const api = new Component(stack, "payments-api", { name: "payments-api", service: svc });
+    const liveTopologyUrn = "urn:scp:acme:release-topology:payments-api-image-pipeline";
+    new ImagePipeline(api, {
+      repo: "payments/payments-api",
+      waves: [],
+      adoptTopologyUrn: liveTopologyUrn
+    });
+    const manifest = stack.synth();
+    const topology = manifest.objects.find((o) => o.typeId === "release-topology");
+    expect(topology?.urn).toBe(liveTopologyUrn);
+    // The `releases_via` edge still points at whatever the topology's URN resolved to — proving the
+    // adoption is coherent end-to-end, not just a stray field on the object.
+    const releasesVia = manifest.relationships.find((r) => r.typeId === "releases_via");
+    expect(releasesVia?.toUrn).toBe(liveTopologyUrn);
+  });
+
+  it("does not affect any other field the pipeline computes (D18 repo, D8 inferred placements)", () => {
+    const stack = new Stack("payments-api");
+    const svc = new Service(stack, "payments", { name: "Payments" });
+    const api = new Component(stack, "payments-api", { name: "payments-api", service: svc });
+    const target = new DeploymentTarget(stack, "prod", { name: "prod" });
+    new ImagePipeline(api, {
+      repo: "payments/payments-api",
+      waves: [target],
+      adoptTopologyUrn: "urn:scp:acme:release-topology:payments-api-image-pipeline"
+    });
+    const manifest = stack.synth();
+    expect(manifest.sourceMappings?.[0]?.repoPattern).toBe("payments/payments-api");
+    expect(manifest.placements).toHaveLength(1);
+  });
+});
+
 describe("@scp/iac: nested pipelines under a Component (multi-pipeline repo, D17)", () => {
   it("two pipeline kinds on one component get distinct default ids and distinct topologies", () => {
     const stack = new Stack("payments-api");
