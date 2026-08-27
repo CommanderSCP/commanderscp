@@ -538,6 +538,20 @@ export const ChangeReportRequestSchema = z.strictObject({
   correlationKey: z.string().optional(),
   workspace: z.string().optional(),
   artifactDigest: z.string().optional(),
+  /** The BUILT COMMIT this release was produced from — the git sha, not a ref.
+   *
+   *  Declared for the SAME reason `ref` above is, and found the same way: this is a `strictObject`,
+   *  so until it was declared a CI step sending `commitSha` got a 400 rather than a route. The
+   *  processor's generic hint extractor has always READ this key (`commitShaFromPayload`) and every
+   *  provider webhook adapter has always supplied one — so a commit reached `sourceRef` from a raw
+   *  push payload and could not reach it from the TYPED report door at all.
+   *
+   *  That gap is load-bearing for D23: `deriveCapturedWorkflow` needs the built commit as one of the
+   *  three facts a hook run's `captured_workflow` is assembled from, and it will not substitute
+   *  "whatever the branch holds now". Without this field a change created through the typed report
+   *  route could never carry a pin, and every gate depending on one would hold forever with a
+   *  correctly-named reason and no way for the reporter to fix it. */
+  commitSha: z.string().optional(),
   status: z.enum(["planned", "applied", "errored", "discarded"]),
   planJson: z.unknown().optional(),
   /** M12 P4B coupled pipelines — the SAME shape as `CreateChangeRequestSchema.provides`: opaque

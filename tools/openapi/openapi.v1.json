@@ -53802,6 +53802,9 @@
                   "artifactDigest": {
                     "type": "string"
                   },
+                  "commitSha": {
+                    "type": "string"
+                  },
                   "status": {
                     "type": "string",
                     "enum": [
