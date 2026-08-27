@@ -6,6 +6,7 @@ import {
   cursorPageResponseSchema
 } from "./common.js";
 import { ControlRunSchema } from "./governance.js";
+import { ContinuousTestHoldSchema } from "./pipeline-behaviors.js";
 import {
   ExecutorTypeSchema,
   ExecutorCategorySchema,
@@ -391,7 +392,28 @@ export const ChangeWaveTargetSchema = z.object({
    *
    *  THE RAW `status` STAYS BESIDE THIS FIELD, UNCHANGED. A held target's `status` is still
    *  `pending` — `hold` explains that status, it does not replace it (same rule ADR-0028's
-   *  stage-dependency hold follows on this same schema). */
+   *  stage-dependency hold follows on this same schema).
+   *
+   *  ============================================================================================
+   *  `continuousTests` — THE SECOND HALF (team-pipeline-iac increment 8, D21)
+   *  ============================================================================================
+   *  ADDITIVE-OPTIONAL BESIDE `freezes`, never in place of it: a target can be held by a freeze, by
+   *  a stale/failed/never-reported `continuous` probe, or by both at once, and collapsing the two
+   *  into one array would lose which authority an operator has to go and talk to. `freezes` STAYS
+   *  REQUIRED on this object and is `[]` for a target held only by a probe — making it optional
+   *  would be a breaking weakening of a shipped response field, which is not a trade this repo
+   *  makes.
+   *
+   *  COMPOSED AT READ TIME, NEVER PERSISTED, for exactly the reason stated above for `freezes` and
+   *  restated on `ContinuousTestHoldSchema` itself: the `continuous_test` Decision has no clearing
+   *  counterpart, so a field fed from that row would still say "held" long after fresh green
+   *  landed. `plan-service.ts` re-runs `evaluateContinuousHolds` — the SAME predicate
+   *  `reconcile.ts`'s per-target loop refuses on — on every read. Present ONLY while the target is
+   *  genuinely held; absent on the next read once a fresh pass arrives.
+   *
+   *  `now` NEVER CROSSES THIS SEAM (property 4, again): each entry carries `staleAfter` and
+   *  `lastReportedAt` as DATA that the client's own clock contextualizes, and `summary` is a
+   *  server-composed sentence naming the boundary rather than a relative time. */
   hold: z
     .object({
       freezes: z.array(
@@ -403,7 +425,12 @@ export const ChangeWaveTargetSchema = z.object({
           summary: z.string(),
           endsAt: z.string().datetime()
         })
-      )
+      ),
+      /** Every declared `continuous` hook currently holding this target, SORTED BY `hookId`
+       *  (`continuous-hold.ts` sorts, and the order is load-bearing there for Decision stability —
+       *  the wire inherits the same array). Absent when no probe holds the target; never present
+       *  as an empty array. */
+      continuousTests: z.array(ContinuousTestHoldSchema).optional()
     })
     .optional(),
   status: z.string(),

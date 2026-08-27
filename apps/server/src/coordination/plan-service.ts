@@ -29,6 +29,7 @@ import {
   evaluateFreezeHolds,
   type FreezeHoldVerdict
 } from "./freeze-hold.js";
+import { evaluateContinuousHolds, type ContinuousHoldTargetVerdict } from "./continuous-hold.js";
 import { rollbackExemptible } from "../governance/freeze-scope.js";
 import { originalChangeDispatchedTarget } from "./wave-targets-repo.js";
 
@@ -274,6 +275,12 @@ export async function compileAndPersistPlan(
  *  with the SAME `toWaveTargetHold` function below rather than a parallel reimplementation. */
 export type WaveTargetHold = NonNullable<ChangeWaveTarget["hold"]>;
 
+/** The FREEZE HALF alone — what `toWaveTargetHold` builds and what the campaign wave target's own
+ *  `hold` is in its entirety (`CampaignWaveTargetSchema.hold` has no continuous-test half; a
+ *  campaign wave target is a fan-out candidate, not a deployment). Named separately so that adding
+ *  `continuousTests` to the CHANGE side could not silently widen the campaign side's contract. */
+export type WaveTargetFreezeHold = Pick<WaveTargetHold, "freezes">;
+
 /** `FreezeHoldVerdict` -> the wire `hold` shape (or `undefined` for an unheld target) — the ONE
  *  place a `FreezeHoldVerdict` becomes API surface, so the freeze-projection idiom
  *  (`describeFreezeForWaveTarget`) is applied exactly once. `scopeNames` is the caller's one-query
@@ -284,7 +291,7 @@ export type WaveTargetHold = NonNullable<ChangeWaveTarget["hold"]>;
 export function toWaveTargetHold(
   verdict: FreezeHoldVerdict | undefined,
   scopeNames: Map<string, string>
-): WaveTargetHold | undefined {
+): WaveTargetFreezeHold | undefined {
   if (!verdict || verdict.freezes.length === 0) return undefined;
   return {
     freezes: verdict.freezes.map((f) => {
@@ -296,6 +303,41 @@ export function toWaveTargetHold(
         endsAt: f.endsAt
       };
     })
+  };
+}
+
+/**
+ * THE TWO HALVES OF `ChangeWaveTargetSchema.hold`, MERGED INTO THE ONE WIRE OBJECT.
+ *
+ * `freezes` STAYS REQUIRED and is `[]` for a target held ONLY by a continuous probe. That is the
+ * deliberate shape: making a shipped, required response field optional is the oasdiff-visible
+ * weakening this repo has already paid for once (`DependencyLineProducerSchema.declaredAt`, whose
+ * dry-run projection was DROPPED rather than nullify a field every other reader relies on). An
+ * empty array is a true statement — no freeze covers this target — and costs a client nothing,
+ * because every existing consumer already reads `hold.freezes.length > 0` rather than `hold`'s mere
+ * presence (`apps/web/.../PipelineWaveCard.tsx`).
+ *
+ * `continuousTests` is ABSENT, never `[]`, when no probe holds — the same present-only-while-held
+ * convention `hold` itself follows, and the reason `evaluateContinuousHolds` returns an absent map
+ * entry rather than an empty list for an unheld target.
+ *
+ * `undefined` for a target held by NEITHER, so an unheld wave target carries no `hold` key at all.
+ */
+function composeWaveTargetHold(
+  freeze: WaveTargetFreezeHold | undefined,
+  continuous: ContinuousHoldTargetVerdict | undefined
+): WaveTargetHold | undefined {
+  const continuousTests = continuous?.holds.map((h) => ({
+    hookId: h.hookId,
+    reason: h.reason,
+    summary: h.summary,
+    staleAfter: h.staleAfter,
+    lastReportedAt: h.lastReportedAt
+  }));
+  if (!freeze && (continuousTests === undefined || continuousTests.length === 0)) return undefined;
+  return {
+    freezes: freeze?.freezes ?? [],
+    ...(continuousTests !== undefined && continuousTests.length > 0 ? { continuousTests } : {})
   };
 }
 
@@ -372,7 +414,11 @@ function toChangePlanShape(
   waves: (typeof changeWaves.$inferSelect)[],
   targets: (typeof changeWaveTargets.$inferSelect)[],
   freezeHolds?: Map<string, FreezeHoldVerdict>,
-  scopeNames?: Map<string, string>
+  scopeNames?: Map<string, string>,
+  /** The continuous-probe half of `hold`, re-derived on this same read. Passed SEPARATELY from
+   *  `freezeHolds` rather than pre-merged because the two are produced by two independent
+   *  predicates over the same candidate set and a target can be held by either, both, or neither. */
+  continuousHolds?: Map<string, ContinuousHoldTargetVerdict>
 ): ChangePlan {
   return {
     id: plan.id,
@@ -410,7 +456,10 @@ function toChangePlanShape(
             targets: waveTargets.map((t) =>
               toChangeWaveTargetShape(
                 t,
-                toWaveTargetHold(freezeHolds?.get(t.targetObjectId), scopeNames ?? new Map())
+                composeWaveTargetHold(
+                  toWaveTargetHold(freezeHolds?.get(t.targetObjectId), scopeNames ?? new Map()),
+                  continuousHolds?.get(t.targetObjectId)
+                )
               )
             )
           };
@@ -420,18 +469,114 @@ function toChangePlanShape(
 }
 
 /**
+ * WHICH TARGETS A HOLD CAN STILL ACT ON — resolved ONCE and shared by BOTH read-time hold
+ * projections below, so "a hold is never reported against a target a hold can no longer act on"
+ * has exactly one definition. It was written out inline inside the freeze projection; the
+ * continuous projection needs the identical gate, and two copies of this predicate is precisely
+ * the drift `stage-dependency-status.ts`'s own doc warns about for a THIRD copy of it.
+ *
+ * `null` when no hold of any kind can apply — the change is not `executing`, every wave is
+ * terminal, or the active wave has nothing pending left.
+ */
+interface WaveTargetHoldCandidates {
+  /** EVERY target of the active wave, pending or not. The freeze half must ask about all of them:
+   *  an `atomic` freeze's union (`freeze-hold.ts`'s `unionFreezes(byTarget)`) only ever sees the
+   *  ids it was asked about, so a target held SOLELY because an atomic freeze covers an
+   *  already-succeeded sibling would never surface if the pending subset were the question. */
+  activeWaveTargetIds: string[];
+  /** The subset a hold can still act on — `pending`/`triggering`. A `triggered` target has already
+   *  been handed to its executor and no hold can un-ring that bell (ADR-0008 has no pause verb). */
+  pendingTargetIds: Set<string>;
+  /** D7's rollback exemption inputs, read off the same change row. */
+  rollbackOfObjectId: string | null;
+}
+
+async function resolveWaveTargetHoldCandidates(
+  tx: TenantTx,
+  orgId: string,
+  changeObjectId: string,
+  waves: (typeof changeWaves.$inferSelect)[],
+  targets: (typeof changeWaveTargets.$inferSelect)[]
+): Promise<WaveTargetHoldCandidates | null> {
+  const [changeRow] = await tx
+    .select({ state: changes.state, rollbackOfObjectId: changes.rollbackOfObjectId })
+    .from(changes)
+    .where(and(eq(changes.orgId, orgId), eq(changes.objectId, changeObjectId)))
+    .limit(1);
+  if (changeRow?.state !== "executing") return null;
+
+  const activeWave = activeWaveOf(waves);
+  if (!activeWave) return null;
+
+  const activeWaveTargets = targets.filter((t) => t.waveId === activeWave.id);
+  const pendingTargetIds = new Set(
+    activeWaveTargets
+      .filter((t) => t.status === "pending" || t.status === "triggering")
+      .map((t) => t.targetObjectId)
+  );
+  if (pendingTargetIds.size === 0) return null;
+
+  return {
+    activeWaveTargetIds: activeWaveTargets.map((t) => t.targetObjectId),
+    pendingTargetIds,
+    rollbackOfObjectId: changeRow.rollbackOfObjectId
+  };
+}
+
+/**
+ * THE READ-TIME HALF OF THE PER-TARGET CONTINUOUS-TEST HOLD (`ChangeWaveTargetSchema.hold
+ * .continuousTests`, team-pipeline-iac increment 8 / D21).
+ *
+ * Reuses `evaluateContinuousHolds` — the SAME predicate `reconcile.ts`'s per-target loop refuses
+ * on — rather than a second implementation, for the reason the freeze projection beside it states
+ * and `continuous-hold.ts`'s own module doc repeats: a second copy of "stale-green is ABSENT, not
+ * pass and not fail" is a second place to regress the one distinction the hook exists for.
+ *
+ * NEVER READ FROM THE `continuous_test` DECISION. That row has no clearing counterpart in the sense
+ * that matters here — `reconcile.ts` does write an `allow` when the hold releases, but the LATEST
+ * row of that kind is whatever the last TICK decided, and `explain` is answered between ticks. A
+ * field fed from it would say "held" for up to a tick after fresh green landed and, on a change
+ * whose reconcile is parked, forever. Re-derived here, the answer is true at the instant it is
+ * read: submit fresh green and the very next `explain` omits the key, with no tick in between.
+ * That is exactly what this projection's integration test measures.
+ *
+ * ASKS ONLY ABOUT THE PENDING SUBSET, unlike the freeze half. There is no union across targets in
+ * this predicate — a probe's verdict for target A is derived from evidence keyed to A alone
+ * ("a stale canary probe on target A says nothing about target B") — so a sibling's hold can never
+ * be the reason this target is held, and asking about the wider set would buy nothing but rows.
+ *
+ * NO ROLLBACK EXEMPTION, deliberately. D7's exemption is about FREEZES — a human-declared pause a
+ * rollback is allowed to step around to undo a bad release. A stale or failing canary probe is not
+ * a policy anyone can be exempt from; it is a statement that nobody knows whether the target is
+ * healthy, and reconcile's own per-target loop applies it to rollbacks exactly as it does to
+ * anything else. Reporting an exemption here that the engine does not honour would be the
+ * `explain`-disagrees-with-admission defect this file already fixed once, in the other direction.
+ */
+async function resolveWaveTargetContinuousHolds(
+  tx: TenantTx,
+  orgId: string,
+  candidates: WaveTargetHoldCandidates | null
+): Promise<Map<string, ContinuousHoldTargetVerdict>> {
+  if (!candidates) return new Map();
+  // `evaluateContinuousHolds` opens with ONE indexed existence read and returns empty before
+  // resolving a single placement for an org that declares no `continuous` hook — which is nearly
+  // every org, nearly all the time. No extra gate is needed here, and adding one would be a second
+  // place for the inertness property to be true.
+  return await evaluateContinuousHolds(tx, {
+    orgId,
+    targetObjectIds: [...candidates.pendingTargetIds]
+  });
+}
+
+/**
  * THE READ-TIME HALF OF THE WAVE-TARGET FREEZE-HOLD PROJECTION — reuses `evaluateFreezeHolds`
  * (`freeze-hold.ts`), the SAME predicate `reconcile.ts`'s engine loop consults, rather than a
  * second implementation that could drift from admission (campaigns-rework.md's instruction on
  * this exact field).
  *
- * ONLY THE TARGETS THE HOLD CAN STILL ACT ON ARE *RETURNED*, mirroring `stage-dependency-status.ts`'s
- * own gate exactly (`isStillTriggerable` there, restated here): the active (non-terminal) wave's
- * `pending`/`triggering` targets, and only while the change itself is `executing` — a `triggered`
- * target has already been handed to its executor (a freeze cannot un-ring that bell — ADR-0008
- * has no pause verb), and a hold reported against a dead change's never-run target would describe
- * a wait that is already over. Two changes reading the identical gate independently is exactly
- * the drift class `stage-dependency-status.ts`'s own doc warns about, restated for a second field.
+ * ONLY THE TARGETS THE HOLD CAN STILL ACT ON ARE *RETURNED* — the shared
+ * `resolveWaveTargetHoldCandidates` gate above, whose doc carries the argument for it
+ * (`stage-dependency-status.ts`'s `isStillTriggerable`, mirrored).
  *
  * BUT `evaluateFreezeHolds` IS ASKED ABOUT EVERY ACTIVE-WAVE TARGET, not just the pending ones
  * (M25.UI review finding 2 — "atomic drift"). `reconcile.ts`'s admission loop asks the identical
@@ -447,31 +592,14 @@ function toChangePlanShape(
 async function resolveWaveTargetFreezeHolds(
   tx: TenantTx,
   orgId: string,
-  changeObjectId: string,
-  waves: (typeof changeWaves.$inferSelect)[],
-  targets: (typeof changeWaveTargets.$inferSelect)[]
+  candidates: WaveTargetHoldCandidates | null
 ): Promise<Map<string, FreezeHoldVerdict>> {
-  const [changeRow] = await tx
-    .select({ state: changes.state, rollbackOfObjectId: changes.rollbackOfObjectId })
-    .from(changes)
-    .where(and(eq(changes.orgId, orgId), eq(changes.objectId, changeObjectId)))
-    .limit(1);
-  if (changeRow?.state !== "executing") return new Map();
-
-  const activeWave = activeWaveOf(waves);
-  if (!activeWave) return new Map();
-
-  const activeWaveTargets = targets.filter((t) => t.waveId === activeWave.id);
-  const pendingTargetIds = new Set(
-    activeWaveTargets
-      .filter((t) => t.status === "pending" || t.status === "triggering")
-      .map((t) => t.targetObjectId)
-  );
-  if (pendingTargetIds.size === 0) return new Map();
+  if (!candidates) return new Map();
+  const { activeWaveTargetIds, pendingTargetIds } = candidates;
 
   const allHolds = await evaluateFreezeHolds(tx, {
     orgId,
-    targetObjectIds: activeWaveTargets.map((t) => t.targetObjectId)
+    targetObjectIds: activeWaveTargetIds
   });
 
   // D7'S ROLLBACK EXEMPTION, MIRRORED (M25.UI review finding 3). `reconcile.ts`'s actuator
@@ -480,8 +608,8 @@ async function resolveWaveTargetFreezeHolds(
   // dispatched. Without the same check here, `explain` reports that target `held` by the very
   // freeze reconcile has already stepped around — a target sitting in `triggering` backoff after
   // a real dispatch, described as still waiting on a freeze it was exempted from.
-  const isRollback = changeRow.rollbackOfObjectId !== null;
-  const rollbackOfObjectId = changeRow.rollbackOfObjectId;
+  const rollbackOfObjectId = candidates.rollbackOfObjectId;
+  const isRollback = rollbackOfObjectId !== null;
 
   const holds = new Map<string, FreezeHoldVerdict>();
   for (const [targetObjectId, verdict] of allHolds) {
@@ -530,9 +658,13 @@ export async function getLatestPlanForChange(
   orgId: string,
   changeObjectId: string,
   /**
-   * `withFreezeHolds: false` (M25.UI review finding 4) skips `resolveWaveTargetFreezeHolds` and
-   * `resolveFreezeScopeNames` entirely, for a caller that only needs wave/target *status* data and
-   * never reads `.hold`/`heldTargetCount` off the result. `reconcile.ts`'s per-tick trigger branch
+   * `withFreezeHolds: false` (M25.UI review finding 4) skips BOTH read-time hold projections —
+   * `resolveWaveTargetFreezeHolds`, `resolveWaveTargetContinuousHolds` and `resolveFreezeScopeNames`
+   * — for a caller that only needs wave/target *status* data and never reads `.hold`/
+   * `heldTargetCount` off the result. The flag keeps its original name because its meaning is
+   * unchanged ("do not compose `hold`"); the continuous half joined the same switch rather than
+   * gaining a second one, because a caller that wants half a `hold` object does not exist and
+   * inventing the knob would be inventing the caller. `reconcile.ts`'s per-tick trigger branch
    * is the one that matters: `advanceExecutingChanges` calls this UNCONDITIONALLY, once per
    * `executing` change per 1 s tick, to find the active wave — and its OWN trigger branch already
    * does a second, real freeze evaluation a few lines later (`loadFreezeHolds`, lazily, only when a
@@ -573,14 +705,20 @@ export async function getLatestPlanForChange(
     return toChangePlanShape(planRow, waveRows, targetRows);
   }
 
-  const freezeHolds = await resolveWaveTargetFreezeHolds(
+  // ONE gate, TWO predicates over it — see `resolveWaveTargetHoldCandidates`. Both halves of
+  // `ChangeWaveTargetSchema.hold` are re-derived here on every read and NEITHER is ever persisted:
+  // the holding Decision rows have no clearing counterpart that `explain` can see between ticks,
+  // so a field fed from one would say "held" after the condition cleared.
+  const candidates = await resolveWaveTargetHoldCandidates(
     tx,
     orgId,
     changeObjectId,
     waveRows,
     targetRows
   );
+  const freezeHolds = await resolveWaveTargetFreezeHolds(tx, orgId, candidates);
+  const continuousHolds = await resolveWaveTargetContinuousHolds(tx, orgId, candidates);
   const scopeNames = await resolveFreezeScopeNames(tx, orgId, freezeHolds);
 
-  return toChangePlanShape(planRow, waveRows, targetRows, freezeHolds, scopeNames);
+  return toChangePlanShape(planRow, waveRows, targetRows, freezeHolds, scopeNames, continuousHolds);
 }

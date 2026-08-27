@@ -12435,6 +12435,13 @@ export type ExplainChangeResponses = {
                             summary: string;
                             endsAt: string;
                         }>;
+                        continuousTests?: Array<{
+                            hookId: string;
+                            reason: 'no_evidence' | 'stale' | 'failed';
+                            summary: string;
+                            staleAfter: string | null;
+                            lastReportedAt: string | null;
+                        }>;
                     };
                     status: string;
                     attempt: number;
@@ -13562,6 +13569,116 @@ export type SetSourceMappingScopeResponses = {
 };
 
 export type SetSourceMappingScopeResponse = SetSourceMappingScopeResponses[keyof SetSourceMappingScopeResponses];
+
+export type SubmitPipelineEvidenceData = {
+    body: {
+        subject: {
+            componentUrn: string;
+            targetUrn: string;
+            artifactDigest?: string;
+            commitSha?: string;
+        };
+        evidence: {
+            kind: 'testRun';
+            hook: 'postMerge' | 'postDeploy' | 'continuous' | 'bakeAlarms';
+            hookId: string;
+            workflow: {
+                repo: string;
+                branch: string;
+                path: string;
+                templateName?: string;
+                commitSha: string;
+                bundle: {
+                    repository: string;
+                    digest: string;
+                };
+            };
+            runId: string;
+            outcome: 'passed' | 'failed';
+            startedAt: string;
+            completedAt: string;
+        } | {
+            kind: 'alarmState';
+            hookId: string;
+            windowStart: string;
+            windowEnd: string;
+            alarms: Array<{
+                name: string;
+                severity: 'warning' | 'critical';
+                firedAt: string;
+            }>;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/pipelines/evidence';
+};
+
+export type SubmitPipelineEvidenceErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type SubmitPipelineEvidenceError = SubmitPipelineEvidenceErrors[keyof SubmitPipelineEvidenceErrors];
+
+export type SubmitPipelineEvidenceResponses = {
+    /**
+     * Success
+     */
+    201: {
+        evidenceId: string;
+        kind: 'testRun' | 'alarmState';
+        source: 'pushed';
+        producerSubjectId: string;
+        componentObjectId: string;
+        targetObjectId: string;
+        recordedAt: string;
+    };
+};
+
+export type SubmitPipelineEvidenceResponse = SubmitPipelineEvidenceResponses[keyof SubmitPipelineEvidenceResponses];
 
 export type ListPolicysData = {
     body?: never;
