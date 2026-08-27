@@ -15,9 +15,7 @@ import {
 
 describe("assertWaveGateHookKind — continuous must never reach a wave gate", () => {
   it("throws for 'continuous', naming why it must not be here", () => {
-    expect(() => assertWaveGateHookKind("continuous")).toThrow(
-      /per-target hold/i
-    );
+    expect(() => assertWaveGateHookKind("continuous")).toThrow(/per-target hold/i);
   });
 
   it("does not throw for any of the three wave-gate kinds", () => {

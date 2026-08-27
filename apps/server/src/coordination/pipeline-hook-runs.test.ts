@@ -80,9 +80,9 @@ describe("hookRunBindingCarrier — target when there is one, else the component
   });
 
   it("falls back to componentObjectId for a postMerge run (no target)", () => {
-    expect(
-      hookRunBindingCarrier({ targetObjectId: null, componentObjectId: "component-1" })
-    ).toBe("component-1");
+    expect(hookRunBindingCarrier({ targetObjectId: null, componentObjectId: "component-1" })).toBe(
+      "component-1"
+    );
   });
 });
 

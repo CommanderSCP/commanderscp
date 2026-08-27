@@ -135,9 +135,7 @@ describe("composeWaveTargetHold — merges the freeze half and the continuous ha
     // `evaluateContinuousHolds` never actually produces this shape (an unheld target is simply
     // absent from its map) — this is the defensive branch `composeWaveTargetHold` itself takes,
     // and the reason `continuousTests` is checked for BOTH undefined and empty.
-    expect(
-      composeWaveTargetHold(undefined, { ...continuousHeld, holds: [] })
-    ).toBeUndefined();
+    expect(composeWaveTargetHold(undefined, { ...continuousHeld, holds: [] })).toBeUndefined();
   });
 
   it("carries only freezes, with continuousTests omitted, when held by a freeze alone", () => {
