@@ -4,20 +4,23 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DesiredStateManifestSchema } from "@scp/schemas";
 import {
-  App,
   Campaign,
   Component,
   DeploymentTarget,
   Domain,
+  Group,
   Placement,
   Policy,
   ReleaseTopology,
   Service,
+  ServiceAccount,
   Stack,
   Team,
+  User,
   synthToFile
 } from "./index.js";
 import { canonicalJson } from "./canonical.js";
+import { deriveConstructUrn } from "./urn.js";
 
 /**
  * Example-based synth test for a realistic small stack (goal statement): two services, a team
@@ -27,8 +30,7 @@ import { canonicalJson } from "./canonical.js";
  */
 describe("@scp/iac: example stack synth", () => {
   it("two services + a team owning both + one depends_on the other", () => {
-    const app = new App();
-    const stack = new Stack(app, "billing-platform");
+    const stack = new Stack("billing-platform");
 
     const billingApi = new Service(stack, "billing-api", {
       name: "Billing API",
@@ -78,8 +80,7 @@ describe("@scp/iac: example stack synth", () => {
   });
 
   it("an external URN string target (outside this stack) is a valid relationship endpoint", () => {
-    const app = new App();
-    const stack = new Stack(app, "consumer-stack");
+    const stack = new Stack("consumer-stack");
     const service = new Service(stack, "checkout", { name: "Checkout" });
     service.consumes("urn:scp:other-stack:service:payments");
 
@@ -94,8 +95,7 @@ describe("@scp/iac: example stack synth", () => {
   });
 
   it("a Component emits a `contains` edge from its service (strict create-in-service, M12 P5a)", () => {
-    const app = new App();
-    const stack = new Stack(app, "checkout-stack");
+    const stack = new Stack("checkout-stack");
     const checkout = new Service(stack, "checkout", { name: "Checkout" });
     const api = new Component(stack, "api", { name: "checkout-api", service: checkout });
 
@@ -113,8 +113,7 @@ describe("@scp/iac: example stack synth", () => {
   });
 
   it("a Component may belong to an EXTERNAL service by URN string (not just a construct)", () => {
-    const app = new App();
-    const stack = new Stack(app, "worker-stack");
+    const stack = new Stack("worker-stack");
     const worker = new Component(stack, "worker", {
       name: "checkout-worker",
       service: "urn:scp:platform-stack:service:checkout"
@@ -128,35 +127,21 @@ describe("@scp/iac: example stack synth", () => {
   });
 
   it("an explicit urn prop overrides the derived one", () => {
-    const app = new App();
-    const stack = new Stack(app, "explicit-urn-stack");
+    const stack = new Stack("explicit-urn-stack");
     const svc = new Service(stack, "svc", { name: "Svc", urn: "urn:scp:custom:service:my-svc" });
     expect(svc.urn).toBe("urn:scp:custom:service:my-svc");
     expect(stack.synth().objects[0]?.urn).toBe("urn:scp:custom:service:my-svc");
   });
 
   it("re-synthesizing the same tree twice is byte-identical (pure synth)", () => {
-    const app = new App();
-    const stack = new Stack(app, "idempotent-stack");
+    const stack = new Stack("idempotent-stack");
     new Service(stack, "svc", { name: "Svc", properties: { tier: "high" } });
 
     expect(canonicalJson(stack.synth())).toBe(canonicalJson(stack.synth()));
   });
 
-  it("App.synth() returns every stack's manifest, sorted by stack name", () => {
-    const app = new App();
-    const stackB = new Stack(app, "zzz-stack");
-    new Service(stackB, "svc-b", { name: "Svc B" });
-    const stackA = new Stack(app, "aaa-stack");
-    new Service(stackA, "svc-a", { name: "Svc A" });
-
-    const manifests = app.synth();
-    expect(manifests.map((m) => m.stackName)).toEqual(["aaa-stack", "zzz-stack"]);
-  });
-
   it("synthToFile writes canonical JSON that round-trips through DesiredStateManifestSchema", async () => {
-    const app = new App();
-    const stack = new Stack(app, "file-stack");
+    const stack = new Stack("file-stack");
     new Service(stack, "svc", { name: "Svc", properties: { b: 2, a: 1 } });
 
     const dir = await mkdtemp(path.join(os.tmpdir(), "scp-iac-test-"));
@@ -176,26 +161,51 @@ describe("@scp/iac: example stack synth", () => {
     }
   });
 
-  it("synthToFile rejects a multi-stack App (ambiguous which manifest to write)", async () => {
-    const app = new App();
-    const stackA = new Stack(app, "stack-a");
-    new Service(stackA, "svc", { name: "Svc" });
-    new Stack(app, "stack-b");
+  it("rejects an empty stack name", () => {
+    expect(() => new Stack("")).toThrow();
+    expect(() => new Stack("   ")).toThrow();
+  });
+
+  it("two independently-constructed stacks never share state, even though each auto-creates its own App (D15a: no App argument, ever)", () => {
+    // The pre-D15a two-argument `new Stack(app, name)` form let several stacks share one `App`
+    // instance; that form no longer exists (`Stack`'s constructor takes only a name), so every
+    // `Stack` gets its OWN internal `App`. This pins down that isolation: same construct id in
+    // two different stacks derives two different URNs/paths, with nothing leaking between them.
+    const stackA = new Stack("stack-a");
+    const svcA = new Service(stackA, "svc", { name: "Svc A" });
+    const stackB = new Stack("stack-b");
+    const svcB = new Service(stackB, "svc", { name: "Svc B" });
+
+    expect(svcA.path).toBe("stack-a/svc");
+    expect(svcB.path).toBe("stack-b/svc");
+    expect(svcA.urn).not.toBe(svcB.urn);
+    expect(stackA.synth().objects).toHaveLength(1);
+    expect(stackB.synth().objects).toHaveLength(1);
+  });
+
+  it("synthToFile writes exactly the one stack passed to it, never a second stack that happens to exist", async () => {
+    // `App` is no longer exported and `synthToFile` no longer accepts one (only a `Stack`), so the
+    // old "ambiguous multi-stack App" runtime rejection is now a compile error at the call site
+    // instead — there is no longer a runtime path that could confuse which stack to write.
+    const stackA = new Stack("multi-a");
+    new Service(stackA, "svc-a", { name: "Svc A" });
+    const stackB = new Stack("multi-b");
+    new Service(stackB, "svc-b", { name: "Svc B" });
 
     const dir = await mkdtemp(path.join(os.tmpdir(), "scp-iac-test-"));
     try {
-      await expect(synthToFile(app, path.join(dir, "manifest.json"))).rejects.toThrow(
-        /exactly one stack/
-      );
+      const fileA = path.join(dir, "a.json");
+      const fileB = path.join(dir, "b.json");
+      await synthToFile(stackA, fileA);
+      await synthToFile(stackB, fileB);
+
+      const parsedA = DesiredStateManifestSchema.parse(JSON.parse(await readFile(fileA, "utf8")));
+      const parsedB = DesiredStateManifestSchema.parse(JSON.parse(await readFile(fileB, "utf8")));
+      expect(parsedA.stackName).toBe("multi-a");
+      expect(parsedB.stackName).toBe("multi-b");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
-
-  it("rejects an empty stack name", () => {
-    const app = new App();
-    expect(() => new Stack(app, "")).toThrow();
-    expect(() => new Stack(app, "   ")).toThrow();
   });
 });
 
@@ -206,8 +216,7 @@ describe("@scp/iac: example stack synth", () => {
  */
 describe("@scp/iac: campaign/release-topology synth", () => {
   it("a ReleaseTopology with a parallel wave and a sequential wave resolves construct-reference targets to URN strings", () => {
-    const app = new App();
-    const stack = new Stack(app, "release-platform");
+    const stack = new Stack("release-platform");
 
     const api = new Service(stack, "api", { name: "API" });
     const worker = new Service(stack, "worker", { name: "Worker" });
@@ -235,8 +244,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
   });
 
   it("a Campaign resolves construct-reference targets to URNs and carries description/topology", () => {
-    const app = new App();
-    const stack = new Stack(app, "release-platform-2");
+    const stack = new Stack("release-platform-2");
 
     const api = new Service(stack, "api", { name: "API" });
     const worker = new Service(stack, "worker", { name: "Worker" });
@@ -263,8 +271,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
   });
 
   it("a Campaign resolves a ReleaseTopology CONSTRUCT REFERENCE for `topology` to its URN, not just a raw string", () => {
-    const app = new App();
-    const stack = new Stack(app, "release-platform-3");
+    const stack = new Stack("release-platform-3");
 
     const api = new Service(stack, "api", { name: "API" });
     const topology = new ReleaseTopology(stack, "canary-topology", {
@@ -283,8 +290,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
   });
 
   it("a Campaign with no description/topology synthesizes only targets", () => {
-    const app = new App();
-    const stack = new Stack(app, "release-platform-3");
+    const stack = new Stack("release-platform-3");
     const api = new Service(stack, "api", { name: "API" });
 
     const campaign = new Campaign(stack, "bare-campaign", {
@@ -299,8 +305,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
   });
 
   it("no construct exposes a membership-edge method — `coordinates` is system-managed (M5 CRITICAL)", () => {
-    const app = new App();
-    const stack = new Stack(app, "modernization-platform");
+    const stack = new Stack("modernization-platform");
 
     const svcA = new Service(stack, "svc-a", { name: "Svc A" });
     const campaignA = new Campaign(stack, "campaign-a", { name: "Campaign A", targets: [svcA] });
@@ -333,8 +338,7 @@ describe("@scp/iac constructs: executor bindings on a placement", () => {
   /** Local to this block: the placements suite below defines its own, and reaching across describe
    *  scopes for a helper is how a shared fixture quietly acquires a second set of requirements. */
   function fixture(stackName: string) {
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
     const component = new Component(stack, "api", { name: "API", service });
     const gamma = new DeploymentTarget(stack, "gamma", { name: "gamma" });
@@ -382,8 +386,7 @@ describe("@scp/iac constructs: executor bindings on a placement", () => {
 
 describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
   function stackWithComponent(name: string) {
-    const app = new App();
-    const stack = new Stack(app, name);
+    const stack = new Stack(name);
     const service = new Service(stack, "billing", { name: "Billing" });
     const component = new Component(stack, "api", { name: "API", service });
     return { stack, service, component };
@@ -466,6 +469,16 @@ describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
     expect(() => stack.synth()).toThrow();
   });
 
+  it("D16(6): bindsExecutor's spec is optional (ExecutorBindingSpec is all-optional-fielded) — omitting it still refuses at synth, never silently", () => {
+    // `component.bindsExecutor()` — no argument at all — must be legal TypeScript (D16(6)'s
+    // "props? omitted entirely when all fields are optional"). It still fails at SYNTH, the same
+    // as the "neither inline nor system-backed" case above; the convention is about the call
+    // being typeable, not about the empty binding becoming valid.
+    const { stack, component } = stackWithComponent("bare-call");
+    component.bindsExecutor();
+    expect(() => stack.synth()).toThrow();
+  });
+
   it("declaration ORDER never changes the synthesized manifest — only content does", () => {
     function build(order: "forward" | "reverse") {
       const { stack, component } = stackWithComponent("determinism-c1");
@@ -487,8 +500,7 @@ describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
   });
 
   it("stack.addSourceMapping / addExecutorBinding accept a bare URN for a component outside this program", () => {
-    const app = new App();
-    const stack = new Stack(app, "external-refs");
+    const stack = new Stack("external-refs");
     const external = "urn:scp:other-program:component:legacy";
     stack.addSourceMapping(external, { sourceKind: "gitea", repoPattern: "ops/legacy" });
     stack.addExecutorBinding(external, { pluginModule: "terraform", pluginInstanceId: "tf-1" });
@@ -511,8 +523,7 @@ describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
    * | have `placeAt` push a decl directly instead of constructing `Placement` | no test fails — the two forms are required to converge, so this is asserted by BOTH producing the identical manifest |
    */
   function fixture(stackName: string) {
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
     const component = new Component(stack, "api", { name: "API", service });
     const gamma = new DeploymentTarget(stack, "gamma", { name: "gamma" });
@@ -580,8 +591,7 @@ describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
  */
 describe("@scp/iac constructs: Policy (M21.6 — a dependency subscription is a policy effect)", () => {
   it("synthesizes a policy carrying a dependencySubscription effect as a `policy` object with the properties verbatim", () => {
-    const app = new App();
-    const stack = new Stack(app, "checkout-stack");
+    const stack = new Stack("checkout-stack");
     const svc = new Service(stack, "checkout", { name: "checkout" });
     const api = new Component(stack, "checkout-api", { name: "checkout-api", service: svc });
 
@@ -626,8 +636,7 @@ describe("@scp/iac constructs: Policy (M21.6 — a dependency subscription is a 
   });
 
   it("is uniform: an explicit urn/domainId/labels pass through like every other resource construct", () => {
-    const app = new App();
-    const stack = new Stack(app, "s");
+    const stack = new Stack("s");
     new Policy(stack, "p", {
       name: "p",
       urn: "urn:scp:acme:policy:hand-named",
@@ -667,8 +676,7 @@ describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
    * | have `producesDependency` push a decl directly instead of delegating to the stack | no test fails — the two spellings are required to converge, which the sugar-equivalence case asserts |
    */
   function fixture(stackName: string) {
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
     const component = new Component(stack, "api", { name: "API", service });
     return { stack, service, component };
@@ -766,8 +774,7 @@ describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
    * | resolve the subject to something other than its URN (e.g. the construct id) | "lands in the manifest…" and "accepts a container referenced by URN…" FAIL |
    */
   function fixture(stackName: string) {
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
     return { stack, service };
   }
@@ -827,5 +834,259 @@ describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
     const manifest = bare.synth();
     expect(manifest.governanceMoveRungs).toBeUndefined();
     expect(Object.keys(manifest).sort()).toEqual(["objects", "relationships", "stackName"]);
+  });
+});
+
+/**
+ * D16(2) — `fromXxx()` reference statics returning interface types. `Service.fromName(...)` /
+ * `.fromUrn(...)` return `IService`, and an OWNED `Service` construct implements the same
+ * interface, so the two are interchangeable wherever `IService` (or the looser `IResourceRef`) is
+ * accepted — this is what lets a component in one repo reference a service declared in another
+ * stack's file without a bare, untyped URN string.
+ */
+describe("@scp/iac constructs: fromXxx() reference statics (D16(2))", () => {
+  it("fromUrn returns the exact URN given, verbatim, with the construct's typeId", () => {
+    const ref = Service.fromName; // sanity: the static exists on the exported class
+    expect(typeof ref).toBe("function");
+    const svc = Service.fromUrn("urn:scp:payments-team:service:payments");
+    expect(svc).toEqual({ urn: "urn:scp:payments-team:service:payments", typeId: "service" });
+  });
+
+  it("fromName derives a deterministic, syntactically-valid-URN placeholder from (kind, name)", () => {
+    const a = Service.fromName("payments");
+    const b = Service.fromName("payments");
+    expect(a).toEqual(b); // pure — same input, same reference, every time
+    expect(a.typeId).toBe("service");
+    // Syntactically a real URN (UrnSchema: urn:scp:{org}:{type}:{slug-path}) so it is legal
+    // wherever a construct's own derived URN is — even though today nothing resolves it (below).
+    expect(a.urn).toMatch(/^urn:scp:[a-z0-9-]+:service:payments$/);
+  });
+
+  it("fromName is stable across every typed-registry construct, keyed by its own typeId", () => {
+    expect(Domain.fromName("platform").typeId).toBe("domain");
+    expect(Team.fromName("team-payments").typeId).toBe("team");
+    expect(Policy.fromName("checkout-deps").typeId).toBe("policy");
+    expect(DeploymentTarget.fromName("commercial-amer-production").typeId).toBe(
+      "deployment-target"
+    );
+    expect(Group.fromName("platform-admins").typeId).toBe("group");
+    expect(User.fromName("alice").typeId).toBe("user");
+    expect(ServiceAccount.fromName("ci-bot").typeId).toBe("service-account");
+    expect(Component.fromName("ledger-core").typeId).toBe("component");
+  });
+
+  it("a reference NEVER creates an object in the manifest — it only yields a URN for other entries to point at", () => {
+    const stack = new Stack("ref-no-object");
+    const api = new Component(stack, "api", {
+      name: "checkout-api",
+      service: Service.fromName("checkout") // reference, not an owned construct
+    });
+    const manifest = stack.synth();
+
+    // The component is the ONLY object — no "service" object was synthesized for the reference.
+    expect(manifest.objects.map((o) => o.typeId)).toEqual(["component"]);
+    expect(manifest.objects[0]?.urn).toBe(api.urn);
+    // The `contains` edge still points at the reference's URN, exactly like the existing raw-URN-
+    // string case (`"a Component may belong to an EXTERNAL service by URN string"` above).
+    expect(manifest.relationships).toEqual([
+      { typeId: "contains", fromUrn: Service.fromName("checkout").urn, toUrn: api.urn }
+    ]);
+  });
+
+  it("an owned construct and a fromXxx() reference are INTERCHANGEABLE wherever the interface is accepted", () => {
+    // Same call, two different argument shapes for `service:` — both compile and both synthesize
+    // the `contains` edge from whatever URN the argument carries. This is the D16(2) contract:
+    // IService accepts an owned Service OR a Service.fromName()/fromUrn() reference.
+    const owned = new Stack("interop-stack");
+    const svc = new Service(owned, "checkout", { name: "Checkout" });
+    new Component(owned, "api", { name: "checkout-api", service: svc });
+
+    // Same stack NAME (so the component's own URN matches too) — only `service:`'s argument shape
+    // differs between the two builds.
+    const referenced = new Stack("interop-stack");
+    new Component(referenced, "api", {
+      name: "checkout-api",
+      service: Service.fromUrn(svc.urn) // same URN, via the reference door
+    });
+
+    expect(owned.synth().relationships).toEqual(referenced.synth().relationships);
+  });
+
+  it("fromName/fromUrn compose with placeAt and dependsOn exactly like an owned construct would", () => {
+    const stack = new Stack("ref-composition");
+    const api = new Component(stack, "api", { name: "api", service: Service.fromName("payments") });
+    api.placeAt(DeploymentTarget.fromName("commercial-amer-production"));
+    api.dependsOn(Component.fromName("ledger-core"));
+
+    const manifest = stack.synth();
+    // Still only ONE real object in this program: the component itself.
+    expect(manifest.objects.map((o) => o.typeId)).toEqual(["component"]);
+    expect(manifest.placements).toEqual([
+      {
+        componentUrn: api.urn,
+        deploymentTargetUrn: DeploymentTarget.fromName("commercial-amer-production").urn
+      }
+    ]);
+    expect(manifest.relationships).toEqual(
+      expect.arrayContaining([
+        { typeId: "depends_on", fromUrn: api.urn, toUrn: Component.fromName("ledger-core").urn }
+      ])
+    );
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+});
+
+/**
+ * D16(1) — the guaranteed L1 escape hatch: `Stack.addManifestEntry`/`addRelationship` (raw doors)
+ * and `ResourceConstruct.overrideManifestEntry` (per-construct patch). Follows the house
+ * "synthesizes identically through the sugar and the stack-level door" pattern already used for
+ * placements/producers/rungs above.
+ */
+describe("@scp/iac constructs: the L1 escape hatch (D16(1))", () => {
+  it("an L1 addManifestEntry object and its L2 equivalent synthesize identically", () => {
+    const l2 = new Stack("l1-vs-l2");
+    new Service(l2, "checkout", { name: "Checkout", properties: { tier: "critical" } });
+
+    const l1 = new Stack("l1-vs-l2"); // same stack name -> same derived URN
+    l1.addManifestEntry({
+      urn: deriveConstructUrn("l1-vs-l2", "service", "checkout"),
+      typeId: "service",
+      name: "Checkout",
+      properties: { tier: "critical" },
+      labels: {}
+    });
+
+    expect(l1.synth()).toEqual(l2.synth());
+  });
+
+  it("addManifestEntry is NOT gated by any registry of known typeIds — an L2-unknown kind synthesizes exactly like any other", () => {
+    // The whole point of D16(1): no L2 construct can block reaching L1. There is no typed
+    // `FuturePipeline` construct in this package; the raw door does not care.
+    const stack = new Stack("l1-unknown-kind");
+    stack.addManifestEntry({
+      urn: "urn:scp:l1-unknown-kind:future-thing:widget",
+      typeId: "future-thing",
+      name: "Widget",
+      properties: {},
+      labels: {}
+    });
+    const manifest = stack.synth();
+    expect(manifest.objects).toEqual([
+      {
+        urn: "urn:scp:l1-unknown-kind:future-thing:widget",
+        typeId: "future-thing",
+        name: "Widget",
+        properties: {},
+        labels: {}
+      }
+    ]);
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it("an L1 addRelationship and the owns() fluent sugar synthesize identically", () => {
+    const sugar = new Stack("l1-rel-sugar");
+    const team = new Team(sugar, "team", { name: "Team" });
+    const svc = new Service(sugar, "svc", { name: "Svc" });
+    team.owns(svc);
+
+    const raw = new Stack("l1-rel-sugar");
+    const rawTeam = new Team(raw, "team", { name: "Team" });
+    const rawSvc = new Service(raw, "svc", { name: "Svc" });
+    raw.addRelationship("owns", rawTeam, rawSvc);
+
+    expect(sugar.synth()).toEqual(raw.synth());
+  });
+
+  it("addRelationship accepts an arbitrary typeId no fluent method names", () => {
+    const stack = new Stack("l1-rel-arbitrary");
+    const a = new Service(stack, "a", { name: "A" });
+    const b = new Service(stack, "b", { name: "B" });
+    stack.addRelationship("publishes_to", a, b, { channel: "stable" });
+    expect(stack.synth().relationships).toEqual([
+      { typeId: "publishes_to", fromUrn: a.urn, toUrn: b.urn, properties: { channel: "stable" } }
+    ]);
+  });
+
+  it("overrideManifestEntry patches fields the typed props don't expose, and WINS over the construct's own properties", () => {
+    const stack = new Stack("l1-override");
+    const svc = new Service(stack, "svc", { name: "Svc", properties: { tier: "low" } });
+    svc.overrideManifestEntry({ properties: { tier: "critical", extra: "field" } });
+
+    const manifest = stack.synth();
+    expect(manifest.objects[0]).toEqual({
+      urn: svc.urn,
+      typeId: "service",
+      name: "Svc",
+      properties: { tier: "critical", extra: "field" },
+      labels: {}
+    });
+  });
+
+  it("overrideManifestEntry composes across repeated calls — each patches over the last", () => {
+    const stack = new Stack("l1-override-compose");
+    const svc = new Service(stack, "svc", { name: "Svc" });
+    svc.overrideManifestEntry({ name: "Renamed" });
+    svc.overrideManifestEntry({ labels: { owner: "platform" } });
+
+    const obj = stack.synth().objects[0];
+    expect(obj?.name).toBe("Renamed");
+    expect(obj?.labels).toEqual({ owner: "platform" });
+    // urn/typeId are excluded from the override surface by design — identity never drifts.
+    expect(obj?.urn).toBe(svc.urn);
+    expect(obj?.typeId).toBe("service");
+  });
+});
+
+/**
+ * D16(5) — construct-path in synth errors (synth-side half). Every `DesiredStateManifestSchema`
+ * validation failure now names the construct-tree PATH that produced the offending entry, not just
+ * a bare array index into the assembled manifest — the whole point being that a large multi-
+ * construct file's refusal maps back to the ONE construct a team actually wrote.
+ */
+describe("@scp/iac: construct-path in synth errors (D16(5))", () => {
+  it("Construct.path is the slash-joined tree path from the root, excluding App", () => {
+    const stack = new Stack("payments-api");
+    const svc = new Service(stack, "billing", { name: "Billing" });
+    expect(stack.path).toBe("payments-api");
+    expect(svc.path).toBe("payments-api/billing");
+  });
+
+  it("an executor-binding validation refusal names the binding's construct path", () => {
+    const stack = new Stack("mode-a-conflict-path");
+    const svc = new Service(stack, "billing", { name: "Billing" });
+    const api = new Component(stack, "api", { name: "API", service: svc });
+    api.bindsExecutor({
+      executionSystem: "urn:scp:x:execution-system:argocd",
+      config: { serverUrl: "https://attacker.example" }
+    });
+    expect(() => stack.synth()).toThrow(/mode-a-conflict-path\/api/);
+  });
+
+  it("a relationship validation refusal names the FROM construct's path", () => {
+    const stack = new Stack("rel-path");
+    const svc = new Service(stack, "svc", { name: "Svc" });
+    svc.dependsOn("not-a-valid-urn"); // fails UrnSchema on the `to` side
+    expect(() => stack.synth()).toThrow(/rel-path\/svc/);
+  });
+
+  it("an L1 addManifestEntry validation refusal falls back to the entry's own URN (no construct exists to have a path)", () => {
+    const stack = new Stack("l1-path-fallback");
+    stack.addManifestEntry({
+      urn: "urn:scp:l1-path-fallback:service:x",
+      typeId: "service",
+      name: "", // fails ManifestObjectSchema's name.min(1)
+      properties: {},
+      labels: {}
+    });
+    expect(() => stack.synth()).toThrow(/urn:scp:l1-path-fallback:service:x/);
+  });
+
+  it("the error message identifies which manifest field failed, not just that synth failed", () => {
+    // Guards against a regression that reports the construct path but loses the underlying Zod
+    // message — both must survive, since only the message says WHAT was wrong.
+    const stack = new Stack("message-preserved");
+    const svc = new Service(stack, "svc", { name: "Svc" });
+    svc.dependsOn("not-a-valid-urn");
+    expect(() => stack.synth()).toThrow(/must match urn:scp/);
   });
 });

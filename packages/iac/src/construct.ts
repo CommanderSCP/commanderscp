@@ -12,7 +12,7 @@ import {
   type ManifestSourceMapping,
   type SourceMappingScope
 } from "@scp/schemas";
-import { deriveConstructUrn } from "./urn.js";
+import { deriveConstructUrn, slugify } from "./urn.js";
 
 /**
  * CDK-style construct tree, inspired by AWS CDK's `App`/`Stack`/`Construct` shape but far
@@ -28,6 +28,31 @@ import { deriveConstructUrn } from "./urn.js";
  * import per relationship type. The tradeoff: relationship declarations live on `Stack` internally
  * (`_registerRelationship`), not as their own addressable construct id — acceptable here since
  * relationships have no independent lifecycle state to reference later within a single synth.
+ *
+ * ## Layering: L1 / L2 / L3 (team-pipeline-iac.md D16(1))
+ *
+ * **L1 — the raw manifest entry.** `Stack.addManifestEntry(object)` appends a `ManifestObject`
+ * verbatim; `Stack.addRelationship(typeId, from, to, properties?)` does the same for an edge; every
+ * `ResourceConstruct` additionally offers `overrideManifestEntry(patch)` to patch fields its own
+ * typed props don't expose. None of these doors consult a registry of "known" typeIds — a `typeId`
+ * no typed construct in this package has ever heard of synthesizes exactly as well as `"service"`
+ * does. That is what makes "no L2 construct may block reaching L1" structurally true: there is no
+ * gate to bypass, because the L2 constructs below are themselves built on these same doors and
+ * contribute to the SAME collections `synth()` sorts and emits.
+ *
+ * **L2 — the typed constructs.** Everything exported from this module below this comment:
+ * `Service`, `Component`, `Campaign`, `ReleaseTopology`, the `add*`/fluent sugar. Each is a thin
+ * layer that resolves references to URNs and calls the L1 doors underneath — `Component.placeAt`
+ * constructs a `Placement`, which calls `Stack.addPlacement`; `ResourceConstruct.dependsOn` calls
+ * `Stack._registerRelationship`. An L1-authored entry and its L2 equivalent synthesize IDENTICALLY
+ * (pinned in `construct.test.ts`), because the L2 form is never anything more than the L1 call
+ * plus ergonomics.
+ *
+ * **L3 — patterns shipped via standards packages.** Not part of `@scp/iac` itself: an org's
+ * `@corp/scp-standards`-style package (D10) composes L2 constructs into higher-level authoring
+ * patterns (a `waves.standard` wave shape, a `repos()` helper) and publishes them like any other
+ * package. `@scp/iac` has no special knowledge of L3 — it is ordinary code built on L1/L2's public
+ * surface, which is exactly why nothing here needs to change for a new L3 pattern to exist.
  */
 
 // -------------------------------------------------------------------------------------------
@@ -40,47 +65,118 @@ export abstract class Construct {
     readonly scope: Construct | undefined,
     readonly id: string
   ) {}
+
+  /**
+   * Slash-joined construct-tree path from the root, e.g. `billing-platform/billing-api`
+   * (team-pipeline-iac.md D16(5)) — every synth validation error names this, so a refusal maps back
+   * to the construct a team actually wrote, not just an array index in the assembled manifest. `App`
+   * is excluded from the path (it is synth plumbing, D15a, and never appears in user-facing IaC).
+   */
+  get path(): string {
+    const parts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- walking the scope chain upward.
+    let node: Construct | undefined = this;
+    while (node) {
+      if (!(node instanceof App)) parts.unshift(node.id);
+      node = node.scope;
+    }
+    return parts.join("/");
+  }
+}
+
+/**
+ * A URN plus which typed-registry kind it names — the shape BOTH an owned `ResourceConstruct` and a
+ * `fromXxx()` reference satisfy (D16(2)). `Kind` is the construct's `typeId` literal (`"service"`,
+ * `"component"`, …), so `IService` and `ITeam` are structurally distinct in TypeScript even though
+ * neither carries any field beyond identity — passing a `Team` reference where an `IService` is
+ * expected is a compile error, not just a naming convention.
+ */
+export interface IResourceRef<Kind extends string = string> {
+  readonly urn: string;
+  readonly typeId: Kind;
+}
+
+// Per-kind aliases of `IResourceRef<Kind>` (not `interface X extends IResourceRef<"…"> {}` —
+// an interface adding no members over its supertype is the same type, and this repo's lint config
+// (`@typescript-eslint/no-empty-object-type`) refuses to let the two spellings drift silently).
+
+/** A reference to an EXISTING `service`, owned or `Service.fromName()`/`Service.fromUrn()`. */
+export type IService = IResourceRef<"service">;
+/** A reference to an EXISTING `domain`, owned or `Domain.fromName()`/`Domain.fromUrn()`. */
+export type IDomain = IResourceRef<"domain">;
+/** A reference to an EXISTING `team`, owned or `Team.fromName()`/`Team.fromUrn()`. */
+export type ITeam = IResourceRef<"team">;
+/** A reference to an EXISTING `policy`, owned or `Policy.fromName()`/`Policy.fromUrn()`. */
+export type IPolicy = IResourceRef<"policy">;
+/** A reference to an EXISTING `deployment-target`, owned or `DeploymentTarget.fromName()`/`.fromUrn()`. */
+export type IDeploymentTarget = IResourceRef<"deployment-target">;
+/** A reference to an EXISTING `group`, owned or `Group.fromName()`/`Group.fromUrn()`. */
+export type IGroup = IResourceRef<"group">;
+/** A reference to an EXISTING `user`, owned or `User.fromName()`/`User.fromUrn()`. */
+export type IUser = IResourceRef<"user">;
+/** A reference to an EXISTING `service-account`, owned or `ServiceAccount.fromName()`/`.fromUrn()`. */
+export type IServiceAccount = IResourceRef<"service-account">;
+/** A reference to an EXISTING `component`, owned or `Component.fromName()`/`Component.fromUrn()`. */
+export type IComponent = IResourceRef<"component">;
+
+/** The reserved, syntactically-URN-shaped namespace `fromName()` placeholders live in — see
+ *  `nameReferenceUrn`'s doc for the whole rule. Not a real stack name; no owned construct's stack
+ *  is ever slugified to exactly this token (`slugify` never emits a bare word with no input, and no
+ *  real stack is named literally "named-ref"), so it cannot collide with a genuine synth-derived URN. */
+const NAME_REFERENCE_NAMESPACE = "named-ref";
+
+/**
+ * Builds the placeholder URN a `fromName()` reference resolves to at synth time (D16(2)/D14).
+ *
+ * `@scp/iac` synth is pure, offline, and single-stack-scoped (`urn.ts`'s module doc) — it has no
+ * visibility into WHICH stack owns an object merely named `"payments"`, so it cannot derive that
+ * object's real `deriveConstructUrn`-style URN the way an OWNED construct can. What it CAN do is
+ * name the reference unambiguously by (kind, name) in a reserved namespace that still satisfies
+ * `UrnSchema`'s `urn:scp:{org}:{type}:{slug-path}` shape (`@scp/schemas`), so the reference is legal
+ * wherever a construct's own URN would be.
+ *
+ * Resolving `urn:scp:named-ref:service:payments` to the real object — matching by (typeId, name)
+ * across whatever stack actually declared it — is SERVER-SIDE behavior at plan time
+ * (team-pipeline-iac.md D14: "every fromName()/fromUrn() reference resolves server-side at plan
+ * time"). That resolution is not built yet; until it lands, a manifest using a `fromName()`
+ * reference REFUSES THE PLAN LOUDLY (not-found) rather than silently succeeding against the wrong
+ * object — which is the correct behavior for an unresolved structural reference, not a defect of
+ * this placeholder.
+ */
+function nameReferenceUrn(typeId: string, name: string): string {
+  return `urn:scp:${NAME_REFERENCE_NAMESPACE}:${typeId}:${slugify(name)}`;
 }
 
 interface RelationshipDecl {
   typeId: string;
-  /** A construct, or an external endpoint's URN string — symmetric with `to`. The fluent methods
-   *  (`dependsOn`/`consumes`/`owns`) always pass `this` (a construct); `Component`'s `contains`
-   *  edge passes `props.service`, which may be a `Service` construct OR an external service URN. */
-  from: ResourceConstruct | string;
-  to: ResourceConstruct | string;
+  /** A construct, a `fromXxx()` reference, or an external endpoint's URN string — symmetric with
+   *  `to`. The fluent methods (`dependsOn`/`consumes`/`owns`) always pass `this` (a construct);
+   *  `Component`'s `contains` edge passes `props.service`, which may be a `Service`
+   *  construct/reference OR an external service URN. */
+  from: IResourceRef | string;
+  to: IResourceRef | string;
   properties?: Record<string, unknown> | undefined;
 }
 
-/**
- * Root scope holding one or more `Stack`s. `App` itself never appears in a manifest — it's purely
- * an in-memory aggregation point, mirroring real CDK's `App`.
- */
-export class App extends Construct {
-  private readonly stacks: Stack[] = [];
+/** A projection-collection entry paired with the construct-tree LOCATION that declared it
+ *  (D16(5)) — `locationOf()`'s output at the time the `addXxx` call was made. `Stack.synth()` keeps
+ *  this alongside the resolved manifest entry through sorting, so a validation error on entry N of
+ *  the sorted array can still name where entry N came from. */
+interface LocatedDecl<T> {
+  readonly entry: T;
+  readonly location: string;
+}
 
+/**
+ * Root scope every `Stack` sits under. `App` itself never appears in a manifest — it is purely
+ * in-memory synth plumbing (`Construct.path` excludes it, mirroring real CDK's `App`), and it is
+ * NOT part of `@scp/iac`'s public surface (D15a: "`App` disappears from user code entirely").
+ * `new Stack("platform-estate")` auto-creates one internally; no user-facing IaC file ever needs to
+ * write `new App()`, because there is no longer any form of `Stack`'s constructor that accepts one.
+ */
+class App extends Construct {
   constructor() {
     super(undefined, "App");
-  }
-
-  /** @internal called by `Stack`'s constructor. */
-  _registerStack(stack: Stack): void {
-    this.stacks.push(stack);
-  }
-
-  listStacks(): readonly Stack[] {
-    return this.stacks;
-  }
-
-  /**
-   * Synthesizes every stack in this app. Sorted by `stackName` (not registration order) so an app
-   * whose stacks were added in a different order still produces the same array — same determinism
-   * discipline as `Stack.synth()`'s object/relationship ordering.
-   */
-  synth(): DesiredStateManifest[] {
-    return [...this.stacks]
-      .sort((a, b) => a.stackName.localeCompare(b.stackName))
-      .map((s) => s.synth());
   }
 }
 
@@ -89,16 +185,20 @@ export class App extends Construct {
  * supplies) — see `ManifestSourceMappingSchema`.
  */
 export interface SourceMappingSpec {
-  sourceKind: string;
-  repoPattern?: string;
-  pathPattern?: string;
-  /** Which pipeline of the component this source drives (ADR-0007). Omitted ⇒ `configuration`. */
-  type?: ExecutorType;
+  readonly sourceKind: string;
+  /** @default undefined — matches any repo. */
+  readonly repoPattern?: string;
+  /** @default undefined — matches any path. */
+  readonly pathPattern?: string;
+  /** Which pipeline of the component this source drives (ADR-0007).
+   *  @default "configuration" */
+  readonly type?: ExecutorType;
   /** Declared reach of the repo (pipeline-substrate-registry-scan.md §10.6): `global` (shared across
-   *  domains, tracked at the commander) | `domain` (tracked only in one domain). Omitted ⇒ this
-   *  program does not manage the scope (an apply never clears one set by hand); explicit `null` ⇒
-   *  declare it undeclared. A label read by pipelines, the CLI and plans — never a routing input. */
-  scope?: SourceMappingScope | null;
+   *  domains, tracked at the commander) | `domain` (tracked only in one domain). A label read by
+   *  pipelines, the CLI and plans — never a routing input.
+   *  @default undefined — this program does not manage the scope (an apply never clears one set by
+   *  hand); explicit `null` declares it undeclared, a different value from omission. */
+  readonly scope?: SourceMappingScope | null;
 }
 
 /**
@@ -106,24 +206,42 @@ export interface SourceMappingSpec {
  * `ManifestExecutorBindingSchema`, whose either-inline-or-system-backed rule this shape inherits
  * (the server rejects a manifest that satisfies neither, at `POST /plans`).
  */
+/**
+ * All fields optional — the either-inline-or-execution-system-backed refinement (which combination
+ * is legal) is enforced by `ManifestExecutorBindingSchema` at synth, not by this type. Every call
+ * site that takes one (`bindsExecutor`, `addExecutorBinding`, `addPlacementExecutorBinding`) makes
+ * the parameter itself optional too, per D16(6)'s "props? omitted entirely when all fields are
+ * optional" — `component.bindsExecutor()` is legal TypeScript; it just fails synth validation like
+ * any other incomplete binding.
+ */
 export interface ExecutorBindingSpec {
-  /** Which pipeline this binding drives (ADR-0007). Omitted ⇒ `configuration`. */
-  type?: ExecutorType;
-  pluginModule?: string;
-  pluginInstanceId?: string;
-  config?: Record<string, unknown>;
+  /** Which pipeline this binding drives (ADR-0007).
+   *  @default "configuration" */
+  readonly type?: ExecutorType;
+  /** @default undefined — required together with `pluginInstanceId` for an INLINE binding; omit
+   *  both for an execution-system-backed one. */
+  readonly pluginModule?: string;
+  /** @default undefined — see `pluginModule`. */
+  readonly pluginInstanceId?: string;
+  /** @default undefined — inline binding config; not legal alongside `executionSystem`. */
+  readonly config?: Record<string, unknown>;
   /** `{ configFieldName: secretKey }`. Names secrets stored via `PUT /secrets/{key}` — a synthesized
-   *  manifest is committed to git, so it must never carry the values themselves. */
-  secretRefs?: Record<string, string>;
-  allowedHosts?: string[];
-  externalRef?: string;
-  /** A registered `execution-system` construct, or its id/URN (Mode A). When set, module, instance
-   *  id, config and credentials all resolve from that system — declare none of them here. */
-  executionSystem?: ResourceConstruct | string;
+   *  manifest is committed to git, so it must never carry the values themselves.
+   *  @default undefined */
+  readonly secretRefs?: Record<string, string>;
+  /** @default undefined */
+  readonly allowedHosts?: string[];
+  /** Executor-specific target identifier (e.g. an Argo CD Application name).
+   *  @default undefined */
+  readonly externalRef?: string;
+  /** A registered `execution-system` construct/reference, or its id/URN (Mode A). When set, module,
+   *  instance id, config and credentials all resolve from that system — declare none of them here.
+   *  @default undefined — an INLINE binding (`pluginModule` + `pluginInstanceId`) instead. */
+  readonly executionSystem?: IResourceRef | string;
 }
 
 /**
- * A named deployable unit (`new Stack(app, 'billing-platform')`) — this name becomes the row's
+ * A named deployable unit (`new Stack('billing-platform')`) — this name becomes the row's
  * server-written `managed_by_stack` (drizzle/0068), which is what scopes pruning, and the "org"
  * segment of every URN this stack's constructs derive (`urn.ts` — synth is offline and has no real
  * org id to key off). It is also mirrored into `labels` as `scp:stack`, for humans only.
@@ -131,15 +249,15 @@ export interface ExecutorBindingSpec {
  * method supplies) — see `ManifestDependencyProducerSchema`.
  */
 export interface DependencyProducerSpec {
-  ecosystem: DependencyEcosystem;
+  readonly ecosystem: DependencyEcosystem;
   /** The ECOSYSTEM-NATIVE coordinate, VERBATIM — `@acme/lib`, `github.com/acme/lib`,
    *  `com.acme:lib`, `docker.io/library/alpine`. Never a URN and never slugified: `@acme/lib` and
    *  `acme-lib` share a URN slug and are two different packages. */
-  coordinate: string;
+  readonly coordinate: string;
 }
 
 /**
- * A named deployable unit (`new Stack(app, 'billing-platform')`) — this name becomes the
+ * A named deployable unit (`new Stack('billing-platform')`) — this name becomes the
  * `scp:stack` managed-by marker (`apps/server/src/iac/plan-diff.ts`) that scopes pruning, and the
  * "org" segment of every URN this stack's constructs derive (`urn.ts` — synth is offline and has
  * no real org id to key off).
@@ -148,17 +266,25 @@ export class Stack extends Construct {
   readonly stackName: string;
   private readonly resources: ResourceConstruct[] = [];
   private readonly relationshipDecls: RelationshipDecl[] = [];
-  private readonly sourceMappingDecls: ManifestSourceMapping[] = [];
-  private readonly placementDecls: ManifestPlacement[] = [];
-  private readonly executorBindingDecls: ManifestExecutorBinding[] = [];
-  private readonly dependencyProducerDecls: ManifestDependencyProducer[] = [];
-  private readonly governanceMoveRungDecls: ManifestGovernanceMoveRung[] = [];
+  private readonly sourceMappingDecls: LocatedDecl<ManifestSourceMapping>[] = [];
+  private readonly placementDecls: LocatedDecl<ManifestPlacement>[] = [];
+  private readonly executorBindingDecls: LocatedDecl<ManifestExecutorBinding>[] = [];
+  private readonly dependencyProducerDecls: LocatedDecl<ManifestDependencyProducer>[] = [];
+  private readonly governanceMoveRungDecls: LocatedDecl<ManifestGovernanceMoveRung>[] = [];
+  /** L1 raw objects (D16(1)) — entries added via `addManifestEntry`, never through a typed
+   *  construct. Kept separate from `resources` (which holds typed CONSTRUCTS, not manifest
+   *  objects) so `_toManifestObject()` is only ever called on something that actually has one. */
+  private readonly rawObjectDecls: ManifestObject[] = [];
 
-  constructor(app: App, stackName: string) {
-    super(app, stackName);
+  /**
+   * `new Stack("platform-estate")` is the ONLY form (D15a): `App` is internal synth plumbing,
+   * auto-created here, and never appears in user code — nothing in a component's, team's, or
+   * estate's file ever writes `new App()`.
+   */
+  constructor(stackName: string) {
+    super(new App(), stackName);
     if (stackName.trim().length === 0) throw new Error("Stack name must be non-empty");
     this.stackName = stackName;
-    app._registerStack(this);
   }
 
   /** @internal called by `ResourceConstruct`'s constructor. */
@@ -172,6 +298,42 @@ export class Stack extends Construct {
   }
 
   /**
+   * L1 — the guaranteed raw manifest-entry door (D16(1)). Appends `object` to this stack's
+   * `objects` VERBATIM, exactly as if a typed construct had synthesized it — no L2 construct
+   * (`Service`, `Component`, …) sits between this call and the manifest, and none of them can
+   * block it: this method takes any `typeId`, including one no typed construct in this package
+   * knows about yet. It is what makes "no L2 construct may block reaching L1" structurally true
+   * rather than a promise — there is no registry of "known" typeIds this checks against.
+   *
+   * The one thing it does NOT do that a typed construct does: derive a URN when one is omitted.
+   * `ManifestObjectSchema.urn` is required, so callers supply it — `deriveConstructUrn` (`urn.ts`,
+   * also exported from `./index.js`) is the same deterministic algorithm every typed construct
+   * uses, so an L1 entry can reproduce an L2 one byte-for-byte (see `construct.test.ts`'s "an L1
+   * addManifestEntry object and its L2 equivalent synthesize identically" case).
+   */
+  addManifestEntry(object: ManifestObject): this {
+    this.rawObjectDecls.push(object);
+    return this;
+  }
+
+  /**
+   * L1 — the guaranteed raw relationship door (D16(1)). Declares an edge of ANY `typeId`, from and
+   * to any construct/reference/URN — the same escape hatch `addManifestEntry` is for objects.
+   * `dependsOn`/`consumes`/`owns` are convenience sugar over exactly this call (with `from` fixed
+   * to `this`); reach for this one directly for an edge type none of those three name, or when
+   * `from` is not the construct doing the declaring.
+   */
+  addRelationship(
+    typeId: string,
+    from: IResourceRef | string,
+    to: IResourceRef | string,
+    properties?: Record<string, unknown>
+  ): this {
+    this._registerRelationship({ typeId, from, to, properties });
+    return this;
+  }
+
+  /**
    * Declares a `source_mappings` row for `component` (docs/proposals/post-import-configuration.md
    * §8 C1). Prefer `component.mapsSource(...)`; this stack-level form exists for a component that
    * lives OUTSIDE this program and is referenced by URN — the same escape hatch relationship
@@ -182,16 +344,27 @@ export class Stack extends Construct {
    * else with a 400 —
    * ownership of a mapping is inherited from its component, so a stack cannot configure a component
    * it does not manage.
+   *
+   * DELIBERATELY typed `IResourceRef`, not `IComponent`: this is the L1-adjacent escape hatch, not
+   * the typed sugar (`Component.mapsSource`) — it exists precisely so a caller CAN write something
+   * `Component.mapsSource` cannot, and the SERVER is the authority on whether the target is a
+   * component (`iac-dependency-producers.integration.test.ts`'s analogous
+   * "…refused, exactly as the typed verb refuses one" pins the same shape for
+   * `addDependencyProducer`). Narrowing the parameter here would make that a compile error instead
+   * of the intended 400.
    */
-  addSourceMapping(component: ResourceConstruct | string, spec: SourceMappingSpec): this {
+  addSourceMapping(component: IResourceRef | string, spec: SourceMappingSpec): this {
     this.sourceMappingDecls.push({
-      componentUrn: resolveUrn(component),
-      sourceKind: spec.sourceKind,
-      ...(spec.repoPattern !== undefined ? { repoPattern: spec.repoPattern } : {}),
-      ...(spec.pathPattern !== undefined ? { pathPattern: spec.pathPattern } : {}),
-      ...(spec.type !== undefined ? { type: spec.type } : {}),
-      // Omitted stays OMITTED (not `null`): the two mean different things server-side (§10.6).
-      ...(spec.scope !== undefined ? { scope: spec.scope } : {})
+      location: locationOf(component),
+      entry: {
+        componentUrn: resolveUrn(component),
+        sourceKind: spec.sourceKind,
+        ...(spec.repoPattern !== undefined ? { repoPattern: spec.repoPattern } : {}),
+        ...(spec.pathPattern !== undefined ? { pathPattern: spec.pathPattern } : {}),
+        ...(spec.type !== undefined ? { type: spec.type } : {}),
+        // Omitted stays OMITTED (not `null`): the two mean different things server-side (§10.6).
+        ...(spec.scope !== undefined ? { scope: spec.scope } : {})
+      }
     });
     return this;
   }
@@ -213,14 +386,18 @@ export class Stack extends Construct {
    *
    * There is no `urn` argument and cannot be: a placement's URN is DERIVED from both endpoints
    * (ADR-0026 D3), so supplying one could disagree with what the server mints.
+   *
+   * DELIBERATELY typed `IResourceRef` on both parameters, not `IComponent`/`IDeploymentTarget` —
+   * see `addSourceMapping`'s doc for why the stack-level escape hatch stays loose while the sugar
+   * (`Component.placeAt`) stays typed.
    */
-  addPlacement(
-    component: ResourceConstruct | string,
-    deploymentTarget: ResourceConstruct | string
-  ): this {
+  addPlacement(component: IResourceRef | string, deploymentTarget: IResourceRef | string): this {
     this.placementDecls.push({
-      componentUrn: resolveUrn(component),
-      deploymentTargetUrn: resolveUrn(deploymentTarget)
+      location: locationOf(component),
+      entry: {
+        componentUrn: resolveUrn(component),
+        deploymentTargetUrn: resolveUrn(deploymentTarget)
+      }
     });
     return this;
   }
@@ -236,24 +413,32 @@ export class Stack extends Construct {
    * The pair must ALSO be declared as a placement by this same stack — `POST /plans` refuses a
    * binding on a pair the manifest does not declare, because apply would otherwise write it onto a
    * placement the same apply just pruned.
+   *
+   * DELIBERATELY typed `IResourceRef` — see `addSourceMapping`'s doc.
    */
   addPlacementExecutorBinding(
-    component: ResourceConstruct | string,
-    deploymentTarget: ResourceConstruct | string,
-    spec: ExecutorBindingSpec
+    component: IResourceRef | string,
+    deploymentTarget: IResourceRef | string,
+    spec: ExecutorBindingSpec = {}
   ): this {
     this.executorBindingDecls.push({
-      targetUrn: resolveUrn(component),
-      deploymentTargetUrn: resolveUrn(deploymentTarget),
-      ...executorBindingFields(spec)
+      location: locationOf(component),
+      entry: {
+        targetUrn: resolveUrn(component),
+        deploymentTargetUrn: resolveUrn(deploymentTarget),
+        ...executorBindingFields(spec)
+      }
     });
     return this;
   }
 
-  addExecutorBinding(target: ResourceConstruct | string, spec: ExecutorBindingSpec): this {
+  addExecutorBinding(target: IResourceRef | string, spec: ExecutorBindingSpec = {}): this {
     this.executorBindingDecls.push({
-      targetUrn: resolveUrn(target),
-      ...executorBindingFields(spec)
+      location: locationOf(target),
+      entry: {
+        targetUrn: resolveUrn(target),
+        ...executorBindingFields(spec)
+      }
     });
     return this;
   }
@@ -294,12 +479,22 @@ export class Stack extends Construct {
    * (`POST /dependencies/producers/retract`) — which is the better path anyway, because only the
    * verb reports the bumps SCP has already authored and cannot recall. A hand-authored manifest
    * carrying `"producers": []` also works; `@scp/iac` cannot emit one.
+   *
+   * DELIBERATELY typed `IResourceRef`, not `IComponent`: this stack-level door is the escape hatch,
+   * not the typed sugar (`Component.producesDependency`) — it must stay able to express a
+   * SERVICE-valued producer so the server's own refusal of one is testable
+   * (`iac-dependency-producers.integration.test.ts`'s "a SERVICE-valued producer is refused, exactly
+   * as the typed verb refuses one"). Narrowing this parameter would turn that server-authority test
+   * into a compile error instead.
    */
-  addDependencyProducer(component: ResourceConstruct | string, spec: DependencyProducerSpec): this {
+  addDependencyProducer(component: IResourceRef | string, spec: DependencyProducerSpec): this {
     this.dependencyProducerDecls.push({
-      producerUrn: resolveUrn(component),
-      ecosystem: spec.ecosystem,
-      coordinate: spec.coordinate
+      location: locationOf(component),
+      entry: {
+        producerUrn: resolveUrn(component),
+        ecosystem: spec.ecosystem,
+        coordinate: spec.coordinate
+      }
     });
     return this;
   }
@@ -355,8 +550,11 @@ export class Stack extends Construct {
    * REFUSED: the lattice is monotone, so a rung whose ancestor — or the instance rung — is enabled
    * cannot be turned off below, and the apply fails 409 naming the upper rung.
    */
-  addGovernanceMoveRung(subject: ResourceConstruct | string): this {
-    this.governanceMoveRungDecls.push({ subjectIdOrUrn: resolveUrn(subject) });
+  addGovernanceMoveRung(subject: IResourceRef | string): this {
+    this.governanceMoveRungDecls.push({
+      location: locationOf(subject),
+      entry: { subjectIdOrUrn: resolveUrn(subject) }
+    });
     return this;
   }
 
@@ -368,51 +566,78 @@ export class Stack extends Construct {
    * `construct.determinism.test.ts` exercises.
    */
   synth(): DesiredStateManifest {
-    const objects: ManifestObject[] = this.resources
-      .map((r) => r._toManifestObject())
-      .sort((a, b) => a.urn.localeCompare(b.urn));
+    // L1 raw entries (`addManifestEntry`) sort in seamlessly alongside typed constructs' own
+    // objects — by URN, same as everything else — so which door an object came through leaves no
+    // trace in the synthesized bytes (D16(1): "an L1-authored entry and its L2 equivalent
+    // synthesize identically").
+    const locatedObjects = [
+      ...this.resources.map((r) => ({ entry: r._toManifestObject(), location: r.path })),
+      ...this.rawObjectDecls.map((entry) => ({ entry, location: entry.urn }))
+    ].sort((a, b) => a.entry.urn.localeCompare(b.entry.urn));
+    const objects: ManifestObject[] = locatedObjects.map((o) => o.entry);
+    const objectLocations: string[] = locatedObjects.map((o) => o.location);
 
-    const relationships: ManifestRelationship[] = this.relationshipDecls
-      .map((decl): ManifestRelationship => ({
-        typeId: decl.typeId,
-        fromUrn: typeof decl.from === "string" ? decl.from : decl.from.urn,
-        toUrn: typeof decl.to === "string" ? decl.to : decl.to.urn,
-        ...(decl.properties ? { properties: decl.properties } : {})
+    const locatedRelationships = this.relationshipDecls
+      .map((decl) => ({
+        entry: {
+          typeId: decl.typeId,
+          fromUrn: typeof decl.from === "string" ? decl.from : decl.from.urn,
+          toUrn: typeof decl.to === "string" ? decl.to : decl.to.urn,
+          ...(decl.properties ? { properties: decl.properties } : {})
+        } satisfies ManifestRelationship,
+        location: locationOf(decl.from)
       }))
-      .sort((a, b) => relationshipSortKey(a).localeCompare(relationshipSortKey(b)));
+      .sort((a, b) => relationshipSortKey(a.entry).localeCompare(relationshipSortKey(b.entry)));
+    const relationships: ManifestRelationship[] = locatedRelationships.map((r) => r.entry);
+    const relationshipLocations: string[] = locatedRelationships.map((r) => r.location);
 
     // C1's two collections are OMITTED WHEN EMPTY rather than emitted as `[]`, so a stack that
     // declares neither synthesizes the byte-identical manifest it did before C1 — the interchange
     // format stays stable for every existing program, and an absent key already means "declares
     // none" server-side (`DesiredStateManifestSchema`).
-    const sourceMappings: ManifestSourceMapping[] = [...this.sourceMappingDecls].sort((a, b) =>
-      sourceMappingSortKey(a).localeCompare(sourceMappingSortKey(b))
+    const sortedSourceMappings = [...this.sourceMappingDecls].sort((a, b) =>
+      sourceMappingSortKey(a.entry).localeCompare(sourceMappingSortKey(b.entry))
     );
-    const executorBindings: ManifestExecutorBinding[] = [...this.executorBindingDecls].sort(
-      (a, b) => executorBindingSortKey(a).localeCompare(executorBindingSortKey(b))
+    const sourceMappings: ManifestSourceMapping[] = sortedSourceMappings.map((d) => d.entry);
+    const sourceMappingLocations: string[] = sortedSourceMappings.map((d) => d.location);
+
+    const sortedExecutorBindings = [...this.executorBindingDecls].sort((a, b) =>
+      executorBindingSortKey(a.entry).localeCompare(executorBindingSortKey(b.entry))
     );
+    const executorBindings: ManifestExecutorBinding[] = sortedExecutorBindings.map((d) => d.entry);
+    const executorBindingLocations: string[] = sortedExecutorBindings.map((d) => d.location);
     // Sorted on the PAIR, which is the whole identity (ADR-0026 D3) — so declaration order in code
     // never changes the synthesized bytes, only content does.
-    const placements: ManifestPlacement[] = [...this.placementDecls].sort((a, b) =>
-      `${a.componentUrn}\u0000${a.deploymentTargetUrn}`.localeCompare(
-        `${b.componentUrn}\u0000${b.deploymentTargetUrn}`
+    const sortedPlacements = [...this.placementDecls].sort((a, b) =>
+      `${a.entry.componentUrn}\u0000${a.entry.deploymentTargetUrn}`.localeCompare(
+        `${b.entry.componentUrn}\u0000${b.entry.deploymentTargetUrn}`
       )
     );
+    const placements: ManifestPlacement[] = sortedPlacements.map((d) => d.entry);
+    const placementLocations: string[] = sortedPlacements.map((d) => d.location);
     // Sorted on `(ecosystem, coordinate)` — the declaration's identity, and NOT the producer, which
     // is the row's value. Two programs that declare the same coordinate from differently-ordered
     // code synthesize the same bytes; one that re-points it does not, which is correct.
-    const producers: ManifestDependencyProducer[] = [...this.dependencyProducerDecls].sort((a, b) =>
-      `${a.ecosystem}\u0000${a.coordinate}`.localeCompare(`${b.ecosystem}\u0000${b.coordinate}`)
+    const sortedProducers = [...this.dependencyProducerDecls].sort((a, b) =>
+      `${a.entry.ecosystem}\u0000${a.entry.coordinate}`.localeCompare(
+        `${b.entry.ecosystem}\u0000${b.entry.coordinate}`
+      )
     );
+    const producers: ManifestDependencyProducer[] = sortedProducers.map((d) => d.entry);
+    const producerLocations: string[] = sortedProducers.map((d) => d.location);
     // Sorted on the SUBJECT, which is the whole identity — a rung has no value beyond existing, so
     // there is nothing else two entries could differ in. Duplicates are left in rather than
     // de-duplicated here: `synth()` reports what the program said, and the server collapses two
     // declarations of one subject into one rung (a repeated rung is idempotent, not ambiguous).
-    const governanceMoveRungs: ManifestGovernanceMoveRung[] = [
-      ...this.governanceMoveRungDecls
-    ].sort((a, b) => a.subjectIdOrUrn.localeCompare(b.subjectIdOrUrn));
+    const sortedGovernanceMoveRungs = [...this.governanceMoveRungDecls].sort((a, b) =>
+      a.entry.subjectIdOrUrn.localeCompare(b.entry.subjectIdOrUrn)
+    );
+    const governanceMoveRungs: ManifestGovernanceMoveRung[] = sortedGovernanceMoveRungs.map(
+      (d) => d.entry
+    );
+    const governanceMoveRungLocations: string[] = sortedGovernanceMoveRungs.map((d) => d.location);
 
-    return DesiredStateManifestSchema.parse({
+    const candidate = {
       stackName: this.stackName,
       objects,
       relationships,
@@ -431,7 +656,34 @@ export class Stack extends Construct {
       // rung. This is the more dangerous of the two omissions to get wrong: pruning here would turn
       // OFF a governance bar, and the symptom would be an absence of refusals.
       ...(governanceMoveRungs.length > 0 ? { governanceMoveRungs } : {})
+    };
+
+    const parsed = DesiredStateManifestSchema.safeParse(candidate);
+    if (parsed.success) return parsed.data;
+
+    // D16(5): every synth validation error names the construct-tree PATH that produced the entry
+    // it is about. A `safeParse` failure's `issue.path` starts with the collection name and, for a
+    // collection member, the array index into it — the SAME index `objectLocations`/
+    // `relationshipLocations`/… line up with, because every array above was built and sorted in
+    // lockstep with its location array.
+    const locationsByCollection: Record<string, string[] | undefined> = {
+      objects: objectLocations,
+      relationships: relationshipLocations,
+      sourceMappings: sourceMappingLocations,
+      executorBindings: executorBindingLocations,
+      placements: placementLocations,
+      producers: producerLocations,
+      governanceMoveRungs: governanceMoveRungLocations
+    };
+    const lines = parsed.error.issues.map((issue) => {
+      const [collection, index] = issue.path;
+      const locations =
+        typeof collection === "string" ? locationsByCollection[collection] : undefined;
+      const location = typeof index === "number" ? locations?.[index] : undefined;
+      const where = location ? ` [construct: ${location}]` : "";
+      return `  ${issue.path.join(".")}${where}: ${issue.message}`;
     });
+    throw new Error(`Stack "${this.stackName}" failed synth validation:\n${lines.join("\n")}`);
   }
 }
 
@@ -461,13 +713,17 @@ function relationshipSortKey(r: ManifestRelationship): string {
 // -------------------------------------------------------------------------------------------
 
 export interface ResourceProps {
-  name: string;
-  /** Explicit URN — when omitted, derived deterministically from `(stack name, construct id)` (`urn.ts`). */
-  urn?: string;
-  /** An existing object's id this resource nests under; omitted defaults to the org root at apply time (same as `CreateObjectRequestSchema.domainId`). */
-  domainId?: string;
-  properties?: Record<string, unknown>;
-  labels?: Record<string, unknown>;
+  readonly name: string;
+  /** Explicit URN.
+   *  @default derived deterministically from `(stack name, construct id)` (`urn.ts`) */
+  readonly urn?: string;
+  /** An existing object's id this resource nests under.
+   *  @default the org root at apply time (same as `CreateObjectRequestSchema.domainId`) */
+  readonly domainId?: string;
+  /** @default {} */
+  readonly properties?: Record<string, unknown>;
+  /** @default {} */
+  readonly labels?: Record<string, unknown>;
 }
 
 /**
@@ -475,8 +731,16 @@ export interface ResourceProps {
  * (`Service` -> `'service'`, etc.) via `defineResourceConstruct` below, mirroring
  * `routes/typed-registries.ts`'s server-side "one factory, invoked per resource" pattern instead
  * of 8 hand-copied classes.
+ *
+ * Generic over `TypeId` (D16(2)) so an OWNED construct structurally implements the SAME
+ * `IResourceRef<Kind>`-family interface a `fromXxx()` reference returns — `new Service(...)` is an
+ * `IService` and `Service.fromName(...)` is an `IService`, interchangeable wherever the interface is
+ * accepted, which is the whole point of the reference statics.
  */
-export class ResourceConstruct extends Construct {
+export class ResourceConstruct<TypeId extends string = string>
+  extends Construct
+  implements IResourceRef<TypeId>
+{
   readonly urn: string;
   /** `protected`, not `private`: `Component.mapsSource` (a subclass) registers through it. */
   protected readonly stack: Stack;
@@ -484,7 +748,7 @@ export class ResourceConstruct extends Construct {
   constructor(
     scope: Stack,
     id: string,
-    readonly typeId: string,
+    readonly typeId: TypeId,
     private readonly props: ResourceProps
   ) {
     super(scope, id);
@@ -493,20 +757,21 @@ export class ResourceConstruct extends Construct {
     scope._registerResource(this);
   }
 
-  /** Declares a `depends_on` edge FROM this resource TO `target` (another construct, or an external URN string). */
-  dependsOn(target: ResourceConstruct | string, properties?: Record<string, unknown>): this {
+  /** Declares a `depends_on` edge FROM this resource TO `target` (another construct, a `fromXxx()`
+   *  reference, or an external URN string). */
+  dependsOn(target: IResourceRef | string, properties?: Record<string, unknown>): this {
     this.stack._registerRelationship({ typeId: "depends_on", from: this, to: target, properties });
     return this;
   }
 
   /** Declares a `consumes` edge FROM this resource TO `target`. */
-  consumes(target: ResourceConstruct | string, properties?: Record<string, unknown>): this {
+  consumes(target: IResourceRef | string, properties?: Record<string, unknown>): this {
     this.stack._registerRelationship({ typeId: "consumes", from: this, to: target, properties });
     return this;
   }
 
   /** Declares an `owns` edge FROM this resource (the owner — team/group/user/service-account) TO `target` (the owned resource). */
-  owns(target: ResourceConstruct | string, properties?: Record<string, unknown>): this {
+  owns(target: IResourceRef | string, properties?: Record<string, unknown>): this {
     this.stack._registerRelationship({ typeId: "owns", from: this, to: target, properties });
     return this;
   }
@@ -521,7 +786,7 @@ export class ResourceConstruct extends Construct {
    * Unlike `dependsOn`/`owns` this is NOT a relationship — `executor_bindings` is a projection table
    * with no graph-object equivalent, which is precisely why it needed its own manifest collection.
    */
-  bindsExecutor(spec: ExecutorBindingSpec): this {
+  bindsExecutor(spec: ExecutorBindingSpec = {}): this {
     this.stack.addExecutorBinding(this, spec);
     return this;
   }
@@ -536,6 +801,25 @@ export class ResourceConstruct extends Construct {
   // apply time via `assertCampaignTargetsWithinAuthority`). Offering a `.coordinates()` synth
   // method here would just produce a manifest that fails at apply — so it doesn't exist.
 
+  private manifestOverride: Partial<Omit<ManifestObject, "urn" | "typeId">> = {};
+
+  /**
+   * L1 escape hatch, PER-CONSTRUCT (D16(1)): patches this construct's own synthesized manifest
+   * object with fields its typed L2 props don't expose — `name`, `domainId`, `properties`, or
+   * `labels`, applied AFTER whatever the construct's own props computed, so an override always
+   * wins. `urn`/`typeId` are excluded on purpose: those are identity, already settled by the
+   * constructor, and an override that disagreed with them would desynchronize this construct's
+   * `.urn` (still used by every reference to it) from what actually lands in `objects`.
+   *
+   * Composable with repeated calls — each patches over the last, `properties`/`labels` replaced
+   * wholesale (not deep-merged) so the override is exactly what the caller wrote, not a guess at
+   * how to combine it with the construct's own value.
+   */
+  overrideManifestEntry(patch: Partial<Omit<ManifestObject, "urn" | "typeId">>): this {
+    this.manifestOverride = { ...this.manifestOverride, ...patch };
+    return this;
+  }
+
   /** @internal */
   _toManifestObject(): ManifestObject {
     return {
@@ -544,9 +828,24 @@ export class ResourceConstruct extends Construct {
       name: this.props.name,
       domainId: this.props.domainId,
       properties: this.props.properties ?? {},
-      labels: this.props.labels ?? {}
+      labels: this.props.labels ?? {},
+      ...this.manifestOverride
     };
   }
+}
+
+/** The static side every `defineResourceConstruct`-built class and `Component` carry — the
+ *  `fromXxx()` reference statics (D16(2)). Declared once so the two implementations (the uniform
+ *  factory below, and `Component`'s bespoke class) cannot drift on the doc/behavior contract. */
+interface ResourceConstructStatics<Kind extends string> {
+  /** A reference to an EXISTING object of this kind, by its display NAME — never creates anything
+   *  in the manifest, only yields a URN placeholder for other entries to point at. See
+   *  `nameReferenceUrn`'s doc for exactly what that placeholder is and how/when it resolves. */
+  fromName(name: string): IResourceRef<Kind>;
+  /** A reference to an EXISTING object of this kind, by its exact URN — never creates anything in
+   *  the manifest. Unlike `fromName()`, this resolves the ordinary way (exact URN lookup) with no
+   *  server-side name-matching involved, because the caller already supplied the real identity. */
+  fromUrn(urn: string): IResourceRef<Kind>;
 }
 
 /**
@@ -555,14 +854,22 @@ export class ResourceConstruct extends Construct {
  * subclass's own shape) so declaration emission doesn't need to describe `ResourceConstruct`'s
  * private members on an anonymous exported class type (TS4094).
  */
-function defineResourceConstruct(
-  typeId: string
-): new (scope: Stack, id: string, props: ResourceProps) => ResourceConstruct {
-  return class extends ResourceConstruct {
+function defineResourceConstruct<Kind extends string>(
+  typeId: Kind
+): (new (scope: Stack, id: string, props: ResourceProps) => ResourceConstruct<Kind>) &
+  ResourceConstructStatics<Kind> {
+  class Klass extends ResourceConstruct<Kind> {
     constructor(scope: Stack, id: string, props: ResourceProps) {
       super(scope, id, typeId, props);
     }
-  };
+    static fromName(name: string): IResourceRef<Kind> {
+      return { urn: nameReferenceUrn(typeId, name), typeId };
+    }
+    static fromUrn(urn: string): IResourceRef<Kind> {
+      return { urn, typeId };
+    }
+  }
+  return Klass;
 }
 
 // The required first-class constructs (goal statement). `Component` is bespoke (below) — it must
@@ -593,15 +900,15 @@ export const Policy = defineResourceConstruct("policy");
 
 export interface ComponentProps extends ResourceProps {
   /**
-   * The service this component belongs to — a `Service` construct, or an external service's URN
-   * string. Required: a component ALWAYS belongs to a service (M12 P5a,
+   * The service this component belongs to — a `Service` construct/reference, or an external
+   * service's URN string. Required: a component ALWAYS belongs to a service (M12 P5a,
    * docs/proposals/organize-after.md), mirroring `CreateComponentRequest.service` on the API. The
    * constructor emits the `contains` edge (service -> component) from it; a component an IaC plan
    * CREATES with no incoming `contains` edge is rejected at plan-compute time server-side
    * (`plan-diff.ts`'s `uncontainedComponentCreates`), so requiring it here just moves that failure
    * from apply time to a TypeScript compile error.
    */
-  service: ResourceConstruct | string;
+  readonly service: IService | string;
 }
 
 /**
@@ -610,11 +917,25 @@ export interface ComponentProps extends ResourceProps {
  * `contains` edge from `props.service` to itself so the synthesized manifest satisfies the strict
  * apply invariant. Re-assignment (moving a component between services) is P5b's `move` verb, not an
  * IaC concern here.
+ *
+ * Carries its own `fromName()`/`fromUrn()` statics (D16(2)) rather than going through
+ * `defineResourceConstruct` — same contract as every other typed-registry construct
+ * (`ResourceConstructStatics<"component">`), hand-written here because `Component` already is.
  */
-export class Component extends ResourceConstruct {
+export class Component extends ResourceConstruct<"component"> {
   constructor(scope: Stack, id: string, props: ComponentProps) {
     super(scope, id, "component", props);
     scope._registerRelationship({ typeId: "contains", from: props.service, to: this });
+  }
+
+  /** A reference to an EXISTING component by its display NAME — see `nameReferenceUrn`'s doc. */
+  static fromName(name: string): IComponent {
+    return { urn: nameReferenceUrn("component", name), typeId: "component" };
+  }
+
+  /** A reference to an EXISTING component by its exact URN. */
+  static fromUrn(urn: string): IComponent {
+    return { urn, typeId: "component" };
   }
 
   /**
@@ -667,7 +988,7 @@ export class Component extends ResourceConstruct {
    * standalone form too, so a half-declared placement is unexpressible either way — the pair IS the
    * identity (D3).
    */
-  placeAt(deploymentTarget: ResourceConstruct | string): Placement {
+  placeAt(deploymentTarget: IDeploymentTarget | string): Placement {
     return new Placement(this.stack, this, deploymentTarget);
   }
 }
@@ -701,13 +1022,13 @@ function executorBindingFields(spec: ExecutorBindingSpec): Record<string, unknow
 
 export class Placement {
   private readonly stack: Stack;
-  private readonly component: ResourceConstruct | string;
-  private readonly deploymentTarget: ResourceConstruct | string;
+  private readonly component: IComponent | string;
+  private readonly deploymentTarget: IDeploymentTarget | string;
 
   constructor(
     stack: Stack,
-    component: ResourceConstruct | string,
-    deploymentTarget: ResourceConstruct | string
+    component: IComponent | string,
+    deploymentTarget: IDeploymentTarget | string
   ) {
     stack.addPlacement(component, deploymentTarget);
     this.stack = stack;
@@ -722,13 +1043,14 @@ export class Placement {
    * off the placement rather than off either endpoint: the same component at two targets is two
    * bindings, and the same target for two components likewise.
    */
-  bindsExecutor(spec: ExecutorBindingSpec): this {
+  bindsExecutor(spec: ExecutorBindingSpec = {}): this {
     this.stack.addPlacementExecutorBinding(this.component, this.deploymentTarget, spec);
     return this;
   }
 }
 
-// The remaining 4 typed-registry resources — cheap to add given the factory above.
+// The remaining 4 typed-registry resources — cheap to add given the factory above. Each carries
+// fromName()/fromUrn() statics returning IDeploymentTarget/IGroup/IUser/IServiceAccount (D16(2)).
 export const DeploymentTarget = defineResourceConstruct("deployment-target");
 export const Group = defineResourceConstruct("group");
 export const User = defineResourceConstruct("user");
@@ -744,22 +1066,40 @@ export const ServiceAccount = defineResourceConstruct("service-account");
 /** Resolves a relationship-style reference to a URN string — the same
  *  `typeof t === "string" ? t : t.urn` pattern `Stack.synth()` uses for relationship endpoints,
  *  reused here for the `properties.targets`/`properties.waves[].targets` arrays these constructs
- *  synthesize (which are plain JSON, not relationship declarations). */
-function resolveUrn(target: ResourceConstruct | string): string {
+ *  synthesize (which are plain JSON, not relationship declarations). Accepts an owned construct, a
+ *  `fromXxx()` reference, or a bare URN string — all three carry `.urn` except the string, which
+ *  already IS one. A reference is NEVER registered anywhere by this call; it only ever contributes
+ *  the URN it already carries (D16(2): "a reference must never create an object in the manifest"). */
+function resolveUrn(target: IResourceRef | string): string {
   return typeof target === "string" ? target : target.urn;
 }
 
+/**
+ * Best-effort human-readable LOCATION for a synth validation error (D16(5)): the construct's tree
+ * PATH when the reference is an owned construct in this program, else the raw URN/id string it
+ * names (an external reference, a `fromXxx()` placeholder, or a bare id — none of which sit in this
+ * program's construct tree, so there is no path to report beyond the identifier itself). Used to
+ * annotate every entry `Stack.synth()` pushes into a collection the final schema validation checks,
+ * so a refusal names the file/construct a team actually wrote, not just an array index.
+ */
+function locationOf(ref: IResourceRef | string): string {
+  if (typeof ref === "string") return ref;
+  return ref instanceof ResourceConstruct ? ref.path : ref.urn;
+}
+
 export interface ReleaseTopologyWaveSpec {
-  name?: string;
-  mode: "parallel" | "sequential";
-  targets: (ResourceConstruct | string)[];
-  /** Defaults to `true` server-side (except an implicit wave 0) — left unset here means "let the
-   *  server default it" rather than this construct silently picking a value. */
-  requiresFanIn?: boolean;
+  readonly mode: "parallel" | "sequential";
+  readonly targets: (IResourceRef | string)[];
+  /** @default none — the wave is unnamed. */
+  readonly name?: string;
+  /** Left unset here means "let the server default it" rather than this construct silently picking
+   *  a value.
+   *  @default true server-side (except an implicit wave 0) */
+  readonly requiresFanIn?: boolean;
 }
 
 export interface ReleaseTopologyProps extends Omit<ResourceProps, "properties"> {
-  waves: ReleaseTopologyWaveSpec[];
+  readonly waves: ReleaseTopologyWaveSpec[];
 }
 
 /**
@@ -802,12 +1142,14 @@ export interface CampaignProps extends Omit<ResourceProps, "properties"> {
    * `properties.targets` is canonicalized to the resolved real ids as a side effect of that first
    * compile (a one-time, idempotent no-op for an already-real-id API-created campaign).
    */
-  targets: (ResourceConstruct | string)[];
-  description?: string;
+  readonly targets: (IResourceRef | string)[];
+  /** @default none */
+  readonly description?: string;
   /** Links this campaign to an existing Release Topology — a construct reference (resolved to its
    *  URN, then re-resolved to a real object id server-side, same as `targets` above) or a raw
-   *  object id/URN string. */
-  topology?: ReleaseTopology | string;
+   *  object id/URN string.
+   *  @default none — no topology; waves fall back to whatever `campaign-plan-service.ts` defaults to. */
+  readonly topology?: ReleaseTopology | string;
 }
 
 /**

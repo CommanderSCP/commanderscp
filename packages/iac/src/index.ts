@@ -6,7 +6,9 @@
  * `packages/cli`), exactly like a CDK cloud assembly being `cdk deploy`'d separately from where
  * it was synthesized.
  */
-export { App, Stack, ResourceConstruct, Construct } from "./construct.js";
+// `App` is synth plumbing (D15a) — `new Stack("name")` auto-creates one internally and it never
+// appears in user code, so it is module-internal to `construct.ts` and NOT exported here.
+export { Stack, ResourceConstruct, Construct } from "./construct.js";
 export type { ResourceProps } from "./construct.js";
 export {
   Service,
@@ -31,28 +33,29 @@ export type {
   ExecutorBindingSpec,
   DependencyProducerSpec
 } from "./construct.js";
+// fromXxx() reference statics + the interface types they (and every owned construct) implement
+// (D16(2)) — an owned construct and a `Service.fromName(...)`/`.fromUrn(...)` reference are
+// interchangeable wherever the interface is accepted.
+export type {
+  IResourceRef,
+  IService,
+  IComponent,
+  IDomain,
+  ITeam,
+  IPolicy,
+  IDeploymentTarget,
+  IGroup,
+  IUser,
+  IServiceAccount
+} from "./construct.js";
 export { deriveConstructUrn, slugify } from "./urn.js";
 export { canonicalJson } from "./canonical.js";
+export { Duration } from "./duration.js";
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { DesiredStateManifest } from "@scp/schemas";
-import { App, Stack } from "./construct.js";
+import { Stack } from "./construct.js";
 import { canonicalJson } from "./canonical.js";
-
-function singleStackManifest(target: Stack | App): DesiredStateManifest {
-  if (target instanceof Stack) return target.synth();
-  const stacks = target.listStacks();
-  if (stacks.length !== 1) {
-    throw new Error(
-      `synthToFile(app, ...) requires an App with exactly one stack (found ${stacks.length}) — ` +
-        `pass the specific Stack directly (synthToFile(stack, ...)), or call app.synth() yourself ` +
-        `to get every stack's manifest as an array and write them out individually.`
-    );
-  }
-  // Non-null: length check above guarantees index 0 exists.
-  return stacks[0]!.synth();
-}
 
 /**
  * Writes the canonical JSON manifest to disk — the interchange point between IaC authoring
@@ -62,8 +65,8 @@ function singleStackManifest(target: Stack | App): DesiredStateManifest {
  * file's bytes are stable even when caller-supplied `properties`/`labels` objects were built with
  * different key insertion order — the same byte-identical-output guarantee `synth()` itself makes.
  */
-export async function synthToFile(target: Stack | App, filePath: string): Promise<void> {
-  const manifest = singleStackManifest(target);
+export async function synthToFile(target: Stack, filePath: string): Promise<void> {
+  const manifest = target.synth();
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, canonicalJson(manifest) + "\n", "utf8");
 }
