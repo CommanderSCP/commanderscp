@@ -35,6 +35,8 @@
  * misses exactly the inputs that wedge.
  */
 
+import type { WaveGate } from "@scp/schemas";
+
 export interface DependsOnEdge {
   /** `from` depends on `to` — `to` must be scheduled in an earlier (or, if truly independent, an
    * un-shared) wave relative to `from`. */
@@ -48,6 +50,17 @@ export interface TopologyWaveSpec {
   targets: string[];
   /** Defaults to `true` (except an implicit wave 0, which has nothing to fan in from). */
   requiresFanIn?: boolean;
+  /**
+   * Gates this wave ADDS on top of whatever `pipelineHooks` already declares for it — a UNION,
+   * never a replacement (§14 resolution 5; the union is evaluated elsewhere, not by this module,
+   * which only carries the value from parse through to the compiled wave). ABSENT and `[]` are NOT
+   * the same statement: absent means this wave-document is silent about gates (only declared hooks
+   * apply), while `[]` explicitly declares "this wave adds no gates of its own" — still a real,
+   * present value. `topology-waves.ts`'s `parseTopologyWaves` is the only producer of this field and
+   * preserves the distinction; do not `?? []` it anywhere downstream, and do not merge, dedupe, or
+   * reconcile it against `pipelineHooks` here.
+   */
+  gates?: WaveGate[];
 }
 
 export interface CompiledWave {
@@ -60,6 +73,12 @@ export interface CompiledWave {
    * has nothing to do (§5's participation rule). Emitted rather than omitted — see `compileStages`.
    */
   skipped?: boolean;
+  /**
+   * Carried verbatim from the source `TopologyWaveSpec.gates` (see there for the absent-vs-empty
+   * rule this field must keep). Not yet consumed by anything downstream — gate EVALUATION is a
+   * separate session's work; this compiler's job ends at "the compiled wave carries it."
+   */
+  gates?: WaveGate[];
 }
 
 export type CompilePlanResult =
@@ -241,7 +260,12 @@ function compileStages(
   const targetSet = new Set(input.targets);
   const relevant = input.placements.filter((p) => targetSet.has(p.componentObjectId));
 
-  const steps: { name: string | null; targets: string[]; requiresFanIn?: boolean }[] = [];
+  const steps: {
+    name: string | null;
+    targets: string[];
+    requiresFanIn?: boolean;
+    gates?: WaveGate[];
+  }[] = [];
   const participated = new Set<string>();
 
   const placementsAt = (deploymentTargetIds: string[]): StagePlacement[] => {
@@ -249,26 +273,34 @@ function compileStages(
     return relevant.filter((p) => places.has(p.deploymentTargetObjectId));
   };
 
-  const pushStep = (name: string | null, group: StagePlacement[], requiresFanIn?: boolean) => {
+  const pushStep = (
+    name: string | null,
+    group: StagePlacement[],
+    requiresFanIn?: boolean,
+    gates?: WaveGate[]
+  ) => {
     for (const p of group) {
       participated.add(p.componentObjectId);
     }
     steps.push({
       name,
       targets: group.map((p) => p.placementObjectId),
-      ...(requiresFanIn !== undefined ? { requiresFanIn } : {})
+      ...(requiresFanIn !== undefined ? { requiresFanIn } : {}),
+      ...(gates !== undefined ? { gates } : {})
     });
   };
 
   for (const wave of input.topologyWaves) {
     const name = wave.name ?? null;
     if (wave.mode === "parallel") {
-      pushStep(name, placementsAt(wave.targets), wave.requiresFanIn);
+      pushStep(name, placementsAt(wave.targets), wave.requiresFanIn, wave.gates);
     } else {
       // Sequential: one step per PLACE, in the declared order. A place with no participants still
-      // gets its own (empty) step, so the sequence keeps its shape.
+      // gets its own (empty) step, so the sequence keeps its shape. The source wave's `gates`
+      // (absent-vs-empty preserved, per `TopologyWaveSpec.gates`) is carried to EVERY step split out
+      // of it — the same treatment `name` and `requiresFanIn` already get on this path.
       for (const deploymentTargetId of wave.targets) {
-        pushStep(name, placementsAt([deploymentTargetId]), wave.requiresFanIn);
+        pushStep(name, placementsAt([deploymentTargetId]), wave.requiresFanIn, wave.gates);
       }
     }
   }
@@ -392,7 +424,8 @@ function compileStages(
       name: step.name,
       targets: step.targets,
       requiresFanIn: step.requiresFanIn ?? i > 0,
-      ...(step.targets.length === 0 ? { skipped: true } : {})
+      ...(step.targets.length === 0 ? { skipped: true } : {}),
+      ...(step.gates !== undefined ? { gates: step.gates } : {})
     }))
   };
 }
@@ -513,7 +546,12 @@ export function compilePlan(input: CompilePlanInput): CompilePlanResult {
   }
 
   // Explicit-topology mode.
-  const steps: { name: string | null; targets: string[]; requiresFanIn?: boolean }[] = [];
+  const steps: {
+    name: string | null;
+    targets: string[];
+    requiresFanIn?: boolean;
+    gates?: WaveGate[];
+  }[] = [];
   const assigned = new Set<string>();
 
   for (const wave of input.topologyWaves) {
@@ -524,12 +562,20 @@ export function compilePlan(input: CompilePlanInput): CompilePlanResult {
       steps.push({
         name: wave.name ?? null,
         targets: [...wave.targets],
-        requiresFanIn: wave.requiresFanIn
+        requiresFanIn: wave.requiresFanIn,
+        gates: wave.gates
       });
       for (const t of wave.targets) assigned.add(t);
     } else {
+      // Sequential: `gates` (absent-vs-empty preserved) is carried to EVERY split-out step, the same
+      // treatment `name` and `requiresFanIn` already get here.
       for (const t of wave.targets) {
-        steps.push({ name: wave.name ?? null, targets: [t], requiresFanIn: wave.requiresFanIn });
+        steps.push({
+          name: wave.name ?? null,
+          targets: [t],
+          requiresFanIn: wave.requiresFanIn,
+          gates: wave.gates
+        });
         assigned.add(t);
       }
     }
@@ -583,7 +629,8 @@ export function compilePlan(input: CompilePlanInput): CompilePlanResult {
       waveIndex: i,
       name: step.name,
       targets: step.targets,
-      requiresFanIn: step.requiresFanIn ?? i > 0
+      requiresFanIn: step.requiresFanIn ?? i > 0,
+      ...(step.gates !== undefined ? { gates: step.gates } : {})
     }))
   };
 }
