@@ -12,7 +12,7 @@ import {
   type ManifestSourceMapping,
   type SourceMappingScope
 } from "@scp/schemas";
-import { deriveConstructUrn } from "./urn.js";
+import { deriveConstructUrn, slugify } from "./urn.js";
 
 /**
  * CDK-style construct tree, inspired by AWS CDK's `App`/`Stack`/`Construct` shape but far
@@ -40,15 +40,96 @@ export abstract class Construct {
     readonly scope: Construct | undefined,
     readonly id: string
   ) {}
+
+  /**
+   * Slash-joined construct-tree path from the root, e.g. `billing-platform/billing-api`
+   * (team-pipeline-iac.md D16(5)) — every synth validation error names this, so a refusal maps back
+   * to the construct a team actually wrote, not just an array index in the assembled manifest. `App`
+   * is excluded from the path (it is synth plumbing, D15a, and never appears in user-facing IaC).
+   */
+  get path(): string {
+    const parts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- walking the scope chain upward.
+    let node: Construct | undefined = this;
+    while (node) {
+      if (!(node instanceof App)) parts.unshift(node.id);
+      node = node.scope;
+    }
+    return parts.join("/");
+  }
+}
+
+/**
+ * A URN plus which typed-registry kind it names — the shape BOTH an owned `ResourceConstruct` and a
+ * `fromXxx()` reference satisfy (D16(2)). `Kind` is the construct's `typeId` literal (`"service"`,
+ * `"component"`, …), so `IService` and `ITeam` are structurally distinct in TypeScript even though
+ * neither carries any field beyond identity — passing a `Team` reference where an `IService` is
+ * expected is a compile error, not just a naming convention.
+ */
+export interface IResourceRef<Kind extends string = string> {
+  readonly urn: string;
+  readonly typeId: Kind;
+}
+
+// Per-kind aliases of `IResourceRef<Kind>` (not `interface X extends IResourceRef<"…"> {}` —
+// an interface adding no members over its supertype is the same type, and this repo's lint config
+// (`@typescript-eslint/no-empty-object-type`) refuses to let the two spellings drift silently).
+
+/** A reference to an EXISTING `service`, owned or `Service.fromName()`/`Service.fromUrn()`. */
+export type IService = IResourceRef<"service">;
+/** A reference to an EXISTING `domain`, owned or `Domain.fromName()`/`Domain.fromUrn()`. */
+export type IDomain = IResourceRef<"domain">;
+/** A reference to an EXISTING `team`, owned or `Team.fromName()`/`Team.fromUrn()`. */
+export type ITeam = IResourceRef<"team">;
+/** A reference to an EXISTING `policy`, owned or `Policy.fromName()`/`Policy.fromUrn()`. */
+export type IPolicy = IResourceRef<"policy">;
+/** A reference to an EXISTING `deployment-target`, owned or `DeploymentTarget.fromName()`/`.fromUrn()`. */
+export type IDeploymentTarget = IResourceRef<"deployment-target">;
+/** A reference to an EXISTING `group`, owned or `Group.fromName()`/`Group.fromUrn()`. */
+export type IGroup = IResourceRef<"group">;
+/** A reference to an EXISTING `user`, owned or `User.fromName()`/`User.fromUrn()`. */
+export type IUser = IResourceRef<"user">;
+/** A reference to an EXISTING `service-account`, owned or `ServiceAccount.fromName()`/`.fromUrn()`. */
+export type IServiceAccount = IResourceRef<"service-account">;
+/** A reference to an EXISTING `component`, owned or `Component.fromName()`/`Component.fromUrn()`. */
+export type IComponent = IResourceRef<"component">;
+
+/** The reserved, syntactically-URN-shaped namespace `fromName()` placeholders live in — see
+ *  `nameReferenceUrn`'s doc for the whole rule. Not a real stack name; no owned construct's stack
+ *  is ever slugified to exactly this token (`slugify` never emits a bare word with no input, and no
+ *  real stack is named literally "named-ref"), so it cannot collide with a genuine synth-derived URN. */
+const NAME_REFERENCE_NAMESPACE = "named-ref";
+
+/**
+ * Builds the placeholder URN a `fromName()` reference resolves to at synth time (D16(2)/D14).
+ *
+ * `@scp/iac` synth is pure, offline, and single-stack-scoped (`urn.ts`'s module doc) — it has no
+ * visibility into WHICH stack owns an object merely named `"payments"`, so it cannot derive that
+ * object's real `deriveConstructUrn`-style URN the way an OWNED construct can. What it CAN do is
+ * name the reference unambiguously by (kind, name) in a reserved namespace that still satisfies
+ * `UrnSchema`'s `urn:scp:{org}:{type}:{slug-path}` shape (`@scp/schemas`), so the reference is legal
+ * wherever a construct's own URN would be.
+ *
+ * Resolving `urn:scp:named-ref:service:payments` to the real object — matching by (typeId, name)
+ * across whatever stack actually declared it — is SERVER-SIDE behavior at plan time
+ * (team-pipeline-iac.md D14: "every fromName()/fromUrn() reference resolves server-side at plan
+ * time"). That resolution is not built yet; until it lands, a manifest using a `fromName()`
+ * reference REFUSES THE PLAN LOUDLY (not-found) rather than silently succeeding against the wrong
+ * object — which is the correct behavior for an unresolved structural reference, not a defect of
+ * this placeholder.
+ */
+function nameReferenceUrn(typeId: string, name: string): string {
+  return `urn:scp:${NAME_REFERENCE_NAMESPACE}:${typeId}:${slugify(name)}`;
 }
 
 interface RelationshipDecl {
   typeId: string;
-  /** A construct, or an external endpoint's URN string — symmetric with `to`. The fluent methods
-   *  (`dependsOn`/`consumes`/`owns`) always pass `this` (a construct); `Component`'s `contains`
-   *  edge passes `props.service`, which may be a `Service` construct OR an external service URN. */
-  from: ResourceConstruct | string;
-  to: ResourceConstruct | string;
+  /** A construct, a `fromXxx()` reference, or an external endpoint's URN string — symmetric with
+   *  `to`. The fluent methods (`dependsOn`/`consumes`/`owns`) always pass `this` (a construct);
+   *  `Component`'s `contains` edge passes `props.service`, which may be a `Service`
+   *  construct/reference OR an external service URN. */
+  from: IResourceRef | string;
+  to: IResourceRef | string;
   properties?: Record<string, unknown> | undefined;
 }
 
@@ -124,9 +205,9 @@ export interface ExecutorBindingSpec {
   secretRefs?: Record<string, string>;
   allowedHosts?: string[];
   externalRef?: string;
-  /** A registered `execution-system` construct, or its id/URN (Mode A). When set, module, instance
-   *  id, config and credentials all resolve from that system — declare none of them here. */
-  executionSystem?: ResourceConstruct | string;
+  /** A registered `execution-system` construct/reference, or its id/URN (Mode A). When set, module,
+   *  instance id, config and credentials all resolve from that system — declare none of them here. */
+  executionSystem?: IResourceRef | string;
 }
 
 /**
@@ -204,7 +285,7 @@ export class Stack extends Construct {
    * ownership of a mapping is inherited from its component, so a stack cannot configure a component
    * it does not manage.
    */
-  addSourceMapping(component: ResourceConstruct | string, spec: SourceMappingSpec): this {
+  addSourceMapping(component: IComponent | string, spec: SourceMappingSpec): this {
     this.sourceMappingDecls.push({
       componentUrn: resolveUrn(component),
       sourceKind: spec.sourceKind,
@@ -235,10 +316,7 @@ export class Stack extends Construct {
    * There is no `urn` argument and cannot be: a placement's URN is DERIVED from both endpoints
    * (ADR-0026 D3), so supplying one could disagree with what the server mints.
    */
-  addPlacement(
-    component: ResourceConstruct | string,
-    deploymentTarget: ResourceConstruct | string
-  ): this {
+  addPlacement(component: IComponent | string, deploymentTarget: IDeploymentTarget | string): this {
     this.placementDecls.push({
       componentUrn: resolveUrn(component),
       deploymentTargetUrn: resolveUrn(deploymentTarget)
@@ -259,8 +337,8 @@ export class Stack extends Construct {
    * placement the same apply just pruned.
    */
   addPlacementExecutorBinding(
-    component: ResourceConstruct | string,
-    deploymentTarget: ResourceConstruct | string,
+    component: IComponent | string,
+    deploymentTarget: IDeploymentTarget | string,
     spec: ExecutorBindingSpec
   ): this {
     this.executorBindingDecls.push({
@@ -271,7 +349,7 @@ export class Stack extends Construct {
     return this;
   }
 
-  addExecutorBinding(target: ResourceConstruct | string, spec: ExecutorBindingSpec): this {
+  addExecutorBinding(target: IResourceRef | string, spec: ExecutorBindingSpec): this {
     this.executorBindingDecls.push({
       targetUrn: resolveUrn(target),
       ...executorBindingFields(spec)
@@ -316,7 +394,7 @@ export class Stack extends Construct {
    * verb reports the bumps SCP has already authored and cannot recall. A hand-authored manifest
    * carrying `"producers": []` also works; `@scp/iac` cannot emit one.
    */
-  addDependencyProducer(component: ResourceConstruct | string, spec: DependencyProducerSpec): this {
+  addDependencyProducer(component: IComponent | string, spec: DependencyProducerSpec): this {
     this.dependencyProducerDecls.push({
       producerUrn: resolveUrn(component),
       ecosystem: spec.ecosystem,
@@ -376,7 +454,7 @@ export class Stack extends Construct {
    * REFUSED: the lattice is monotone, so a rung whose ancestor — or the instance rung — is enabled
    * cannot be turned off below, and the apply fails 409 naming the upper rung.
    */
-  addGovernanceMoveRung(subject: ResourceConstruct | string): this {
+  addGovernanceMoveRung(subject: IResourceRef | string): this {
     this.governanceMoveRungDecls.push({ subjectIdOrUrn: resolveUrn(subject) });
     return this;
   }
@@ -496,8 +574,16 @@ export interface ResourceProps {
  * (`Service` -> `'service'`, etc.) via `defineResourceConstruct` below, mirroring
  * `routes/typed-registries.ts`'s server-side "one factory, invoked per resource" pattern instead
  * of 8 hand-copied classes.
+ *
+ * Generic over `TypeId` (D16(2)) so an OWNED construct structurally implements the SAME
+ * `IResourceRef<Kind>`-family interface a `fromXxx()` reference returns — `new Service(...)` is an
+ * `IService` and `Service.fromName(...)` is an `IService`, interchangeable wherever the interface is
+ * accepted, which is the whole point of the reference statics.
  */
-export class ResourceConstruct extends Construct {
+export class ResourceConstruct<TypeId extends string = string>
+  extends Construct
+  implements IResourceRef<TypeId>
+{
   readonly urn: string;
   /** `protected`, not `private`: `Component.mapsSource` (a subclass) registers through it. */
   protected readonly stack: Stack;
@@ -505,7 +591,7 @@ export class ResourceConstruct extends Construct {
   constructor(
     scope: Stack,
     id: string,
-    readonly typeId: string,
+    readonly typeId: TypeId,
     private readonly props: ResourceProps
   ) {
     super(scope, id);
@@ -514,20 +600,21 @@ export class ResourceConstruct extends Construct {
     scope._registerResource(this);
   }
 
-  /** Declares a `depends_on` edge FROM this resource TO `target` (another construct, or an external URN string). */
-  dependsOn(target: ResourceConstruct | string, properties?: Record<string, unknown>): this {
+  /** Declares a `depends_on` edge FROM this resource TO `target` (another construct, a `fromXxx()`
+   *  reference, or an external URN string). */
+  dependsOn(target: IResourceRef | string, properties?: Record<string, unknown>): this {
     this.stack._registerRelationship({ typeId: "depends_on", from: this, to: target, properties });
     return this;
   }
 
   /** Declares a `consumes` edge FROM this resource TO `target`. */
-  consumes(target: ResourceConstruct | string, properties?: Record<string, unknown>): this {
+  consumes(target: IResourceRef | string, properties?: Record<string, unknown>): this {
     this.stack._registerRelationship({ typeId: "consumes", from: this, to: target, properties });
     return this;
   }
 
   /** Declares an `owns` edge FROM this resource (the owner — team/group/user/service-account) TO `target` (the owned resource). */
-  owns(target: ResourceConstruct | string, properties?: Record<string, unknown>): this {
+  owns(target: IResourceRef | string, properties?: Record<string, unknown>): this {
     this.stack._registerRelationship({ typeId: "owns", from: this, to: target, properties });
     return this;
   }
@@ -570,20 +657,42 @@ export class ResourceConstruct extends Construct {
   }
 }
 
+/** The static side every `defineResourceConstruct`-built class and `Component` carry — the
+ *  `fromXxx()` reference statics (D16(2)). Declared once so the two implementations (the uniform
+ *  factory below, and `Component`'s bespoke class) cannot drift on the doc/behavior contract. */
+interface ResourceConstructStatics<Kind extends string> {
+  /** A reference to an EXISTING object of this kind, by its display NAME — never creates anything
+   *  in the manifest, only yields a URN placeholder for other entries to point at. See
+   *  `nameReferenceUrn`'s doc for exactly what that placeholder is and how/when it resolves. */
+  fromName(name: string): IResourceRef<Kind>;
+  /** A reference to an EXISTING object of this kind, by its exact URN — never creates anything in
+   *  the manifest. Unlike `fromName()`, this resolves the ordinary way (exact URN lookup) with no
+   *  server-side name-matching involved, because the caller already supplied the real identity. */
+  fromUrn(urn: string): IResourceRef<Kind>;
+}
+
 /**
  * One tiny factory invoked per resource type instead of 8 hand-copied subclasses. Explicitly
  * typed as a constructor-of-`ResourceConstruct` (rather than letting TS infer the anonymous
  * subclass's own shape) so declaration emission doesn't need to describe `ResourceConstruct`'s
  * private members on an anonymous exported class type (TS4094).
  */
-function defineResourceConstruct(
-  typeId: string
-): new (scope: Stack, id: string, props: ResourceProps) => ResourceConstruct {
-  return class extends ResourceConstruct {
+function defineResourceConstruct<Kind extends string>(
+  typeId: Kind
+): (new (scope: Stack, id: string, props: ResourceProps) => ResourceConstruct<Kind>) &
+  ResourceConstructStatics<Kind> {
+  class Klass extends ResourceConstruct<Kind> {
     constructor(scope: Stack, id: string, props: ResourceProps) {
       super(scope, id, typeId, props);
     }
-  };
+    static fromName(name: string): IResourceRef<Kind> {
+      return { urn: nameReferenceUrn(typeId, name), typeId };
+    }
+    static fromUrn(urn: string): IResourceRef<Kind> {
+      return { urn, typeId };
+    }
+  }
+  return Klass;
 }
 
 // The required first-class constructs (goal statement). `Component` is bespoke (below) — it must
@@ -614,15 +723,15 @@ export const Policy = defineResourceConstruct("policy");
 
 export interface ComponentProps extends ResourceProps {
   /**
-   * The service this component belongs to — a `Service` construct, or an external service's URN
-   * string. Required: a component ALWAYS belongs to a service (M12 P5a,
+   * The service this component belongs to — a `Service` construct/reference, or an external
+   * service's URN string. Required: a component ALWAYS belongs to a service (M12 P5a,
    * docs/proposals/organize-after.md), mirroring `CreateComponentRequest.service` on the API. The
    * constructor emits the `contains` edge (service -> component) from it; a component an IaC plan
    * CREATES with no incoming `contains` edge is rejected at plan-compute time server-side
    * (`plan-diff.ts`'s `uncontainedComponentCreates`), so requiring it here just moves that failure
    * from apply time to a TypeScript compile error.
    */
-  service: ResourceConstruct | string;
+  service: IService | string;
 }
 
 /**
@@ -631,11 +740,25 @@ export interface ComponentProps extends ResourceProps {
  * `contains` edge from `props.service` to itself so the synthesized manifest satisfies the strict
  * apply invariant. Re-assignment (moving a component between services) is P5b's `move` verb, not an
  * IaC concern here.
+ *
+ * Carries its own `fromName()`/`fromUrn()` statics (D16(2)) rather than going through
+ * `defineResourceConstruct` — same contract as every other typed-registry construct
+ * (`ResourceConstructStatics<"component">`), hand-written here because `Component` already is.
  */
-export class Component extends ResourceConstruct {
+export class Component extends ResourceConstruct<"component"> {
   constructor(scope: Stack, id: string, props: ComponentProps) {
     super(scope, id, "component", props);
     scope._registerRelationship({ typeId: "contains", from: props.service, to: this });
+  }
+
+  /** A reference to an EXISTING component by its display NAME — see `nameReferenceUrn`'s doc. */
+  static fromName(name: string): IComponent {
+    return { urn: nameReferenceUrn("component", name), typeId: "component" };
+  }
+
+  /** A reference to an EXISTING component by its exact URN. */
+  static fromUrn(urn: string): IComponent {
+    return { urn, typeId: "component" };
   }
 
   /**
@@ -688,7 +811,7 @@ export class Component extends ResourceConstruct {
    * standalone form too, so a half-declared placement is unexpressible either way — the pair IS the
    * identity (D3).
    */
-  placeAt(deploymentTarget: ResourceConstruct | string): Placement {
+  placeAt(deploymentTarget: IDeploymentTarget | string): Placement {
     return new Placement(this.stack, this, deploymentTarget);
   }
 }
@@ -722,13 +845,13 @@ function executorBindingFields(spec: ExecutorBindingSpec): Record<string, unknow
 
 export class Placement {
   private readonly stack: Stack;
-  private readonly component: ResourceConstruct | string;
-  private readonly deploymentTarget: ResourceConstruct | string;
+  private readonly component: IComponent | string;
+  private readonly deploymentTarget: IDeploymentTarget | string;
 
   constructor(
     stack: Stack,
-    component: ResourceConstruct | string,
-    deploymentTarget: ResourceConstruct | string
+    component: IComponent | string,
+    deploymentTarget: IDeploymentTarget | string
   ) {
     stack.addPlacement(component, deploymentTarget);
     this.stack = stack;
@@ -749,7 +872,8 @@ export class Placement {
   }
 }
 
-// The remaining 4 typed-registry resources — cheap to add given the factory above.
+// The remaining 4 typed-registry resources — cheap to add given the factory above. Each carries
+// fromName()/fromUrn() statics returning IDeploymentTarget/IGroup/IUser/IServiceAccount (D16(2)).
 export const DeploymentTarget = defineResourceConstruct("deployment-target");
 export const Group = defineResourceConstruct("group");
 export const User = defineResourceConstruct("user");
@@ -765,17 +889,22 @@ export const ServiceAccount = defineResourceConstruct("service-account");
 /** Resolves a relationship-style reference to a URN string — the same
  *  `typeof t === "string" ? t : t.urn` pattern `Stack.synth()` uses for relationship endpoints,
  *  reused here for the `properties.targets`/`properties.waves[].targets` arrays these constructs
- *  synthesize (which are plain JSON, not relationship declarations). */
-function resolveUrn(target: ResourceConstruct | string): string {
+ *  synthesize (which are plain JSON, not relationship declarations). Accepts an owned construct, a
+ *  `fromXxx()` reference, or a bare URN string — all three carry `.urn` except the string, which
+ *  already IS one. A reference is NEVER registered anywhere by this call; it only ever contributes
+ *  the URN it already carries (D16(2): "a reference must never create an object in the manifest"). */
+function resolveUrn(target: IResourceRef | string): string {
   return typeof target === "string" ? target : target.urn;
 }
 
 export interface ReleaseTopologyWaveSpec {
-  name?: string;
   mode: "parallel" | "sequential";
-  targets: (ResourceConstruct | string)[];
-  /** Defaults to `true` server-side (except an implicit wave 0) — left unset here means "let the
-   *  server default it" rather than this construct silently picking a value. */
+  targets: (IResourceRef | string)[];
+  /** @default undefined — let the server default it (`true`, except an implicit wave 0) rather than
+   *  this construct silently picking a value. */
+  name?: string;
+  /** @default true server-side (except an implicit wave 0) — left unset here means "let the server
+   *  default it" rather than this construct silently picking a value. */
   requiresFanIn?: boolean;
 }
 
@@ -823,7 +952,7 @@ export interface CampaignProps extends Omit<ResourceProps, "properties"> {
    * `properties.targets` is canonicalized to the resolved real ids as a side effect of that first
    * compile (a one-time, idempotent no-op for an already-real-id API-created campaign).
    */
-  targets: (ResourceConstruct | string)[];
+  targets: (IResourceRef | string)[];
   description?: string;
   /** Links this campaign to an existing Release Topology — a construct reference (resolved to its
    *  URN, then re-resolved to a real object id server-side, same as `targets` above) or a raw

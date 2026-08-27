@@ -9,12 +9,15 @@ import {
   Component,
   DeploymentTarget,
   Domain,
+  Group,
   Placement,
   Policy,
   ReleaseTopology,
   Service,
+  ServiceAccount,
   Stack,
   Team,
+  User,
   synthToFile
 } from "./index.js";
 import { canonicalJson } from "./canonical.js";
@@ -806,5 +809,104 @@ describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
     const manifest = bare.synth();
     expect(manifest.governanceMoveRungs).toBeUndefined();
     expect(Object.keys(manifest).sort()).toEqual(["objects", "relationships", "stackName"]);
+  });
+});
+
+/**
+ * D16(2) — `fromXxx()` reference statics returning interface types. `Service.fromName(...)` /
+ * `.fromUrn(...)` return `IService`, and an OWNED `Service` construct implements the same
+ * interface, so the two are interchangeable wherever `IService` (or the looser `IResourceRef`) is
+ * accepted — this is what lets a component in one repo reference a service declared in another
+ * stack's file without a bare, untyped URN string.
+ */
+describe("@scp/iac constructs: fromXxx() reference statics (D16(2))", () => {
+  it("fromUrn returns the exact URN given, verbatim, with the construct's typeId", () => {
+    const ref = Service.fromName; // sanity: the static exists on the exported class
+    expect(typeof ref).toBe("function");
+    const svc = Service.fromUrn("urn:scp:payments-team:service:payments");
+    expect(svc).toEqual({ urn: "urn:scp:payments-team:service:payments", typeId: "service" });
+  });
+
+  it("fromName derives a deterministic, syntactically-valid-URN placeholder from (kind, name)", () => {
+    const a = Service.fromName("payments");
+    const b = Service.fromName("payments");
+    expect(a).toEqual(b); // pure — same input, same reference, every time
+    expect(a.typeId).toBe("service");
+    // Syntactically a real URN (UrnSchema: urn:scp:{org}:{type}:{slug-path}) so it is legal
+    // wherever a construct's own derived URN is — even though today nothing resolves it (below).
+    expect(a.urn).toMatch(/^urn:scp:[a-z0-9-]+:service:payments$/);
+  });
+
+  it("fromName is stable across every typed-registry construct, keyed by its own typeId", () => {
+    expect(Domain.fromName("platform").typeId).toBe("domain");
+    expect(Team.fromName("team-payments").typeId).toBe("team");
+    expect(Policy.fromName("checkout-deps").typeId).toBe("policy");
+    expect(DeploymentTarget.fromName("commercial-amer-production").typeId).toBe(
+      "deployment-target"
+    );
+    expect(Group.fromName("platform-admins").typeId).toBe("group");
+    expect(User.fromName("alice").typeId).toBe("user");
+    expect(ServiceAccount.fromName("ci-bot").typeId).toBe("service-account");
+    expect(Component.fromName("ledger-core").typeId).toBe("component");
+  });
+
+  it("a reference NEVER creates an object in the manifest — it only yields a URN for other entries to point at", () => {
+    const stack = new Stack("ref-no-object");
+    const api = new Component(stack, "api", {
+      name: "checkout-api",
+      service: Service.fromName("checkout") // reference, not an owned construct
+    });
+    const manifest = stack.synth();
+
+    // The component is the ONLY object — no "service" object was synthesized for the reference.
+    expect(manifest.objects.map((o) => o.typeId)).toEqual(["component"]);
+    expect(manifest.objects[0]?.urn).toBe(api.urn);
+    // The `contains` edge still points at the reference's URN, exactly like the existing raw-URN-
+    // string case (`"a Component may belong to an EXTERNAL service by URN string"` above).
+    expect(manifest.relationships).toEqual([
+      { typeId: "contains", fromUrn: Service.fromName("checkout").urn, toUrn: api.urn }
+    ]);
+  });
+
+  it("an owned construct and a fromXxx() reference are INTERCHANGEABLE wherever the interface is accepted", () => {
+    // Same call, two different argument shapes for `service:` — both compile and both synthesize
+    // the `contains` edge from whatever URN the argument carries. This is the D16(2) contract:
+    // IService accepts an owned Service OR a Service.fromName()/fromUrn() reference.
+    const owned = new Stack("interop-stack");
+    const svc = new Service(owned, "checkout", { name: "Checkout" });
+    new Component(owned, "api", { name: "checkout-api", service: svc });
+
+    // Same stack NAME (so the component's own URN matches too) — only `service:`'s argument shape
+    // differs between the two builds.
+    const referenced = new Stack("interop-stack");
+    new Component(referenced, "api", {
+      name: "checkout-api",
+      service: Service.fromUrn(svc.urn) // same URN, via the reference door
+    });
+
+    expect(owned.synth().relationships).toEqual(referenced.synth().relationships);
+  });
+
+  it("fromName/fromUrn compose with placeAt and dependsOn exactly like an owned construct would", () => {
+    const stack = new Stack("ref-composition");
+    const api = new Component(stack, "api", { name: "api", service: Service.fromName("payments") });
+    api.placeAt(DeploymentTarget.fromName("commercial-amer-production"));
+    api.dependsOn(Component.fromName("ledger-core"));
+
+    const manifest = stack.synth();
+    // Still only ONE real object in this program: the component itself.
+    expect(manifest.objects.map((o) => o.typeId)).toEqual(["component"]);
+    expect(manifest.placements).toEqual([
+      {
+        componentUrn: api.urn,
+        deploymentTargetUrn: DeploymentTarget.fromName("commercial-amer-production").urn
+      }
+    ]);
+    expect(manifest.relationships).toEqual(
+      expect.arrayContaining([
+        { typeId: "depends_on", fromUrn: api.urn, toUrn: Component.fromName("ledger-core").urn }
+      ])
+    );
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
   });
 });

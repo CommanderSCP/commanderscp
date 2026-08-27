@@ -33,6 +33,21 @@ export type {
   ExecutorBindingSpec,
   DependencyProducerSpec
 } from "./construct.js";
+// fromXxx() reference statics + the interface types they (and every owned construct) implement
+// (D16(2)) — an owned construct and a `Service.fromName(...)`/`.fromUrn(...)` reference are
+// interchangeable wherever the interface is accepted.
+export type {
+  IResourceRef,
+  IService,
+  IComponent,
+  IDomain,
+  ITeam,
+  IPolicy,
+  IDeploymentTarget,
+  IGroup,
+  IUser,
+  IServiceAccount
+} from "./construct.js";
 export { deriveConstructUrn, slugify } from "./urn.js";
 export { canonicalJson } from "./canonical.js";
 export { Duration } from "./duration.js";
