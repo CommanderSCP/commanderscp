@@ -231,11 +231,57 @@ export interface AbortResult {
   detail?: string;
 }
 
+/**
+ * D12's rollout authority split — WHO OWNS THE ROLLOUT, DECLARED BY THE PLUGIN.
+ *
+ *   authoritative — the plugin performs the rollout to SCP's declaration (the `scp-runner-*`
+ *                   managed classes, where SCP is the executor).
+ *   triggerParams — the executor runs its own automation and accepts SCP's declaration as trigger
+ *                   parameters.
+ *   verified      — the executor owns the rollout entirely; SCP compares DECLARED against the
+ *                   OBSERVED state it already reads (`ExecutionStatus.observed.rollout`, ADR-0008)
+ *                   and surfaces divergence LOUDLY. It never re-weights anything: no verb here
+ *                   promotes, pauses, aborts or re-weights a rollout, and none may be added
+ *                   (charter principle 1; ADR-0008 "rollout state is OBSERVED, NOT DRIVEN").
+ *
+ * The point of putting this on the CAPABILITY DECLARATION rather than in a server-side table keyed
+ * by executor kind is D12's own rule: the authority split is READ FROM THE BINDING, never assumed
+ * per executor kind. Two Argo CD instances can be bound with different rollout arrangements, and a
+ * hardcoded "argocd means verified" would be wrong for one of them with no way to say so.
+ */
+export type RolloutAuthority = "authoritative" | "triggerParams" | "verified";
+
+/**
+ * MUST stay identical to `RolloutTargetClassSchema` in `@scp/schemas/pipeline-behaviors`.
+ *
+ * Kept as a self-contained string union here for the same reason `DependencyIndexEcosystem` and
+ * `DiscoveryProposal.sourceMappings[].type` are: `@scp/plugin-api` stays free of a `@scp/schemas`
+ * dependency, and that boundary is worth more than enum non-duplication. But read the warning on
+ * `DependencyIndexEcosystem` before treating a third copy as harmless — the first two copies of the
+ * ecosystem vocabulary DID drift (`image` vs `oci`), precisely because no test crossed the
+ * boundary. So this copy is pinned against the Zod enum at runtime by a total-`Record` test whose
+ * keys this union generates, exactly as that one is: a value added on one side and not the other is
+ * then a compile error rather than a silently misrouted rollout.
+ */
+export type RolloutTargetClass = "kubernetes" | "instanceGroup";
+
+export interface RolloutCapability {
+  authority: RolloutAuthority;
+  /** The target classes this executor can roll out to. An executor bound to a target whose class is
+   *  not listed does not "fall back" — the binding is loud-unbound (§14 resolution 2: no silent
+   *  defaults), because a misrouted rollout is worse than an absent one. */
+  targetClasses: RolloutTargetClass[];
+}
+
 export interface ExecutorCapabilities {
   supportsObserve: boolean;
   supportsTrigger: boolean;
   supportsAbort: boolean;
   triggerKinds: TriggerIntent["kind"][];
+  /** D12. OPTIONAL and additive: an executor that has no notion of a progressive rollout omits it,
+   *  and every plugin that predates this field keeps its existing meaning — which is "declares no
+   *  rollout authority", NOT "authoritative by default". Absent must never read as a claim. */
+  rollout?: RolloutCapability;
 }
 
 export interface ExecutorPlugin {

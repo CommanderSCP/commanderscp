@@ -10999,6 +10999,70 @@ export type CreatePlanData = {
             governanceMoveRungs?: Array<{
                 subjectIdOrUrn: string;
             }>;
+            /**
+             * Pipeline test/bake hooks (D11/D21). LIKE 'producers' and 'governanceMoveRungs' and UNLIKE mappings/bindings/placements, an ABSENT key means UNMANAGED and prunes NOTHING — a hook is a gate, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry prunes that hook, and a present-but-empty array prunes every hook on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot remove the LAST hook — remove one while others remain, or hand-author "pipelineHooks": []. Identity is (componentUrn, kind, hookId); a changed hook is a delete + create.
+             */
+            pipelineHooks?: Array<{
+                kind: 'postMerge';
+                componentUrn: string;
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                };
+            } | {
+                kind: 'postDeploy';
+                componentUrn: string;
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                };
+                stage?: string;
+            } | {
+                kind: 'continuous';
+                componentUrn: string;
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                };
+                everySeconds: number;
+                maxAgeSeconds: number;
+            } | {
+                kind: 'bakeAlarms';
+                componentUrn: string;
+                hookId: string;
+                quietWindowSeconds: number;
+                stage?: string;
+            }>;
+            rollouts?: Array<{
+                componentUrn: string;
+                targetClass: 'kubernetes' | 'instanceGroup';
+                rollout: {
+                    strategy: 'canary';
+                    steps: Array<{
+                        weightPercent: number;
+                        pauseSeconds?: number;
+                    }>;
+                } | {
+                    strategy: 'rolling';
+                    batchPercent: number;
+                    pauseBetweenSeconds?: number;
+                };
+            }>;
+            convergence?: Array<{
+                componentUrn: string;
+                targetUrn: string;
+                converge: boolean;
+                scope: 'changedSubset' | 'fullGroup';
+            }>;
         };
     };
     path?: never;
@@ -11126,6 +11190,70 @@ export type CreatePlanResponses = {
              */
             governanceMoveRungs?: Array<{
                 subjectIdOrUrn: string;
+            }>;
+            /**
+             * Pipeline test/bake hooks (D11/D21). LIKE 'producers' and 'governanceMoveRungs' and UNLIKE mappings/bindings/placements, an ABSENT key means UNMANAGED and prunes NOTHING — a hook is a gate, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry prunes that hook, and a present-but-empty array prunes every hook on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot remove the LAST hook — remove one while others remain, or hand-author "pipelineHooks": []. Identity is (componentUrn, kind, hookId); a changed hook is a delete + create.
+             */
+            pipelineHooks?: Array<{
+                kind: 'postMerge';
+                componentUrn: string;
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                };
+            } | {
+                kind: 'postDeploy';
+                componentUrn: string;
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                };
+                stage?: string;
+            } | {
+                kind: 'continuous';
+                componentUrn: string;
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                };
+                everySeconds: number;
+                maxAgeSeconds: number;
+            } | {
+                kind: 'bakeAlarms';
+                componentUrn: string;
+                hookId: string;
+                quietWindowSeconds: number;
+                stage?: string;
+            }>;
+            rollouts?: Array<{
+                componentUrn: string;
+                targetClass: 'kubernetes' | 'instanceGroup';
+                rollout: {
+                    strategy: 'canary';
+                    steps: Array<{
+                        weightPercent: number;
+                        pauseSeconds?: number;
+                    }>;
+                } | {
+                    strategy: 'rolling';
+                    batchPercent: number;
+                    pauseBetweenSeconds?: number;
+                };
+            }>;
+            convergence?: Array<{
+                componentUrn: string;
+                targetUrn: string;
+                converge: boolean;
+                scope: 'changedSubset' | 'fullGroup';
             }>;
         };
         diff: {
@@ -11358,6 +11486,70 @@ export type GetPlanResponses = {
              */
             governanceMoveRungs?: Array<{
                 subjectIdOrUrn: string;
+            }>;
+            /**
+             * Pipeline test/bake hooks (D11/D21). LIKE 'producers' and 'governanceMoveRungs' and UNLIKE mappings/bindings/placements, an ABSENT key means UNMANAGED and prunes NOTHING — a hook is a gate, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry prunes that hook, and a present-but-empty array prunes every hook on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot remove the LAST hook — remove one while others remain, or hand-author "pipelineHooks": []. Identity is (componentUrn, kind, hookId); a changed hook is a delete + create.
+             */
+            pipelineHooks?: Array<{
+                kind: 'postMerge';
+                componentUrn: string;
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                };
+            } | {
+                kind: 'postDeploy';
+                componentUrn: string;
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                };
+                stage?: string;
+            } | {
+                kind: 'continuous';
+                componentUrn: string;
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                };
+                everySeconds: number;
+                maxAgeSeconds: number;
+            } | {
+                kind: 'bakeAlarms';
+                componentUrn: string;
+                hookId: string;
+                quietWindowSeconds: number;
+                stage?: string;
+            }>;
+            rollouts?: Array<{
+                componentUrn: string;
+                targetClass: 'kubernetes' | 'instanceGroup';
+                rollout: {
+                    strategy: 'canary';
+                    steps: Array<{
+                        weightPercent: number;
+                        pauseSeconds?: number;
+                    }>;
+                } | {
+                    strategy: 'rolling';
+                    batchPercent: number;
+                    pauseBetweenSeconds?: number;
+                };
+            }>;
+            convergence?: Array<{
+                componentUrn: string;
+                targetUrn: string;
+                converge: boolean;
+                scope: 'changedSubset' | 'fullGroup';
             }>;
         };
         diff: {
@@ -11602,6 +11794,70 @@ export type ApplyPlanResponses = {
                  */
                 governanceMoveRungs?: Array<{
                     subjectIdOrUrn: string;
+                }>;
+                /**
+                 * Pipeline test/bake hooks (D11/D21). LIKE 'producers' and 'governanceMoveRungs' and UNLIKE mappings/bindings/placements, an ABSENT key means UNMANAGED and prunes NOTHING — a hook is a gate, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry prunes that hook, and a present-but-empty array prunes every hook on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot remove the LAST hook — remove one while others remain, or hand-author "pipelineHooks": []. Identity is (componentUrn, kind, hookId); a changed hook is a delete + create.
+                 */
+                pipelineHooks?: Array<{
+                    kind: 'postMerge';
+                    componentUrn: string;
+                    hookId: string;
+                    workflow: {
+                        repo: string;
+                        branch: string;
+                        path: string;
+                        templateName?: string;
+                    };
+                } | {
+                    kind: 'postDeploy';
+                    componentUrn: string;
+                    hookId: string;
+                    workflow: {
+                        repo: string;
+                        branch: string;
+                        path: string;
+                        templateName?: string;
+                    };
+                    stage?: string;
+                } | {
+                    kind: 'continuous';
+                    componentUrn: string;
+                    hookId: string;
+                    workflow: {
+                        repo: string;
+                        branch: string;
+                        path: string;
+                        templateName?: string;
+                    };
+                    everySeconds: number;
+                    maxAgeSeconds: number;
+                } | {
+                    kind: 'bakeAlarms';
+                    componentUrn: string;
+                    hookId: string;
+                    quietWindowSeconds: number;
+                    stage?: string;
+                }>;
+                rollouts?: Array<{
+                    componentUrn: string;
+                    targetClass: 'kubernetes' | 'instanceGroup';
+                    rollout: {
+                        strategy: 'canary';
+                        steps: Array<{
+                            weightPercent: number;
+                            pauseSeconds?: number;
+                        }>;
+                    } | {
+                        strategy: 'rolling';
+                        batchPercent: number;
+                        pauseBetweenSeconds?: number;
+                    };
+                }>;
+                convergence?: Array<{
+                    componentUrn: string;
+                    targetUrn: string;
+                    converge: boolean;
+                    scope: 'changedSubset' | 'fullGroup';
                 }>;
             };
             diff: {

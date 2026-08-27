@@ -6,6 +6,11 @@ import {
   SourceMappingScopeSchema
 } from "./executors.js";
 import { DependencyCoordinateSchema, DependencyEcosystemSchema } from "./dependencies.js";
+import {
+  ManifestConvergenceSchema,
+  ManifestPipelineHookSchema,
+  ManifestRolloutSchema
+} from "./pipeline-behaviors.js";
 
 /**
  * `@scp/iac` desired-state manifest contract (DESIGN.md §15, BUILD_AND_TEST.md §8 M2 item 4).
@@ -455,7 +460,73 @@ export const DesiredStateManifestSchema = z.object({
         'DELETE /governance/move-enforcement/rungs/{idOrUrn}, or hand-author "governanceMoveRungs": []. The ' +
         "subject must be a CONTAINER this stack declares; apply requires policy:write at-or-above it, and a " +
         "disable under an enabled upper rung is refused 409."
-    )
+    ),
+  /**
+   * ===========================================================================================
+   * THE THIRD `ABSENT MEANS **UNMANAGED**` COLLECTION — read `producers` and `governanceMoveRungs`
+   * above first, because this follows their rule and NOT the rule of the three collections above
+   * them (docs/proposals/team-pipeline-iac.md D11/D21).
+   * ===========================================================================================
+   * The test is not consistency, it is blast radius, and a pipeline hook fails the same test a
+   * governance rung fails:
+   *
+   *   - Pruning a mapping, a binding or a placement costs a route or a pipeline an operator
+   *     notices the same day.
+   *   - Pruning a HOOK disarms a gate. A `postDeploy` entry that vanishes stops gating every
+   *     wave's exit; a `bakeAlarms` entry that vanishes stops holding the widening. The symptom in
+   *     both cases is an ABSENCE — of refusals, of holds, of anything at all — and nothing
+   *     surfaces it until a bad release walks the whole fleet unimpeded. That is precisely the
+   *     argument `governanceMoveRungs` makes one field up, and it applies here without weakening.
+   *
+   * So: key absent  -> this stack manages no hooks. NOTHING is disarmed, ever.
+   *     key present -> this stack is authoritative over the hooks it names, AND over any hook on a
+   *                    component this stack owns. Removing an entry from a present collection DOES
+   *                    prune it, visible as a delete line in the plan.
+   *
+   * AND `@scp/iac` THEREFORE CANNOT REMOVE THE **LAST** HOOK, the identical accepted cost:
+   * `Stack.synth()` omits an empty collection, so a pipeline that declares no hooks and one that
+   * declares none ANY MORE synthesize byte-identical manifests. Remove an entry while others
+   * remain, or hand-author `"pipelineHooks": []`.
+   *
+   * IDENTITY is `(componentUrn, kind, hookId)` — no update path keyed on a subset, so a changed
+   * hook is a delete + create, exactly as a changed source mapping is. Declaring one tuple twice in
+   * a manifest is rejected.
+   */
+  pipelineHooks: z
+    .array(ManifestPipelineHookSchema)
+    .optional()
+    .describe(
+      "Pipeline test/bake hooks (D11/D21). LIKE 'producers' and 'governanceMoveRungs' and UNLIKE mappings/" +
+        "bindings/placements, an ABSENT key means UNMANAGED and prunes NOTHING — a hook is a gate, and the " +
+        "symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its " +
+        "members: removing an entry prunes that hook, and a present-but-empty array prunes every hook on a " +
+        "component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot remove " +
+        'the LAST hook — remove one while others remain, or hand-author "pipelineHooks": []. Identity is ' +
+        "(componentUrn, kind, hookId); a changed hook is a delete + create."
+    ),
+  /**
+   * ORDINARY RULE (absent = empty = prune), unlike `pipelineHooks` directly above — and the
+   * divergence is deliberate rather than an oversight, so here is the test being applied.
+   *
+   * Dropping a rollout declaration does not disarm a safety bar. For a coordinated executor the
+   * rollout is the executor's own (D12: SCP's declaration is `triggerParams` or `verified`, never
+   * the thing that performs it), so what is lost when the declaration goes is SCP's
+   * declared-vs-observed divergence WARNING — the artifact still rolls out under the team's own
+   * Argo Rollouts spec. That is a real loss and a visible one (the plan shows the delete line), but
+   * it is not the silent un-gating that earns an exception. Three exceptions to one rule would
+   * make the exception the rule.
+   *
+   * Identity is `(componentUrn, targetClass)`.
+   */
+  rollouts: z.array(ManifestRolloutSchema).optional(),
+  /**
+   * ORDINARY RULE, for a second and simpler reason: D25 has synth write `converge` EXPLICITLY
+   * whenever a configuration pipeline places at a product, so an absent collection means this stack
+   * declares no such pipeline at all — there is nothing for a forgotten key to silently switch off.
+   *
+   * Identity is `(componentUrn, targetUrn)`.
+   */
+  convergence: z.array(ManifestConvergenceSchema).optional()
 });
 export type DesiredStateManifest = z.infer<typeof DesiredStateManifestSchema>;
 
