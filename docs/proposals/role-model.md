@@ -1,9 +1,13 @@
 # Proposal — Purpose-shaped roles, and the permission review behind them
 
 **Status:** Draft — proposed, pending owner review.
-**Built and merged:** step 0 (§5) as **PR #286**, and **2.5a** — the 23 get-by-id re-scopes plus
-`authz/org-root-arm.ts` — as **PR #288**. **2.5b** (LIST-door filtering) is built and unmerged.
-Steps 1, 2 and 3–10 — the roles themselves — are **not started**.
+**Built and merged — the read surface is closed:** step 0 (§5) as **PR #286**; **2.5a** (the 23
+get-by-id re-scopes plus `authz/org-root-arm.ts`) as **PR #288**; **2.5b** (LIST-door filtering, the
+`readable-scope` → `list-door-scope` → `list-scope` stack, and the inverse-walk drift detector) as
+**PR #291**.
+**Not started:** steps 1, 2 and 3–10 — the roles themselves. Per **D5** the role seed (step 3) and the
+role-binding write door (step 5) are **one shippable unit**, since deprecating `Administrator` before
+any purpose-role binding exists would 403 the obvious migration target from day one.
 **Date:** 2026-08-25, last revised 2026-08-26
 **Prompted by:** owner ask — *"review the permissions and create the proper roles for each. Generally
 we'll want some for security/compliance (global scans and overrides), commander-wide admin, org
