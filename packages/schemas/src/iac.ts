@@ -9,7 +9,9 @@ import { DependencyCoordinateSchema, DependencyEcosystemSchema } from "./depende
 import {
   ManifestConvergenceSchema,
   ManifestPipelineHookSchema,
-  ManifestRolloutSchema
+  ManifestRolloutSchema,
+  PipelineHookKindSchema,
+  WorkflowRefSchema
 } from "./pipeline-behaviors.js";
 
 /**
@@ -701,6 +703,47 @@ export const PlanGovernanceMoveRungDiffEntrySchema = z.object({
 });
 export type PlanGovernanceMoveRungDiffEntry = z.infer<typeof PlanGovernanceMoveRungDiffEntrySchema>;
 
+/**
+ * One `pipeline_hooks` row's verdict (D11/D21). No `update`, and the reason is the one
+ * {@link PlanPlacementDiffEntrySchema} gives rather than the one
+ * {@link PlanSourceMappingDiffEntrySchema} gives: a hook has no attribute that converges in place.
+ * The DECLARATION is what the diff keys on — identity `(componentUrn, kind, hookId)` PLUS the
+ * payload beside it — so a hook whose `stage` or `maxAgeSeconds` moved surfaces as a `delete` line
+ * and a `create` line, exactly as `ManifestPipelineHookSchema` says it must. Both lines are shown;
+ * nothing about a gate changes without an entry the reviewer can read.
+ *
+ * `kind` is the DISCRIMINANT every entry in this file carries, so the hook's OWN kind is
+ * `hookKind`. Two fields named `kind` on one object is how a reviewer reads the wrong one.
+ *
+ * The per-kind fields are all nullable because the four kinds carry different ones (the table's own
+ * shape, migration 0096) — a `postMerge` entry has no `stage`, a `bakeAlarms` entry no `workflow`.
+ * They are on the ENTRY and not hidden behind a `target` object because they ARE the gate: a plan
+ * that pruned a `postDeploy` hook without showing which stage it gated is a prune the operator
+ * cannot check, and the whole reason this collection diverges from the prune-on-absent rule is that
+ * a disarmed gate announces itself only by an absence.
+ */
+export const PlanPipelineHookDiffEntrySchema = z.object({
+  kind: z.literal("pipeline-hook"),
+  action: z.enum(["create", "delete", "noop"]),
+  componentUrn: UrnSchema,
+  /** The hook's own kind — see the note above on why this is not called `kind`. */
+  hookKind: PipelineHookKindSchema,
+  hookId: z.string(),
+  /** `null` on `bakeAlarms`, which triggers nothing. */
+  workflow: WorkflowRefSchema.nullable(),
+  /** `postDeploy`/`bakeAlarms`. `null` = EVERY wave — the STRICT end, so a plan that shows `null`
+   *  here is showing a gate on every wave, not an unset field. */
+  stage: z.string().nullable(),
+  /** `continuous` only. */
+  everySeconds: z.number().int().nullable(),
+  /** `continuous` only. */
+  maxAgeSeconds: z.number().int().nullable(),
+  /** `bakeAlarms` only. */
+  quietWindowSeconds: z.number().int().nullable(),
+  reason: z.string()
+});
+export type PlanPipelineHookDiffEntry = z.infer<typeof PlanPipelineHookDiffEntrySchema>;
+
 export const PlanDiffSummarySchema = z.object({
   creates: z.number().int(),
   updates: z.number().int(),
@@ -737,6 +780,16 @@ export const PlanDiffSchema = z.object({
    * from "this stack manages them and has nothing to change" (an empty array).
    */
   governanceMoveRungs: z.array(PlanGovernanceMoveRungDiffEntrySchema).optional(),
+  /**
+   * Pipeline test/bake hooks (D11/D21). OPTIONAL FOR THE SAME TWO REASONS `producers` is, and the
+   * second one is load-bearing in the same way: this key is ABSENT — not `[]` — whenever the
+   * manifest omitted its own `pipelineHooks` collection, because absent there means UNMANAGED. The
+   * stored plan therefore records "this stack manages no hooks", which an operator can tell apart
+   * from "this stack manages them and has nothing to change" (an empty array). The third of the
+   * three collections that diverge; `rollouts` and `convergence` deliberately do not, and are not
+   * projected here at all yet.
+   */
+  pipelineHooks: z.array(PlanPipelineHookDiffEntrySchema).optional(),
   summary: PlanDiffSummarySchema
 });
 export type PlanDiff = z.infer<typeof PlanDiffSchema>;

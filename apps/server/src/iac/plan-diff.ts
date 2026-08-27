@@ -8,11 +8,14 @@ import type {
   PlanGovernanceMoveRungDiffEntry,
   PlanObjectDiffEntry,
   PlanObjectTarget,
+  PlanPipelineHookDiffEntry,
   PlanPlacementDiffEntry,
   PlanRelationshipDiffEntry,
   PlanSourceMappingDiffEntry,
   PipelineClassification,
-  SourceMappingScope
+  PipelineHookKind,
+  SourceMappingScope,
+  WorkflowRef
 } from "@scp/schemas";
 import { canonicalJson } from "../graph/objects-repo.js";
 import { moveRungTierForObjectType } from "../governance/move-enforcement.js";
@@ -164,6 +167,32 @@ export interface ResolvedManifestDependencyProducer {
   coordinate: string;
 }
 
+/**
+ * A declared pipeline hook (D11/D21, migration 0096). IDENTITY is `(componentUrn, hookKind, hookId)`
+ * — the table's own `pipeline_hooks_identity` — but the DIFF keys on the whole declaration
+ * ({@link pipelineHookKey}), because a hook has no attribute that converges in place: a `stage` or
+ * `maxAgeSeconds` that moved is a different gate, and `ManifestPipelineHookSchema` states the
+ * consequence ("a changed hook is a delete + create").
+ *
+ * Every per-kind field is NORMALIZED to `null` here rather than left `undefined`, so the ACTUAL side
+ * (rows read back from a table whose per-kind columns are nullable) and the DESIRED side (a
+ * discriminated union whose members simply lack the fields they do not use) key identically. Without
+ * that, a `postMerge` hook would key one way from the manifest and another from the database and
+ * every plan would propose a delete plus a create for a hook that never changed.
+ */
+export interface ResolvedManifestPipelineHook {
+  componentUrn: string;
+  /** The hook's own kind. Named `hookKind` for the reason `PlanPipelineHookDiffEntrySchema` gives:
+   *  `kind` is already the discriminant every diff entry carries. */
+  hookKind: PipelineHookKind;
+  hookId: string;
+  workflow: WorkflowRef | null;
+  stage: string | null;
+  everySeconds: number | null;
+  maxAgeSeconds: number | null;
+  quietWindowSeconds: number | null;
+}
+
 export interface ResolvedManifest {
   stackName: string;
   objects: ResolvedManifestObject[];
@@ -224,6 +253,25 @@ export interface ResolvedManifest {
    *  Each member is the SUBJECT CONTAINER'S URN — the whole identity. A rung has no value beyond
    *  existing, and its TIER is derived from the subject's object type, never declared. */
   governanceMoveRungs: string[] | null;
+  /** THE THIRD `| null` COLLECTION, null for the same KIND of reason the two above are — read both
+   *  of those comments first (docs/proposals/team-pipeline-iac.md D11/D21).
+   *
+   *  `null`  = the manifest had NO `pipelineHooks` key = this stack manages no hooks. The prune step
+   *            is skipped ENTIRELY and no diff entries are emitted at all.
+   *  `[]`    = the key was present and empty = "I manage hooks and declare none" -> prune all.
+   *
+   *  A hook is a GATE. Pruning a `postDeploy` entry stops gating every wave's exit; pruning a
+   *  `bakeAlarms` entry stops holding the widening. The symptom in both cases is an ABSENCE — of
+   *  refusals, of holds, of anything at all — and nothing surfaces it until a bad release walks the
+   *  whole fleet unimpeded. A stack that merely FORGOT A KEY must not disarm a gate an operator
+   *  deliberately armed. Same accepted cost as the two above: `Stack.synth()` omits an empty
+   *  collection, so `@scp/iac` cannot remove a stack's LAST hook; remove one while others remain, or
+   *  hand-author `"pipelineHooks": []`.
+   *
+   *  Ownership is DERIVED from the owning COMPONENT (`pipeline_hooks` has no `managed_by_stack`),
+   *  exactly as `sourceMappings`/`executorBindings` are: the pool a prune considers is hooks whose
+   *  component this stack owns. */
+  pipelineHooks: ResolvedManifestPipelineHook[] | null;
 }
 
 export interface ExistingObjectSnapshot {
@@ -320,6 +368,16 @@ export interface PlanDiffSnapshot {
    * subject is in the pool. One pool is therefore not a simplification — it is the whole question.
    */
   managedGovernanceMoveRungs: string[];
+  /**
+   * Live `pipeline_hooks` rows whose COMPONENT this stack owns — the prune pool AND the existence
+   * pool, ONE pool for the reason the projection tables have one: ownership is inherited from the
+   * component the row hangs off, so a hook on a component this stack owns is this stack's to
+   * converge and a hook on any other component is invisible here and therefore unprunable.
+   *
+   * `plans-repo.ts` builds it and it is left EMPTY when the manifest omits the collection — reading
+   * a prune pool we must never act on would only invite a later edit to act on it.
+   */
+  managedPipelineHooks: ResolvedManifestPipelineHook[];
 }
 
 function relKey(t: ExistingRelationshipTriple): string {
@@ -335,6 +393,56 @@ function placementKey(p: ResolvedManifestPlacement): string {
     componentUrn: p.componentUrn,
     deploymentTargetUrn: p.deploymentTargetUrn
   });
+}
+
+/**
+ * A hook's DIFF key — the WHOLE declaration, identity and payload alike, exactly as
+ * {@link sourceMappingKey} keys nearly the whole tuple and for the same reason.
+ *
+ * A hook has no attribute that converges in place. `sourceMappings` has one (`scope`) and pays for
+ * it with an `update` verdict; a hook's every field IS the gate, so a `stage` that moved from
+ * `undefined` (every wave) to `"prod"` is not the same gate wearing a new value — it is a narrower
+ * gate, and D21(a) is emphatic that adding a `stage` REMOVES gates. Keying on the identity alone
+ * would render that change as a `noop` while the apply's upsert quietly rewrote it: a gate changed
+ * with no plan line, which is precisely the class of silence this whole collection exists to
+ * prevent.
+ *
+ * So the key includes the payload and a changed hook is a `delete` plus a `create` — two lines the
+ * reviewer sees. The identity tuple still matters, at the DB (`pipeline_hooks_identity`) and at
+ * {@link pipelineHookIdentityKey}, where a manifest declaring one tuple twice is REJECTED rather
+ * than collapsed: two declarations sharing an identity but differing in payload would race through
+ * one row and the last would silently win.
+ */
+function pipelineHookKey(h: ResolvedManifestPipelineHook): string {
+  return canonicalJson({
+    componentUrn: h.componentUrn,
+    hookKind: h.hookKind,
+    hookId: h.hookId,
+    workflow: h.workflow,
+    stage: h.stage,
+    everySeconds: h.everySeconds,
+    maxAgeSeconds: h.maxAgeSeconds,
+    quietWindowSeconds: h.quietWindowSeconds
+  });
+}
+
+/** The `pipeline_hooks_identity` tuple — the UNIQUE constraint, and the write key an apply uses.
+ *  See {@link pipelineHookKey} for why the DIFF keys on more than this. */
+function pipelineHookIdentityKey(h: ResolvedManifestPipelineHook): string {
+  return canonicalJson({
+    componentUrn: h.componentUrn,
+    hookKind: h.hookKind,
+    hookId: h.hookId
+  });
+}
+
+/** Human-readable identity for a hook, for a refusal message. */
+function describePipelineHook(h: {
+  componentUrn: string;
+  hookKind: string;
+  hookId: string;
+}): string {
+  return `${h.hookKind} hook '${h.hookId}' on ${h.componentUrn}`;
 }
 
 /**
@@ -1001,6 +1109,79 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     governanceMoveRungEntries = entries;
   }
 
+  // -----------------------------------------------------------------------------------------
+  // PIPELINE HOOKS (D11/D21; migration 0096). Converge-then-prune like every collection above,
+  // with the SAME divergence `producers` and `governanceMoveRungs` have and one shape note:
+  //
+  //  - THE DIVERGENCE: `manifest.pipelineHooks === null` (the manifest had no `pipelineHooks` key)
+  //    means UNMANAGED. The whole block is skipped — no entries, NO PRUNE, and the diff carries no
+  //    `pipelineHooks` key at all, so the stored plan itself records that this stack manages no
+  //    hooks. Read `ResolvedManifest.pipelineHooks` for why, and do not "fix" the inconsistency:
+  //    pruning a hook DISARMS A GATE and the symptom is an absence of refusals.
+  //  - NO `update`: the diff keys on the WHOLE declaration (`pipelineHookKey`), so a hook whose
+  //    payload moved is a delete plus a create — two lines the reviewer sees.
+  //  - OWNERSHIP IS THE COMPONENT'S. The pool is hooks on components this stack owns, exactly as
+  //    the projection tables' is; `unownedProjectionDeclarations` refuses the write half.
+  //
+  // ROLLOUTS AND CONVERGENCE ARE DELIBERATELY NOT HERE. They follow the ORDINARY rule and have no
+  // storage yet; wiring them is a separate increment's work, and a half-wired collection that
+  // silently ignores its own manifest key is what this block is fixing.
+  // -----------------------------------------------------------------------------------------
+  let pipelineHookEntries: PlanPipelineHookDiffEntry[] | undefined;
+  if (manifest.pipelineHooks !== null) {
+    const entries: PlanPipelineHookDiffEntry[] = [];
+    const existingHookKeys = new Set(snapshot.managedPipelineHooks.map(pipelineHookKey));
+    const manifestHookKeys = new Set<string>();
+
+    const hookEntryFields = (h: ResolvedManifestPipelineHook) => ({
+      componentUrn: h.componentUrn,
+      hookKind: h.hookKind,
+      hookId: h.hookId,
+      workflow: h.workflow,
+      stage: h.stage,
+      everySeconds: h.everySeconds,
+      maxAgeSeconds: h.maxAgeSeconds,
+      quietWindowSeconds: h.quietWindowSeconds
+    });
+
+    for (const hook of manifest.pipelineHooks) {
+      const key = pipelineHookKey(hook);
+      // A byte-identical repeat is one hook, not two; collapsing keeps the diff well-formed. The
+      // ambiguous case — two declarations sharing an IDENTITY but differing in payload — is not
+      // collapsed here, it is REJECTED by `duplicateProjectionDeclarations` before this output is
+      // ever used, because there the two copies disagree about what the gate is.
+      if (manifestHookKeys.has(key)) continue;
+      manifestHookKeys.add(key);
+      const exists = existingHookKeys.has(key);
+      entries.push({
+        kind: "pipeline-hook",
+        action: exists ? "noop" : "create",
+        ...hookEntryFields(hook),
+        reason: exists ? "matches current state" : "no existing pipeline hook with this declaration"
+      });
+      if (exists) noops++;
+      else creates++;
+    }
+
+    // THE PRUNE, reached only because the key was present. Sorted by declaration so the reviewed
+    // diff is stable regardless of row order from the DB, exactly like every other prune here.
+    const hookPrunes = [...snapshot.managedPipelineHooks]
+      .filter((h) => !manifestHookKeys.has(pipelineHookKey(h)))
+      .sort((a, b) => pipelineHookKey(a).localeCompare(pipelineHookKey(b)));
+    for (const managed of hookPrunes) {
+      entries.push({
+        kind: "pipeline-hook",
+        action: "delete",
+        ...hookEntryFields(managed),
+        reason:
+          "declared on a component this stack owns, no longer present in the desired manifest's " +
+          "pipelineHooks — this plan DISARMS the gate"
+      });
+      deletes++;
+    }
+    pipelineHookEntries = entries;
+  }
+
   return {
     objects: objectEntries,
     relationships: relationshipEntries,
@@ -1013,6 +1194,8 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     ...(governanceMoveRungEntries !== undefined
       ? { governanceMoveRungs: governanceMoveRungEntries }
       : {}),
+    // Same rule, same reason — see `ResolvedManifest.pipelineHooks`.
+    ...(pipelineHookEntries !== undefined ? { pipelineHooks: pipelineHookEntries } : {}),
     summary: { creates, updates, deletes, noops }
   };
 }
@@ -1081,6 +1264,24 @@ export function duplicateProjectionDeclarations(manifest: ResolvedManifest): str
       continue;
     }
     seenProducers.add(key);
+  }
+  // A HOOK IS KEYED ON ITS IDENTITY HERE AND NOT ON ITS DECLARATION, which is the opposite of what
+  // `pipelineHookKey` (the DIFF key) does, and the divergence is the whole point. Two declarations
+  // sharing `(componentUrn, hookKind, hookId)` but differing in payload are the dangerous shape: they
+  // race through one `pipeline_hooks_identity` row and the last one silently wins — the
+  // silently-preferred key proposal §11 names. A BYTE-IDENTICAL repeat is not an offender; the diff
+  // collapses it, because the two copies cannot disagree about what the gate is.
+  const seenHooks = new Map<string, string>();
+  for (const hook of manifest.pipelineHooks ?? []) {
+    const identity = pipelineHookIdentityKey(hook);
+    const declaration = pipelineHookKey(hook);
+    const first = seenHooks.get(identity);
+    if (first === undefined) {
+      seenHooks.set(identity, declaration);
+      continue;
+    }
+    if (first === declaration) continue;
+    offenders.push(describePipelineHook(hook));
   }
   return offenders;
 }
@@ -1307,6 +1508,19 @@ export function unownedProjectionDeclarations(diff: PlanDiff): string[] {
       offenders.push(
         `executorBinding -> ${describeDiffTarget(binding)} (${binding.type}), whose pair this manifest does not declare in placements`
       );
+    }
+  }
+  // PIPELINE HOOKS, under the identical rule and for the identical reason. `pipeline_hooks` carries
+  // no owner of its own, so ownership is inherited from the COMPONENT the row hangs off — and
+  // inheritance only scopes pruning if the converse also holds. Without this, stack A arms (or
+  // re-declares) a gate on stack B's component: a row A can never see again, because it is outside
+  // A's prune pool, and B's next apply DISARMS a gate it never declared. `delete` is exempt for the
+  // same reason it is above: a prune entry can only have come from the ownership-scoped pool, and
+  // its component may legitimately be being deleted by this same plan.
+  for (const hook of diff.pipelineHooks ?? []) {
+    if (hook.action === "delete") continue;
+    if (!ownedUrns.has(hook.componentUrn)) {
+      offenders.push(`pipelineHook -> ${describePipelineHook(hook)}`);
     }
   }
   return offenders;

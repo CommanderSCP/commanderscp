@@ -11342,6 +11342,24 @@ export type CreatePlanResponses = {
                 subjectUrn: string;
                 reason: string;
             }>;
+            pipelineHooks?: Array<{
+                kind: 'pipeline-hook';
+                action: 'create' | 'delete' | 'noop';
+                componentUrn: string;
+                hookKind: 'postMerge' | 'postDeploy' | 'continuous' | 'bakeAlarms';
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                } | null;
+                stage: string | null;
+                everySeconds: number | null;
+                maxAgeSeconds: number | null;
+                quietWindowSeconds: number | null;
+                reason: string;
+            }>;
             summary: {
                 creates: number;
                 updates: number;
@@ -11636,6 +11654,24 @@ export type GetPlanResponses = {
                 kind: 'governance-move-rung';
                 action: 'create' | 'delete' | 'noop';
                 subjectUrn: string;
+                reason: string;
+            }>;
+            pipelineHooks?: Array<{
+                kind: 'pipeline-hook';
+                action: 'create' | 'delete' | 'noop';
+                componentUrn: string;
+                hookKind: 'postMerge' | 'postDeploy' | 'continuous' | 'bakeAlarms';
+                hookId: string;
+                workflow: {
+                    repo: string;
+                    branch: string;
+                    path: string;
+                    templateName?: string;
+                } | null;
+                stage: string | null;
+                everySeconds: number | null;
+                maxAgeSeconds: number | null;
+                quietWindowSeconds: number | null;
                 reason: string;
             }>;
             summary: {
@@ -11944,6 +11980,24 @@ export type ApplyPlanResponses = {
                     kind: 'governance-move-rung';
                     action: 'create' | 'delete' | 'noop';
                     subjectUrn: string;
+                    reason: string;
+                }>;
+                pipelineHooks?: Array<{
+                    kind: 'pipeline-hook';
+                    action: 'create' | 'delete' | 'noop';
+                    componentUrn: string;
+                    hookKind: 'postMerge' | 'postDeploy' | 'continuous' | 'bakeAlarms';
+                    hookId: string;
+                    workflow: {
+                        repo: string;
+                        branch: string;
+                        path: string;
+                        templateName?: string;
+                    } | null;
+                    stage: string | null;
+                    everySeconds: number | null;
+                    maxAgeSeconds: number | null;
+                    quietWindowSeconds: number | null;
                     reason: string;
                 }>;
                 summary: {
