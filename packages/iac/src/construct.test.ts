@@ -454,6 +454,16 @@ describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
     expect(() => stack.synth()).toThrow();
   });
 
+  it("D16(6): bindsExecutor's spec is optional (ExecutorBindingSpec is all-optional-fielded) — omitting it still refuses at synth, never silently", () => {
+    // `component.bindsExecutor()` — no argument at all — must be legal TypeScript (D16(6)'s
+    // "props? omitted entirely when all fields are optional"). It still fails at SYNTH, the same
+    // as the "neither inline nor system-backed" case above; the convention is about the call
+    // being typeable, not about the empty binding becoming valid.
+    const { stack, component } = stackWithComponent("bare-call");
+    component.bindsExecutor();
+    expect(() => stack.synth()).toThrow();
+  });
+
   it("declaration ORDER never changes the synthesized manifest — only content does", () => {
     function build(order: "forward" | "reverse") {
       const { stack, component } = stackWithComponent("determinism-c1");

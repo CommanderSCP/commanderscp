@@ -177,16 +177,20 @@ export class App extends Construct {
  * supplies) — see `ManifestSourceMappingSchema`.
  */
 export interface SourceMappingSpec {
-  sourceKind: string;
-  repoPattern?: string;
-  pathPattern?: string;
-  /** Which pipeline of the component this source drives (ADR-0007). Omitted ⇒ `configuration`. */
-  type?: ExecutorType;
+  readonly sourceKind: string;
+  /** @default undefined — matches any repo. */
+  readonly repoPattern?: string;
+  /** @default undefined — matches any path. */
+  readonly pathPattern?: string;
+  /** Which pipeline of the component this source drives (ADR-0007).
+   *  @default "configuration" */
+  readonly type?: ExecutorType;
   /** Declared reach of the repo (pipeline-substrate-registry-scan.md §10.6): `global` (shared across
-   *  domains, tracked at the commander) | `domain` (tracked only in one domain). Omitted ⇒ this
-   *  program does not manage the scope (an apply never clears one set by hand); explicit `null` ⇒
-   *  declare it undeclared. A label read by pipelines, the CLI and plans — never a routing input. */
-  scope?: SourceMappingScope | null;
+   *  domains, tracked at the commander) | `domain` (tracked only in one domain). A label read by
+   *  pipelines, the CLI and plans — never a routing input.
+   *  @default undefined — this program does not manage the scope (an apply never clears one set by
+   *  hand); explicit `null` declares it undeclared, a different value from omission. */
+  readonly scope?: SourceMappingScope | null;
 }
 
 /**
@@ -194,20 +198,38 @@ export interface SourceMappingSpec {
  * `ManifestExecutorBindingSchema`, whose either-inline-or-system-backed rule this shape inherits
  * (the server rejects a manifest that satisfies neither, at `POST /plans`).
  */
+/**
+ * All fields optional — the either-inline-or-execution-system-backed refinement (which combination
+ * is legal) is enforced by `ManifestExecutorBindingSchema` at synth, not by this type. Every call
+ * site that takes one (`bindsExecutor`, `addExecutorBinding`, `addPlacementExecutorBinding`) makes
+ * the parameter itself optional too, per D16(6)'s "props? omitted entirely when all fields are
+ * optional" — `component.bindsExecutor()` is legal TypeScript; it just fails synth validation like
+ * any other incomplete binding.
+ */
 export interface ExecutorBindingSpec {
-  /** Which pipeline this binding drives (ADR-0007). Omitted ⇒ `configuration`. */
-  type?: ExecutorType;
-  pluginModule?: string;
-  pluginInstanceId?: string;
-  config?: Record<string, unknown>;
+  /** Which pipeline this binding drives (ADR-0007).
+   *  @default "configuration" */
+  readonly type?: ExecutorType;
+  /** @default undefined — required together with `pluginInstanceId` for an INLINE binding; omit
+   *  both for an execution-system-backed one. */
+  readonly pluginModule?: string;
+  /** @default undefined — see `pluginModule`. */
+  readonly pluginInstanceId?: string;
+  /** @default undefined — inline binding config; not legal alongside `executionSystem`. */
+  readonly config?: Record<string, unknown>;
   /** `{ configFieldName: secretKey }`. Names secrets stored via `PUT /secrets/{key}` — a synthesized
-   *  manifest is committed to git, so it must never carry the values themselves. */
-  secretRefs?: Record<string, string>;
-  allowedHosts?: string[];
-  externalRef?: string;
+   *  manifest is committed to git, so it must never carry the values themselves.
+   *  @default undefined */
+  readonly secretRefs?: Record<string, string>;
+  /** @default undefined */
+  readonly allowedHosts?: string[];
+  /** Executor-specific target identifier (e.g. an Argo CD Application name).
+   *  @default undefined */
+  readonly externalRef?: string;
   /** A registered `execution-system` construct/reference, or its id/URN (Mode A). When set, module,
-   *  instance id, config and credentials all resolve from that system — declare none of them here. */
-  executionSystem?: IResourceRef | string;
+   *  instance id, config and credentials all resolve from that system — declare none of them here.
+   *  @default undefined — an INLINE binding (`pluginModule` + `pluginInstanceId`) instead. */
+  readonly executionSystem?: IResourceRef | string;
 }
 
 /**
@@ -219,11 +241,11 @@ export interface ExecutorBindingSpec {
  * method supplies) — see `ManifestDependencyProducerSchema`.
  */
 export interface DependencyProducerSpec {
-  ecosystem: DependencyEcosystem;
+  readonly ecosystem: DependencyEcosystem;
   /** The ECOSYSTEM-NATIVE coordinate, VERBATIM — `@acme/lib`, `github.com/acme/lib`,
    *  `com.acme:lib`, `docker.io/library/alpine`. Never a URN and never slugified: `@acme/lib` and
    *  `acme-lib` share a URN slug and are two different packages. */
-  coordinate: string;
+  readonly coordinate: string;
 }
 
 /**
@@ -339,7 +361,7 @@ export class Stack extends Construct {
   addPlacementExecutorBinding(
     component: IComponent | string,
     deploymentTarget: IDeploymentTarget | string,
-    spec: ExecutorBindingSpec
+    spec: ExecutorBindingSpec = {}
   ): this {
     this.executorBindingDecls.push({
       targetUrn: resolveUrn(component),
@@ -349,7 +371,7 @@ export class Stack extends Construct {
     return this;
   }
 
-  addExecutorBinding(target: IResourceRef | string, spec: ExecutorBindingSpec): this {
+  addExecutorBinding(target: IResourceRef | string, spec: ExecutorBindingSpec = {}): this {
     this.executorBindingDecls.push({
       targetUrn: resolveUrn(target),
       ...executorBindingFields(spec)
@@ -560,13 +582,17 @@ function relationshipSortKey(r: ManifestRelationship): string {
 // -------------------------------------------------------------------------------------------
 
 export interface ResourceProps {
-  name: string;
-  /** Explicit URN — when omitted, derived deterministically from `(stack name, construct id)` (`urn.ts`). */
-  urn?: string;
-  /** An existing object's id this resource nests under; omitted defaults to the org root at apply time (same as `CreateObjectRequestSchema.domainId`). */
-  domainId?: string;
-  properties?: Record<string, unknown>;
-  labels?: Record<string, unknown>;
+  readonly name: string;
+  /** Explicit URN.
+   *  @default derived deterministically from `(stack name, construct id)` (`urn.ts`) */
+  readonly urn?: string;
+  /** An existing object's id this resource nests under.
+   *  @default the org root at apply time (same as `CreateObjectRequestSchema.domainId`) */
+  readonly domainId?: string;
+  /** @default {} */
+  readonly properties?: Record<string, unknown>;
+  /** @default {} */
+  readonly labels?: Record<string, unknown>;
 }
 
 /**
@@ -629,7 +655,7 @@ export class ResourceConstruct<TypeId extends string = string>
    * Unlike `dependsOn`/`owns` this is NOT a relationship — `executor_bindings` is a projection table
    * with no graph-object equivalent, which is precisely why it needed its own manifest collection.
    */
-  bindsExecutor(spec: ExecutorBindingSpec): this {
+  bindsExecutor(spec: ExecutorBindingSpec = {}): this {
     this.stack.addExecutorBinding(this, spec);
     return this;
   }
@@ -731,7 +757,7 @@ export interface ComponentProps extends ResourceProps {
    * (`plan-diff.ts`'s `uncontainedComponentCreates`), so requiring it here just moves that failure
    * from apply time to a TypeScript compile error.
    */
-  service: IService | string;
+  readonly service: IService | string;
 }
 
 /**
@@ -866,7 +892,7 @@ export class Placement {
    * off the placement rather than off either endpoint: the same component at two targets is two
    * bindings, and the same target for two components likewise.
    */
-  bindsExecutor(spec: ExecutorBindingSpec): this {
+  bindsExecutor(spec: ExecutorBindingSpec = {}): this {
     this.stack.addPlacementExecutorBinding(this.component, this.deploymentTarget, spec);
     return this;
   }
@@ -898,18 +924,18 @@ function resolveUrn(target: IResourceRef | string): string {
 }
 
 export interface ReleaseTopologyWaveSpec {
-  mode: "parallel" | "sequential";
-  targets: (IResourceRef | string)[];
-  /** @default undefined — let the server default it (`true`, except an implicit wave 0) rather than
-   *  this construct silently picking a value. */
-  name?: string;
-  /** @default true server-side (except an implicit wave 0) — left unset here means "let the server
-   *  default it" rather than this construct silently picking a value. */
-  requiresFanIn?: boolean;
+  readonly mode: "parallel" | "sequential";
+  readonly targets: (IResourceRef | string)[];
+  /** @default none — the wave is unnamed. */
+  readonly name?: string;
+  /** Left unset here means "let the server default it" rather than this construct silently picking
+   *  a value.
+   *  @default true server-side (except an implicit wave 0) */
+  readonly requiresFanIn?: boolean;
 }
 
 export interface ReleaseTopologyProps extends Omit<ResourceProps, "properties"> {
-  waves: ReleaseTopologyWaveSpec[];
+  readonly waves: ReleaseTopologyWaveSpec[];
 }
 
 /**
@@ -952,12 +978,14 @@ export interface CampaignProps extends Omit<ResourceProps, "properties"> {
    * `properties.targets` is canonicalized to the resolved real ids as a side effect of that first
    * compile (a one-time, idempotent no-op for an already-real-id API-created campaign).
    */
-  targets: (IResourceRef | string)[];
-  description?: string;
+  readonly targets: (IResourceRef | string)[];
+  /** @default none */
+  readonly description?: string;
   /** Links this campaign to an existing Release Topology — a construct reference (resolved to its
    *  URN, then re-resolved to a real object id server-side, same as `targets` above) or a raw
-   *  object id/URN string. */
-  topology?: ReleaseTopology | string;
+   *  object id/URN string.
+   *  @default none — no topology; waves fall back to whatever `campaign-plan-service.ts` defaults to. */
+  readonly topology?: ReleaseTopology | string;
 }
 
 /**
