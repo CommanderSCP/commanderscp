@@ -1,12 +1,13 @@
 # Team-level pipeline IaC from a single config repo
 
-**Status:** Draft — proposed 2026-08-26. The rulings in §0 (D1–D24) were made by the owner in-session on 2026-08-26; the design built on them is pending owner review as a whole.
+**Status:** Draft — proposed 2026-08-26. The rulings in §0 (D1–D24) and every §14 resolution were made by the owner in-session on 2026-08-26; the design is pending owner review as a whole.
+**Development-stage note (owner, 2026-08-26):** the platform is pre-release with no external usage — rulings need not preserve existing-user compatibility; compatibility machinery that remains (the `api-v2-exception` ledger, the 0043 wedge posture) is process hygiene, not user protection.
 **Relates to:** [ADR-0002](../adr/0002-execution-strategy.md) (three modes, ownership test), [ADR-0005](../adr/0005-component-create-strict.md) (create-strict / import-permissive), [ADR-0030](../adr/0030-dev-branch-pipelines.md) (dev pipelines selected by source ref), [ADR-0031](../adr/0031-domain-local-objects-never-federate.md) (pipeline routing is domain-local), [iac-placements.md](iac-placements.md) (ACCEPTED 2026-08-03), [iac-stack-ownership.md](iac-stack-ownership.md), [import-existing-executors.md](import-existing-executors.md), [post-import-configuration.md §8](post-import-configuration.md).
 **Worked example:** [team-pipeline-iac-examples.md](team-pipeline-iac-examples.md) — the full estate (commander + XO, HQ outpost, retrans, govcloud outpost, air-gapped outpost).
 
 ## 0. Owner rulings (2026-08-26)
 
-- **D1 — discovery is demoted to a scaffolder.** `discover()` stays, but its output becomes IaC construct code / a manifest (optionally delivered as a PR to the config repo), never a graph write. `POST /discovery/accept` is deprecated now and removed later under the `api-v2-exception` process (`/v1` is additive-only). The `/connect` wizards become scaffolder UI. The M13.1a federation **inbox loop** — the only thing in the tree literally named "auto-import" — is unrelated (promotion-bundle replication) and is untouched.
+- **D1 — discovery is demoted to a scaffolder.** `discover()` stays, but its output becomes IaC construct code / a manifest (optionally delivered as a PR to the config repo), never a graph write. `POST /discovery/accept` is **removed with increment 6** — the same increment the scaffolder ships — under the `api-v2-exception` process (`/v1` is additive-only); dev-stage, so no deprecation window or transition flag (§14.4). The `/connect` wizards become scaffolder UI. The M13.1a federation **inbox loop** — the only thing in the tree literally named "auto-import" — is unrelated (promotion-bundle replication) and is untouched.
 - **D2 — the config repo carries committed synthesized JSON.** Teams author TypeScript constructs; their own CI runs synth and commits the manifest JSON beside the source (the monorepo's own committed-codegen convention), with a drift check. SCP reads only the declarative JSON. **SCP never executes team-authored code.**
 - **D3 — auto-apply on merge.** Merge to the registered branch *is* the approval (CODEOWNERS + PR review gate authorship). SCP plans and applies on sync; every plan persists as a Decision. An active freeze whose scope covers an affected object holds the apply until lifted.
 - **D4 — outpost binding policy.** The repo declares the WHAT (services, components, placements, wave topologies — ordinary federating objects). Each security domain authors the HOW once — a binding policy mapping deployment-targets to its local execution systems — and a domain-local reconciler joins the two into `executor_bindings`. Teams never author bindings. ADR-0031 stands unamended.
@@ -148,26 +149,33 @@ Failure honesty: a manifest that fails validation or an apply that is refused (a
 3. **git-provider-core tree reads + buffer-gap close** (pre-work).
 4. **Config-source + sync at the commander** (API surface + migration slot).
 5. **Binding policy + domain reconciler** (API surface; the fake-success honesty fix rides along).
-6. **Scaffolder + accept deprecation** (UI follows: /connect becomes scaffold).
+6. **Scaffolder + accept removal** (same increment, §14.4; api-v2-exception on the ledger; UI follows: /connect becomes scaffold).
 7. **Adopt + export + estate migration** (homelab converts; backfill route then follows accept)
 8. **Argo Workflows plugin + pipeline behaviors** — the `argo-workflows` executor module (a new plugin: six-place module-name census per ADR-0014/M15.1 applies), WorkflowTemplate/CronWorkflow trigger + observe, the D11 test-hook contract compiled to controls/per-target holds, the D12 rollout capability field on the plugin contract, D13 artifact-class verification against build evidence. The largest new server-side piece after the config source itself; API-surface and likely a migration slot.
 
 Each increment lands with its own verification tests per BUILD_AND_TEST.md discipline; increments 4–7 serialize against other API-surface/migration sessions.
 
-## 14. Open questions
+## 14. Open questions — all resolved 2026-08-26
 
-1. Scope filtering: should a peer's `syncScope` narrow which teams' declarations reach which outposts, or does every outpost see all global WHAT (current default)? Recommend: default all, revisit if a tenant asks.
-2. Placement federation to outposts: placements are pair-bound (refused at generic doors) — verify the federation import path materializes them with derived edges intact before increment 5 (it should, via `createPlacement`-equivalent apply, but this is a verify-not-assume).
-3. Does the binding policy need a per-Type default at the org tier (a commander-side fallback for domains that haven't authored policy yet), or is unbound-and-loud the better default? Recommend: unbound-and-loud (a silent fallback is how fake-success returns).
-4. Transition window: how long does deprecated `discovery/accept` stay operable behind the operator flag before the exception removal?
-5. `depends_on` endpoint authorization: verify what the relationships route requires today (both endpoints vs one); the proposal's position is `depends_on` needs `relationship:write` only at the *from* endpoint — the edge holds the depender's rollout, never the dependee's — but this must match (or deliberately change) current UI behavior, not diverge from it.
-6. Per-wave `gates:` in IaC: compile to scoped policy/control declarations (no wave-schema change), or add a native per-wave field (a `topology-waves` parser change — it loudly rejects unknown keys today, and older readers in a federation would reject the new key; needs the ADR-0022-style version posture decided).
-7. Test-evidence freshness (D11): the continuous/canary hook needs a declared max-age per hook — stale green must read as absent, and the boundary goes in the Decision inputContext, never `now`.
-8. Rollout authority split (D12): plugins must *declare* which strategy parameters they accept vs. which SCP can only verify — a capability field on the plugin contract, so authoritative-vs-verified is read from the binding, never assumed per executor kind.
-9. Sub-target modeling — child deployment-targets under a stage stand (freezes, binding policies, and policies scope to a single cluster via existing containment routes), but authorship is settled by D19: sub-targets are declared by their **managing infra/config pipeline**, not by domain menu stacks. Remaining detail: those pipeline-declared targets must federate (team placements at the commander resolve against them) even when the managing pipeline's stack is otherwise team-scoped — confirm the locality defaults. Related: artifact-class enum growth posture — additions land request-side first; check the oasdiff response-enum rule before echoing the class in responses.
-10. Pending-dependency posture (D14): display-and-age only, or expire/alert after a window; and whether an unresolved pending dependency should block *accepting* the depender's changes or stay purely advisory until it materializes.
-11. Test dispatch lane (D11): do test runs ride the `build`-Type binding policy, or get a dedicated lane key — matters for orgs whose builds and tests run on different Workflows instances.
-14. Test-bundle packaging (D23): OCI artifact vs. a git push into the domain Gitea's code side — increment-8 implementation choice; and confirm the promotion-manifest schema already admits a new artifact class without a wire change.
-15. Compatibility-matrix growth (D24): the initial rows are the known estate; serverless (`Function`), machine-image rollover semantics, and any org-defined infra kinds need a posture — closed code enum per D15c vs. registry-data extension per the graph-native principle — before a tenant asks.
-12. Per-kind pipeline attachment (D17): the migration shape for relaxing `releases_via`'s one-per-component unique index to one-per-(component, kind) — mirror P3's `UNIQUE(org, target, purpose)` precedent exactly; sweep every consumer of "the component's pipeline" (nearest-rung resolution, the component-pipeline read view, plan compilation, UI) to take a kind, with a filterless census, since a missed consumer silently reads the wrong pipeline.
-13. BakeAlarms sources (D21): the rollout executor's own analysis (ADR-0008 observed signals) is the grounded default — whether external alarm sources (CloudWatch, Prometheus alerts) join as evidence, and through what read-only seam, needs its own decision; air-gap domains constrain any pull-based source.
+The ten open decisions were ruled by the owner in-session on 2026-08-26 (the remaining five items were build-time verifications, not decisions — kept below). Several resolutions lean on the development-stage note in the header.
+
+**Resolved:**
+
+1. **Sync scope — all outposts receive all WHAT.** Declarations are small metadata; placements for other domains sit inert at an outpost. Narrowing per peer waits for a real tenant ask.
+2. **Binding fallback — unbound and loud.** No commander-side default executor tier: a missing (target, Type) policy shows as unbound and dispatches nothing — domain HOW ownership (ADR-0017) stays crisp, and silent defaults stay dead.
+3. **Accept sunset — removed with increment 6**, the same increment the scaffolder ships. Dev-stage: no deprecation window. Adopt/export (increment 7) remains full product surface — it is how future customers bring existing estates in, and how the homelab trial converts.
+4. **`depends_on` authorization — from-endpoint only** (`relationship:write` at the depender; the edge holds the depender's rollout, never the dependee's). The increment that builds this measures current route/UI behavior and aligns both to the rule, so IaC and UI cannot diverge.
+5. **Per-wave gates — a native `gates` field in the wave document.** The `topology-waves` parser gains the key (it loudly rejects unknown keys today — that stays true for everything else). Compatibility posture is migration 0043's precedent: an outpost on an older set rejects the entry and federation wedges for that peer until upgraded — accepted, and cheap pre-release.
+6. **Pending dependencies — advisory + aging, surfaced at accept.** Never blocks, never expires: listed with its age on the pipeline status AND on the change-accept surface, so an approver sees exactly what has not materialized (amends D14's display clause).
+7. **Test lane — dedicated `test` lane key in the binding policy, falling back to the build lane** when a domain does not set it.
+8. **Bake-alarm sources — Rollouts analysis + pushed evidence.** v1 consumes the rollout executor's analysis/health (ADR-0008 observed signals) and accepts externally pushed alarm state through the existing typed report/evidence door — no new egress class, air-gap-clean. Pull integrations (CloudWatch/Prometheus polling) deferred until a driving case.
+9. **Test bundle — an OCI artifact** beside the image: digest-native, cosign-signed like every other artifact (D23), riding the byte channel and registry replication unchanged.
+10. **Infra-kind growth — closed enum in code** (D15c holds everywhere): a new kind arrives as a release carrying the enum value, the typed construct + interface, and its matrix rows. Org-defined custom kinds wait for a real tenant ask rather than a speculative extension point.
+
+**Build-time verifications (carried into increments, not decisions):**
+
+- Placement federation through the pair-bound doors — verify the import path materializes placements with their derived edges intact (increment 5).
+- Evidence freshness plumbing — the boundary timestamp lives in Decision inputContext, per hook, never `now` (increment 8).
+- The rollout capability declaration on the plugin contract — authoritative vs. verified is read from the binding, never assumed per executor kind (increment 8).
+- Locality defaults for pipeline-declared targets — D19 products must federate even when declared from otherwise team-scoped stacks (increment 5).
+- The per-kind `releases_via` migration — mirror P3's `UNIQUE(org, target, purpose)` fix exactly, then a filterless census of every consumer of "the component's pipeline" (resolution rungs, read view, plan compiler, UI), since a missed consumer silently reads the wrong pipeline (increments 4–5).
