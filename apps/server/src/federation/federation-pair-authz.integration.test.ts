@@ -383,6 +383,22 @@ describe("federation:pair — a second bar on pairing, added never substituted (
       .filter((r) => r.permissions.includes("federation:pair"))
       .map((r) => r.name)
       .sort();
-    expect(holders).toEqual(["Administrator", "Owner"]);
+    // `OrgAdmin` JOINED THE SET IN drizzle/0099, BY OWNER RULING D6 (2026-08-27), and this assertion
+    // is what caught the change rather than letting it land silently — which is the whole reason it
+    // enumerates the holders instead of spot-checking two names.
+    //
+    // D6 resolved a contradiction inside role-model.md: §4.1 and D4 both granted `federation:pair` to
+    // "Administrator, Owner and OrgAdmin", while §3C's permission list — the one 0099's seed literal
+    // is copied from — omitted it. D4 governs, because it is the ruling that REASONED about this
+    // permission: establishing a trust relationship is a different act from operating one, so the
+    // role that operates the link must not decide whose signature this instance believes. That names
+    // `FederationAdmin` as the withholding, and it is the ONLY one — §3B holds `federation:write` and
+    // not this. Withholding it from OrgAdmin as well would leave an org whose only pairing principals
+    // are Owner and the D5-deprecated Administrator, i.e. unadministrable in exactly the dimension
+    // OrgAdmin exists to cover.
+    //
+    // So the list below is three, and `FederationAdmin`'s ABSENCE from it is the load-bearing half.
+    expect(holders).toEqual(["Administrator", "OrgAdmin", "Owner"]);
+    expect(holders).not.toContain("FederationAdmin");
   });
 });
