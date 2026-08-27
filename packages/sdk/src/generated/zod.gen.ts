@@ -3760,6 +3760,75 @@ export const zCreatePlanResponse = z.object({
         })).optional(),
         governanceMoveRungs: z.array(z.object({
             subjectIdOrUrn: z.string().min(1).max(512)
+        })).optional(),
+        pipelineHooks: z.array(z.union([
+            z.object({
+                kind: z.literal('postMerge'),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                hookId: z.string().min(1).max(200),
+                workflow: z.object({
+                    repo: z.string().min(1),
+                    branch: z.string().min(1),
+                    path: z.string().min(1),
+                    templateName: z.string().min(1).optional()
+                })
+            }),
+            z.object({
+                kind: z.literal('postDeploy'),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                hookId: z.string().min(1).max(200),
+                workflow: z.object({
+                    repo: z.string().min(1),
+                    branch: z.string().min(1),
+                    path: z.string().min(1),
+                    templateName: z.string().min(1).optional()
+                }),
+                stage: z.string().min(1).optional()
+            }),
+            z.object({
+                kind: z.literal('continuous'),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                hookId: z.string().min(1).max(200),
+                workflow: z.object({
+                    repo: z.string().min(1),
+                    branch: z.string().min(1),
+                    path: z.string().min(1),
+                    templateName: z.string().min(1).optional()
+                }),
+                everySeconds: z.int().gt(0).lte(9007199254740991),
+                maxAgeSeconds: z.int().gt(0).lte(9007199254740991)
+            }),
+            z.object({
+                kind: z.literal('bakeAlarms'),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                hookId: z.string().min(1).max(200),
+                quietWindowSeconds: z.int().gt(0).lte(9007199254740991),
+                stage: z.string().min(1).optional()
+            })
+        ])).optional(),
+        rollouts: z.array(z.object({
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetClass: z.enum(['kubernetes', 'instanceGroup']),
+            rollout: z.union([
+                z.object({
+                    strategy: z.literal('canary'),
+                    steps: z.array(z.object({
+                        weightPercent: z.int().gte(0).lte(100),
+                        pauseSeconds: z.int().gte(0).lte(9007199254740991).optional()
+                    })).min(1)
+                }),
+                z.object({
+                    strategy: z.literal('rolling'),
+                    batchPercent: z.int().gte(1).lte(100),
+                    pauseBetweenSeconds: z.int().gte(0).lte(9007199254740991).optional()
+                })
+            ])
+        })).optional(),
+        convergence: z.array(z.object({
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            converge: z.boolean(),
+            scope: z.enum(['changedSubset', 'fullGroup'])
         })).optional()
     }),
     diff: z.object({
@@ -3987,6 +4056,75 @@ export const zGetPlanResponse = z.object({
         })).optional(),
         governanceMoveRungs: z.array(z.object({
             subjectIdOrUrn: z.string().min(1).max(512)
+        })).optional(),
+        pipelineHooks: z.array(z.union([
+            z.object({
+                kind: z.literal('postMerge'),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                hookId: z.string().min(1).max(200),
+                workflow: z.object({
+                    repo: z.string().min(1),
+                    branch: z.string().min(1),
+                    path: z.string().min(1),
+                    templateName: z.string().min(1).optional()
+                })
+            }),
+            z.object({
+                kind: z.literal('postDeploy'),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                hookId: z.string().min(1).max(200),
+                workflow: z.object({
+                    repo: z.string().min(1),
+                    branch: z.string().min(1),
+                    path: z.string().min(1),
+                    templateName: z.string().min(1).optional()
+                }),
+                stage: z.string().min(1).optional()
+            }),
+            z.object({
+                kind: z.literal('continuous'),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                hookId: z.string().min(1).max(200),
+                workflow: z.object({
+                    repo: z.string().min(1),
+                    branch: z.string().min(1),
+                    path: z.string().min(1),
+                    templateName: z.string().min(1).optional()
+                }),
+                everySeconds: z.int().gt(0).lte(9007199254740991),
+                maxAgeSeconds: z.int().gt(0).lte(9007199254740991)
+            }),
+            z.object({
+                kind: z.literal('bakeAlarms'),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                hookId: z.string().min(1).max(200),
+                quietWindowSeconds: z.int().gt(0).lte(9007199254740991),
+                stage: z.string().min(1).optional()
+            })
+        ])).optional(),
+        rollouts: z.array(z.object({
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetClass: z.enum(['kubernetes', 'instanceGroup']),
+            rollout: z.union([
+                z.object({
+                    strategy: z.literal('canary'),
+                    steps: z.array(z.object({
+                        weightPercent: z.int().gte(0).lte(100),
+                        pauseSeconds: z.int().gte(0).lte(9007199254740991).optional()
+                    })).min(1)
+                }),
+                z.object({
+                    strategy: z.literal('rolling'),
+                    batchPercent: z.int().gte(1).lte(100),
+                    pauseBetweenSeconds: z.int().gte(0).lte(9007199254740991).optional()
+                })
+            ])
+        })).optional(),
+        convergence: z.array(z.object({
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            converge: z.boolean(),
+            scope: z.enum(['changedSubset', 'fullGroup'])
         })).optional()
     }),
     diff: z.object({
@@ -4215,6 +4353,75 @@ export const zApplyPlanResponse = z.object({
             })).optional(),
             governanceMoveRungs: z.array(z.object({
                 subjectIdOrUrn: z.string().min(1).max(512)
+            })).optional(),
+            pipelineHooks: z.array(z.union([
+                z.object({
+                    kind: z.literal('postMerge'),
+                    componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                    hookId: z.string().min(1).max(200),
+                    workflow: z.object({
+                        repo: z.string().min(1),
+                        branch: z.string().min(1),
+                        path: z.string().min(1),
+                        templateName: z.string().min(1).optional()
+                    })
+                }),
+                z.object({
+                    kind: z.literal('postDeploy'),
+                    componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                    hookId: z.string().min(1).max(200),
+                    workflow: z.object({
+                        repo: z.string().min(1),
+                        branch: z.string().min(1),
+                        path: z.string().min(1),
+                        templateName: z.string().min(1).optional()
+                    }),
+                    stage: z.string().min(1).optional()
+                }),
+                z.object({
+                    kind: z.literal('continuous'),
+                    componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                    hookId: z.string().min(1).max(200),
+                    workflow: z.object({
+                        repo: z.string().min(1),
+                        branch: z.string().min(1),
+                        path: z.string().min(1),
+                        templateName: z.string().min(1).optional()
+                    }),
+                    everySeconds: z.int().gt(0).lte(9007199254740991),
+                    maxAgeSeconds: z.int().gt(0).lte(9007199254740991)
+                }),
+                z.object({
+                    kind: z.literal('bakeAlarms'),
+                    componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                    hookId: z.string().min(1).max(200),
+                    quietWindowSeconds: z.int().gt(0).lte(9007199254740991),
+                    stage: z.string().min(1).optional()
+                })
+            ])).optional(),
+            rollouts: z.array(z.object({
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                targetClass: z.enum(['kubernetes', 'instanceGroup']),
+                rollout: z.union([
+                    z.object({
+                        strategy: z.literal('canary'),
+                        steps: z.array(z.object({
+                            weightPercent: z.int().gte(0).lte(100),
+                            pauseSeconds: z.int().gte(0).lte(9007199254740991).optional()
+                        })).min(1)
+                    }),
+                    z.object({
+                        strategy: z.literal('rolling'),
+                        batchPercent: z.int().gte(1).lte(100),
+                        pauseBetweenSeconds: z.int().gte(0).lte(9007199254740991).optional()
+                    })
+                ])
+            })).optional(),
+            convergence: z.array(z.object({
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                converge: z.boolean(),
+                scope: z.enum(['changedSubset', 'fullGroup'])
             })).optional()
         }),
         diff: z.object({

@@ -43852,6 +43852,343 @@
                           ],
                           "additionalProperties": false
                         }
+                      },
+                      "pipelineHooks": {
+                        "description": "Pipeline test/bake hooks (D11/D21). LIKE 'producers' and 'governanceMoveRungs' and UNLIKE mappings/bindings/placements, an ABSENT key means UNMANAGED and prunes NOTHING — a hook is a gate, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry prunes that hook, and a present-but-empty array prunes every hook on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot remove the LAST hook — remove one while others remain, or hand-author \"pipelineHooks\": []. Identity is (componentUrn, kind, hookId); a changed hook is a delete + create.",
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "postMerge"
+                                },
+                                "componentUrn": {
+                                  "type": "string",
+                                  "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                },
+                                "hookId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 200
+                                },
+                                "workflow": {
+                                  "type": "object",
+                                  "properties": {
+                                    "repo": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "branch": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "path": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "templateName": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "repo",
+                                    "branch",
+                                    "path"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "componentUrn",
+                                "hookId",
+                                "workflow"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "postDeploy"
+                                },
+                                "componentUrn": {
+                                  "type": "string",
+                                  "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                },
+                                "hookId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 200
+                                },
+                                "workflow": {
+                                  "type": "object",
+                                  "properties": {
+                                    "repo": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "branch": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "path": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "templateName": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "repo",
+                                    "branch",
+                                    "path"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "stage": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "componentUrn",
+                                "hookId",
+                                "workflow"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "continuous"
+                                },
+                                "componentUrn": {
+                                  "type": "string",
+                                  "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                },
+                                "hookId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 200
+                                },
+                                "workflow": {
+                                  "type": "object",
+                                  "properties": {
+                                    "repo": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "branch": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "path": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "templateName": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "repo",
+                                    "branch",
+                                    "path"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "everySeconds": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "maxAgeSeconds": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "componentUrn",
+                                "hookId",
+                                "workflow",
+                                "everySeconds",
+                                "maxAgeSeconds"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "bakeAlarms"
+                                },
+                                "componentUrn": {
+                                  "type": "string",
+                                  "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                },
+                                "hookId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 200
+                                },
+                                "quietWindowSeconds": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "stage": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "componentUrn",
+                                "hookId",
+                                "quietWindowSeconds"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "rollouts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "componentUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "targetClass": {
+                              "type": "string",
+                              "enum": [
+                                "kubernetes",
+                                "instanceGroup"
+                              ]
+                            },
+                            "rollout": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "strategy": {
+                                      "type": "string",
+                                      "const": "canary"
+                                    },
+                                    "steps": {
+                                      "minItems": 1,
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "weightPercent": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 100
+                                          },
+                                          "pauseSeconds": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "required": [
+                                          "weightPercent"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "strategy",
+                                    "steps"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "strategy": {
+                                      "type": "string",
+                                      "const": "rolling"
+                                    },
+                                    "batchPercent": {
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 100
+                                    },
+                                    "pauseBetweenSeconds": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "strategy",
+                                    "batchPercent"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "componentUrn",
+                            "targetClass",
+                            "rollout"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "convergence": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "componentUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "targetUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "converge": {
+                              "type": "boolean"
+                            },
+                            "scope": {
+                              "type": "string",
+                              "enum": [
+                                "changedSubset",
+                                "fullGroup"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "componentUrn",
+                            "targetUrn",
+                            "converge",
+                            "scope"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -44201,6 +44538,343 @@
                             },
                             "required": [
                               "subjectIdOrUrn"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "pipelineHooks": {
+                          "description": "Pipeline test/bake hooks (D11/D21). LIKE 'producers' and 'governanceMoveRungs' and UNLIKE mappings/bindings/placements, an ABSENT key means UNMANAGED and prunes NOTHING — a hook is a gate, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry prunes that hook, and a present-but-empty array prunes every hook on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot remove the LAST hook — remove one while others remain, or hand-author \"pipelineHooks\": []. Identity is (componentUrn, kind, hookId); a changed hook is a delete + create.",
+                          "type": "array",
+                          "items": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "postMerge"
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "hookId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "workflow": {
+                                    "type": "object",
+                                    "properties": {
+                                      "repo": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "branch": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "templateName": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "repo",
+                                      "branch",
+                                      "path"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "componentUrn",
+                                  "hookId",
+                                  "workflow"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "postDeploy"
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "hookId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "workflow": {
+                                    "type": "object",
+                                    "properties": {
+                                      "repo": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "branch": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "templateName": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "repo",
+                                      "branch",
+                                      "path"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "stage": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "componentUrn",
+                                  "hookId",
+                                  "workflow"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "continuous"
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "hookId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "workflow": {
+                                    "type": "object",
+                                    "properties": {
+                                      "repo": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "branch": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "templateName": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "repo",
+                                      "branch",
+                                      "path"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "everySeconds": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "maxAgeSeconds": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "componentUrn",
+                                  "hookId",
+                                  "workflow",
+                                  "everySeconds",
+                                  "maxAgeSeconds"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "bakeAlarms"
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "hookId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "quietWindowSeconds": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "stage": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "componentUrn",
+                                  "hookId",
+                                  "quietWindowSeconds"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "rollouts": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "targetClass": {
+                                "type": "string",
+                                "enum": [
+                                  "kubernetes",
+                                  "instanceGroup"
+                                ]
+                              },
+                              "rollout": {
+                                "oneOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "strategy": {
+                                        "type": "string",
+                                        "const": "canary"
+                                      },
+                                      "steps": {
+                                        "minItems": 1,
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "weightPercent": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 100
+                                            },
+                                            "pauseSeconds": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 9007199254740991
+                                            }
+                                          },
+                                          "required": [
+                                            "weightPercent"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      }
+                                    },
+                                    "required": [
+                                      "strategy",
+                                      "steps"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "strategy": {
+                                        "type": "string",
+                                        "const": "rolling"
+                                      },
+                                      "batchPercent": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 100
+                                      },
+                                      "pauseBetweenSeconds": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "strategy",
+                                      "batchPercent"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "componentUrn",
+                              "targetClass",
+                              "rollout"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "convergence": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "targetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "converge": {
+                                "type": "boolean"
+                              },
+                              "scope": {
+                                "type": "string",
+                                "enum": [
+                                  "changedSubset",
+                                  "fullGroup"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "componentUrn",
+                              "targetUrn",
+                              "converge",
+                              "scope"
                             ],
                             "additionalProperties": false
                           }
@@ -45296,6 +45970,343 @@
                             ],
                             "additionalProperties": false
                           }
+                        },
+                        "pipelineHooks": {
+                          "description": "Pipeline test/bake hooks (D11/D21). LIKE 'producers' and 'governanceMoveRungs' and UNLIKE mappings/bindings/placements, an ABSENT key means UNMANAGED and prunes NOTHING — a hook is a gate, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry prunes that hook, and a present-but-empty array prunes every hook on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot remove the LAST hook — remove one while others remain, or hand-author \"pipelineHooks\": []. Identity is (componentUrn, kind, hookId); a changed hook is a delete + create.",
+                          "type": "array",
+                          "items": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "postMerge"
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "hookId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "workflow": {
+                                    "type": "object",
+                                    "properties": {
+                                      "repo": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "branch": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "templateName": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "repo",
+                                      "branch",
+                                      "path"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "componentUrn",
+                                  "hookId",
+                                  "workflow"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "postDeploy"
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "hookId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "workflow": {
+                                    "type": "object",
+                                    "properties": {
+                                      "repo": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "branch": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "templateName": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "repo",
+                                      "branch",
+                                      "path"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "stage": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "componentUrn",
+                                  "hookId",
+                                  "workflow"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "continuous"
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "hookId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "workflow": {
+                                    "type": "object",
+                                    "properties": {
+                                      "repo": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "branch": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "templateName": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "repo",
+                                      "branch",
+                                      "path"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "everySeconds": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "maxAgeSeconds": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "componentUrn",
+                                  "hookId",
+                                  "workflow",
+                                  "everySeconds",
+                                  "maxAgeSeconds"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "bakeAlarms"
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "hookId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "quietWindowSeconds": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "stage": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "componentUrn",
+                                  "hookId",
+                                  "quietWindowSeconds"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "rollouts": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "targetClass": {
+                                "type": "string",
+                                "enum": [
+                                  "kubernetes",
+                                  "instanceGroup"
+                                ]
+                              },
+                              "rollout": {
+                                "oneOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "strategy": {
+                                        "type": "string",
+                                        "const": "canary"
+                                      },
+                                      "steps": {
+                                        "minItems": 1,
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "weightPercent": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 100
+                                            },
+                                            "pauseSeconds": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 9007199254740991
+                                            }
+                                          },
+                                          "required": [
+                                            "weightPercent"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      }
+                                    },
+                                    "required": [
+                                      "strategy",
+                                      "steps"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "strategy": {
+                                        "type": "string",
+                                        "const": "rolling"
+                                      },
+                                      "batchPercent": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 100
+                                      },
+                                      "pauseBetweenSeconds": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "strategy",
+                                      "batchPercent"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "componentUrn",
+                              "targetClass",
+                              "rollout"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "convergence": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "targetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "converge": {
+                                "type": "boolean"
+                              },
+                              "scope": {
+                                "type": "string",
+                                "enum": [
+                                  "changedSubset",
+                                  "fullGroup"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "componentUrn",
+                              "targetUrn",
+                              "converge",
+                              "scope"
+                            ],
+                            "additionalProperties": false
+                          }
                         }
                       },
                       "required": [
@@ -46388,6 +47399,343 @@
                                 },
                                 "required": [
                                   "subjectIdOrUrn"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "pipelineHooks": {
+                              "description": "Pipeline test/bake hooks (D11/D21). LIKE 'producers' and 'governanceMoveRungs' and UNLIKE mappings/bindings/placements, an ABSENT key means UNMANAGED and prunes NOTHING — a hook is a gate, and the symptom of dropping one is an absence of refusals. A PRESENT collection IS authoritative over its members: removing an entry prunes that hook, and a present-but-empty array prunes every hook on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot remove the LAST hook — remove one while others remain, or hand-author \"pipelineHooks\": []. Identity is (componentUrn, kind, hookId); a changed hook is a delete + create.",
+                              "type": "array",
+                              "items": {
+                                "oneOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "postMerge"
+                                      },
+                                      "componentUrn": {
+                                        "type": "string",
+                                        "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                      },
+                                      "hookId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 200
+                                      },
+                                      "workflow": {
+                                        "type": "object",
+                                        "properties": {
+                                          "repo": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "branch": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "path": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "templateName": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          }
+                                        },
+                                        "required": [
+                                          "repo",
+                                          "branch",
+                                          "path"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "componentUrn",
+                                      "hookId",
+                                      "workflow"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "postDeploy"
+                                      },
+                                      "componentUrn": {
+                                        "type": "string",
+                                        "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                      },
+                                      "hookId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 200
+                                      },
+                                      "workflow": {
+                                        "type": "object",
+                                        "properties": {
+                                          "repo": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "branch": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "path": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "templateName": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          }
+                                        },
+                                        "required": [
+                                          "repo",
+                                          "branch",
+                                          "path"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      "stage": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "componentUrn",
+                                      "hookId",
+                                      "workflow"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "continuous"
+                                      },
+                                      "componentUrn": {
+                                        "type": "string",
+                                        "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                      },
+                                      "hookId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 200
+                                      },
+                                      "workflow": {
+                                        "type": "object",
+                                        "properties": {
+                                          "repo": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "branch": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "path": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "templateName": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          }
+                                        },
+                                        "required": [
+                                          "repo",
+                                          "branch",
+                                          "path"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      "everySeconds": {
+                                        "type": "integer",
+                                        "exclusiveMinimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "maxAgeSeconds": {
+                                        "type": "integer",
+                                        "exclusiveMinimum": 0,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "componentUrn",
+                                      "hookId",
+                                      "workflow",
+                                      "everySeconds",
+                                      "maxAgeSeconds"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "bakeAlarms"
+                                      },
+                                      "componentUrn": {
+                                        "type": "string",
+                                        "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                      },
+                                      "hookId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 200
+                                      },
+                                      "quietWindowSeconds": {
+                                        "type": "integer",
+                                        "exclusiveMinimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "stage": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "componentUrn",
+                                      "hookId",
+                                      "quietWindowSeconds"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              }
+                            },
+                            "rollouts": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "targetClass": {
+                                    "type": "string",
+                                    "enum": [
+                                      "kubernetes",
+                                      "instanceGroup"
+                                    ]
+                                  },
+                                  "rollout": {
+                                    "oneOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "strategy": {
+                                            "type": "string",
+                                            "const": "canary"
+                                          },
+                                          "steps": {
+                                            "minItems": 1,
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "weightPercent": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 100
+                                                },
+                                                "pauseSeconds": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "weightPercent"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          }
+                                        },
+                                        "required": [
+                                          "strategy",
+                                          "steps"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "strategy": {
+                                            "type": "string",
+                                            "const": "rolling"
+                                          },
+                                          "batchPercent": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "maximum": 100
+                                          },
+                                          "pauseBetweenSeconds": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "required": [
+                                          "strategy",
+                                          "batchPercent"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "componentUrn",
+                                  "targetClass",
+                                  "rollout"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "convergence": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "targetUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "converge": {
+                                    "type": "boolean"
+                                  },
+                                  "scope": {
+                                    "type": "string",
+                                    "enum": [
+                                      "changedSubset",
+                                      "fullGroup"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "componentUrn",
+                                  "targetUrn",
+                                  "converge",
+                                  "scope"
                                 ],
                                 "additionalProperties": false
                               }
