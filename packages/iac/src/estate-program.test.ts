@@ -115,6 +115,60 @@ describe("buildEstateManifest", () => {
   });
 });
 
+describe("PipelineSpec.topologyUrn — the D5 adoption affordance (never duplicate a live topology)", () => {
+  function specWithLiveTopology(): ServiceSpec {
+    const spec = completeSpec();
+    return {
+      ...spec,
+      components: [
+        {
+          ...spec.components[0]!,
+          pipelines: [
+            {
+              ...spec.components[0]!.pipelines[0]!,
+              topologyUrn: "urn:scp:acme:release-topology:payments-api-image-pipeline"
+            }
+          ]
+        }
+      ]
+    };
+  }
+
+  // MUTATION-WATCHED (restored before commit): removing the `adoptTopologyUrn` spread from
+  // `buildEstateManifest`'s `props` object makes this case go red — the synthesized topology's URN
+  // reverts to a fresh, derived one instead of the live URN `spec` supplied, which is exactly the
+  // silent-duplication hazard this prop closes (applying the exported manifest would then CREATE a
+  // second `release-topology` object beside the real one and repoint `releases_via` at it).
+  it("buildEstateManifest: the synthesized topology carries the LIVE urn, not a derived one", () => {
+    const { manifest } = buildEstateManifest(specWithLiveTopology());
+    const topology = manifest.objects.find((o) => o.typeId === "release-topology");
+    expect(topology?.urn).toBe("urn:scp:acme:release-topology:payments-api-image-pipeline");
+    const releasesVia = manifest.relationships.find((r) => r.typeId === "releases_via");
+    expect(releasesVia?.toUrn).toBe("urn:scp:acme:release-topology:payments-api-image-pipeline");
+  });
+
+  it("buildEstateManifest: WITHOUT topologyUrn, the topology still gets a derived urn (unaffected default)", () => {
+    const { manifest } = buildEstateManifest(completeSpec());
+    const topology = manifest.objects.find((o) => o.typeId === "release-topology");
+    expect(topology?.urn).not.toBe("urn:scp:acme:release-topology:payments-api-image-pipeline");
+    expect(topology?.urn).toContain("release-topology");
+  });
+
+  // MUTATION-WATCHED: dropping the `adoptTopologyUrn:` line from `renderEstateProgram`'s emitted
+  // props makes this case go red (the literal string vanishes from the rendered source).
+  it("renderEstateProgram: emits adoptTopologyUrn with the live urn as a pipeline prop", () => {
+    const { source } = renderEstateProgram(specWithLiveTopology());
+    expect(source).toContain(
+      'adoptTopologyUrn: "urn:scp:acme:release-topology:payments-api-image-pipeline"'
+    );
+  });
+
+  it("renderEstateProgram: omits adoptTopologyUrn entirely when the spec has none", () => {
+    const { source } = renderEstateProgram(completeSpec());
+    expect(source).not.toContain("adoptTopologyUrn");
+  });
+});
+
 describe("renderEstateProgram", () => {
   it("renders valid-looking construct calls and imports only what it used", () => {
     const { source, placeholderCount } = renderEstateProgram(completeSpec());

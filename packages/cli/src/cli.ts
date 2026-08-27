@@ -3394,8 +3394,7 @@ export function buildProgram(): Command {
     .option("--format <format>", "ts|json", "ts")
     .option(
       "--source-kind <kinds>",
-      "comma-separated source kinds to probe for source_mappings (D9's registration side is by pattern; export cannot know which kinds an org uses)",
-      "gitea"
+      "comma-separated source kinds to probe for source_mappings (D9's registration side is by pattern; export cannot know which kinds an org uses) — default: every known git provider (github, gitea, gitlab)"
     )
     .option("--output <path>", "write to this file instead of stdout")
     .option("--base-url <url>", "API base URL override")
@@ -3404,7 +3403,7 @@ export function buildProgram(): Command {
         opts: BaseCliOpts & {
           scope: string;
           format: string;
-          sourceKind: string;
+          sourceKind?: string;
           output?: string;
         }
       ) => {
@@ -3413,7 +3412,7 @@ export function buildProgram(): Command {
         }
         const client = await clientFromStoredCredentials(opts);
         const spec = await readServiceExportSpec(client, opts.scope, {
-          sourceKinds: parseList(opts.sourceKind) ?? ["gitea"]
+          ...(opts.sourceKind !== undefined ? { sourceKinds: parseList(opts.sourceKind) } : {})
         });
 
         let content: string;

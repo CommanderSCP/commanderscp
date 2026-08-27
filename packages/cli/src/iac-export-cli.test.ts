@@ -215,7 +215,9 @@ afterEach(async () => {
 describe("scp iac export --format ts", () => {
   it("emits construct code for the scope's subtree and reports 0 placeholders when a mapping exists", async () => {
     await run(["--scope", service.urn]);
-    expect(listMappingsCalls).toEqual(["gitea"]); // the default, probed exactly once
+    // Default probes EVERY known git provider (github, gitea, gitlab) — narrowing to one kind would
+    // make a GitHub-/GitLab-backed component silently read as "no source mapping" (owner fix).
+    expect(listMappingsCalls.sort()).toEqual(["gitea", "github", "gitlab"]);
     const out = logged.join("\n");
     expect(out).toContain("new Component(stack,");
     expect(out).toContain('urn: "urn:scp:acme:component:payments-api"');
@@ -229,9 +231,22 @@ describe("scp iac export --format ts", () => {
     expect(out).not.toContain("!!! SCP-EXPORT PLACEHOLDER");
   });
 
-  it("threads --source-kind into changeSources.listMappings", async () => {
+  it("threads --source-kind into changeSources.listMappings, NARROWING the default probe set", async () => {
     await run(["--scope", service.urn, "--source-kind", "gitea,github"]);
     expect(listMappingsCalls.sort()).toEqual(["gitea", "github"]);
+  });
+
+  // D5's whole point: applying an exported program must ADOPT the live topology, never duplicate it
+  // (owner fix). MUTATION-WATCHED: dropping `topologyUrn: topologyObj.urn` from
+  // `iac-estate-reader.ts`'s `readComponentSpec` makes this go red — the emitted pipeline would carry
+  // no `adoptTopologyUrn` at all, and a second `scp apply` of the export would create a duplicate
+  // `release-topology` object beside the real one.
+  it("emits adoptTopologyUrn with the LIVE topology's own urn — export never duplicates it on apply", async () => {
+    await run(["--scope", service.urn]);
+    const out = logged.join("\n");
+    expect(out).toContain(
+      'adoptTopologyUrn: "urn:scp:acme:release-topology:payments-api-image-pipeline"'
+    );
   });
 
   it("--output writes the file instead of stdout, and says so", async () => {
@@ -255,9 +270,17 @@ describe("scp iac export --format json", () => {
     await run(["--scope", service.urn, "--format", "json"]);
     const jsonLine = logged.find((l) => l.trim().startsWith("{"));
     expect(jsonLine).toBeDefined();
-    const manifest = JSON.parse(jsonLine!) as { objects: { urn: string }[] };
+    const manifest = JSON.parse(jsonLine!) as { objects: { urn: string; typeId: string }[] };
     expect(manifest.objects.some((o) => o.urn === "urn:scp:acme:component:payments-api")).toBe(
       true
     );
+    // D5 adoption, JSON path too: the topology object carries the LIVE urn, not a derived one.
+    expect(
+      manifest.objects.some(
+        (o) =>
+          o.typeId === "release-topology" &&
+          o.urn === "urn:scp:acme:release-topology:payments-api-image-pipeline"
+      )
+    ).toBe(true);
   });
 });

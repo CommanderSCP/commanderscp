@@ -56,12 +56,22 @@ function deploymentTargetId(placement: GraphObject): string {
 // `scp iac export --scope <service-urn>` (§9/D5)
 // -------------------------------------------------------------------------------------------
 
+/** Mirrors `apps/server/src/dependencies/manifest-reader.ts`'s `GIT_PROVIDER_MODULES` — the three
+ *  git-hosting `source_mappings.sourceKind` values this platform's own adapters carry. Duplicated
+ *  as a literal, not imported: `@scp/cli` must not depend on `apps/server` (a CLI package pulling in
+ *  the server would be a layering violation, and there is no shared package this vocabulary lives in
+ *  today). Keep in sync with that file if the provider set ever grows. */
+const DEFAULT_SOURCE_KINDS = ["github", "gitea", "gitlab"];
+
 export interface ExportEstateOptions {
   /** `source_mappings` are listed per source kind (`GET /change-sources/{sourceKind}/mappings`,
    *  D9's registration-by-pattern only narrows how a config source APPLIES, not how this read
    *  works) — export has no way to know which kinds an org uses, so it probes each of these and
-   *  keeps whatever matches one of the scope's components.
-   *  @default ["gitea"] — the platform's own self-hosted default (ADR-0012). */
+   *  keeps whatever matches one of the scope's components. Defaulting to only ONE kind would make a
+   *  GitHub- or GitLab-backed component silently read as "no source mapping" (a loud placeholder per
+   *  pipeline, but with an invisible CAUSE) — so every known git provider is probed by default, and
+   *  `--source-kind` only narrows it.
+   *  @default DEFAULT_SOURCE_KINDS — every git-hosting kind this platform's own adapters carry. */
   readonly sourceKinds?: string[];
 }
 
@@ -70,7 +80,7 @@ export async function readServiceExportSpec(
   scopeIdOrUrn: string,
   opts: ExportEstateOptions = {}
 ): Promise<ServiceSpec> {
-  const sourceKinds = opts.sourceKinds ?? ["gitea"];
+  const sourceKinds = opts.sourceKinds ?? DEFAULT_SOURCE_KINDS;
   const service = await client.services.get(scopeIdOrUrn);
 
   const containsRels = await collectAll<Relationship>((cursor) =>
@@ -191,7 +201,11 @@ async function readComponentSpec(
         ...(w.requiresFanIn !== undefined ? { requiresFanIn: w.requiresFanIn } : {})
       })),
       ...(source ? { source } : {}),
-      ...(publishesTo ? { publishesTo } : {})
+      ...(publishesTo ? { publishesTo } : {}),
+      // The live topology's OWN urn (D5 adoption) — never a derived one. Omitting this is what makes
+      // `scp apply` of an exported program create a SECOND `release-topology` object beside this
+      // real one instead of adopting it (`pipeline.ts`'s `adoptTopologyUrn` doc has the full hazard).
+      topologyUrn: topologyObj.urn
     });
   }
 

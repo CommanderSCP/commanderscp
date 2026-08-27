@@ -87,6 +87,11 @@ export interface PipelineSpec {
   readonly waves: WaveItem[];
   /** Build-kind pipelines only (`PublishProps`); ignored for infrastructure/configuration. */
   readonly publishesTo?: PublishSpec;
+  /** Set ⇒ this pipeline already has a live `release-topology` object (export's own case); threads
+   *  straight to `Pipeline`'s `adoptTopologyUrn` prop so `scp apply` ADOPTS it instead of creating a
+   *  duplicate beside it (`pipeline.ts`'s `adoptTopologyUrn` doc carries the full hazard). Omitted
+   *  (scaffold's case — nothing exists yet) ⇒ a fresh, synth-derived URN. */
+  readonly topologyUrn?: string;
 }
 
 export interface ComponentSpec {
@@ -228,7 +233,8 @@ export function buildEstateManifest(spec: ServiceSpec): BuiltEstateProgram {
         waves: pl.waves,
         ...(pl.source?.branch !== undefined ? { branch: pl.source.branch } : {}),
         ...(pl.source?.pathPattern !== undefined ? { path: pl.source.pathPattern } : {}),
-        ...(pl.source?.sourceKind !== undefined ? { sourceKind: pl.source.sourceKind } : {})
+        ...(pl.source?.sourceKind !== undefined ? { sourceKind: pl.source.sourceKind } : {}),
+        ...(pl.topologyUrn !== undefined ? { adoptTopologyUrn: pl.topologyUrn } : {})
       };
       if (isBuildKind(pl.kind) && pl.publishesTo !== undefined) {
         props["publishesTo"] = ExecutionSystem.fromUrn(pl.publishesTo.destinationUrn);
@@ -409,6 +415,12 @@ export function renderEstateProgram(
         propLines.push(`sourceKind: ${jsString(pl.source.sourceKind)}`);
       }
       propLines.push(`waves: ${renderWaves(pl.waves)}`);
+      if (pl.topologyUrn !== undefined) {
+        // Adoption, not authoring (`pipeline.ts`'s `adoptTopologyUrn` doc carries the full hazard):
+        // without this, applying an exported program would create a SECOND `release-topology`
+        // object beside the live one this pipeline already has.
+        propLines.push(`adoptTopologyUrn: ${jsString(pl.topologyUrn)}`);
+      }
       if (isBuildKind(pl.kind) && pl.publishesTo !== undefined) {
         usesExecutionSystemRef = true;
         propLines.push(
