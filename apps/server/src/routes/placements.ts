@@ -12,6 +12,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { readableScopeForListDoor } from "../authz/list-door-scope.js";
 import { withIdempotency } from "../idempotency.js";
 import { getObjectByIdOrUrn, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { resolveDeclaredContainmentParent } from "../graph/containment-parent-authz.js";
@@ -137,11 +138,20 @@ export function registerPlacementRoutes(app: FastifyInstance, deps: AppDeps): vo
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // THE GATE, AND THE ROW FILTER, IN ONE CALL (role-model.md §8.2, increment 2.5b). The
+        // org-root `object:read` check this replaced is still the first thing it runs and still
+        // throws the same 403 when nothing else grants; what is new is that a principal bound
+        // BELOW the org root now lists the placements their binding reaches instead of being
+        // refused outright. See `authz/list-door-scope.ts` for why the resolver is a callback:
+        // `?scopeObjectId=` must be resolved AFTER the gate (existence oracle) and authorized at
+        // the RESOLVED id (404-becomes-403).
+        const readableFilter = await readableScopeForListDoor(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
-          scopeObjectId: auth.orgId
+          scopeObjectRef: request.query.scopeObjectId,
+          resolveScopeObject: async (ref) =>
+            (await getObjectByIdOrUrnAnyType(tx, auth.orgId, ref)).id
         });
         // Resolve the filter refs to ids so a caller may filter by URN as well as by id — the same
         // id-or-URN affordance every other route offers. An unknown ref 404s rather than silently
@@ -156,9 +166,14 @@ export function registerPlacementRoutes(app: FastifyInstance, deps: AppDeps): vo
           cursor: request.query.cursor,
           limit: request.query.limit,
           domainId: containmentDomainIdFromWire(request.query.domainId) ?? undefined,
+          // ⚠️ `includeDeleted` and a narrowed scope do not compose: the descend walks LIVE rows
+          // only (as the upward walk joins every ancestor live), so a tombstoned placement is
+          // below nothing and never appears. Unchanged for an org-root caller who passes no hint —
+          // their filter is `null`.
           includeDeleted: request.query.includeDeleted,
           componentId,
-          deploymentTargetId
+          deploymentTargetId,
+          readableFilter
         });
       });
       reply.status(200).send(page);

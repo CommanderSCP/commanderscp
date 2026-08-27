@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
+import { containmentChildrenSql } from "../graph/containment.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
 
 /**
@@ -186,13 +187,51 @@ export type ContainmentRoute = "domain_id" | "contains" | "container_deleted";
  * path — measured, and the reason this route is instrumented separately rather than assumed covered
  * by the edge cascade it appears to share.
  *
- * ## The three parent routes it counts, matching `containmentChain` exactly
+ * ## The routes it counts: `containmentChildrenSql`, COMPOSED — not restated
  *
- * `domain_id` children (route 1), `contains` children (route 2), and the placements naming this
- * object as either endpoint of their pair (routes 3+4 — a placement is contained by BOTH the
- * component it places and the deployment-target it names). Counted rather than enumerated: the
- * record needs to say how wide the blast radius was, and walking every descendant's before/after
- * reach on a delete is unbounded work on a write path.
+ * `graph/containment.ts`'s exported downward fragment, one level, counted. It is the same three arms
+ * the depth doors and the read filter descend, so "what contains this row" and "what does this row
+ * contain" cannot disagree here.
+ *
+ * ⚠️ IT USED TO BE A HAND-TYPED COPY, AND IT HAD ALREADY DRIFTED IN TWO PLACES. Because it is ONE
+ * LEVEL rather than recursive, a census for the downward WALK did not see it: `containment.ts`'s
+ * header asserted "exactly one definition" while this was the third. Both drifts changed what counts
+ * as a dependent, and both are now fixed by composing:
+ *
+ *   - ARM 2 counted `contains` EDGES and never joined the child object, so a live edge to a
+ *     TOMBSTONED child counted as a dependent — contradicting this function's own first sentence
+ *     ("how many LIVE objects"). Reachable: `deleteObject`'s cascade refuses REPLICA edges, and
+ *     legacy rows predate it. The record it produced said "detached 1 contained object(s)" about a
+ *     row that was already gone.
+ *   - ARM 3 compared `properties ->> 'componentId'` as RAW TEXT with no `UUID_TEXT_PATTERN` guard
+ *     and no cast, while the fragment casts to `uuid`. Measured on PostgreSQL 16, `uuid` equality is
+ *     case-insensitive and `text` equality is not, so an UPPER-CASE-HEX `componentId` was a parent
+ *     going UP and not a dependent counted DOWN. The cast form is the correct side — see
+ *     `placementNamesObjectSql`'s note, which weighs it against migration 0051's text index and
+ *     decides the mirror is worth more.
+ *
+ * ## The self-exclusion, and why it is HERE and not in the fragment
+ *
+ * `c.child_id <> objectId` answers this function's QUESTION — "how many OTHER rows would lose this
+ * parent if it were tombstoned?" — for which a row that is its own containment parent (only
+ * reachable as legacy or federation-imported data; every write door refuses to create one) loses
+ * nothing, because it IS the tombstone.
+ *
+ * It must not move into `containmentChildrenSql`. That fragment is defined as the EXACT INVERSE of
+ * the four routes `containmentChain` walks up, and `containmentChain` does not exclude self either —
+ * a self-parented row is walked, blows the depth bound and refuses loudly (ADR-0037). An exclusion
+ * added there would break the inverse property the fragment exists to guarantee, and would silently
+ * change a WRITE DOOR (`containmentSubtreeExceeds`) as well as this read.
+ *
+ * Applying it across all three arms rather than to arm 1 alone (where the old copy had it) is a
+ * deliberate, unreachable-by-any-door widening of the exclusion: a self `contains` edge is refused
+ * by `relationships-repo.ts`'s cycle check, and a placement's `componentId` is the resolved
+ * component's id, never its own. It only makes the pathological-data answer consistent across arms.
+ *
+ * Counted rather than enumerated: the record needs to say how wide the blast radius was, and walking
+ * every descendant's before/after reach on a delete is unbounded work on a write path. `count(*)`
+ * over the fragment's `UNION ALL` is the sum of the three arms, which is exactly what the three
+ * added sub-counts computed.
  */
 export async function countContainmentDependents(
   tx: TenantTx,
@@ -200,20 +239,9 @@ export async function countContainmentDependents(
   objectId: string
 ): Promise<number> {
   const result = await tx.execute<{ n: string | number }>(sql`
-    SELECT (
-      (SELECT count(*) FROM objects o
-        WHERE o.org_id = ${orgId} AND o.domain_id = ${objectId}::uuid
-          AND o.deleted_at IS NULL AND o.id <> ${objectId}::uuid)
-      +
-      (SELECT count(*) FROM relationships r
-        WHERE r.org_id = ${orgId} AND r.type_id = 'contains'
-          AND r.from_id = ${objectId}::uuid AND r.deleted_at IS NULL)
-      +
-      (SELECT count(*) FROM objects pl
-        WHERE pl.org_id = ${orgId} AND pl.type_id = 'placement' AND pl.deleted_at IS NULL
-          AND (pl.properties ->> 'componentId' = ${objectId}
-            OR pl.properties ->> 'deploymentTargetId' = ${objectId}))
-    ) AS n
+    SELECT count(*) AS n
+    FROM (${containmentChildrenSql(orgId, sql`${objectId}::uuid`)}) c
+    WHERE c.child_id <> ${objectId}::uuid
   `);
   return Number(result.rows[0]?.n ?? 0);
 }

@@ -22,6 +22,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { checkAtOrgRootOrScopes } from "../authz/org-root-arm.js";
+import { readableScopeForListDoor } from "../authz/list-door-scope.js";
 import {
   getCampaign,
   listCampaignTargetObjectIds,
@@ -260,7 +261,14 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
     url: "/api/v1/campaigns",
     schema: {
       querystring: CampaignListQuerySchema,
-      response: { 200: CampaignListResponseSchema, 401: ProblemSchema, 403: ProblemSchema }
+      response: {
+        200: CampaignListResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        // NEW with `?scopeObjectId=`: a hint naming no object in this org is a 404, so that
+        // authorizing at it can never turn "no such object" into "forbidden" (§8.7's trap).
+        404: ProblemSchema
+      }
     },
     config: {
       openapi: { operationId: "listCampaigns", summary: "List campaigns", tags: ["campaigns"] }
@@ -268,13 +276,27 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // THE GATE, AND THE ROW FILTER, IN ONE CALL (role-model.md §8.2, increment 2.5b). The
+        // org-root `object:read` check this replaced runs first, unchanged, and still throws the
+        // same 403 when nothing else grants; a principal bound BELOW the org root now lists the
+        // campaigns their binding reaches. A campaign authored with `domainId` genuinely lives
+        // under that object (`POST /campaigns` resolves and authorizes it), which is what makes
+        // the downward walk find it — §8.4 measured that a CHANGE, by contrast, has no such
+        // parent.
+        const readableFilter = await readableScopeForListDoor(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
-          scopeObjectId: auth.orgId
+          scopeObjectRef: request.query.scopeObjectId,
+          resolveScopeObject: async (ref) =>
+            (await getObjectByIdOrUrnAnyType(tx, auth.orgId, ref)).id
         });
-        return listCampaigns(tx, auth.orgId, request.query);
+        return listCampaigns(tx, auth.orgId, {
+          cursor: request.query.cursor,
+          limit: request.query.limit,
+          status: request.query.status,
+          readableFilter
+        });
       });
       reply.status(200).send(page);
     }

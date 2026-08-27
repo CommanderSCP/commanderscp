@@ -53,7 +53,10 @@ describe("list pagination: cursor precision", () => {
     // loop deterministically instead of hanging the test forever.
     do {
       const page = await withTenantTx(server.deps.db, orgId, (tx) =>
-        listObjects(tx, orgId, "component", { limit: 20, cursor })
+        // `null` = NO row filter, which is what an org-root principal resolves to. This test is
+        // about cursor precision, so it deliberately measures the unfiltered statement — the one
+        // `authz/list-scope.ts` hands back for every org-root Owner/Viewer.
+        listObjects(tx, orgId, "component", { limit: 20, cursor }, null)
       );
       for (const item of page.items) seen.push(item.id);
       cursor = page.nextCursor ?? undefined;

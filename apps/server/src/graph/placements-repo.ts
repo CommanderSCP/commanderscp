@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { ContainmentDomainId, GraphObject } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -350,6 +350,15 @@ export interface ListPlacementsQuery {
   componentId?: string | undefined;
   /** Already-resolved deployment-target object id. */
   deploymentTargetId?: string | undefined;
+  /**
+   * The rows this caller's authority REACHES, as a subquery yielding `id`
+   * (`authz/list-door-scope.ts` builds it; `authz/readable-scope.ts` defines it).
+   *
+   * `null`/absent means NO FILTER — the caller holds the permission at the ORG ROOT, so this is
+   * today's query verbatim. It is NOT "matches nothing": a subject with no allow binding at all
+   * yields a real match-nothing subquery, and the two must never collapse.
+   */
+  readableFilter?: SQL | null | undefined;
 }
 
 /**
@@ -358,6 +367,14 @@ export interface ListPlacementsQuery {
  * Filters read the PROPERTIES, not the edges — the source of truth, and the half the unique index
  * covers. Reading the edges instead would answer subtly differently the moment the two ever
  * disagreed, and a query that silently disagrees with the constraint is worse than no query.
+ *
+ * ⚠️ {@link ListPlacementsQuery.readableFilter} is applied HERE, as a `WHERE` condition, and not in
+ * the handler over the returned page. This list is keyset-paginated with `.limit(limit + 1)` and
+ * derives `nextCursor` from the last row it selected, so a handler-side filter would shrink the
+ * page AFTER the `LIMIT` — role-model.md §8.2 measured that shape returning one readable row on
+ * page 1 and zero on pages 6 through 185, each with a valid `nextCursor`, while 27 of 30 `apps/web`
+ * list call sites fetch exactly one page. Any future filter that expresses "which rows may this
+ * caller see" belongs in `conditions` for the same reason.
  */
 export async function listPlacements(
   tx: TenantTx,
@@ -366,6 +383,7 @@ export async function listPlacements(
 ): Promise<{ items: GraphObject[]; nextCursor: string | null }> {
   const cursor = query.cursor ? decodeCursor(query.cursor) : null;
   const conditions = [eq(objects.orgId, orgId), eq(objects.typeId, "placement")];
+  if (query.readableFilter) conditions.push(sql`${objects.id} IN ${query.readableFilter}`);
   if (!query.includeDeleted) conditions.push(isNull(objects.deletedAt));
   if (query.domainId) conditions.push(eq(objects.domainId, query.domainId));
   if (query.componentId) {

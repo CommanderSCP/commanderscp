@@ -1,4 +1,4 @@
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import {
   asContainmentDomainId,
@@ -15,7 +15,7 @@ import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagin
 // TYPE from here (`FederationImportContext`), which erases at compile time.
 import { deleteRelationship } from "./relationships-repo.js";
 // No runtime cycle: containment.ts imports only drizzle, the tenant tx type and errors.
-import { assertRootedContainmentParent } from "./containment.js";
+import { assertRootedContainmentParent, placementNamesObjectSql } from "./containment.js";
 import { computeObjectContentHash } from "./content-hash.js";
 import { deriveUrn } from "./urn.js";
 import { requireObjectType } from "./type-registry-repo.js";
@@ -766,16 +766,56 @@ export interface ListObjectsQuery {
   includeDeleted?: boolean;
 }
 
+/**
+ * The type-scoped object list — `/objects/{type}`, `/components`, `/objects/service` and every typed
+ * registry, which are its FOUR callers and therefore ~23 wire routes.
+ *
+ * ------------------------------------------------------------------------------------------------
+ * `readableFilter` — THE ROW-LEVEL READ SCOPE (role-model.md §8.2 step 4), AND WHY IT IS A PARAMETER
+ * ------------------------------------------------------------------------------------------------
+ * `authz/list-scope.ts`'s `authorizeListAndScope` produces it: `null` for a principal whose
+ * authority covers the whole org, otherwise a subquery of the object ids their role bindings reach
+ * downward. It arrives here as an already-decided value rather than being computed inside, because
+ * the permission it must be computed with is the door's own (`object:read` for most, whatever
+ * `readPermission` a typed registry declares for the rest) and it has to be the SAME permission the
+ * door authorized with. Deciding both in one place at the door is what keeps those two from
+ * drifting.
+ *
+ * It is a REQUIRED parameter, not an optional one, and that is deliberate: `undefined` would be
+ * indistinguishable from "forgot", and forgetting is how a list door silently keeps returning the
+ * whole org. A caller with no subject to scope to passes `null` explicitly and says why.
+ *
+ * IT GOES IN `conditions`, WHICH IS THE ENTIRE POINT. This query is keyset-paginated with
+ * `.limit(query.limit + 1)` and derives `nextCursor` from the last row it actually selected, so a
+ * filter applied anywhere but inside the statement is applied AFTER the LIMIT — shrinking pages,
+ * and eventually producing whole empty pages that still carry a non-null `nextCursor`. §8.2
+ * measured that on a 20,910-object estate: an assembly-bound principal's 5 readable components at
+ * cursor ranks 97/140/254/339/440 of 18,500 yield ONE row on page 1 and zero on pages 6–185, while
+ * 27 of 30 `apps/web` list call sites fetch exactly one page. Composed here, the page is full, the
+ * cursor is honest, and there is no empty-page-with-cursor state.
+ *
+ * NOTE on `includeDeleted`: the descend behind the filter walks LIVE rows only (a tombstoned
+ * ancestor stops the chain upward, so it must stop it downward too — `authz/readable-scope.ts`),
+ * so a SCOPED principal asking for `includeDeleted` still sees no tombstones. That is not a
+ * narrowing of anything: before this parameter existed those principals were refused the door
+ * outright. An org-root principal gets `null` and is unaffected.
+ */
 export async function listObjects(
   tx: TenantTx,
   orgId: string,
   typeId: string,
-  query: ListObjectsQuery
+  query: ListObjectsQuery,
+  readableFilter: SQL | null
 ): Promise<{ items: GraphObject[]; nextCursor: string | null }> {
   const cursor = query.cursor ? decodeCursor(query.cursor) : null;
   const conditions = [eq(objects.orgId, orgId), eq(objects.typeId, typeId)];
   if (!query.includeDeleted) conditions.push(isNull(objects.deletedAt));
   if (query.domainId) conditions.push(eq(objects.domainId, query.domainId));
+  // `null` adds NOTHING — not a match-everything condition, nothing at all — so the org-root
+  // principal's statement is the one that shipped before this parameter existed, parameter list
+  // included. An empty allow set is NOT spelled `null`; it arrives as a subquery that matches
+  // nothing (`authz/readable-scope.ts`), so `if (readableFilter)` cannot confuse the two.
+  if (readableFilter) conditions.push(sql`${objects.id} IN ${readableFilter}`);
   if (cursor) {
     // Millisecond-precision keyset via the shared helper: `created_at` is stored at microsecond
     // precision but the cursor round-trips through a millisecond JS `Date`, so a raw comparison
@@ -1714,9 +1754,23 @@ export async function deleteObject(
         )
       )
       .limit(6);
-    // Placements name their endpoints by JSON property (`componentId` / `deploymentTargetId`) — the
-    // same predicate `countContainmentDependents` uses, so the guard and the reach record can never
+    // Placements name their endpoints by JSON property (`componentId` / `deploymentTargetId`), so
+    // this arm COMPOSES `graph/containment.ts`'s `placementNamesObjectSql` — the one definition of
+    // routes 3+4 read downward, which `containmentChildrenSql`'s arm 3 also composes. The guard, the
+    // reach record (`countContainmentDependents`) and both containment walks therefore cannot
     // disagree about what depends on this row.
+    //
+    // ⚠️ IT WAS A HAND-TYPED COPY AND IT HAD DRIFTED, 2026-08-26. The predicate here was a RAW TEXT
+    // comparison with no `UUID_TEXT_PATTERN` guard and no `::uuid` cast. `uuid` equality is
+    // case-insensitive and `text` equality is not (measured, PostgreSQL 16), and every id compared
+    // here comes out of a `uuid` column lower-case — so a placement whose `componentId` was written
+    // as UPPER-CASE HEX was on this object's containment chain going UP, and INVISIBLE to this guard
+    // coming down. BEHAVIOUR CHANGE, stated rather than folded in: deleting such a component or
+    // deployment-target is now REFUSED instead of silently leaving the placement live and dangling,
+    // which is this guard's whole purpose. It is not reachable through `createPlacement` (that
+    // resolves both endpoints and writes their own ids), only through `createObject` directly —
+    // federation import, or legacy rows — which is the same population `placementEndpointParentSql`'s
+    // `CASE` guard exists for.
     const placementBlockers = await tx
       .select({ id: objects.id, urn: objects.urn, typeId: objects.typeId })
       .from(objects)
@@ -1725,8 +1779,7 @@ export async function deleteObject(
           eq(objects.orgId, input.orgId),
           eq(objects.typeId, "placement"),
           isNull(objects.deletedAt),
-          sql`(${objects.properties} ->> 'componentId' = ${existing.id}
-               OR ${objects.properties} ->> 'deploymentTargetId' = ${existing.id})`
+          placementNamesObjectSql(sql`${objects.properties}`, sql`${existing.id}::uuid`)
         )
       )
       .limit(6);

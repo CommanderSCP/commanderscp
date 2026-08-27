@@ -8,7 +8,8 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject, listObjects } from "../graph/objects-repo.js";
 import { resolveDeclaredContainmentParent } from "../graph/containment-parent-authz.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
-import { authorize } from "../authz/resolve.js";
+import { authorize, type PermissionCheck } from "../authz/resolve.js";
+import { authorizeListAndScope } from "../authz/list-scope.js";
 import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 import { withIdempotency } from "../idempotency.js";
 import type { GraphObject } from "@scp/schemas";
@@ -109,17 +110,30 @@ export async function listServiceObjects(
   query: { cursor?: string | undefined; limit: number }
 ): Promise<ServiceObjectListResponse> {
   const page = await withTenantTx(deps.db, orgId, async (tx) => {
-    await authorize(tx, {
+    // THE DOOR A `routes/*.ts` CENSUS CANNOT SEE (role-model.md §8.1): `routes/objects.ts` has zero
+    // `authorize(` calls and Fastify prefers its literal `/objects/service` over the parametric
+    // `/objects/:type`, so this is the ONLY handler that ever runs for that path — and the check is
+    // spelled `scopeObjectId: orgId`, with no `auth.` prefix, one directory away. It gets the same
+    // treatment as the three doors a string census does find, or the legacy service list would keep
+    // 403-ing every scoped principal after the others stopped.
+    const check: PermissionCheck = {
       orgId,
       subjectObjectId: actorObjectId,
       permission: "object:read",
       scopeObjectId: orgId
-    });
-    return listObjects(tx, orgId, "service", {
-      ...query,
-      domainId: undefined,
-      includeDeleted: false
-    });
+    };
+    const readable = await authorizeListAndScope(tx, check);
+    return listObjects(
+      tx,
+      orgId,
+      "service",
+      {
+        ...query,
+        domainId: undefined,
+        includeDeleted: false
+      },
+      readable
+    );
   });
   return { items: page.items.map(toServiceObject), nextCursor: page.nextCursor };
 }

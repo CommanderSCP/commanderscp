@@ -120,9 +120,13 @@ interface CensusEntry {
  *   root, so there is no narrower scope to check at. The pin is correct and permanent.
  * - `escalation-bar` — org-root ON PURPOSE, so that a narrower binding CANNOT satisfy it. Widening
  *   one of these is a security regression, not a fix (role-model.md §8.6).
- * - `list-gate` — a LIST door. §8.2 step 5 keeps this `authorize()` UNCHANGED and does the widening
- *   by row filtering inside the repo (2.5b), which is what makes that change a pure widening. The
- *   pin stays after 2.5b lands.
+ * - `list-gate` — a LIST door's gate. §8.2 step 5 keeps this check unchanged — same permission, same
+ *   org-root scope, evaluated FIRST — and does the widening by filtering rows inside the repo before
+ *   the `LIMIT` (2.5b), which is what makes that change a pure widening: a caller who cleared it
+ *   before still clears it, and still gets an UNFILTERED query. On the doors 2.5b has reached the
+ *   check is no longer written in the route: it moved into `authz/list-door-scope.ts`'s wide arm,
+ *   one definition for all eight list doors, and it is still org-root pinned there. The entries
+ *   still naming a route are the doors 2.5b has not reached.
  * - `not-a-check` — a `scopeObjectId` written into a `role_bindings` ROW, not a permission check.
  *   Present because the property is "a scope set to the org root" and filtering by call target is
  *   where the next instance would hide.
@@ -439,11 +443,28 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     why: "DEFERRED — ingestion writes the org's whole inventory and defaults to every component when none is named; a per-component re-scope needs the target list first, like changes did"
   },
 
-  // ---- LIST doors: §8.2 step 5 keeps this check unchanged and widens by row filtering (2.5b) ------
+  // ---- LIST doors ------------------------------------------------------------------------------
+  // 2.5b routes EVERY list door's gate through `authz/list-door-scope.ts`'s WIDE ARM — the two
+  // entries directly below. Doors reached by 2.5b then fall into two shapes, and BOTH are correct:
+  //
+  //   - `/campaigns` and `/placements` pass the permission and org id as arguments, so the check is
+  //     no longer written in the route and they have no entry of their own here;
+  //   - `listObjects`'s four doors keep a `PermissionCheck` LITERAL in the route and hand the whole
+  //     thing to the shared gate. Nothing is checked twice — the literal IS what the wide arm runs —
+  //     and keeping it buys per-door visibility in this census, which matters most for
+  //     `services/objects-service.ts`, the door a `routes/*.ts` census cannot see at all (§8.1).
+  //
+  // The remaining route entries (`/changes`, `/change-sources/.../mappings`, `/relationships`,
+  // `/dependencies/producers`) are the doors 2.5b has not reached.
   {
-    site: "routes/campaigns.ts :: GET /api/v1/campaigns :: object:read",
+    site: "authz/list-door-scope.ts :: readableScopeForListDoor() :: -",
     cls: "list-gate",
-    why: "LIST — 2.5b filters rows inside the repo before the LIMIT; this org-root check stays so a subject with no allow binding anywhere still gets today's 403"
+    why: "THE ONE DEFINITION of every LIST door's gate (role-model.md §8.2 step 5, increment 2.5b). Same permission, same org-root scope, run FIRST — so a caller who could list before still lists, over an unfiltered query (readableObjectFilterSql returns null for an org-root allow, i.e. today's SQL verbatim). What changed is only the REFUSAL path: instead of 403ing a subject bound below the org root, the door now resolves that subject's own allow roots and filters rows to their subtrees inside the repo, before the LIMIT. Left in the route as a literal `authorize({scopeObjectId: auth.orgId})` the widening would be measurably INERT — scope_expand from the org root is the org root alone, so the only subject who clears it is the one for whom the filter is null. The permission reads `-` because the call passes it by shorthand; it is the door's own permission parameter, object:read on both current callers"
+  },
+  {
+    site: "authz/list-door-scope.ts :: refuseAtOrgRoot() :: input.permission",
+    cls: "list-gate",
+    why: "the SAME check again, on the refusal path only, so the 403 a subject with no allow binding anywhere receives is produced by re-running today's check rather than by a re-typed message that could drift from authorize()'s wording. Never reached when hasPermission has granted"
   },
   {
     site: "routes/changes.ts :: GET /api/v1/changes :: object:read",
@@ -458,17 +479,12 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
   {
     site: "routes/components.ts :: GET base :: object:read",
     cls: "list-gate",
-    why: "LIST — the door §8.2 measured the per-row-filter failure on (5 readable components at cursor ranks 97..440 of 18,500); the gate stays, the filter goes inside listObjects"
+    why: "DONE (2.5b) — the door §8.2 measured the per-row-filter failure on (5 readable components at cursor ranks 97..440 of 18,500). This literal is now the input to authz/list-door-scope.ts's wide arm, and listObjects filters rows in its WHERE before the LIMIT; routes/list-readable-scope.integration.test.ts pins full pages and an honest cursor"
   },
   {
     site: "routes/objects-generic.ts :: GET /api/v1/objects/:type :: object:read",
     cls: "list-gate",
-    why: "LIST — one of listObjects's four callers, all covered at once by the 2.5b filter"
-  },
-  {
-    site: "routes/placements.ts :: GET base :: object:read",
-    cls: "list-gate",
-    why: "LIST — same shape as the other typed lists: keep the org-root gate, filter placements by their component in 2.5b"
+    why: "DONE (2.5b) — one of listObjects's four callers, all four threaded; this literal is the input to the shared wide arm, not a second check"
   },
   {
     site: "routes/relationships.ts :: GET /api/v1/relationships :: relationship:read",
@@ -478,7 +494,7 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
   {
     site: "routes/typed-registries.ts :: GET base :: readPermission",
     cls: "list-gate",
-    why: "LIST — the shared factory behind every typed registry, so one filter covers all of them"
+    why: "DONE (2.5b) — the shared factory behind every typed registry, so one threading covers ~10 of them; readPermission drives BOTH the wide arm and the row filter, so the two cannot be edited apart"
   },
   {
     site: "routes/dependency-producers.ts :: GET /api/v1/dependencies/producers :: object:read",
@@ -488,7 +504,7 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
   {
     site: "services/objects-service.ts :: listServiceObjects() :: object:read",
     cls: "list-gate",
-    why: "LIST — the door a routes/*.ts census cannot see at all (§8.1); it is the only handler that ever runs for GET /objects/service"
+    why: "DONE (2.5b) — the door a routes/*.ts census cannot see at all (§8.1); it is the only handler that ever runs for GET /objects/service, and it is threaded like the three a string census does find"
   },
 
   // ---- deferred: §8.6 excluded these, or a later increment owns them ------------------------------

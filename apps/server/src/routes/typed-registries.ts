@@ -15,7 +15,8 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { authorize, type Permission } from "../authz/resolve.js";
+import { authorize, type Permission, type PermissionCheck } from "../authz/resolve.js";
+import { authorizeListAndScope } from "../authz/list-scope.js";
 import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 import { withIdempotency } from "../idempotency.js";
 import {
@@ -272,13 +273,25 @@ export function registerTypedRegistryRoutes(
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // The shared factory behind EVERY typed registry, so this one composition covers all ~10 of
+        // them. `readPermission` is whatever the registry declared (`policy:read` for the governance
+        // ones, `object:read` for the rest) and the SAME value feeds the gate and the row filter —
+        // a filter computed from a different permission than the gate checked would either widen or
+        // silently empty the list.
+        const check: PermissionCheck = {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: readPermission,
           scopeObjectId: auth.orgId
-        });
-        return listObjects(tx, auth.orgId, typeId, listObjectsQueryFromWire(request.query));
+        };
+        const readable = await authorizeListAndScope(tx, check);
+        return listObjects(
+          tx,
+          auth.orgId,
+          typeId,
+          listObjectsQueryFromWire(request.query),
+          readable
+        );
       });
       reply.status(200).send(page);
     }

@@ -20,6 +20,43 @@ import { badRequest, conflict } from "../errors.js";
  * hand-synced: they are exported as ONE SQL fragment composed into both walks, because a route added
  * twice by hand is exactly how routes 1 and 2 drifted in the first place. Route 4 arriving after
  * route 3 is the proof it was worth doing — adding it touched the fragment, not the two walks.
+ *
+ * THE DOWNWARD DIRECTION HAS ONE DEFINITION OF THE ROUTE SET: {@link containmentChildrenSql} — with
+ * one deliberate, bounded exception named below. Not "exactly one definition" full stop: an earlier
+ * draft of this header said that, and it was false while the delete guard still hand-typed arms 1
+ * and 2. Stated precisely because this whole module exists to stop a claim of uniqueness standing in
+ * for the thing itself. Its consumers, ALL of them:
+ *
+ *   - {@link containmentSubtreeExceeds} — the depth doors (recursive);
+ *   - `authz/readable-scope.ts`'s `descendSql` — which objects a role binding REACHES
+ *     (recursive; role-model.md §8.2);
+ *   - `governance/governance-reach.ts`'s `countContainmentDependents` — how many rows a container's
+ *     tombstone detaches (ONE LEVEL, counted);
+ *   - `graph/objects-repo.ts`'s container-delete guard — the same one level, ENUMERATED per route
+ *     so the refusal can name the blockers. It composes the routes-3+4 half,
+ *     {@link placementNamesObjectSql}, rather than the whole fragment, because it needs each route's
+ *     rows separately and with `urn`/`type_id` attached. **Arms 1 and 2 are still hand-typed there**,
+ *     and calling them "a plain test no guard can spell wrong" would be the same overconfidence that
+ *     produced the drift: `countContainmentDependents`'s arm 2 DID spell it wrong — it counted
+ *     `contains` EDGES without joining the child live, so a live edge to a tombstoned child was a
+ *     dependent, and a container whose only child was already gone wrote a hash-chained audit event
+ *     claiming it "detached 1 contained object(s)". The delete guard's arms 1 and 2 happen to be
+ *     correct today (verified 2026-08-26; arm 2 there does join the child live) — that is a
+ *     measurement, not a property of their being short.
+ *
+ * ⚠️ THE LAST TWO ARE ONE LEVEL, NOT RECURSIVE, AND THAT IS HOW THEY HID. A census run for
+ * `WITH RECURSIVE` — or for "the downward walk" — returns the first two and concludes there is one
+ * definition. Both of the others were hand-typed copies of these same three arms, found only by
+ * censusing the PROPERTY ("code that enumerates the rows contained by a given row") over each
+ * route's predicate. BUILD_AND_TEST.md §4.4: a bug found by a symptom is one instance; the property
+ * is the class. If you add a route here, search `domain_id =`, `type_id = 'contains'` with a
+ * `from_id`, and `type_id = 'placement'` — filterless, `grep -rna` — not `WITH RECURSIVE`.
+ *
+ * Both directions must stay inverses of each other: a route this file walks up and that fragment
+ * does not walk down means an object `authorize()` admits is missing from the list that should
+ * contain it. That equivalence is not left to review — `authz/readable-scope.integration.test.ts`
+ * asserts `hasPermission(o)` iff `o ∈ readableSet(subject)` over every live object of a fixture that
+ * exercises all four routes.
  */
 
 /**
@@ -144,6 +181,47 @@ export function placementParentsSql(orgId: string, childIdSql: SQL): SQL {
     UNION ALL
     ${placementEndpointParentSql(orgId, childIdSql, "deploymentTargetId")}
   `;
+}
+
+/**
+ * ROUTES 3 + 4 AS A PREDICATE OVER A PLACEMENT ROW — "does this placement name `objectIdSql` as
+ * either endpoint of its pair?" — the downward reading of {@link placementParentsSql}, in ONE place.
+ *
+ * Exported for the same reason `placementParentsSql` is: the pair is the route most often written
+ * out by hand, because it is the only one that lives in JSON rather than in a column or an edge.
+ * Two consumers compose it — {@link containmentChildrenSql}'s arm 3 and `graph/objects-repo.ts`'s
+ * container-delete guard — and until 2026-08-26 both of the ONE-LEVEL consumers (that guard and
+ * `governance/governance-reach.ts`'s `countContainmentDependents`) carried their own copy, spelled
+ * as a RAW TEXT comparison with no `UUID_TEXT_PATTERN` guard and no cast.
+ *
+ * WHY THE CAST FORM IS THE RIGHT ONE, and the text form the drift — MEASURED, PostgreSQL 16:
+ *
+ *     '0191F1E2-AAAA-7000-8000-0000000000AA'::uuid = '0191f1e2-…-aa'::uuid   ->  TRUE
+ *     '0191F1E2-AAAA-7000-8000-0000000000AA'       = '0191f1e2-…-aa'         ->  FALSE
+ *
+ * `uuid` equality is case-insensitive and `text` equality is not, while every id this is compared
+ * against arrives from a `uuid` column and is therefore lower-case. So an upper-case-hex
+ * `componentId` is a PARENT going up (`placementParentsSql` casts, because it must join `objects.id`)
+ * and, under the text form, was NOT a child coming down — the two directions disagreeing about which
+ * values count, which is precisely the failure class the shared fragment exists to end. The INDEX
+ * NOTE on {@link containmentChildrenSql} records the same trade being decided the same way against
+ * migration 0051's text index.
+ *
+ * The `CASE` guard is load-bearing for the reason `placementEndpointParentSql` gives above: a
+ * malformed value must yield NO MATCH, never an error, because a bare `::uuid` on a hostile or
+ * corrupt federated row would throw inside every walk in the org.
+ *
+ * `propertiesSql` is spliced in unqualified — pass the caller's own qualified expression
+ * (`sql\`pl.properties\``, `sql\`${objects.properties}\``), not a bare `properties`.
+ */
+export function placementNamesObjectSql(propertiesSql: SQL, objectIdSql: SQL): SQL {
+  return sql`(
+        (CASE WHEN ${propertiesSql} ->> 'componentId' ~ ${UUID_TEXT_PATTERN}
+              THEN (${propertiesSql} ->> 'componentId')::uuid END) = ${objectIdSql}
+        OR
+        (CASE WHEN ${propertiesSql} ->> 'deploymentTargetId' ~ ${UUID_TEXT_PATTERN}
+              THEN (${propertiesSql} ->> 'deploymentTargetId')::uuid END) = ${objectIdSql}
+      )`;
 }
 
 export interface ChainEntry {
@@ -419,25 +497,120 @@ export async function containmentScopeIds(
 }
 
 /**
- * THE DOWNWARD WALK — "how deep is the subtree under this row?" — the exact INVERSE of the four
- * routes `containmentChain` walks up, bounded, live rows only.
+ * ================================================================================================
+ * THE DOWNWARD FRAGMENT — "what does this row CONTAIN?", one `child_id` column, one definition
+ * ================================================================================================
+ *
+ * The exact INVERSE of the four routes `containmentChain` (and `authz/resolve.ts`'s
+ * `scopeExpandCte`) walk UP, and the single definition every downward consumer composes. The full
+ * list, recursive and single-level, is in this module's header — read it before adding a route.
+ *
+ *   - {@link containmentSubtreeExceeds} — the depth doors: how tall is the subtree that travels
+ *     with a moved row? (recursive)
+ *   - `authz/readable-scope.ts`'s `readableObjectFilterSql` — which objects does a role binding at
+ *     this row REACH? (recursive; docs/proposals/role-model.md §8.2, increment 2.5b.)
+ *   - `governance/governance-reach.ts`'s `countContainmentDependents` and
+ *     `graph/objects-repo.ts`'s container-delete guard — ONE LEVEL, "what does tombstoning this row
+ *     detach?" (2026-08-26; the second composes {@link placementNamesObjectSql} alone, see the
+ *     header).
+ *
+ * It is exported for the reason routes 3 and 4 are exported upward, and the count is worth stating
+ * because it was UNDERCOUNTED when this fragment landed. `containmentSubtreeExceeds` was believed to
+ * be the third hand-typed copy; censusing the PROPERTY rather than the recursive shape found FIVE,
+ * two of them already drifted (`governance-reach.ts` counted `contains` EDGES rather than live
+ * children, and both one-level copies compared the placement pair as raw TEXT rather than as
+ * `uuid`). This module's header records what the FIRST two copies cost when they drifted — a
+ * service-scoped freeze failing OPEN and a service-scoped approval failing CLOSED, from one root
+ * cause. Every consumer now composes, so the next route added here reaches all of them.
+ *
+ * ROUTE BY ROUTE — which downward arm inverts which upward route. (role-model.md §8.3's first
+ * hazard: the two directions MUST be exact inverses, or an object `authorize()` admits at its own
+ * id is missing from the list that should contain it, which reads as a cache bug rather than an
+ * authz bug.)
+ *
+ *   arm 1 inverts ROUTE 1 (`objects.domain_id`, walked child -> parent) — rows whose `domain_id`
+ *         IS this row. ANY type: `objects.domain_id` carries no type constraint, so a component or
+ *         a placement can have `domain_id` children too, and this arm is not optional for any type.
+ *   arm 2 inverts ROUTE 2 (the `contains` edge, walked BACKWARDS up) — `contains` edges FROM this
+ *         row, read FORWARDS (the edge is registered container -> member, so the child is `to_id`).
+ *         The asymmetry route 2 rests on is preserved by construction: downward reaches a
+ *         container's members and never a member's container, which is the same security property
+ *         read the other way round.
+ *   arm 3 inverts ROUTES 3 + 4 TOGETHER (`placementParentsSql`'s pair) — live `placement`s NAMING
+ *         this row as their `componentId` or their `deploymentTargetId`, read from the PROPERTIES
+ *         exactly as the upward fragment reads them (ADR-0026 D17) and with the SAME `CASE` guard
+ *         and the SAME `uuid` cast, so a malformed value matches nothing here just as it yields no
+ *         parent there and the two directions agree on which values count. Delegated to
+ *         {@link placementNamesObjectSql} so that the ONE-LEVEL consumers can compose the predicate
+ *         without composing the whole fragment — this pair is the route that had already been
+ *         hand-copied twice, and both copies had dropped the guard and the cast.
+ *
+ * LIVENESS — and the ONE place the two directions do not agree, stated rather than discovered.
+ * Upward, every PARENT is joined `deleted_at IS NULL` while the seed row is raw
+ * (`authz/org-root-arm.ts` documents at length what that seed asymmetry costs). Downward, every
+ * CHILD is filtered `deleted_at IS NULL` and the seed is the caller's business — and BOTH callers
+ * filter their seed live. So along a path `root -> ... -> object`, both directions require every
+ * INTERMEDIATE node and the ROOT to be live; the only difference is the far endpoint, which upward
+ * never checks and downward always does. That difference is observable ONLY for a TOMBSTONED
+ * object, which no list door returns (`listObjects` filters `deleted_at IS NULL` unless
+ * `includeDeleted`) and which the depth doors do not count. It is pinned by a named case in
+ * `authz/readable-scope.integration.test.ts` rather than left as a comment.
+ *
+ * NOT BOUNDED HERE. The bound belongs to the walk, because the two consumers count different
+ * things: the depth doors walk `budget + 1` levels (they only need "taller than the budget?"),
+ * while the read filter walks {@link CONTAINMENT_WALK_MAX_DEPTH} — the same bound `scopeExpandCte`
+ * uses, which is what makes the two directions exact inverses over the same path set.
+ *
+ * ALIASES. The three arms use `child_o`, `r` and `pl` internally; `parentIdSql` is spliced in
+ * unqualified, so it must not be an expression that those names could capture (both callers pass a
+ * column of an OUTER recursive CTE — `d.id` — which nothing here shadows).
+ *
+ * INDEX NOTE, so nobody "fixes" arm 3's `CASE` form for speed (it moved here with the fragment):
+ * migration 0051's pair index is on the TEXT expression `(properties ->> 'componentId')`, which the
+ * cast form cannot use; a text comparison could, but would be a STRICTER match than the upward walk
+ * (upper-case hex would be a parent going up and not a child coming down). The mirror is worth more
+ * than the index — the placement population is small (61 on the live estate, per this module's
+ * header) and both callers bound their walk.
+ */
+export function containmentChildrenSql(orgId: string, parentIdSql: SQL): SQL {
+  return sql`
+    -- arm 1 (inverse of route 1): rows whose domain_id is this row
+    SELECT child_o.id AS child_id
+    FROM objects child_o
+    WHERE child_o.domain_id = ${parentIdSql}
+      AND child_o.org_id = ${orgId}
+      AND child_o.deleted_at IS NULL
+    UNION ALL
+    -- arm 2 (inverse of route 2): contains edges FROM this row, read forwards
+    SELECT child_o.id AS child_id
+    FROM relationships r
+    JOIN objects child_o ON child_o.id = r.to_id AND child_o.org_id = ${orgId}
+      AND child_o.deleted_at IS NULL
+    WHERE r.from_id = ${parentIdSql}
+      AND r.org_id = ${orgId}
+      AND r.type_id = 'contains'
+      AND r.deleted_at IS NULL
+    UNION ALL
+    -- arm 3 (inverse of routes 3 + 4): live placements naming this row as component or target
+    SELECT pl.id AS child_id
+    FROM objects pl
+    WHERE pl.org_id = ${orgId}
+      AND pl.type_id = 'placement'
+      AND pl.deleted_at IS NULL
+      AND ${placementNamesObjectSql(sql`pl.properties`, parentIdSql)}
+  `;
+}
+
+/**
+ * THE DOWNWARD WALK — "how deep is the subtree under this row?" — {@link containmentChildrenSql}
+ * (the exact inverse of the four routes `containmentChain` walks up) recursed, bounded, live rows
+ * only.
  *
  * Exists for ONE caller, {@link assertContainmentDepthAdmits}: a MOVE takes the moved row's whole
  * subtree with it, so the door has to know how far below the row the deepest live descendant sits.
- * The routes are the same three writes read backwards, and they MUST stay the mirror of the upward
- * walk — a route present in one and not the other is exactly how routes 1 and 2 drifted apart in
- * this module's history:
- *
- *   inverse of route 1 — rows whose `domain_id` is this row (any type: `objects.domain_id` carries
- *                        no type constraint, so a component or a placement can have `domain_id`
- *                        children too, and this arm is not optional for any type);
- *   inverse of route 2 — `contains` edges FROM this row, read FORWARDS (the edge is registered
- *                        container -> member, so the child is `to_id`);
- *   inverse of routes 3+4 — live placements NAMING this row as their component or their
- *                        deployment-target, read from the PROPERTIES exactly as
- *                        `placementParentsSql` does, with the SAME CASE guard, so a malformed value
- *                        matches nothing here just as it yields no parent there and the two walks
- *                        agree on which values count.
+ * It used to carry its own hand-typed copy of the three arms, which is why the fragment above was
+ * exported rather than another one written for the read surface. (It was called "the third copy"
+ * here; a census by property later found five — see the fragment's own note.)
  *
  * Every CHILD is filtered `deleted_at IS NULL` (as every PARENT is upward): a tombstoned descendant
  * is on no walk and costs no depth. The seed is filtered live too — the callers pass a row they
@@ -447,19 +620,22 @@ export async function containmentScopeIds(
  * know whether the subtree is TALLER than the budget it has left, and a row found at depth
  * `budget + 1` proves that without walking the rest. The bound literal is `sql.raw` for the reason
  * `authz/resolve.ts` gives at its own walk (an untyped `$n` against a recursive CTE's depth column).
- * `UNION` (not `UNION ALL`) because the subtree is a DAG — a component reachable via its domain AND
- * its service is one node — and `MAX(depth)` keeps the LONGEST route per row, which is what the
- * invariant counts. `budget` is never negative here: the ONE caller, {@link assertContainmentDepthAdmits},
+ *
+ * `UNION` (not `UNION ALL`), and MEASURED rather than assumed, because the obvious justification is
+ * wrong: the recursive term's rows are `(id, depth)` PAIRS, so `UNION` can only collapse a row
+ * reached by two routes AT THE SAME DEPTH (two services both containing one component). A component
+ * reachable via its domain at depth 1 AND via its service at depth 2 is TWO rows under `UNION` just
+ * as it is under `UNION ALL` — measured on PostgreSQL 16, identical output for that shape, and its
+ * subtree walked twice either way. That case is handled by `MAX(depth)` keeping the LONGEST route
+ * per row, which is what the invariant counts; `UNION` is what stops the same-depth fan-in from
+ * multiplying. Neither is what terminates the walk — the `depth <` guard is, which is also why a
+ * self-parented legacy row (`domain_id` = own id) costs `probeDepth + 1` rows and no more.
+ *
+ * `budget` is never negative here: the ONE caller, {@link assertContainmentDepthAdmits},
  * refuses `rowDepth > MAX` BEFORE computing `budget = MAX - rowDepth`, so a parent at the bound
  * never reaches this walk (a "negative budget" branch used to sit here as a `return true` — dead
  * by that ordering, and a verifier measured that inverting it left the whole suite green; a claim
  * no test can hold to is not kept as behaviour).
- *
- * Index note, so nobody "fixes" the CASE form for speed: migration 0051's pair index is on the TEXT
- * expression `(properties ->> 'componentId')`, which the cast form cannot use; a text comparison
- * could, but would be a STRICTER match than the upward walk (upper-case hex would be a parent going
- * up and not a child coming down). The mirror is worth more than the index — the placement
- * population is small (61 on the live estate, per this module's header) and the walk is bounded.
  */
 export async function containmentSubtreeExceeds(
   tx: TenantTx,
@@ -474,40 +650,9 @@ export async function containmentSubtreeExceeds(
       FROM objects o
       WHERE o.id = ${rootId}::uuid AND o.org_id = ${orgId} AND o.deleted_at IS NULL
       UNION
-      SELECT child.id, d.depth + 1
+      SELECT child.child_id, d.depth + 1
       FROM down d
-      CROSS JOIN LATERAL (
-        -- inverse of route 1: rows whose domain_id is this row
-        SELECT child_o.id
-        FROM objects child_o
-        WHERE child_o.domain_id = d.id
-          AND child_o.org_id = ${orgId}
-          AND child_o.deleted_at IS NULL
-        UNION ALL
-        -- inverse of route 2: contains edges FROM this row, read forwards
-        SELECT child_o.id
-        FROM relationships r
-        JOIN objects child_o ON child_o.id = r.to_id AND child_o.org_id = ${orgId}
-          AND child_o.deleted_at IS NULL
-        WHERE r.from_id = d.id
-          AND r.org_id = ${orgId}
-          AND r.type_id = 'contains'
-          AND r.deleted_at IS NULL
-        UNION ALL
-        -- inverse of routes 3 + 4: live placements naming this row as component or target
-        SELECT pl.id
-        FROM objects pl
-        WHERE pl.org_id = ${orgId}
-          AND pl.type_id = 'placement'
-          AND pl.deleted_at IS NULL
-          AND (
-            (CASE WHEN pl.properties ->> 'componentId' ~ ${UUID_TEXT_PATTERN}
-                  THEN (pl.properties ->> 'componentId')::uuid END) = d.id
-            OR
-            (CASE WHEN pl.properties ->> 'deploymentTargetId' ~ ${UUID_TEXT_PATTERN}
-                  THEN (pl.properties ->> 'deploymentTargetId')::uuid END) = d.id
-          )
-      ) child
+      CROSS JOIN LATERAL (${containmentChildrenSql(orgId, sql`d.id`)}) child
       WHERE d.depth < ${sql.raw(String(probeDepth))}
     )
     SELECT COALESCE(MAX(depth), 0)::int AS depth FROM down
