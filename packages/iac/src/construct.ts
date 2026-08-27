@@ -190,6 +190,14 @@ export interface SourceMappingSpec {
   readonly repoPattern?: string;
   /** @default undefined — matches any path. */
   readonly pathPattern?: string;
+  /** Glob matched against the event's git ref (`refs/heads/main`) — ADR-0030 §1's routing
+   *  discriminator, joining the mapping's identity tuple alongside `repoPattern`/`pathPattern`/
+   *  `type` (`ManifestSourceMappingSchema`). Added for team-pipeline-iac.md D17/D18: a pipeline's
+   *  `branch` prop threads through to here (`refs/heads/${branch}`) so two pipelines sharing a repo
+   *  but differing only in branch (`main` vs `dev`) synthesize two distinct mappings rather than
+   *  colliding as one.
+   *  @default undefined — matches any ref. */
+  readonly refPattern?: string;
   /** Which pipeline of the component this source drives (ADR-0007).
    *  @default "configuration" */
   readonly type?: ExecutorType;
@@ -361,6 +369,7 @@ export class Stack extends Construct {
         sourceKind: spec.sourceKind,
         ...(spec.repoPattern !== undefined ? { repoPattern: spec.repoPattern } : {}),
         ...(spec.pathPattern !== undefined ? { pathPattern: spec.pathPattern } : {}),
+        ...(spec.refPattern !== undefined ? { refPattern: spec.refPattern } : {}),
         ...(spec.type !== undefined ? { type: spec.type } : {}),
         // Omitted stays OMITTED (not `null`): the two mean different things server-side (§10.6).
         ...(spec.scope !== undefined ? { scope: spec.scope } : {})
@@ -400,6 +409,23 @@ export class Stack extends Construct {
       }
     });
     return this;
+  }
+
+  /**
+   * Whether this stack already declares a placement for this exact `(component, deploymentTarget)`
+   * pair — the identity is the pair (ADR-0026 D3), same as `addPlacement`. Exists so a HIGHER-LEVEL
+   * inference step (team-pipeline-iac.md D8: "placements from the stages a component's waves name")
+   * can check "did an explicit declaration already say this?" before adding an inferred one, rather
+   * than emitting two `ManifestPlacement` entries for one pair — D8's rule that "an explicit
+   * declaration always overrides an inferred one" is enforced by never emitting the inferred one at
+   * all when the explicit one already exists, not by a later dedup pass.
+   */
+  hasPlacement(component: IResourceRef | string, deploymentTarget: IResourceRef | string): boolean {
+    const componentUrn = resolveUrn(component);
+    const targetUrn = resolveUrn(deploymentTarget);
+    return this.placementDecls.some(
+      (d) => d.entry.componentUrn === componentUrn && d.entry.deploymentTargetUrn === targetUrn
+    );
   }
 
   /**
@@ -742,19 +768,35 @@ export class ResourceConstruct<TypeId extends string = string>
   implements IResourceRef<TypeId>
 {
   readonly urn: string;
-  /** `protected`, not `private`: `Component.mapsSource` (a subclass) registers through it. */
-  protected readonly stack: Stack;
+  /**
+   * PUBLIC (widened from round A's `protected`, team-pipeline-iac.md D17/D19/D24 round B): a
+   * `Pipeline` construct scoping infra products (`Cluster`, `InstanceGroup`, …) or nested pipelines
+   * under an owned `Component`/`Service` lives in a DIFFERENT module (`pipeline.ts`) from this
+   * class, so it needs to read the owning `Stack` off a construct it did not itself create —
+   * `protected` only reaches subclasses in the SAME file. Still `readonly`: nothing outside the
+   * constructor may reassign which stack a construct belongs to.
+   */
+  readonly stack: Stack;
 
+  /**
+   * `scope` accepts either a `Stack` directly (every construct round A shipped) OR any construct
+   * that itself carries a `.stack` (round B's `Pipeline` — a non-`Stack` scope for infra products
+   * and nested pipelines, team-pipeline-iac.md D19). This is a WIDENING, not a behavior change: a
+   * `Stack` scope resolves to itself exactly as before, and every existing call site (`new
+   * Service(stack, …)`, `new Component(stack, …)`, …) is unaffected because `Stack` still satisfies
+   * the union's first arm.
+   */
   constructor(
-    scope: Stack,
+    scope: Stack | (Construct & { readonly stack: Stack }),
     id: string,
     readonly typeId: TypeId,
     private readonly props: ResourceProps
   ) {
     super(scope, id);
-    this.stack = scope;
-    this.urn = props.urn ?? deriveConstructUrn(scope.stackName, typeId, id);
-    scope._registerResource(this);
+    const stack = scope instanceof Stack ? scope : scope.stack;
+    this.stack = stack;
+    this.urn = props.urn ?? deriveConstructUrn(stack.stackName, typeId, id);
+    stack._registerResource(this);
   }
 
   /** Declares a `depends_on` edge FROM this resource TO `target` (another construct, a `fromXxx()`
@@ -912,6 +954,25 @@ export interface ComponentProps extends ResourceProps {
 }
 
 /**
+ * Resolves `Component`'s two constructor forms into one `(scope, id, props)` triple, computed BEFORE
+ * `super()` is called (team-pipeline-iac.md D15a/D17 round B) so a root-form `Component` creates
+ * exactly ONE `Stack` — calling the resolution twice (once to compute `super()`'s arguments, once
+ * more inside the constructor body) would construct two DIFFERENT `Stack` instances and register the
+ * component under the one nobody kept a reference to. A plain (non-`this`-touching) statement before
+ * `super()` is legal JS, which is what lets this run once and be reused for both.
+ */
+function resolveComponentCtorArgs(
+  scopeOrName: Stack | string,
+  idOrProps: string | ComponentProps,
+  maybeProps: ComponentProps | undefined
+): { scope: Stack; id: string; props: ComponentProps } {
+  if (typeof scopeOrName === "string") {
+    return { scope: new Stack(scopeOrName), id: scopeOrName, props: idOrProps as ComponentProps };
+  }
+  return { scope: scopeOrName, id: idOrProps as string, props: maybeProps as ComponentProps };
+}
+
+/**
  * A component (server-side object type `"component"`). Unlike the uniform `defineResourceConstruct`
  * types, `Component` is a bespoke subclass because create-in-service is strict: it emits a
  * `contains` edge from `props.service` to itself so the synthesized manifest satisfies the strict
@@ -921,11 +982,34 @@ export interface ComponentProps extends ResourceProps {
  * Carries its own `fromName()`/`fromUrn()` statics (D16(2)) rather than going through
  * `defineResourceConstruct` — same contract as every other typed-registry construct
  * (`ResourceConstructStatics<"component">`), hand-written here because `Component` already is.
+ *
+ * TWO CONSTRUCTOR FORMS (team-pipeline-iac.md D15a/D17 round B): `new Component(scope, id, props)`
+ * (round A, unchanged) for a `Component` declared inside an existing `Stack`, and `new
+ * Component(name, props)` for a MULTI-PIPELINE repo's root file — "a multi-pipeline repo roots at
+ * `Component`" (D17) — which auto-creates its own `Stack` exactly the way a root `Pipeline` class
+ * does (`pipeline.ts`), so `App`/`Stack` stay absent from that file's own code (D15a).
  */
 export class Component extends ResourceConstruct<"component"> {
-  constructor(scope: Stack, id: string, props: ComponentProps) {
-    super(scope, id, "component", props);
-    scope._registerRelationship({ typeId: "contains", from: props.service, to: this });
+  /** The service this component belongs to, as a reference — recorded so composition built on top
+   *  of an owned `Component` (round B's `Pipeline`, computing a default publish `repository` path)
+   *  can read it back; `props.service` itself is consumed by the constructor and not otherwise kept. */
+  readonly service: IService;
+
+  constructor(name: string, props: ComponentProps);
+  constructor(scope: Stack, id: string, props: ComponentProps);
+  constructor(
+    scopeOrName: Stack | string,
+    idOrProps: string | ComponentProps,
+    maybeProps?: ComponentProps
+  ) {
+    const resolved = resolveComponentCtorArgs(scopeOrName, idOrProps, maybeProps);
+    super(resolved.scope, resolved.id, "component", resolved.props);
+    this.service = { urn: resolveUrn(resolved.props.service), typeId: "service" };
+    resolved.scope._registerRelationship({
+      typeId: "contains",
+      from: resolved.props.service,
+      to: this
+    });
   }
 
   /** A reference to an EXISTING component by its display NAME — see `nameReferenceUrn`'s doc. */

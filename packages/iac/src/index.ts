@@ -52,6 +52,52 @@ export { deriveConstructUrn, slugify } from "./urn.js";
 export { canonicalJson } from "./canonical.js";
 export { Duration } from "./duration.js";
 
+// Round B (team-pipeline-iac.md): typed pipeline-kind constructs, infra products, and wave helpers.
+export {
+  ImagePipeline,
+  RpmPipeline,
+  DebPipeline,
+  NpmPipeline,
+  MavenPipeline,
+  PythonPipeline,
+  GoPipeline,
+  ChartPipeline,
+  VmImagePipeline,
+  InfrastructurePipeline,
+  ConfigurationPipeline,
+  PipelineBase,
+  PIPELINE_KINDS,
+  ExecutionSystem,
+  repos
+} from "./pipeline.js";
+export type {
+  PipelineConstructStatics,
+  PipelineParentScope,
+  PipelineSourceProps,
+  PipelineWavesProps,
+  PublishProps,
+  RootPipelineProps,
+  NestedPipelineProps,
+  RootPipelinePropsFor,
+  NestedPipelinePropsFor,
+  IExecutionSystem
+} from "./pipeline.js";
+export { Cluster, InstanceGroup, Database, Bucket, Queue, PLACEMENT_MATRIX } from "./infra.js";
+export type {
+  ICluster,
+  IInstanceGroup,
+  IDatabase,
+  IBucket,
+  IQueue,
+  InfraKindInterfaceMap,
+  InfraProductProps,
+  InfraProductScope,
+  InfraProductStatics,
+  PlaceableTarget
+} from "./infra.js";
+export { linear, widening, byDomain, waves, normalizeWaveItems } from "./waves.js";
+export type { WaveTarget, WaveItem, WideningOptions } from "./waves.js";
+
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Stack } from "./construct.js";
