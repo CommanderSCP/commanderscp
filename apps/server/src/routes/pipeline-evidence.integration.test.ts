@@ -50,20 +50,30 @@ import { evaluateBakeGate } from "../coordination/pipeline-hook-verdicts.js";
  * Each was applied alone and reverted:
  *
  *  (a) `routes/pipelines.ts`'s `authorize({... scopeObjectId: target.id})` -> `scopeObjectId:
- *      input.orgId` (the org root, i.e. the bar `POST /change-sources/{kind}/report` uses) =>
- *      "a caller authorized only at ANOTHER target cannot submit for this one" FAILED: expected
- *      403 to be 201. Its POSITIVE CONTROL in the same test stayed green, so the test cannot pass
- *      by everything being refused.
+ *      input.orgId` (the org root — the bar `POST /change-sources/{kind}/report` uses) => TWO
+ *      tests failed, both on the SAME shape: "a caller authorized only at ANOTHER target cannot
+ *      submit for this one" and "stamps the PERSISTED producer from the authenticated subject",
+ *      each `expected 403 to be 201`, with `subject '<component-scoped principal>' lacks
+ *      'object:write' at scope '<org root>'`. The narrowing test failed at its POSITIVE CONTROL —
+ *      the leg that exists so the case cannot pass by everything being refused — which is exactly
+ *      where an org-root pin has to show up: it does not let MORE through here, it locks every
+ *      component-scoped CI principal out. Its refusal leg stayed green, and so, correctly, did the
+ *      other six tests, all of which submit as the org-root admin.
  *  (b) the producer stamp -> read from the caller's body
- *      (`producerSubjectId: rawSubject.producer ?? auth.subjectObjectId`, off `request.rawBody` so
- *      Zod's strip does not hide it) => "the PERSISTED producer is the AUTHENTICATED subject, never
- *      anything the caller supplied" FAILED on the stored row: the forged id was persisted.
- *  (c) `SubmitPipelineEvidenceRequestSchema` `z.strictObject` -> `z.object` => "a body carrying an
- *      extra `producer` key is REFUSED, not silently stripped" FAILED: expected 400 to be 201.
- *  (d) `plan-service.ts`'s read-time continuous projection replaced by a persisted one (the map
- *      captured on the FIRST read and reused on every later read, i.e. what a Decision-fed field
- *      would do) => "hold.continuousTests ... and is ABSENT once fresh green evidence lands"
- *      FAILED on its second half: the key was still present after the fresh pass landed.
+ *      (`producerSubjectId: rawSubject.producer ?? auth.subjectObjectId`, taken off
+ *      `request.rawBody` so Zod's strip of the unknown `subject.producer` key does not hide it) =>
+ *      "stamps the PERSISTED producer from the authenticated subject" FAILED ALONE, on the stored
+ *      row: `expected '<impostor id>' to be '<reporter id>'`. The forged id was persisted.
+ *  (c) `SubmitPipelineEvidenceRequestSchema` `z.strictObject` -> `z.object` (and `@scp/schemas`
+ *      REBUILT — these tests import the package's `dist`, so a source-only mutation is a false
+ *      green) => "REFUSES a body carrying an extra top-level `producer` key" FAILED ALONE:
+ *      `expected 201 to be 400`.
+ *  (d) `plan-service.ts`'s read-time continuous projection replaced by a persisted one (the verdict
+ *      map captured on the FIRST read and reused on every later read — what a Decision-fed field
+ *      does) => the hold-projection test FAILED ALONE on its second half:
+ *      `expected [ { hookId: 'canary', …(4) } ] to be undefined`. Its first half (the key IS
+ *      present while held) stayed green, which is what makes the failure attributable to
+ *      read-time composition rather than to the projection existing at all.
  *
  * A test that survives its own mutation is vacuous; the results above are the record that these
  * did not.
