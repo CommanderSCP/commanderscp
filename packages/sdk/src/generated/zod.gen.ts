@@ -3986,6 +3986,33 @@ export const zCreatePlanResponse = z.object({
             subjectUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             reason: z.string()
         })).optional(),
+        pipelineHooks: z.array(z.object({
+            kind: z.literal('pipeline-hook'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            hookKind: z.enum([
+                'postMerge',
+                'postDeploy',
+                'continuous',
+                'bakeAlarms'
+            ]),
+            hookId: z.string(),
+            workflow: z.object({
+                repo: z.string().min(1),
+                branch: z.string().min(1),
+                path: z.string().min(1),
+                templateName: z.string().min(1).optional()
+            }).nullable(),
+            stage: z.string().nullable(),
+            everySeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+            maxAgeSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+            quietWindowSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+            reason: z.string()
+        })).optional(),
         summary: z.object({
             creates: z.int().gte(-9007199254740991).lte(9007199254740991),
             updates: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -4300,6 +4327,33 @@ export const zGetPlanResponse = z.object({
                 'noop'
             ]),
             subjectUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            reason: z.string()
+        })).optional(),
+        pipelineHooks: z.array(z.object({
+            kind: z.literal('pipeline-hook'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            hookKind: z.enum([
+                'postMerge',
+                'postDeploy',
+                'continuous',
+                'bakeAlarms'
+            ]),
+            hookId: z.string(),
+            workflow: z.object({
+                repo: z.string().min(1),
+                branch: z.string().min(1),
+                path: z.string().min(1),
+                templateName: z.string().min(1).optional()
+            }).nullable(),
+            stage: z.string().nullable(),
+            everySeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+            maxAgeSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+            quietWindowSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
             reason: z.string()
         })).optional(),
         summary: z.object({
@@ -4617,6 +4671,33 @@ export const zApplyPlanResponse = z.object({
                     'noop'
                 ]),
                 subjectUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                reason: z.string()
+            })).optional(),
+            pipelineHooks: z.array(z.object({
+                kind: z.literal('pipeline-hook'),
+                action: z.enum([
+                    'create',
+                    'delete',
+                    'noop'
+                ]),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                hookKind: z.enum([
+                    'postMerge',
+                    'postDeploy',
+                    'continuous',
+                    'bakeAlarms'
+                ]),
+                hookId: z.string(),
+                workflow: z.object({
+                    repo: z.string().min(1),
+                    branch: z.string().min(1),
+                    path: z.string().min(1),
+                    templateName: z.string().min(1).optional()
+                }).nullable(),
+                stage: z.string().nullable(),
+                everySeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+                maxAgeSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+                quietWindowSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
                 reason: z.string()
             })).optional(),
             summary: z.object({

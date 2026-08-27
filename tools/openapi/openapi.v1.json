@@ -45446,6 +45446,139 @@
                             "additionalProperties": false
                           }
                         },
+                        "pipelineHooks": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "pipeline-hook"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "hookKind": {
+                                "type": "string",
+                                "enum": [
+                                  "postMerge",
+                                  "postDeploy",
+                                  "continuous",
+                                  "bakeAlarms"
+                                ]
+                              },
+                              "hookId": {
+                                "type": "string"
+                              },
+                              "workflow": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "repo": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "branch": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "templateName": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "repo",
+                                      "branch",
+                                      "path"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "stage": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "everySeconds": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "maxAgeSeconds": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "quietWindowSeconds": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "componentUrn",
+                              "hookKind",
+                              "hookId",
+                              "workflow",
+                              "stage",
+                              "everySeconds",
+                              "maxAgeSeconds",
+                              "quietWindowSeconds",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
                         "summary": {
                           "type": "object",
                           "properties": {
@@ -46890,6 +47023,139 @@
                               "kind",
                               "action",
                               "subjectUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "pipelineHooks": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "pipeline-hook"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "hookKind": {
+                                "type": "string",
+                                "enum": [
+                                  "postMerge",
+                                  "postDeploy",
+                                  "continuous",
+                                  "bakeAlarms"
+                                ]
+                              },
+                              "hookId": {
+                                "type": "string"
+                              },
+                              "workflow": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "repo": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "branch": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "path": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "templateName": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "repo",
+                                      "branch",
+                                      "path"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "stage": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "everySeconds": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "maxAgeSeconds": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "quietWindowSeconds": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "componentUrn",
+                              "hookKind",
+                              "hookId",
+                              "workflow",
+                              "stage",
+                              "everySeconds",
+                              "maxAgeSeconds",
+                              "quietWindowSeconds",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -48342,6 +48608,139 @@
                                   "kind",
                                   "action",
                                   "subjectUrn",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "pipelineHooks": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "pipeline-hook"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "hookKind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "postMerge",
+                                      "postDeploy",
+                                      "continuous",
+                                      "bakeAlarms"
+                                    ]
+                                  },
+                                  "hookId": {
+                                    "type": "string"
+                                  },
+                                  "workflow": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "repo": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "branch": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "path": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "templateName": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          }
+                                        },
+                                        "required": [
+                                          "repo",
+                                          "branch",
+                                          "path"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "stage": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "everySeconds": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "maxAgeSeconds": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "quietWindowSeconds": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "componentUrn",
+                                  "hookKind",
+                                  "hookId",
+                                  "workflow",
+                                  "stage",
+                                  "everySeconds",
+                                  "maxAgeSeconds",
+                                  "quietWindowSeconds",
                                   "reason"
                                 ],
                                 "additionalProperties": false

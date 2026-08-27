@@ -3,11 +3,13 @@ import { v7 as uuidv7 } from "uuid";
 import type {
   DependencyLineProducer,
   DesiredStateManifest,
+  ManifestPipelineHook,
   Plan,
   PlanDependencyProducerDiffEntry,
   PlanDiff,
   PlanExecutorBindingDiffEntry,
-  PlanStatus
+  PlanStatus,
+  WorkflowRef
 } from "@scp/schemas";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -63,6 +65,7 @@ import {
   type ResolvedManifestDependencyProducer,
   type ResolvedManifestExecutorBinding,
   type ResolvedManifestObject,
+  type ResolvedManifestPipelineHook,
   type ResolvedManifestPlacement,
   type ResolvedManifestSourceMapping
 } from "./plan-diff.js";
@@ -98,6 +101,11 @@ import {
   listSourceMappingsForComponents,
   setSourceMappingScopeMatching
 } from "../coordination/source-mappings-repo.js";
+import {
+  deleteHook,
+  listHooksForComponents,
+  upsertHook
+} from "../coordination/pipeline-hooks-repo.js";
 import { validatePluginConfig } from "../plugin-host/plugin-manifests.js";
 
 /**
@@ -133,10 +141,10 @@ function assertProjectionsOwned(diff: PlanDiff): void {
   const unowned = unownedProjectionDeclarations(diff);
   if (unowned.length === 0) return;
   throw badRequest(
-    `plan declares source mapping(s)/executor binding(s) on object(s) this stack does not manage: ` +
-      `${unowned.join(", ")}. Neither table carries an owner of its own, so ownership is inherited ` +
-      `from the object the row hangs off — declare that object in this stack's manifest (which ` +
-      `adopts it), or configure it from the stack that already manages it.`
+    `plan declares source mapping(s)/executor binding(s)/pipeline hook(s) on object(s) this stack ` +
+      `does not manage: ${unowned.join(", ")}. None of those tables carries an owner of its own, so ` +
+      `ownership is inherited from the object the row hangs off — declare that object in this ` +
+      `stack's manifest (which adopts it), or configure it from the stack that already manages it.`
   );
 }
 
@@ -186,13 +194,69 @@ function assertProducerDeclarationsValid(diff: PlanDiff): void {
  * twice. See `duplicateProjectionDeclarations` — silently preferring one is the failure mode
  * proposal §11 names explicitly.
  */
+/**
+ * A manifest hook -> the flat, fully-NORMALIZED row shape the diff keys on.
+ *
+ * Every per-kind field is written to `null` where the kind does not carry it, rather than left
+ * `undefined`. That is what makes the DESIRED side (a discriminated union whose members simply lack
+ * the fields they do not use) key byte-for-byte against the ACTUAL side (rows from a table whose
+ * per-kind columns are all nullable). Skip it and a `postMerge` hook keys one way from the manifest
+ * and another from the database, so every plan proposes a delete plus a create for a hook nobody
+ * touched — and, worse, the apply performs them.
+ *
+ * The per-kind reads are guarded by the discriminant rather than by optional chaining so a fifth
+ * hook kind cannot be added without this function failing to compile.
+ */
+function resolvePipelineHook(hook: ManifestPipelineHook): ResolvedManifestPipelineHook {
+  const base = {
+    componentUrn: hook.componentUrn,
+    hookKind: hook.kind,
+    hookId: hook.hookId,
+    everySeconds: null,
+    maxAgeSeconds: null,
+    quietWindowSeconds: null
+  };
+  switch (hook.kind) {
+    case "postMerge":
+      return { ...base, hookKind: "postMerge", workflow: hook.workflow, stage: null };
+    case "postDeploy":
+      return {
+        ...base,
+        hookKind: "postDeploy",
+        workflow: hook.workflow,
+        // ABSENT = EVERY WAVE, the strict end of the range (D21(a)) — `null` on the row IS that
+        // statement, not an unset field.
+        stage: hook.stage ?? null
+      };
+    case "continuous":
+      return {
+        ...base,
+        hookKind: "continuous",
+        workflow: hook.workflow,
+        stage: null,
+        everySeconds: hook.everySeconds,
+        maxAgeSeconds: hook.maxAgeSeconds
+      };
+    case "bakeAlarms":
+      return {
+        ...base,
+        hookKind: "bakeAlarms",
+        // `bakeAlarms` triggers nothing, so it carries no workflow.
+        workflow: null,
+        stage: hook.stage ?? null,
+        quietWindowSeconds: hook.quietWindowSeconds
+      };
+  }
+}
+
 function assertProjectionsUnique(manifest: ResolvedManifest): void {
   const duplicates = duplicateProjectionDeclarations(manifest);
   if (duplicates.length === 0) return;
   throw badRequest(
     `manifest declares the same configuration twice: ${duplicates.join(", ")}. ` +
-      `A source mapping is identified by its whole tuple and an executor binding by (target, type) — ` +
-      `remove the duplicate rather than relying on which one wins.`
+      `A source mapping is identified by its whole tuple, an executor binding by (target, type), and ` +
+      `a pipeline hook by (componentUrn, kind, hookId) — remove the duplicate rather than relying ` +
+      `on which one wins.`
   );
 }
 
@@ -432,6 +496,9 @@ export async function computeDiffForManifest(
   // A producer declaration's owning object is its PRODUCER COMPONENT — the row hangs off it and
   // inherits its ownership, the same rule a source mapping's component gets.
   for (const declaration of manifest.producers ?? []) referencedUrns.add(declaration.producerUrn);
+  // A hook's owning object is its COMPONENT — the row hangs off it and inherits its ownership, the
+  // same rule a source mapping's component and a producer's component get.
+  for (const hook of manifest.pipelineHooks ?? []) referencedUrns.add(hook.componentUrn);
   for (const binding of manifest.executorBindings ?? []) {
     referencedUrns.add(binding.targetUrn);
     // A placement-targeted binding resolves BOTH halves at apply, never the placement itself —
@@ -705,6 +772,38 @@ export async function computeDiffForManifest(
     }
   }
 
+  // ---------------------------------------------------------------------------------------
+  // PIPELINE HOOKS (D11/D21; migration 0096) — ONE pool, ownership-scoped through the COMPONENT,
+  // exactly like `source_mappings` and `executor_bindings` and for the identical reason:
+  // `pipeline_hooks` carries no owner of its own, so a row's owner is the owner of the component it
+  // hangs off. The pool therefore serves BOTH prune detection and create/noop matching.
+  //
+  // Skipped entirely when the manifest has no `pipelineHooks` key: absent means UNMANAGED (see
+  // `ResolvedManifest.pipelineHooks`), so there is nothing to converge and nothing to prune, and
+  // reading a prune pool we must never act on would only invite a later edit to act on it.
+  // ---------------------------------------------------------------------------------------
+  const managedPipelineHooks: ResolvedManifestPipelineHook[] = [];
+  if (manifest.pipelineHooks !== undefined) {
+    for (const row of await listHooksForComponents(tx, orgId, ownedIdList)) {
+      const componentUrn = urnOfOwnedId(row.componentObjectId);
+      // Defensive, and the conservative direction: a hook whose component cannot be named is
+      // invisible to BOTH create-matching and prune, so this plan neither disarms it nor duplicates
+      // it — never silently mis-attributed to another component.
+      if (!componentUrn) continue;
+      managedPipelineHooks.push({
+        componentUrn,
+        hookKind: row.kind,
+        hookId: row.hookId,
+        // The ACTUAL side, carried verbatim so it keys byte-for-byte against the DESIRED side.
+        workflow: (row.workflow ?? null) as WorkflowRef | null,
+        stage: row.stage,
+        everySeconds: row.everySeconds,
+        maxAgeSeconds: row.maxAgeSeconds,
+        quietWindowSeconds: row.quietWindowSeconds
+      });
+    }
+  }
+
   // A manifest may name its execution-system by id OR URN (`CreateExecutorBindingRequest` semantics,
   // and a URN is the only stable reference an offline-authored manifest has). The table stores a real
   // object id, so resolve here — a DB read, hence not in the pure diff engine. Without it a
@@ -773,6 +872,11 @@ export async function computeDiffForManifest(
     // that diverge from the prune-on-absent rule (see `ResolvedManifest.governanceMoveRungs`).
     // Already resolved to URNs above, because the manifest addresses a subject by id OR URN.
     governanceMoveRungs: resolvedRungSubjectUrns,
+    // `undefined` -> `null` — ABSENT MEANS UNMANAGED HERE TOO, the THIRD and last collection that
+    // diverges from the prune-on-absent rule (see `ResolvedManifest.pipelineHooks`). `rollouts` and
+    // `convergence` follow the ordinary rule and are not projected at all yet.
+    pipelineHooks:
+      manifest.pipelineHooks === undefined ? null : manifest.pipelineHooks.map(resolvePipelineHook),
     executorBindings: (manifest.executorBindings ?? []).map((b) => ({
       targetUrn: b.targetUrn,
       deploymentTargetUrn: b.deploymentTargetUrn ?? null,
@@ -802,7 +906,8 @@ export async function computeDiffForManifest(
     managedPlacements,
     managedDependencyProducers,
     existingDependencyProducers,
-    managedGovernanceMoveRungs
+    managedGovernanceMoveRungs,
+    managedPipelineHooks
   });
   // Strict create-in-service, IaC path (M12 P5a): reject at plan-compute so the invalid manifest
   // never becomes a stored plan and the human reviews only a valid diff. C1's two guards run at the
@@ -1261,6 +1366,24 @@ export async function prepareApplyChecks(
   // coarse org-root check, matching this module's discipline everywhere else; authz walks
   // containment, so an org-wide writer still passes.
   for (const entry of diff.sourceMappings ?? []) {
+    if (entry.action === "noop") continue;
+    const component = await resolveEndpoint(entry.componentUrn);
+    checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
+  }
+
+  // PIPELINE HOOKS (D11/D21) — `object:write` at the OWNING COMPONENT, the same per-object bar the
+  // mapping loop directly above uses, and for the same reason: a stack must not configure a
+  // component it does not own. Per-object rather than one coarse org-root check (unlike producers,
+  // whose blast radius really is org-wide): a hook's reach is exactly the component's own pipeline,
+  // and authz walks containment, so an org-wide writer still passes.
+  //
+  // `delete` is INCLUDED, deliberately — narrowing this to `create` would let a principal holding
+  // `object:write` nowhere DISARM a gate, and a gate that is off announces itself only by an
+  // absence of refusals. `noop` is exempt, matching every other loop here.
+  //
+  // The resolution is also what `executePlanDiff` needs: `deleteHook`/`upsertHook` are keyed on the
+  // component's OBJECT ID, so a prune entry has to be resolved here too, not only checked.
+  for (const entry of diff.pipelineHooks ?? []) {
     if (entry.action === "noop") continue;
     const component = await resolveEndpoint(entry.componentUrn);
     checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
@@ -1753,6 +1876,51 @@ export async function executePlanDiff(
       ...(entry.enabled === false ? { enabled: false } : {}),
       // Declared reach (§10.6) — written as the plan showed it; absent/null ⇒ not declared.
       ...(entry.scope ? { scope: entry.scope } : {})
+    });
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // PIPELINE HOOKS (D11/D21; migration 0096). Same position and same reason as the projection rows
+  // above: AFTER object creates (a hook needs its component to exist — "create this component and
+  // gate its waves" is the ordinary first manifest) and BEFORE object deletes, because
+  // `deleteObject` is a SOFT delete and `pipeline_hooks` has no `deleted_at` of its own. A hook left
+  // behind a tombstoned component is a gate nobody can see: outside every list read's join and
+  // outside every future plan's ownership pool, and it would spring back on any object restore.
+  //
+  // Deletes before creates, mirroring every other collection here — and here it CAN matter: a
+  // payload change is rendered as a delete plus a create of the SAME
+  // `(org_id, component_object_id, kind, hook_id)` row, so creates-first would upsert the new gate
+  // and the prune would then remove it.
+  //
+  // A PRUNE MISS IS NOT AN ERROR, unlike the mapping/producer/rung prunes above. `deleteHook`
+  // returns `undefined` when there was no row, and that is the honest outcome here: the plan's
+  // end state ("this gate is not armed") holds either way, and the alternative — 409ing the whole
+  // apply — would make a re-run of an interrupted apply un-runnable for no gain in safety. The
+  // direction that matters for a GATE is that a delete never silently fails to happen, and it
+  // cannot: the row is keyed on the identity this entry names.
+  // -----------------------------------------------------------------------------------------
+  for (const entry of diff.pipelineHooks ?? []) {
+    if (entry.action !== "delete") continue;
+    await deleteHook(tx, orgId, {
+      componentObjectId: endpointId(entry.componentUrn),
+      kind: entry.hookKind,
+      hookId: entry.hookId
+    });
+  }
+
+  for (const entry of diff.pipelineHooks ?? []) {
+    if (entry.action !== "create") continue;
+    await upsertHook(tx, orgId, {
+      componentObjectId: endpointId(entry.componentUrn),
+      kind: entry.hookKind,
+      hookId: entry.hookId,
+      // Written as the plan SHOWED it, every field included — the entry the operator reviewed is
+      // the row that lands, which is the whole of property (7).
+      workflow: entry.workflow,
+      stage: entry.stage,
+      everySeconds: entry.everySeconds,
+      maxAgeSeconds: entry.maxAgeSeconds,
+      quietWindowSeconds: entry.quietWindowSeconds
     });
   }
 
