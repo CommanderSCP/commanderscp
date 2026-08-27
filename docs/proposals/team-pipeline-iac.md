@@ -154,6 +154,8 @@ Failure honesty: a manifest that fails validation or an apply that is refused (a
 7. **Adopt + export + estate migration** (homelab converts; backfill route then follows accept)
 8. **Argo Workflows plugin + pipeline behaviors** — the `argo-workflows` executor module (a new plugin: six-place module-name census per ADR-0014/M15.1 applies), WorkflowTemplate/CronWorkflow trigger + observe, the D11 test-hook contract compiled to controls/per-target holds, the D12 rollout capability field on the plugin contract, D13 artifact-class verification against build evidence. The largest new server-side piece after the config source itself; API-surface and likely a migration slot.
 
+**Cross-session split for the test/rollout surface (owner-confirmed 2026-08-26):** increment 8's session ships the **shared contract first, as its own merged piece** — the `@scp/schemas` manifest additions (test-hook / workflow / rollout / convergence entries), control and hold kinds, and evidence wire shapes — taking and then releasing the API-surface slot, because it owns the semantics. The **core IaC session builds the `@scp/iac` constructs** (`Workflow`, `PostMergeTest`, `PostDeployTest`, `ContinuousTest`, `BakeAlarms`, the rollout classes) against the *merged* contract, because they must match the library's grammar (D15/D16) and D16(6) makes them thin, drift-proof sugar over the contract's own Zod types. No construct work starts against an unmerged contract branch — the foundation is a committed dependency before anything fans out over it.
+
 Each increment lands with its own verification tests per BUILD_AND_TEST.md discipline; increments 4–7 serialize against other API-surface/migration sessions.
 
 ## 14. Open questions — all resolved 2026-08-26
