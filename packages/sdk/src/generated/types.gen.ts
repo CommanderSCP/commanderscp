@@ -7721,6 +7721,7 @@ export type ListPlacementsData = {
         includeDeleted?: boolean;
         component?: string;
         deploymentTarget?: string;
+        scopeObjectId?: string;
     };
     url: '/placements';
 };
@@ -17999,6 +18000,7 @@ export type ListCampaignsData = {
         cursor?: string;
         limit?: number;
         status?: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
+        scopeObjectId?: string;
     };
     url: '/campaigns';
 };
@@ -18019,6 +18021,17 @@ export type ListCampaignsErrors = {
      * Error
      */
     403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
         type: string;
         title: string;
         status: number;

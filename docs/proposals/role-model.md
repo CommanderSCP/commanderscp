@@ -1,7 +1,9 @@
 # Proposal — Purpose-shaped roles, and the permission review behind them
 
-**Status:** Draft — proposed, pending owner review. **Step 0 (§5) is built and in PR #286**; the role
-work itself (steps 1–10) is not started.
+**Status:** Draft — proposed, pending owner review.
+**Built and merged:** step 0 (§5) as **PR #286**, and **2.5a** — the 23 get-by-id re-scopes plus
+`authz/org-root-arm.ts` — as **PR #288**. **2.5b** (LIST-door filtering) is built and unmerged.
+Steps 1, 2 and 3–10 — the roles themselves — are **not started**.
 **Date:** 2026-08-25, last revised 2026-08-26
 **Prompted by:** owner ask — *"review the permissions and create the proper roles for each. Generally
 we'll want some for security/compliance (global scans and overrides), commander-wide admin, org
@@ -579,6 +581,29 @@ wrong, silent, and worse than the 403 it replaces. (Cost is also bad — 0.96–
 > names the drift that produced a service-scoped freeze failing **open** and a service-scoped approval
 > failing **closed**. Hand-writing a new descend would make routes 1 and 2 exist in **four** places.
 > Exporting the fragment turns today's third hand-typed copy into the second consumer of one definition.
+
+> **Correction, 2026-08-26 — the copy count above was wrong, and wrong in the way this repo keeps
+> being wrong.** There were **five**, not three. Two more hand-typed copies of the same three arms
+> exist as **single-level** queries — `governance/governance-reach.ts`'s `countContainmentDependents`
+> and `graph/objects-repo.ts`'s container-delete guard — so a census run for the downward *walk*
+> (`WITH RECURSIVE`, "the descend") returns two hits and concludes there is one definition. That is
+> exactly what happened: after 2.5b landed, `graph/containment.ts`'s header asserted "the downward
+> direction has exactly one definition too" while two copies sat in the tree.
+>
+> **And they had already drifted, in both directions at once.** `countContainmentDependents` counted
+> `contains` **edges** without joining the child object, so a live edge to a *tombstoned* child
+> counted as a dependent and produced a governance Decision claiming it had detached a row that was
+> already gone. Both single-level copies compared the placement pair as **raw text**
+> (`properties ->> 'componentId' = $id`) with no `UUID_TEXT_PATTERN` guard and no cast, while the
+> exported fragment casts to `uuid` — and `uuid` equality is case-insensitive where `text` equality
+> is not (measured, PostgreSQL 16). An upper-case-hex `componentId` was therefore a containment
+> **parent** going up and **not a child** coming down, which is the precise failure class §8.3 names.
+>
+> Both are now composed, and the delete guard's refusal widened as a result (a behaviour change to a
+> write door, pinned by `governance/containment-dependents-drift.integration.test.ts`). **The lesson
+> for the remaining increments: census the PROPERTY — "code that enumerates the rows contained by a
+> given row" — not the recursive shape.** A single-level copy of a recursive idea is invisible to
+> every search phrased in terms of the walk.
 
 ### 8.3 A new invariant nobody has named
 

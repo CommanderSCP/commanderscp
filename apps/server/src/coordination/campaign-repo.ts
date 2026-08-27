@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type {
   Campaign,
   CampaignDeadline,
@@ -689,8 +689,29 @@ export interface ListCampaignsQuery {
   cursor?: string | undefined;
   limit: number;
   status?: CampaignStatus | undefined;
+  /**
+   * The rows this caller's authority REACHES, as a subquery yielding `id`
+   * (`authz/list-door-scope.ts` builds it; `authz/readable-scope.ts` defines it).
+   *
+   * `null`/absent means NO FILTER — the caller holds the permission at the ORG ROOT, so this is
+   * today's query verbatim. It is NOT "matches nothing": a subject with no allow binding at all
+   * yields a real match-nothing subquery, and the two must never collapse.
+   */
+  readableFilter?: SQL | null | undefined;
 }
 
+/**
+ * ⚠️ {@link ListCampaignsQuery.readableFilter} is applied as a `WHERE` condition, BEFORE the
+ * `.limit(limit + 1)` below, and not over the returned page — role-model.md §8.2: this list is
+ * keyset-paginated and takes `nextCursor` from the last row it selected, so a page filtered
+ * afterwards is silently short while still advertising more.
+ *
+ * `query.status` is the counter-example living in this very function: it is a post-filter, it
+ * predates this work, and it has exactly that defect (a `?status=` page can come back with fewer
+ * items than `limit` and a non-null `nextCursor`). It is left alone here because status is not an
+ * authority question and fixing it means expressing `computeCampaignStatus` in SQL — reported, not
+ * fixed. Do not read it as a precedent for the filter above.
+ */
 export async function listCampaigns(
   tx: TenantTx,
   orgId: string,
@@ -702,6 +723,7 @@ export async function listCampaigns(
     eq(objects.typeId, "campaign"),
     sql`${objects.deletedAt} IS NULL`
   ];
+  if (query.readableFilter) conditions.push(sql`${objects.id} IN ${query.readableFilter}`);
   if (cursor) {
     conditions.push(keysetAfter(objects.createdAt, objects.id, cursor));
   }

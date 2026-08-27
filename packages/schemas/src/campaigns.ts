@@ -655,7 +655,18 @@ export const CreateCampaignRequestSchema = z.object({
 export type CreateCampaignRequest = z.infer<typeof CreateCampaignRequestSchema>;
 
 export const CampaignListQuerySchema = CursorPageQuerySchema.extend({
-  status: CampaignStatusSchema.optional()
+  status: CampaignStatusSchema.optional(),
+  /**
+   * Narrow the page to the containment subtree of ONE object — the authority hint
+   * (docs/proposals/role-model.md §8.2 step 6). A campaign authored with `domainId` lives under
+   * that object, so `?scopeObjectId=<service>` is "the campaigns of this service".
+   *
+   * NEVER a widening: the caller is authorized at this object before it is used, so the rows it
+   * admits are always a subset of the rows they could already list. An id naming nothing is a
+   * **404** — authorizing at an unresolved value would answer 403 for everybody, org-root Owner
+   * included, because `scopeExpandCte` seeds its walk with the raw uuid and never checks existence.
+   */
+  scopeObjectId: z.string().uuid().optional()
 });
 export type CampaignListQuery = z.infer<typeof CampaignListQuerySchema>;
 

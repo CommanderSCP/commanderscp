@@ -19,7 +19,8 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { authorize } from "../authz/resolve.js";
+import { authorize, type PermissionCheck } from "../authz/resolve.js";
+import { authorizeListAndScope } from "../authz/list-scope.js";
 import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 import { getComponentPipeline } from "../coordination/component-pipeline.js";
 import { readComponentScanRequirements } from "../governance/scan-requirements-read.js";
@@ -269,13 +270,24 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // The door §8.2 measured the per-row-filter failure on: an assembly-bound principal's 5
+        // readable components at cursor ranks 97/140/254/339/440 of 18,500. ONE check object drives
+        // both the org-root gate (unchanged, tried first) and the row filter, which
+        // `listObjects` composes into its WHERE — before the LIMIT, so the page stays full.
+        const check: PermissionCheck = {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
           scopeObjectId: auth.orgId
-        });
-        return listObjects(tx, auth.orgId, "component", listObjectsQueryFromWire(request.query));
+        };
+        const readable = await authorizeListAndScope(tx, check);
+        return listObjects(
+          tx,
+          auth.orgId,
+          "component",
+          listObjectsQueryFromWire(request.query),
+          readable
+        );
       });
       reply.status(200).send(page);
     }

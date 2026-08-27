@@ -16,7 +16,8 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { authorize } from "../authz/resolve.js";
+import { authorize, type PermissionCheck } from "../authz/resolve.js";
+import { authorizeListAndScope } from "../authz/list-scope.js";
 import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 import { publishDomainLocalObject } from "../federation/publish-domain-local.js";
 import { forbidden } from "../errors.js";
@@ -286,13 +287,19 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
       const auth = await requireAuth(deps, request);
       const { type } = request.params;
       const page = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        await authorize(tx, {
+        // ONE check object for BOTH the gate and the row filter (role-model.md §8.2 steps 4+5), so
+        // the permission the door authorizes with and the permission the filter is computed from
+        // cannot be edited apart. The org-root scope is unchanged and is still tried first; what is
+        // new is that failing it now falls through to the subject's own scopes instead of 403-ing a
+        // ServiceAdmin who can read every row they asked for.
+        const check: PermissionCheck = {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:read",
           scopeObjectId: auth.orgId
-        });
-        return listObjects(tx, auth.orgId, type, listObjectsQueryFromWire(request.query));
+        };
+        const readable = await authorizeListAndScope(tx, check);
+        return listObjects(tx, auth.orgId, type, listObjectsQueryFromWire(request.query), readable);
       });
       reply.status(200).send(page);
     }

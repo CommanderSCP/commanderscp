@@ -401,7 +401,22 @@ export const PlacementListQuerySchema = ObjectListQuerySchema.extend({
   /** id or URN of a component — list only that component's placements. */
   component: z.string().min(1).optional(),
   /** id or URN of a deployment-target — list only the placements it holds. */
-  deploymentTarget: z.string().min(1).optional()
+  deploymentTarget: z.string().min(1).optional(),
+  /**
+   * Narrow the page to the containment subtree of ONE object — the authority hint
+   * (docs/proposals/role-model.md §8.2 step 6).
+   *
+   * NEVER a widening: the caller is authorized at this object before it is used, so the rows it
+   * admits are always a subset of the rows they could already list. It exists for the wide-binding
+   * case — a domain-bound principal (or an org-root one) who wants the placements of one service
+   * rather than a descend over everything.
+   *
+   * A UUID, not an id-or-URN like the two refs above, so the parameter name stays literally true;
+   * accepting a URN later is an additive change. An id naming nothing is a **404**, deliberately:
+   * `scopeExpandCte` seeds its walk with the raw uuid and never checks existence, so authorizing at
+   * an unresolved value would answer 403 for everybody, org-root Owner included.
+   */
+  scopeObjectId: z.string().uuid().optional()
 });
 export type PlacementListQuery = z.infer<typeof PlacementListQuerySchema>;
 
