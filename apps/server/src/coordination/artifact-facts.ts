@@ -156,13 +156,37 @@ export function testBundleRefOf(sourceRef: unknown): TestBundleRef | null {
  *
  * The SBOM (`type: "blob"`) stays excluded for its own, different reason — it is the scan's OUTPUT,
  * not a scanned input. Two exemptions, two reasons, neither borrowed from the other.
+ *
+ * ============================================================================================
+ * THE SELF-EXEMPTION HOLE, AND WHY THE COLLISION CHECK BELOW IS LOAD-BEARING
+ * ============================================================================================
+ * An earlier form of this function filtered on `a.digest !== bundleDigest` alone, and its comment
+ * claimed "an image digest can never fall through it". THAT CLAIM WAS FALSE, and the probe that
+ * disproved it is now a permanent test (`artifact-facts-self-exemption.test.ts`): the reporter
+ * supplies BOTH `artifactDigest` and `testBundle.digest` on the SAME report, so a reporter naming
+ * its own image as its test bundle collapsed the substantive set to EMPTY — the image crossed with
+ * no scan demanded at all. Measured, not theorised: `[{oci, D}, {oci, D}]` filtered to `[]`.
+ *
+ * So the exemption is REFUSED whenever the declared bundle digest is ALSO a declared image digest.
+ * The failure direction is deliberate: with no exemption the E6 gate demands a scan the bundle will
+ * never have, so such a promotion REFUSES loudly rather than crossing unscanned. A self-referential
+ * declaration is a misconfiguration or an attack; either way the safe answer is to gate it.
+ *
+ * The general shape, worth carrying: AN EXEMPTION KEYED ON A VALUE THE SUBJECT SUPPLIES IS ONLY AS
+ * NARROW AS THE SUBJECT CHOOSES TO MAKE IT. Reading the value rather than inferring it (which this
+ * does, correctly) prevents provenance-by-inference; it does NOT prevent self-claiming. Two
+ * different defects — closing one leaves the other open.
  */
 export function substantiveArtifactsOf(
   artifactSet: readonly ArtifactRef[],
   sourceRef: unknown
 ): ArtifactRef[] {
   const bundleDigest = testBundleRefOf(sourceRef)?.digest;
-  return artifactSet.filter((a) => a.type !== "blob" && a.digest !== bundleDigest);
+  // A digest the change ALSO declares as one of its images is never exempt (see the doc above).
+  const imageDigests = new Set(ociDigestsOfSourceRef(sourceRef));
+  const exemptDigest =
+    bundleDigest !== undefined && !imageDigests.has(bundleDigest) ? bundleDigest : undefined;
+  return artifactSet.filter((a) => a.type !== "blob" && a.digest !== exemptDigest);
 }
 
 /**
