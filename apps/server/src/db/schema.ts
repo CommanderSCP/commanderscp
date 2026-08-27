@@ -318,12 +318,35 @@ export const relationships = pgTable(
 // RBAC (DESIGN.md §7)
 // -------------------------------------------------------------------------------------------
 
-export const roles = pgTable("roles", {
-  id: uuid("id").primaryKey(),
-  orgId: uuid("org_id"), // NULL = built-in (Viewer|Operator|Approver|Administrator|Owner)
-  name: text("name").notNull(),
-  permissions: text("permissions").array().notNull()
-});
+export const roles = pgTable(
+  "roles",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id"), // NULL = built-in (Viewer|Operator|Approver|Administrator|Owner)
+    name: text("name").notNull(),
+    permissions: text("permissions").array().notNull(),
+    /**
+     * drizzle/0097 — object type ids this role may be bound at. NULL = ANY scope, which is what
+     * the five built-in ladder rows carry and must keep carrying (their live bindings predate the
+     * column). NOT ENFORCED ANYWHERE YET: validation lands at the role-binding write door
+     * (role-model.md §5 step 5). Until then a binding at a nonsensical scope — a `user`, a
+     * `change` — is still accepted and still silently inert (§1.3h).
+     */
+    bindableAt: text("bindable_at").array()
+  },
+  (table) => [
+    /**
+     * drizzle/0097 — PARTIAL, so an org's own custom roles may reuse a built-in name; the
+     * collision that matters is between the SHARED SINGLETON rows every org reads through the
+     * `roles` RLS `USING (... OR org_id IS NULL)` clause. Without it, 0002's seed
+     * `INSERT ... ON CONFLICT DO NOTHING` has no arbiter index and can never fire, so re-running
+     * that seed forks "Owner" into two rows that `findFirst` picks between arbitrarily.
+     */
+    uniqueIndex("roles_builtin_name_key")
+      .on(table.name)
+      .where(sql`${table.orgId} IS NULL`)
+  ]
+);
 
 export const roleBindings = pgTable(
   "role_bindings",
@@ -342,7 +365,28 @@ export const roleBindings = pgTable(
   },
   (table) => [
     index("role_bindings_subject").on(table.orgId, table.subjectId),
-    index("role_bindings_scope").on(table.orgId, table.scopeObjectId)
+    index("role_bindings_scope").on(table.orgId, table.scopeObjectId),
+    /**
+     * drizzle/0097 — the NATURAL KEY of a grant. Without it a write door creates duplicate
+     * grants that are individually revocable and COLLECTIVELY still granting: revoke one, the
+     * other still grants, and the revoke reports success. That is why this lands BEFORE the
+     * role-binding API, not with it.
+     */
+    unique("role_bindings_grant_key").on(
+      table.orgId,
+      table.subjectId,
+      table.roleId,
+      table.scopeObjectId,
+      table.effect
+    ),
+    /**
+     * drizzle/0097 — `hasPermission`/`hasRoleAtScope` classify with exact string equality
+     * (`effects.includes("deny")`, then `includes("allow")` — authz/resolve.ts:285-286,
+     * :353-354). So 'ALLOW' or '' grants nothing AND denies nothing: a silently inert row that
+     * reads as authority. Deleting this CHECK re-opens that; the database is the only layer that
+     * sees every writer.
+     */
+    check("role_bindings_effect_check", sql`${table.effect} IN ('allow', 'deny')`)
   ]
 );
 

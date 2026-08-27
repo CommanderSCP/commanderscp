@@ -12,6 +12,7 @@ import { readableObjectFilterFor } from "./readable-scope.js";
 import {
   createTestOrg,
   createTestUser,
+  insertMalformedEffectRoleBinding,
   listenTestServer,
   type ListeningTestServer,
   type TestOrg
@@ -112,6 +113,7 @@ import {
  * | `readableObjectFilterSql`: drop the deny descend and the `EXCEPT` | **3 fail.** The invariant reports **6**; the model case 1; the deny case names the row: `… is below the deny and must be absent from the list: expected true to be false`. Deny goes INERT on every list while still refusing at get-by-id — a deny that fails OPEN. |
  * | `partitionReadableRoots`: `effect === "allow"` → `effect !== "deny"` | **3 fail.** The invariant reports **12**; the model case 2; the malformed case: `ALLOW: the list must be empty: expected [ …(6) ] to deeply equal []`. A binding that grants NOTHING at get-by-id would hand over a whole subtree on every list. |
  * | `listObjects`: accept `readableFilter` and never push it into `conditions` (the "built, never installed" shape) | **1 fail — and exactly the right one.** Only the pagination case runs through the real HTTP door, and only it goes red: `expected [ …(27) ] to deeply equal [ …(12) ]`. |
+ * | `insertMalformedEffectRoleBinding`: skip its `INSERT` — the FIXTURE, not production code | **File failed, `15 skipped`** — the guard throws in `beforeAll` with `insertMalformedEffectRoleBinding did not land … Every assertion resting on this row would have passed VACUOUSLY.` (Note the reporting shape: a dead `beforeAll` here reads as SKIPPED, never as failed tests. A run summary of `15 skipped` is a red file, not a quiet one.) With that read-back guard ALSO removed: **0 fail, 15 passed** — `a malformed effect grants NOTHING` is satisfied by there being no binding at all. Since drizzle/0096 this fixture has to drop a CHECK to write its row, so it is now the piece that can silently no-op; the guard is what keeps this suite from measuring nothing. |
  * | THE DISQUALIFIED DESIGN, simulated in this file: no filter in the query, `items` filtered in the handler | **1 fail, on the CONTRACT rather than on the row set** — `page 1 returned 0 of 5 rows but still carries a nextCursor — the filter was applied AFTER the LIMIT`. §8.2's measured production failure, reproduced at fixture scale. |
  */
 
@@ -274,8 +276,15 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
   }
 
   /** A role binding written with an ARBITRARY `effect` — the one thing here not built through the
-   *  API, because `role_bindings.effect` is bare `text` with no CHECK and no door will ever write
-   *  anything but 'allow'/'deny'. That gap IS the hazard being pinned. */
+   *  API, because no door will ever write anything but 'allow'/'deny'.
+   *
+   *  Since drizzle/0096 the DATABASE refuses anything else too (`role_bindings_effect_check`), so a
+   *  malformed value is routed to `insertMalformedEffectRoleBinding` — which builds the row THE ONLY
+   *  WAY IT CAN STILL EXIST (a privileged path with the CHECK momentarily dropped, i.e. what a
+   *  pre-0096 `pg_dump` restores or a DBA does) rather than pretending the shape went away. See that
+   *  helper's doc for why the constraint does not retire these cases: it stops the row being
+   *  written, not the row being READ, and the resolver's exact-string classification is the inner
+   *  layer that keeps it harmless. Legal effects still take the ordinary path, unchanged. */
   async function bindRaw(
     orgId: string,
     subjectId: string,
@@ -283,14 +292,27 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     scopeObjectId: string,
     effect: string
   ): Promise<void> {
-    await withTenantTx(server.deps.db, orgId, async (tx) => {
+    const roleId = await withTenantTx(server.deps.db, orgId, async (tx) => {
       const role = await tx.query.roles.findFirst({
         where: and(isNull(roles.orgId), eq(roles.name, roleName))
       });
       if (!role) throw new Error(`built-in role '${roleName}' not found`);
+      return role.id;
+    });
+    if (effect !== "allow" && effect !== "deny") {
+      await insertMalformedEffectRoleBinding({
+        orgId,
+        subjectId,
+        roleId,
+        scopeObjectId,
+        effect
+      });
+      return;
+    }
+    await withTenantTx(server.deps.db, orgId, async (tx) => {
       await tx
         .insert(roleBindings)
-        .values({ id: uuidv7(), orgId, subjectId, roleId: role.id, scopeObjectId, effect });
+        .values({ id: uuidv7(), orgId, subjectId, roleId, scopeObjectId, effect });
     });
   }
 
@@ -759,7 +781,10 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
   });
 
   // ---------------------------------------------------------------------------------------------
-  // 4. §8.3 hazard: `role_bindings.effect` IS BARE TEXT WITH NO CHECK CONSTRAINT.
+  // 4. §8.3 hazard: A `role_bindings.effect` THAT IS NEITHER 'allow' NOR 'deny'.
+  //    `role_bindings_effect_check` (drizzle/0096) refuses one at the database now; these rows are
+  //    built through `insertMalformedEffectRoleBinding`, which reproduces the only way one can
+  //    still exist — pre-dating the constraint, in a restored dump. See `bindRaw` above.
   // ---------------------------------------------------------------------------------------------
 
   /**
