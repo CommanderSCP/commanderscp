@@ -84,7 +84,11 @@ const PHASE_TO_STATUS: Record<ExecutionPhase, HookRunStatus> = {
   aborted: "aborted"
 };
 
-const TERMINAL_STATUSES = ["succeeded", "failed", "aborted"] as const satisfies readonly HookRunStatus[];
+const TERMINAL_STATUSES = [
+  "succeeded",
+  "failed",
+  "aborted"
+] as const satisfies readonly HookRunStatus[];
 const NON_TERMINAL_STATUSES = ["pending", "running"] as const satisfies readonly HookRunStatus[];
 
 export function isTerminalHookRunStatus(status: HookRunStatus): boolean {
@@ -352,10 +356,7 @@ export async function listHookRunsForChange(
     .select()
     .from(pipelineHookRuns)
     .where(
-      and(
-        eq(pipelineHookRuns.orgId, orgId),
-        eq(pipelineHookRuns.changeObjectId, changeObjectId)
-      )
+      and(eq(pipelineHookRuns.orgId, orgId), eq(pipelineHookRuns.changeObjectId, changeObjectId))
     )
     .orderBy(asc(pipelineHookRuns.startedAt), asc(pipelineHookRuns.id));
   return rows.map(toRunRow);
@@ -525,9 +526,7 @@ export async function ensureHookRunTriggered(
       tx
         .update(pipelineHookRuns)
         .set({ attempt: sql`${pipelineHookRuns.attempt} + 1`, updatedAt: new Date() })
-        .where(
-          and(eq(pipelineHookRuns.orgId, ctx.orgId), eq(pipelineHookRuns.id, run.id))
-        )
+        .where(and(eq(pipelineHookRuns.orgId, ctx.orgId), eq(pipelineHookRuns.id, run.id)))
     ).catch(() => undefined);
     throw err;
   }

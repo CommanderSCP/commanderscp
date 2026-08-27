@@ -3054,11 +3054,7 @@ export const pipelineHookRuns = pgTable(
     index("pipeline_hook_runs_non_terminal")
       .on(table.orgId, table.startedAt)
       .where(sql`${table.status} IN ('pending','running')`),
-    index("pipeline_hook_runs_by_change").on(
-      table.orgId,
-      table.changeObjectId,
-      table.hookId
-    ),
+    index("pipeline_hook_runs_by_change").on(table.orgId, table.changeObjectId, table.hookId),
     check(
       "pipeline_hook_runs_status_check",
       sql`${table.status} IN ('pending','running','succeeded','failed','aborted')`

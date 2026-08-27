@@ -222,9 +222,7 @@ describe("pipeline hook runs", () => {
     await expect(
       second,
       "a NULL wave_index MUST still collide — NULLS NOT DISTINCT is what makes this true"
-    ).rejects.toSatisfy((err: unknown) =>
-      isUniqueViolation(err, "pipeline_hook_runs_identity")
-    );
+    ).rejects.toSatisfy((err: unknown) => isUniqueViolation(err, "pipeline_hook_runs_identity"));
 
     // POSITIVE CONTROL: a NULL wave_index under a DIFFERENT hookId is a different run and inserts
     // fine. Without this, the assertion above would also pass on a schema that refused every
