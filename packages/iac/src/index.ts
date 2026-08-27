@@ -35,6 +35,7 @@ export type {
 } from "./construct.js";
 export { deriveConstructUrn, slugify } from "./urn.js";
 export { canonicalJson } from "./canonical.js";
+export { Duration } from "./duration.js";
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
