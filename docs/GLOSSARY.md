@@ -31,7 +31,7 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **release topology** | A versioned declarative document describing a release's waves, target groups and gates | SCP-SPECIFIC |
 | **deploy / deployment** | The push of an artifact into one environment so it runs there | INDUSTRY-STANDARD |
 | **deployment target** | The graph object type an executor acts on (cluster, host, environment, region) — deliberately broad | SCP-SPECIFIC |
-| **environment** | A named operational tier (dev / gamma / prod) within one security domain | INDUSTRY-STANDARD |
+| **environment** | A named operational tier (dev / staging / production) within one security domain | INDUSTRY-STANDARD |
 | **stage** | **Reserved:** one named deployment **place**, spelled `<domain>[-<location>]-<env>`. A **derived name**, never a row — [ADR-0026](adr/0026-placements-and-derived-stage-names.md) | QUALIFIED-STANDARD *(word-sense precedent only; the definition is ours)* |
 | **placement** | One component **at** one deployment target — the pair an executor binding attaches to | SCP-SPECIFIC |
 | **wave** | One ordered step of a compiled plan — the **set of one-or-more stages** advanced at once | SCP-SPECIFIC |
@@ -81,7 +81,7 @@ Everything about *promotion* in this system follows from one relationship:
 
 Two consequences worth internalising:
 
-- **Bare "promotion" never implies a domain crossing.** Gamma → Prod inside one domain is a promotion, full stop.
+- **Bare "promotion" never implies a domain crossing.** Staging → Production inside one domain is a promotion, full stop.
 - **"Cross-domain promotion" is always written in full.** When the security-domain boundary is what you mean, the qualifier is not optional — it is the only thing distinguishing the species from the genus.
 
 ---
@@ -105,7 +105,7 @@ In GitOps terms — which is what SCP actually coordinates — a promotion is th
 **In the code.** `apps/web/src/components/pipeline/PromotionArrow.tsx` is the UI expression of this sense: a wide top-to-bottom arrow drawn between two vertically-stacked cards, painted from a `PromotionState` (`open` / `blocked` / `approval` / `pending`). Read its own docblock before citing it, because two things about it are commonly overstated:
 
 - **It is "purely presentational"** (its words) — *"the parent computes `state`/`label`/`detail`/`why` from real change data … this component only paints it"*. It decides nothing and evaluates no gate.
-- **It draws between compiled *waves*, not between named environments.** The cards on either side are `PipelineWaveCard`s, one per compiled wave. There is no `environment` table and no `stage` entity, so it cannot be drawing "Gamma → Prod" — there is no Gamma and no Prod for it to draw between. Its docblock formerly said *"between two pipeline stages"*, one of the wave-sense misuses catalogued in the `stage` entry's misuse breakdown; ADR-0021 follow-on (iii-a) corrected it to *"between two consecutive waves"*.
+- **It draws between compiled *waves*, not between named environments.** The cards on either side are `PipelineWaveCard`s, one per compiled wave. There is no `environment` table and no `stage` entity, so it cannot be drawing "Staging → Production" — there is no Staging and no Production for it to draw between. Its docblock formerly said *"between two pipeline stages"*, one of the wave-sense misuses catalogued in the `stage` entry's misuse breakdown; ADR-0021 follow-on (iii-a) corrected it to *"between two consecutive waves"*.
 
 `apps/server/src/federation/promotion-repo.ts` carries Promotion Bundles; `PromotionManifestSchema` in `packages/schemas/src/federation.ts` carries the signed manifest that authorizes a cross-domain one.
 
@@ -123,7 +123,7 @@ What crosses is **metadata** — change objects, digests, signatures, SBOM refer
 
 **Always qualified.** Write "cross-domain promotion" in full. Bare "promotion" is the genus and carries no boundary implication.
 
-**The gate is per crossing, not per wave.** A single wave may advance stages sitting in *different* security domains — the `wave` entry's Wave 3 advances `commercial-apac-prod` and `govcloud-amer-prod` together. That wave is an ordinary promotion for the first stage and a cross-domain promotion for the second. The CDS supply-chain gate above is therefore evaluated **once per boundary crossing**, on the stage that crosses — never once for the wave as a whole, and never skipped for a wave that "mostly" stays inside one domain.
+**The gate is per crossing, not per wave.** A single wave may advance stages sitting in *different* security domains — the `wave` entry's Wave 3 advances `commercial-apac-production` and `govcloud-amer-production` together. That wave is an ordinary promotion for the first stage and a cross-domain promotion for the second. The CDS supply-chain gate above is therefore evaluated **once per boundary crossing**, on the stage that crosses — never once for the wave as a whole, and never skipped for a wave that "mostly" stays inside one domain.
 
 **Industry-standard?** Qualified. The concept is standard; the *word* is ours. CNSSI-4009 defines a cross-domain solution using two verbs — **access** and **transfer** — of information between different security domains, and NCDSMO's accredited-product taxonomy splits transfer-CDS from access-CDS. By the letter of those standards, the correct verb for this hop is **transfer**. The owner considered renaming it and **rejected** that in favour of keeping the existing federation vocabulary at zero rename cost; [ADR-0021](adr/0021-terminology.md) records the rejection honestly, including that "transfer" is the literal CDS-standard verb.
 
@@ -228,11 +228,17 @@ A change compiles against a release topology into `plan → waves → wave_targe
 
 ### environment
 
-**Definition.** A named operational tier within one security domain — dev, beta, gamma, prod. Environments are ordered within a domain and a promotion typically advances an artifact from one to the next.
+**Definition.** A named operational tier within one security domain — dev, beta, staging, production. Environments are ordered within a domain and a promotion typically advances an artifact from one to the next.
+
+> **Vocabulary ruling, 2026-08-26 (D6 / D21(e), [team-pipeline-iac.md](proposals/team-pipeline-iac.md) §0, accepted by [ADR-0046](adr/0046-what-how-split-config-sources-and-binding-policy.md)).** This glossary, all guidance, all worked examples, and all scaffold and template output spell the tiers **`staging`** (replacing the earlier `gamma`) and **`production`** (spelled out, never `prod`) — `staging` being the industry-accepted term. **`dev` still exists as an environment, but normally belongs to domain-local dev pipelines ([ADR-0030](adr/0030-dev-branch-pipelines.md)), not the global promotion path.**
+>
+> **This changes the vocabulary, not the software.** Environment strings remain **operator data** — SCP does not enforce, validate, or reserve environment names anywhere — so a live estate using `gamma` and `prod` keeps working unchanged, and this document's older siblings keep their original wording where they are *citing* a real object or a measurement rather than illustrating the grammar. Two consequences of that rule are visible in this file: the `placement` entry still reads `agentkit-keycloak` at `prod (DOKS hosted)`, and the `region` entry still says "one prod environment", because both are describing the estate and the code as they actually are. Rewriting those would falsify a measurement, which is a worse outcome than a mixed-vocabulary page.
+>
+> **One collision to know about before you search for it.** `staging` now names an environment tier, and it *already* names something else in this system: a **staging node** at a CDS boundary is a retrans-side relay host ([ADR-0020](adr/0020-first-class-commander-scanning.md), `docs/runbooks/retrans-relay.md`, [BUILD_AND_TEST.md](BUILD_AND_TEST.md) — an air-gap transfer role, nothing to do with promotion tiers). The two senses never appear in the same sentence, but a grep for "staging" will return both. When the transfer sense is meant, write **staging node** in full.
 
 **Industry-standard?** Yes. GitHub Actions environments and Argo CD's app-per-environment convention both use it this way. Kargo models the same node but deliberately spells it **Stage** — its docs avoid "environment" precisely *because* the word is perspective-dependent, and note that a Stage's name denotes an application instance's **purpose** "and not necessarily its location". Kargo is therefore a witness to the ambiguity, not a citation for the word; see the `stage` entry.
 
-**Not to be confused with:** *stage* — under D6 (below), "stage" is reserved for a named deployment **place** spelled `<domain>[-<location>]-<env>`, so `gamma` is an environment while `commercial-amer-gamma` and `commercial-gamma` are both stages. Environment is the **last segment** of a stage name — one of the two segments (with domain) that are always present, location being the optional one — not a synonym for the name. And *deployment target*, which may happen to model an environment but may equally model a single cluster or host.
+**Not to be confused with:** *stage* — under D6 (below), "stage" is reserved for a named deployment **place** spelled `<domain>[-<location>]-<env>`, so `staging` is an environment while `commercial-amer-staging` and `commercial-staging` are both stages. Environment is the **last segment** of a stage name — one of the two segments (with domain) that are always present, location being the optional one — not a synonym for the name. And *deployment target*, which may happen to model an environment but may equally model a single cluster or host.
 
 **In the code — there is no `environment` table.** Environments are expressed as labels, deployment-target properties, and wave structure. That is a real gap, not a hidden feature; see the `stage` entry for what a future entity would need to carry.
 
@@ -254,20 +260,20 @@ A change compiles against a release topology into `plan → waves → wave_targe
 |---|---|---|---|
 | **domain** | always | the **security domain** — the trust tier the place sits in | `commercial`, `govcloud`, `il5`, `airgap` |
 | **location** | **optional** | the geographic locality or **region** *within* that domain | `amer`, `apac`, `emea` |
-| **env** | always | the **environment** tier | `dev`, `gamma`, `prod` |
+| **env** | always | the **environment** tier | `dev`, `staging`, `production` |
 
-**Both forms are canonical.** `commercial-apac-prod` (three segments, with location) and `commercial-gamma` (two segments, no location) are equally correct stage names. So are `govcloud-amer-gamma` and `govcloud-prod`.
+**Both forms are canonical.** `commercial-apac-production` (three segments, with location) and `commercial-staging` (two segments, no location) are equally correct stage names. So are `govcloud-amer-staging` and `govcloud-production`.
 
-**When to include a location.** Include it when the place is **one of several geographic peers that must be told apart** — `commercial-amer-prod` versus `commercial-apac-prod`. Omit it when the place has **no meaningful geographic split**: a single-region stage, or a genuinely global one. The segment exists to disambiguate; where there is nothing to disambiguate, adding it is noise.
+**When to include a location.** Include it when the place is **one of several geographic peers that must be told apart** — `commercial-amer-production` versus `commercial-apac-production`. Omit it when the place has **no meaningful geographic split**: a single-region stage, or a genuinely global one. The segment exists to disambiguate; where there is nothing to disambiguate, adding it is noise.
 
 **Naming rule — segment values must be hyphen-free.** This is the practical consequence of making the middle segment optional, and it is a rule, not a footnote. With an optional middle segment, a name is disambiguated **by segment count**:
 
 - **2 segments** → `<domain>-<env>`
 - **3 segments** → `<domain>-<location>-<env>`
 
-That only works if **no segment value itself contains a hyphen**. `us-east` is therefore **not a valid location value**: `govcloud-us-east-prod` is four tokens and cannot be parsed — is `us` the location and `east-prod` the env, or is it a three-segment name at all? Use a single hyphen-free token instead: `useast`, `use1`, `usgovwest1`. The same applies to every segment — no `il-5`, no `pre-prod`; write `il5` and `preprod`.
+That only works if **no segment value itself contains a hyphen**. `us-east` is therefore **not a valid location value**: `govcloud-us-east-production` is four tokens and cannot be parsed — is `us` the location and `east-production` the env, or is it a three-segment name at all? Use a single hyphen-free token instead: `useast`, `use1`, `usgovwest1`. The same applies to every segment — no `il-5`, no `pre-production`; write `il5` and `preproduction`.
 
-**The segment order is fixed, and so is the case.** Domain, then location (where present), then env. Do not write the env before the location — `commercial-amer-prod`, never `commercial-prod-amer` — and do not use uppercase in any segment.
+**The segment order is fixed, and so is the case.** Domain, then location (where present), then env. Do not write the env before the location — `commercial-amer-production`, never `commercial-production-amer` — and do not use uppercase in any segment.
 
 **A stage is a place; a wave is a step.** These are a **containment** relationship, not two names for one thing: **a wave contains one or more stages.** The apparent "stage vs wave" collision was never a rivalry — "stage" was simply being used *for* the wave sense by mistake. See the `wave` entry, which states the same relationship from the other side.
 
@@ -277,7 +283,7 @@ That only works if **no segment value itself contains a hyphen**. `us-east` is t
 - The **minority** sense — and ours — has a real precedent: **Kargo's `Stage` CRD** spends the word on a **promotion-target node** ("a stage is a promotion target that represents some desired state") rather than on a pipeline phase. That is genuine support for *what we spend the word on*.
 - **It is not support for our definition.** Kargo has no security-domain axis, and its docs state that a Stage's name denotes an application instance's **purpose** "and not necessarily its location" — i.e. Kargo deliberately declines to bind a Stage to a place. The `<domain>[-<location>]-<env>` place definition is **ours**: SCP-specific, not inherited from Kargo. Do not cite Kargo for it.
 
-**Honest status: no stage entity exists in the schema today.** There is no `stage` table and no `environment` table, and **no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the code** (this glossary's and ADR-0021's own illustrative examples aside).
+**Honest status: no stage entity exists in the schema today.** There is no `stage` table and no `environment` table, and **no stage-grammar compound name such as `commercial-amer-staging` appears anywhere in the code** (this glossary's and ADR-0021's own illustrative examples aside).
 
 **The deferred entity question is now answered — there will be no stage entity** ([ADR-0026](adr/0026-placements-and-derived-stage-names.md)). ADR-0021 reserved the word and left "a future entity may fill it" open; that is superseded. A stage is a **derived name**, not a row: computed as `<origin domain>-[<region>-]<environment>` from a `deployment-target` carrying [ADR-0017](adr/0017-ownership-refinement.md) §3's `environment` and optional `region` properties, with the domain segment read from the object's `origin_domain_id` — never from the local instance, or a replicated target would derive two different names. The domain segment is not stored anywhere because a security domain is **ambient** (see that entry). Nothing about the D6 grammar changes; what changes is that the thing filling it is a computation over an existing type rather than a new one.
 
@@ -469,13 +475,13 @@ The owner's worked example, in the canonical stage grammar:
 
 | Wave | Stages advanced |
 |---|---|
-| Wave 1 | `commercial-amer-gamma` |
-| Wave 2 | `commercial-amer-prod` |
-| Wave 3 | `commercial-apac-prod` **+** `govcloud-amer-prod` |
+| Wave 1 | `commercial-amer-staging` |
+| Wave 2 | `commercial-amer-production` |
+| Wave 3 | `commercial-apac-production` **+** `govcloud-amer-production` |
 
 Wave 3 is the important row: **one wave, two stages, two different security domains.**
 
-**Consequence — the CDS gate applies per crossing, not per wave.** Because a single wave may hold stages in *different* security domains, advancing one wave can be an ordinary promotion for one of its stages and a **cross-domain promotion** for another. In Wave 3 above, `commercial-apac-prod` is an ordinary intra-domain promotion while `govcloud-amer-prod` crosses `commercial → govcloud` and must therefore satisfy the full CDS supply-chain gate (digest-bound scan, cosign-signed promotion manifest, verify at every hop). **The gate is evaluated per boundary crossing, not once for the wave.** A wave is not "cross-domain" or "not cross-domain" as a unit; each stage in it is judged on its own crossing. See `cross-domain promotion`.
+**Consequence — the CDS gate applies per crossing, not per wave.** Because a single wave may hold stages in *different* security domains, advancing one wave can be an ordinary promotion for one of its stages and a **cross-domain promotion** for another. In Wave 3 above, `commercial-apac-production` is an ordinary intra-domain promotion while `govcloud-amer-production` crosses `commercial → govcloud` and must therefore satisfy the full CDS supply-chain gate (digest-bound scan, cosign-signed promotion manifest, verify at every hop). **The gate is evaluated per boundary crossing, not once for the wave.** A wave is not "cross-domain" or "not cross-domain" as a unit; each stage in it is judged on its own crossing. See `cross-domain promotion`.
 
 Waves are the ordering primitive SCP actually has. In a federated release topology, the waves are commonly aligned with domains — commercial → FedRAMP → IL5 → air-gapped — and each wave's gate is the target domain's own local gate outcome, reported back via the journal (DESIGN.md §13). Note that this alignment is a common *shape*, not a rule: as Wave 3 shows, a wave may straddle domains.
 
@@ -505,7 +511,7 @@ Every transition goes through **one guarded transition function** that atomicall
 
 ### pipeline
 
-**Definition.** The ordered path a release travels for **one executor Type** — build → registry → config → gamma → prod for a software pipeline; plan → gate → apply for an infrastructure pipeline. Because a change carries exactly one Type ([ADR-0007](adr/0007-executor-binding-type-taxonomy.md)), **one change drives one pipeline**; work spanning two pipelines is two changes, chained with `provides`/`requires`.
+**Definition.** The ordered path a release travels for **one executor Type** — build → registry → config → staging → production for a software pipeline; plan → gate → apply for an infrastructure pipeline. Because a change carries exactly one Type ([ADR-0007](adr/0007-executor-binding-type-taxonomy.md)), **one change drives one pipeline**; work spanning two pipelines is two changes, chained with `provides`/`requires`.
 
 **Industry-standard?** Yes, in the ordinary CI/CD sense. What is SCP-specific is the one-change-one-pipeline rule and the Type-based routing.
 
@@ -1008,7 +1014,7 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 | **"co-located outpost"** for the outpost in the commander's own trust domain | **"HQ outpost"** (and **"field outpost"** for every other one) | Owner decision 2026-08-17 ([ADR-0021](adr/0021-terminology.md) D7). "Co-located" already means *reachable, same partition* in the poke-mode documents ([ADR-0009](adr/0009-optional-poke-mode-federation.md)) — a connectivity sense, not a topology one. Vocabulary and rendered copy only: wire fields (`peerIsSelf`), code identifiers (`coLocated`) and test ids keep the old spelling. |
 | **"parent" / "child"** for federation roles | **"commander" / "outpost" / "retrans"** | Removed outright, not aliased, by [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md). (The words remain correct for *process* supervision and RBAC containment walks — that is a different concept.) |
 
-**Note on `stage`:** no `stage` entity exists in the schema today, and no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the **code** (this glossary's and ADR-0021's own illustrative examples aside — scope the claim that way so it stays checkable after this branch merges). "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built. The word is, however, *actively in use for the wave sense* in the `/v1` contract today; the `stage` entry describes each sense, and [ADR-0021](adr/0021-terminology.md) Consequences (iii) carries the complete site roster. The grammar's **location segment is optional** (owner decision, 2026-07-24), which makes segment count the disambiguator and therefore makes **hyphen-free segment values** a naming rule — see the `stage` entry.
+**Note on `stage`:** no `stage` entity exists in the schema today, and no stage-grammar compound name such as `commercial-amer-staging` appears anywhere in the **code** (this glossary's and ADR-0021's own illustrative examples aside — scope the claim that way so it stays checkable after this branch merges). "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built. The word is, however, *actively in use for the wave sense* in the `/v1` contract today; the `stage` entry describes each sense, and [ADR-0021](adr/0021-terminology.md) Consequences (iii) carries the complete site roster. The grammar's **location segment is optional** (owner decision, 2026-07-24), which makes segment count the disambiguator and therefore makes **hyphen-free segment values** a naming rule — see the `stage` entry.
 
 ---
 
