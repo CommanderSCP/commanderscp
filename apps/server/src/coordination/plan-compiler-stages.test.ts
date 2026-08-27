@@ -22,6 +22,7 @@ import { compilePlan, type StagePlacement } from "./plan-compiler.js";
  * | scope the cycle refusal to the target set instead of per place | "NEVER CO-PLACED still compiles" fails |
  * | filter placements by target set AFTER grouping (i.e. not at all) | "another change's placements" fails |
  * | sequential mode → one step for the whole wave | "sequential splits per place" fails |
+ * | break the `gates` carry-through in `compileStages` | "a wave's gates SURVIVE stage-mode compilation" fails |
  */
 describe("coordination/plan-compiler — stage mode (waves name places)", () => {
   const GAMMA = "target-gamma";
@@ -465,5 +466,30 @@ describe("coordination/plan-compiler — stage mode (waves name places)", () => 
     expect(unknown.ok).toBe(false);
     if (unknown.ok) return;
     expect(unknown.error).toBe("unknown_target");
+  });
+
+  it("a wave's gates SURVIVE stage-mode compilation too, absent-vs-empty intact", () => {
+    // Gate EVALUATION is another session's work (§14 resolution 5); this only proves the value
+    // reaches `CompiledWave` on the STAGE path, which `compilePlan`'s explicit-topology test covers
+    // separately for the legacy path.
+    const result = compilePlan({
+      targets: ["keycloak"],
+      dependsOn: [],
+      topologyWaves: [
+        {
+          name: "gamma",
+          mode: "parallel" as const,
+          targets: [GAMMA],
+          gates: [{ kind: "bakeAlarms" }]
+        },
+        { name: "prod", mode: "parallel" as const, targets: [PROD] }
+      ],
+      placements: [place("keycloak", GAMMA), place("keycloak", PROD)]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.waves[0]!.gates).toEqual([{ kind: "bakeAlarms" }]);
+    expect(result.waves[1]).not.toHaveProperty("gates");
   });
 });

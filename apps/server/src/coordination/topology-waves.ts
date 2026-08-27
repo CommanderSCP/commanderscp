@@ -1,3 +1,4 @@
+import { WaveGateSchema, type WaveGate } from "@scp/schemas";
 import { badRequest } from "../errors.js";
 import type { TopologyWaveSpec } from "./plan-compiler.js";
 
@@ -20,7 +21,7 @@ import type { TopologyWaveSpec } from "./plan-compiler.js";
  */
 
 /** Wave keys the compiler understands. Anything else is a typo or a key from a newer authority. */
-const KNOWN_WAVE_KEYS = new Set(["name", "mode", "targets", "requiresFanIn"]);
+const KNOWN_WAVE_KEYS = new Set(["name", "mode", "targets", "requiresFanIn", "gates"]);
 
 /**
  * Parses a snapshotted topology document into wave specs, FAILING LOUDLY on anything malformed.
@@ -64,6 +65,29 @@ const KNOWN_WAVE_KEYS = new Set(["name", "mode", "targets", "requiresFanIn"]);
  * cannot: `topology_document` is a SNAPSHOT taken at compile time, and Ajv never re-validates it.
  *
  * This is a deliberate deviation from D16's letter, in favour of D16's purpose plus 0043's rule.
+ *
+ * ============================================================================================
+ * `gates` (§14 resolution 5) — STRICT AT THIS DOOR, PERMISSIVE ON THE WIRE, SAME AS EVERYTHING ELSE
+ * ============================================================================================
+ * A wave may carry a `gates` array (`WaveGateSchema`, `packages/schemas/src/pipeline-behaviors.ts`)
+ * naming what must clear before the wave is allowed to proceed. It is validated HERE, exactly like
+ * every other wave key, and deliberately NOT added to `release-topology`'s registered JSON Schema —
+ * see the note above. Adding a closed `kind` enum to the wire would manufacture the very federation
+ * wedge this module exists to avoid: the first time a gate kind is added, a not-yet-upgraded
+ * outpost's Ajv would reject the WHOLE sync bundle instead of failing one plan-compile loudly.
+ *
+ * `gates` is a UNION with whatever `pipelineHooks` already declares for the wave, never a
+ * replacement — the wave document can only ADD a gate, never remove one (owner ruling, carried here
+ * as data; the union itself is evaluated elsewhere, not by this parser). That makes ABSENT and
+ * EMPTY two genuinely different statements, and this parser preserves the distinction rather than
+ * collapsing it:
+ *   - no `gates` key at all -> this wave-document is SILENT about gates; `gates` stays absent
+ *     (`undefined`) on the parsed spec, and only declared hooks apply.
+ *   - `gates: []`           -> an explicit statement that this wave-document ADDS no gates of its
+ *     own; parses to a present, empty array, NOT to `undefined`.
+ * Do not `?? []` this field, and do not treat `[]` and absent as interchangeable anywhere
+ * downstream — that would read as an ABSENCE OF REFUSALS: a bad release walking through a wave that
+ * was actually meant to be gated, with nothing anywhere saying so.
  */
 export function parseTopologyWaves(document: unknown): TopologyWaveSpec[] | undefined {
   if (document === null || document === undefined) return undefined;
@@ -117,11 +141,30 @@ export function parseTopologyWaves(document: unknown): TopologyWaveSpec[] | unde
     if (w.requiresFanIn !== undefined && typeof w.requiresFanIn !== "boolean") {
       throw badRequest(`${where} has a non-boolean requiresFanIn`);
     }
+    // ABSENT vs `[]` is a real distinction (see the module doc above) — `gates` is only assigned
+    // below when the key was present at all, so an absent key stays absent rather than becoming
+    // `undefined` masquerading as "empty" or vice versa.
+    let gates: WaveGate[] | undefined;
+    if (w.gates !== undefined) {
+      if (!Array.isArray(w.gates)) {
+        throw badRequest(`${where} has a non-array gates`);
+      }
+      gates = w.gates.map((entry, gi) => {
+        const parsed = WaveGateSchema.safeParse(entry);
+        if (!parsed.success) {
+          throw badRequest(
+            `${where} gate ${gi} is invalid: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`
+          );
+        }
+        return parsed.data;
+      });
+    }
     return {
       ...(typeof w.name === "string" ? { name: w.name } : {}),
       mode: w.mode,
       targets: w.targets as string[],
-      ...(typeof w.requiresFanIn === "boolean" ? { requiresFanIn: w.requiresFanIn } : {})
+      ...(typeof w.requiresFanIn === "boolean" ? { requiresFanIn: w.requiresFanIn } : {}),
+      ...(gates !== undefined ? { gates } : {})
     };
   });
 }

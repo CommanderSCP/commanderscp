@@ -216,6 +216,36 @@ describe("coordination/plan-compiler — explicit topology mode", () => {
     expect(result.waves[0]!.requiresFanIn).toBe(true);
     expect(result.waves[1]!.requiresFanIn).toBe(false);
   });
+
+  it("a wave's gates SURVIVE compilation onto the compiled wave — carried, not evaluated", () => {
+    // Gate EVALUATION is another session's work (§14 resolution 5); this only proves the value
+    // reaches `CompiledWave`. Absent-vs-empty must survive too — see `topology-waves.test.ts` for
+    // where that distinction is made, and the plan-compiler.ts module doc for why it must not
+    // collapse on the way through here.
+    const result = compilePlan({
+      targets: ["a", "b"],
+      dependsOn: [],
+      topologyWaves: [
+        { mode: "sequential", targets: ["a"], gates: [{ kind: "postDeployTest" }] },
+        { mode: "sequential", targets: ["b"], gates: [] }
+      ]
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.waves[0]!.gates).toEqual([{ kind: "postDeployTest" }]);
+    expect(result.waves[1]!.gates).toEqual([]);
+  });
+
+  it("a wave with no gates carries none onto the compiled wave (absent, not [])", () => {
+    const result = compilePlan({
+      targets: ["a"],
+      dependsOn: [],
+      topologyWaves: [{ mode: "sequential", targets: ["a"] }]
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.waves[0]).not.toHaveProperty("gates");
+  });
 });
 
 // -------------------------------------------------------------------------------------------
