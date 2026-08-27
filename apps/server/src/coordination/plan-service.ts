@@ -322,8 +322,10 @@ export function toWaveTargetHold(
  * entry rather than an empty list for an unheld target.
  *
  * `undefined` for a target held by NEITHER, so an unheld wave target carries no `hold` key at all.
+ * EXPORTED so the merge — the 2x2 of (freeze present/absent) x (continuous holds present/empty/absent) —
+ * can be tested directly: its only caller composes it from two independent DB-backed predicates.
  */
-function composeWaveTargetHold(
+export function composeWaveTargetHold(
   freeze: WaveTargetFreezeHold | undefined,
   continuous: ContinuousHoldTargetVerdict | undefined
 ): WaveTargetHold | undefined {

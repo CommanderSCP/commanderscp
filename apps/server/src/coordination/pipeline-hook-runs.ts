@@ -615,7 +615,7 @@ export interface HookRunObservation {
  * this. The full truth is not lost — the RUN row keeps `aborted`, so an operator reading the run
  * sees "cancelled", not "the suite failed".
  */
-function outcomeFor(status: HookRunStatus): TestRunEvidence["outcome"] | null {
+export function outcomeFor(status: HookRunStatus): TestRunEvidence["outcome"] | null {
   if (status === "succeeded") return "passed";
   if (status === "failed" || status === "aborted") return "failed";
   return null;
