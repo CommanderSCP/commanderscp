@@ -4,7 +4,7 @@ import {
   StageDependencySchema,
   cursorPageResponseSchema
 } from "./common.js";
-import { SbomRefSchema, ScanMethodSchema } from "./supply-chain.js";
+import { SbomRefSchema, ScanMethodSchema, TestBundleRefSchema } from "./supply-chain.js";
 
 /**
  * M7 Real Executor Integrations wire contract (DESIGN.md §11/§12, BUILD_AND_TEST.md §8 M7).
@@ -564,6 +564,26 @@ export const ChangeReportRequestSchema = z.strictObject({
    *  cosign-signed at origin (ADR-0015 §5). OPTIONAL and purely ADDITIVE: every existing reporter
    *  keeps working unchanged. SCP stores the reference on the change's `sourceRef.sbom` and NEVER
    *  the document bytes — it neither generates nor signs an SBOM (charter: coordinate, not execute). */
-  sbom: SbomRefSchema.optional()
+  sbom: SbomRefSchema.optional(),
+  /** D23 (team-pipeline-iac increment 8) — a REFERENCE to the TEST BUNDLE the build captured at this
+   *  commit: the workflows this component's hooks name, bundled as an OCI artifact beside the image
+   *  so a domain that provably cannot reach the source repo still runs the same tests.
+   *
+   *  MODELLED ON `sbom` DIRECTLY ABOVE, field for field, and the parallel is the point. OPTIONAL and
+   *  purely ADDITIVE: every existing reporter keeps working unchanged. SCP stores the reference on
+   *  the change's `sourceRef.testBundle` (`coordination/webhook-processor.ts`) and NEVER the bundle
+   *  BYTES — it neither builds nor signs a test bundle (charter: coordinate, not execute).
+   *
+   *  WHAT THIS DELIBERATELY IS NOT: reporting a bundle does NOT mint an `artifact` object. ADR-0045
+   *  D2 keeps minting at promotion export and import only — "an artifact object means SCP attested
+   *  it", and a build report is the executor's claim, not the commander's attestation. The reference
+   *  reported here is what the export path later reads to put the bundle in the promotion manifest,
+   *  which is where the one mint happens.
+   *
+   *  WHY IT MUST BE DECLARED HERE rather than merely read by the processor's generic hint extractor:
+   *  this is a `strictObject`, so an undeclared `testBundle` on a report body is REFUSED outright
+   *  (400 naming the key). A CI step reporting its captured bundle would have got a validation error
+   *  rather than a route — the same trap `ref` above records. */
+  testBundle: TestBundleRefSchema.optional()
 });
 export type ChangeReportRequest = z.infer<typeof ChangeReportRequestSchema>;

@@ -13063,6 +13063,10 @@ export type ReportChangeSourceData = {
             scannerVersion?: string;
             generatedAt?: string;
         };
+        testBundle?: {
+            repository: string;
+            digest: string;
+        };
     };
     path: {
         sourceKind: string;

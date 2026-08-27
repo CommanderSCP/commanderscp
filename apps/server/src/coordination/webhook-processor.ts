@@ -4,9 +4,11 @@ import {
   ChangeRequirementSchema,
   SbomRefSchema,
   StageDependencySchema,
+  TestBundleRefSchema,
   normalizeSbomDigest,
   type SbomRef,
-  type StageDependency
+  type StageDependency,
+  type TestBundleRef
 } from "@scp/schemas";
 import { webhookAdapterForSourceKind } from "./webhook-adapters.js";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -115,6 +117,13 @@ export interface ExtractedHint {
    *  ingress (`ChangeReportRequestSchema.sbom`); provider webhook adapters set no SBOM (a registry
    *  push payload carries none), so this stays undefined for them. */
   sbom?: SbomRef;
+  /** D23 (increment 8) — a REFERENCE to the TEST BUNDLE the build captured at the built commit
+   *  (`{repository, digest}`), lifted to the proposed Change's `sourceRef.testBundle`. SCP never
+   *  builds, signs or stores the bundle — only this reference, exactly as for `sbom` above. Carried
+   *  today by the TYPED first-party report ingress (`ChangeReportRequestSchema.testBundle`); provider
+   *  webhook adapters set none (a push payload knows nothing about a capture step), so this stays
+   *  undefined for them and their behaviour is unchanged. */
+  testBundle?: TestBundleRef;
   /** M12 P4B coupled pipelines — `ChangeReportRequestSchema.provides`, read from the flat
    *  first-party report body and threaded into `proposeChange` exactly as `POST /changes` threads
    *  its own typed field. Provider webhook payloads carry no coupling key (coupled-pipelines.md
@@ -162,6 +171,10 @@ function genericHint(payload: unknown): ExtractedHint {
   if (!payload || typeof payload !== "object") return {};
   const p = payload as Record<string, unknown>;
   const sbom = SbomRefSchema.safeParse(p.sbom);
+  // D23 — parsed with the SAME best-effort posture as `sbom`: a malformed reference is dropped here
+  // and quarantined by `canonicalizeSourceRef`, never thrown. It is metadata about which tests were
+  // captured, not an execution precondition, so it sits with `sbom` and not with `requires`.
+  const testBundle = TestBundleRefSchema.safeParse(p.testBundle);
   // M12 P4B — the coupling declaration, validated against the SAME shapes `POST /changes` uses.
   // `provides`: a malformed value is dropped like `sbom` (fail-CLOSED for the coupling: a dropped
   // `provides` releases nobody; waiters keep waiting and their wait-status names the gap).
@@ -213,6 +226,7 @@ function genericHint(payload: unknown): ExtractedHint {
     // an unparseable supply-chain reference must not wedge ingress for the whole tick (the raw
     // payload is still preserved verbatim in `sourceRef`, so nothing is lost for forensics).
     sbom: sbom.success ? sbom.data : undefined,
+    testBundle: testBundle.success ? testBundle.data : undefined,
     provides: provides.success && provides.data.length > 0 ? provides.data : undefined,
     ...(p.requires === undefined || p.requires === null
       ? {}
@@ -290,6 +304,12 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
     // No provider webhook payload carries an SBOM reference — it arrives only on the typed
     // first-party report body, which the generic shape reads.
     sbom: generic.sbom,
+    // D23: same story, same one line. A test-bundle reference arrives only on the typed report body,
+    // and this branch reconstructs the hint FIELD BY FIELD rather than spreading `generic` — omitting
+    // this line would silently drop the bundle from any first-party report whose `sourceKind` also
+    // resolves an adapter (a `scp change-source report` for sourceKind `github`, the common case),
+    // and the loss would surface only as `no_captured_workflow` on every hook run of that change.
+    testBundle: generic.testBundle,
     // M12 P4B: no provider webhook payload carries a coupling declaration either (§6#1) — like
     // `sbom`, these ride the flat first-party shape. Carried through EXPLICITLY because this
     // branch reconstructs field-by-field rather than spreading `generic`: omitting them here is
@@ -314,6 +334,12 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
  *     gate binds to (`governance/gate-orchestrator.ts`, ADR-0013).
  *   - `sbom` — a REFERENCE to the build-time SBOM (M17.2, ADR-0015 §5). Reference ONLY: `{format,
  *     digest, location, signatureRef, …}`. SCP never generates, signs, or stores the document.
+ *   - `testBundle` — a REFERENCE to the D23 test bundle captured at the built commit. Reference
+ *     ONLY: `{repository, digest}`. SCP never builds, signs, or stores the bundle, and lifting the
+ *     reference mints NOTHING (ADR-0045 D2 — an `artifact` object means SCP attested it, and the
+ *     attestation happens at promotion export/import). This is the key
+ *     `coordination/pipeline-hook-runs.ts` reads to pin a hook run's `captured_workflow`, and the
+ *     key `coordination/artifact-facts.ts` reads to put the bundle in the promotion manifest.
  *
  * Exported for unit testing: this is the one place canonical `source_ref` keys are minted, so it is
  * the one place worth pinning with a test.
@@ -362,6 +388,22 @@ export function canonicalizeSourceRef(
     // mistake garbage for an attested supply-chain reference.
     delete sourceRef.sbom;
     sourceRef.sbom_invalid = raw.sbom;
+  }
+  if (hint.testBundle) {
+    // Stored VERBATIM — `TestBundleRefSchema.digest` is already canonical `sha256:<64-lowercase-hex>`
+    // by construction (it is a regex, not a coercion), so there is nothing to normalize and nothing
+    // to guess. That is what makes this digest comparable byte-for-byte against the artifact digests
+    // in the promotion manifest and against a `CapturedWorkflowRef.bundle.digest`.
+    sourceRef.testBundle = { ...hint.testBundle };
+  } else if ("testBundle" in raw) {
+    // The SAME quarantine `sbom` gets, for the same reason and with sharper stakes: the contract
+    // every reader downstream depends on is "`sourceRef.testBundle`, when present, IS a valid
+    // `TestBundleRef`". A malformed value left under that key would be read by
+    // `capturedWorkflowRefOf`'s caller as a real bundle pin, and a gate verdict would end up bound to
+    // bytes nobody can locate. Under `testBundle_invalid` it is preserved for forensics (DESIGN §8)
+    // and unmistakable for an attested reference.
+    delete sourceRef.testBundle;
+    sourceRef.testBundle_invalid = raw.testBundle;
   }
   return sourceRef;
 }

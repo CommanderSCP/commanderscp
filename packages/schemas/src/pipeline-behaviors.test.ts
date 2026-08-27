@@ -6,10 +6,13 @@ import {
   ManifestContinuousHookSchema,
   ManifestPipelineHookSchema,
   PipelineEvidenceSubjectSchema,
-  Sha256DigestSchema,
   SubmitPipelineEvidenceRequestSchema,
   WorkflowRefSchema
 } from "./pipeline-behaviors.js";
+// `Sha256DigestSchema` is D23's form and is EXERCISED here, but it is DEFINED in `supply-chain.ts`
+// — see that file's note: `executors.ts` needs it too, and defining it beside its specification
+// would make `pipeline-behaviors -> executors -> pipeline-behaviors` a module cycle.
+import { Sha256DigestSchema } from "./supply-chain.js";
 import { DesiredStateManifestSchema } from "./iac.js";
 
 /**
