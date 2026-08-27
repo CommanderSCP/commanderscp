@@ -694,6 +694,13 @@
       "when": 1788157001000,
       "tag": "0098_pipeline_hook_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1788158001000,
+      "tag": "0099_rbac_permission_splits_and_purpose_roles",
+      "breakpoints": true
     }
   ]
 }

@@ -52,12 +52,18 @@ import {
  *   RAISE    — `object:write` at the COMPONENT. The component owner already holds this; raising a
  *              request grants nothing (the grant is inert until approved), so gating it harder would
  *              only mean the people who know about the finding cannot report it.
- *   APPROVE  — `policy:write` at the OBJECT NAMING THE TIER THAT SET THE RULE. `authz/resolve.ts`'s
- *              `scopeExpandCte` walks UPWARD from the named object, so a binding at that tier or
- *              above satisfies the check and a binding BELOW it never does.
+ *   APPROVE  — `policy:write` AND `scan:override`, both at the OBJECT NAMING THE TIER THAT SET THE
+ *              RULE. `authz/resolve.ts`'s `scopeExpandCte` walks UPWARD from the named object, so a
+ *              binding at that tier or above satisfies the check and a binding BELOW it never does.
  *   DENY /
- *   REVOKE   — the same `policy:write` at the same object. The authority to grant and the authority
- *              to take back must be the same one, or a waiver becomes harder to remove than to make.
+ *   REVOKE   — the same two permissions at the same object. The authority to grant and the
+ *              authority to take back must be the same one, or a waiver becomes harder to remove
+ *              than to make.
+ *
+ * `scan:override` was ADDED beside `policy:write` by role-model.md §5 step 3 (drizzle/0099) rather
+ * than replacing it, because authoring a scan ceiling and waiving it were otherwise the same
+ * permission string at the same scope — see the second `authorize()` in `decide` for the full
+ * argument, including why the addition is a behavioural no-op on every deployment that exists today.
  *
  * THE PERMISSION CHECK IS NOT THE WHOLE OF D3, AND THE FIRST VERSION OF THIS FILE ASSUMED IT WAS.
  * `scopeExpandCte` expanding upward cuts both ways: naming a LOWER object strictly WIDENS the set of
@@ -289,6 +295,42 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
         orgId: auth.orgId,
         subjectObjectId: auth.subjectObjectId,
         permission: "policy:write",
+        scopeObjectId: current.tierObjectId
+      });
+      // `scan:override` — ADDED, NEVER SUBSTITUTED (role-model.md §1.3e, drizzle/0099). Both bars
+      // are demanded, at the same derived tier object, so nothing that could decide a waiver before
+      // this permission existed can decide one without it.
+      //
+      // THE DEFECT IT CLOSES. Authoring the scan rule and waiving it were the SAME permission
+      // string at the SAME scope: `policy:write` at the tier authors the ceiling
+      // (`routes/typed-registries.ts`), and `policy:write` at the tier used to be the whole of the
+      // authority to excuse a finding from it. The docblock above already concedes the
+      // consequence — the raiser≠approver check "survives intact the moment any SECOND principal
+      // holds the same scoped `policy:write`" — which is exactly a separation of duty that is not
+      // one.
+      //
+      // A BEHAVIOURAL NO-OP ON EVERY LIVE DEPLOYMENT, which is why it is safe to ADD to a door that
+      // is already in use: drizzle/0010 grants `policy:write` to Administrator and Owner alone, and
+      // drizzle/0099 grants `scan:override` to exactly those two (plus the new SecurityOfficer), so
+      // the set of principals who can sign a waiver is identical before and after.
+      //
+      // WHAT IT BUYS IS THAT IT CAN BE WITHHELD SEPARATELY. The new OrgAdmin holds `policy:write`
+      // and NOT `scan:override`: an org can seat an estate administrator who authors org policy and
+      // a security officer who owns the waiver, and neither is the other (owner ruling D3).
+      //
+      // ON THE DERIVED TIER, not `auth.orgId`, and not the stored `tierObjectId` on trust — the
+      // same object the `policy:write` bar above uses, for the same reason: naming a LOWER object
+      // widens the set of principals whose bindings satisfy an upward walk, so both bars have to
+      // sit on the value `assertOverrideTierStanding` just re-derived from the component's chain.
+      //
+      // RAISING A REQUEST IS UNCHANGED and stays `object:write` at the COMPONENT (see the RAISE
+      // door). A `requested` grant authorizes nothing until it is signed here, so gating the report
+      // of a finding harder than the waiver of one would only stop the people who know about it
+      // from saying so.
+      await authorize(tx, {
+        orgId: auth.orgId,
+        subjectObjectId: auth.subjectObjectId,
+        permission: "scan:override",
         scopeObjectId: current.tierObjectId
       });
       // APPROVE ONLY. An instance floor above this tier makes the grant unwaivable here, so signing

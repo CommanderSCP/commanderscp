@@ -38,7 +38,16 @@ export type Permission =
   | "role_binding:write"
   | "graph:query"
   | "audit:read"
-  | "org:admin"
+  // (`org:admin` was here. Seeded to Owner alone by drizzle/0002 and demanded at ZERO call sites
+  // for its whole life, it was REMOVED by drizzle/0099 — the one deliberate subtraction in an
+  // otherwise additive design, taken now because role-model.md §5 step 5's `GET /roles` is about
+  // to publish these strings, and a permission that gates nothing while advertising authority in
+  // a roles listing is worse than no permission at all. Subtraction from a built-in role is
+  // normally unsafe here — `org_id IS NULL` rows are SHARED SINGLETONS read by every org through
+  // the `roles` RLS `USING (... OR org_id IS NULL)` clause, so removing a permission narrows every
+  // org on every deployment at once with no per-org opt-out (role-model.md §2). It is safe for
+  // exactly this one because no code path has ever asked for it, which is a property the
+  // filterless census re-run for drizzle/0099 measured rather than assumed.)
   | "approval:write"
   // M4 governance (DESIGN.md §7's example role bindings name these exactly):
   | "policy:write"
@@ -108,7 +117,89 @@ export type Permission =
   // would then carry two unrelated blast radii — a freeze-override holder could waive migration
   // deadlines and a deadline-waiver holder could bypass release freezes — and neither grant could
   // afterwards be narrowed without taking the other with it.
-  | "campaign:deadline-override";
+  | "campaign:deadline-override"
+  // ===========================================================================================
+  // THE THREE PERMISSION SPLITS (role-model.md §5 step 3; drizzle/0099)
+  // ===========================================================================================
+  // The permission census behind them found `object:write` demanded at 62 call sites and
+  // `object:read` at 45 — 107 of 170 — while every purpose-built high-consequence permission
+  // (`freeze:override`, `change:emergency`, `campaign:deadline-override`, `approval:write`,
+  // `audit:read`) is demanded exactly once. The care spent designing narrow permissions was not
+  // reflected in what actually gated the estate. These three take the highest-consequence acts
+  // back out of the two generic verbs.
+  //
+  // ONE OF THE THREE SUBSTITUTES, TWO ARE ADDED. Which is which is the load-bearing detail and is
+  // stated on each member below; getting it backwards either silently deletes a bar or breaks a
+  // door nobody meant to break.
+
+  // SUBSTITUTES `object:write` at the three CREDENTIAL doors (role-model.md §1.3d): `PUT` and
+  // `DELETE /api/v1/secrets/{key}` (`routes/executors.ts`) and `PUT
+  // /api/v1/change-sources/{sourceKind}/webhook-secret` (`routes/change-sources.ts`). Scope is
+  // unchanged — still the org root, still one of §8.6's deliberate escalation bars — and ONLY the
+  // permission moves.
+  //
+  // THREE UNRELATED BLAST RADII SHARED ONE GRANT. Writing the tokens SCP uses to reach
+  // GitHub/ArgoCD/Terraform; DELETING them, which is an availability kill switch for all
+  // coordination on the deployment; and rotating the HMAC secret that authenticates inbound
+  // webhooks — where whoever sets the secret can thereafter forge signed source events into the
+  // estate. There was no way to give anyone ordinary org-root `object:write` without also handing
+  // them every execution-system credential the org holds.
+  //
+  // THIS IS A BREAKING CHANGE, DELIBERATELY, AND THE ONLY SUBSTITUTION OF THE THREE. A principal
+  // holding org-root `object:write` and nothing else is now 403 at all three doors. drizzle/0099
+  // grants it to Owner, Administrator and the new OrgAdmin, so the built-in ladder is unaffected;
+  // what loses the capability is a custom or purpose role that holds `object:write` alone.
+  //
+  // WITHHELD FROM SecurityOfficer ON PURPOSE. Holding the org's outbound credentials is an
+  // OPERATIONS act, not a compliance one — a security officer authors ceilings and decides
+  // waivers, and giving them custody of the tokens that reach production would put the auditor
+  // inside the thing being audited.
+  | "secret:write"
+  // ADDED TO — never substituted for — the `policy:write` already demanded on the scan-override
+  // DECIDE door (approve | deny | revoke) in `routes/scan-override-grants.ts`. Both are demanded,
+  // at the same derived tier object, in that order.
+  //
+  // AUTHORING A SCAN CEILING AND WAIVING IT WERE THE SAME PERMISSION STRING AT THE SAME SCOPE
+  // (role-model.md §1.3e): rule authoring is `policy:write` at the tier
+  // (`routes/typed-registries.ts`), and deciding a waiver against that rule was `policy:write` at
+  // the tier too. A textbook separation-of-duty violation, which the route file itself concedes —
+  // its raiser≠approver check "survives intact the moment any SECOND principal holds the same
+  // scoped `policy:write`", which is to say it closes the one-actor shape and nothing else.
+  //
+  // GRANTED TO Owner, Administrator AND the new SecurityOfficer (owner ruling D3 — no sixth
+  // `ScanWaiverApprover` role). Granting it to Administrator is what makes this a NO-OP on every
+  // live deployment: `policy:write` is held today by Administrator and Owner alone (drizzle/0010),
+  // so every principal who can decide a waiver today still can, and no in-flight waiver starts
+  // 403ing on upgrade.
+  //
+  // THE SEPARATION OF DUTY IS THAT IT IS SEPARATELY WITHHOLDABLE. OrgAdmin holds `policy:write`
+  // and NOT this, so an org can seat an estate administrator who authors org policy and a security
+  // officer who owns the waiver, and neither is the other. That was impossible while the two acts
+  // shared one string, because the cumulative ladder welds a permission's blast radius to its rank.
+  | "scan:override"
+  // ADDED TO — never substituted for — the `object:write` already demanded at EVERY target of
+  // `POST /api/v1/changes/{id}/accept` and `POST /api/v1/changes/{id}/rollback`
+  // (`routes/changes.ts`). Same per-target loop, same EVERY-target quantifier, same org-root arm
+  // evaluated first; see `assertAcceptableAtEveryChangeTarget`.
+  //
+  // WHY PER TARGET AND NOT AT THE CHANGE (role-model.md §4.3/§8.4, MEASURED). A change has no
+  // scope of its own: `objects.domain_id` for a change is the org root for every one of the five
+  // internal `proposeChange` callers, and `scp change propose` has no `--domain` flag, so both
+  // `scopeObjectId: change.domainId` and `scopeObjectId: change.id` are inert — they READ as a
+  // narrowing and ARE the org-root pin they replaced.
+  //
+  // `cancel` DELIBERATELY DOES NOT DEMAND IT. Cancelling STOPS a release rather than authorizing
+  // one; folding it in would make a cancel-only incident-responder role — hold `object:write`,
+  // stop a bad release, authorize nothing — inexpressible, and that role is the obvious one an org
+  // wants to seat on-call.
+  //
+  // THIS IS THE ONE INTENTIONALLY BREAKING GRANT IN THE DESIGN. drizzle/0099 grants it to Owner,
+  // Administrator, OrgAdmin, ServiceAdmin and ComponentAdmin, and DELIBERATELY NOT to Operator or
+  // Approver — both of which hold `object:write` and can accept and roll back releases today. On
+  // upgrade they stop being able to, which is the point: accepting a release into production is
+  // not the same authority as editing the graph, and it was only ever the same string because the
+  // ladder had no way to say otherwise. It must be announced, not discovered.
+  | "change:accept";
 
 export interface PermissionCheck {
   orgId: string;

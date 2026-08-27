@@ -1278,8 +1278,15 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     const target = await createTestComponent(admin, { name: "group-scope-target" });
     const group = await admin.groups.create({ name: "release-managers" });
 
-    const member = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
-    const nonMember = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+    // `OrgAdmin`, not `Operator`: this case is about which POLICY fires, so both actors need to be
+    // able to propose AND accept. drizzle/0099 took `change:accept` out of `object:write` and
+    // deliberately withheld it from Operator (role-model.md §5 step 3 — the one intentional
+    // breakage), so an Operator now 403s at the accept door before any policy is consulted and this
+    // case would go green-adjacent for the wrong reason. OrgAdmin holds `change:accept` and is NOT
+    // named `Approver`, so the `requireApprovals.fromRole: "Approver"` quorum below is still
+    // unsatisfiable by either of them — which is exactly what the member's 409 depends on.
+    const member = await createTestUser(server, org, [{ role: "OrgAdmin", scope: org.orgId }]);
+    const nonMember = await createTestUser(server, org, [{ role: "OrgAdmin", scope: org.orgId }]);
     await admin.relationships.create({
       typeId: "member_of",
       fromId: member.objectId,

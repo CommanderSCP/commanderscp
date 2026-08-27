@@ -9,9 +9,14 @@ get-by-id re-scopes plus `authz/org-root-arm.ts`) as **PR #288**; **2.5b** (LIST
 **step 2** (the mutation-proven RBAC-across-assembly test), on branch `rbac-role-preconditions`.
 Neither adds a role or a permission — they make the tables able to hold them safely, and pin the
 `service → assembly → component` chaining the shared ComponentAdmin role depends on.
-**Not started:** steps 3–10 — the roles themselves. Per **D5** the role seed (step 3) and the
-role-binding write door (step 5) are **one shippable unit**, since deprecating `Administrator` before
-any purpose-role binding exists would 403 the obvious migration target from day one.
+**Step 3** (the three permission splits, the deletion of `org:admin`, and the five role seeds —
+`drizzle/0099_rbac_permission_splits_and_purpose_roles.sql`) is built on the stacked branch
+`rbac-roles-and-write-door`, with `routes/rbac-permission-splits.integration.test.ts` pinning both
+breaking changes and all five seeded permission sets, seven mutations proven. **Step 5** (the
+role-binding write door) is the next round on that same branch and ships in the same PR.
+**Not started:** steps 4 and 6–10. Per **D5** the role seed (step 3) and the role-binding write door
+(step 5) are **one shippable unit**, since deprecating `Administrator` before any purpose-role
+binding exists would 403 the obvious migration target from day one.
 **Date:** 2026-08-25, last revised 2026-08-27
 **Prompted by:** owner ask — *"review the permissions and create the proper roles for each. Generally
 we'll want some for security/compliance (global scans and overrides), commander-wide admin, org
@@ -287,7 +292,13 @@ owner decision #2.
 `object:read`, `object:write`, `relationship:read`, `relationship:write`, `type_registry:read`,
 `type_registry:write`, `graph:query`, `audit:read`, `approval:write`, `policy:write`, `freeze:write`,
 **`secret:write`**, **`change:accept`**, `governance:move`, `role_binding:write`, `federation:read`,
-`federation:write`
+`federation:write`, **`federation:pair`**
+
+> **`federation:pair` corrected 2026-08-27.** This list originally omitted it while §4.1 and §7.1 D4
+> both granted it to "Administrator, Owner and OrgAdmin" — the doc contradicting itself, caught when
+> `drizzle/0099` tried to copy this list verbatim. D4 governs: it is the later ruling and the one that
+> reasoned about the permission. Establishing the org's federation trust anchors is org administration;
+> **FederationAdmin is the deliberate withholding, and the only one.**
 
 Deliberately **without** `freeze:override`, `change:emergency`, `campaign:deadline-override`,
 `scan:override` — runs the org, cannot use the four bypasses. That withholding of `scan:override` is
@@ -543,6 +554,22 @@ role seed and the write door a single shippable unit**, not two increments.
 **Sequencing, ruled 2026-08-26:** after step 0, the next work is the **read-surface blocker** (§4.2) —
 not the cheap preconditions. Steps 1 and 2 follow it rather than preceding it.
 
+**D6 — `OrgAdmin` HOLDS `federation:pair` (2026-08-27).** This document contradicted itself and the
+contradiction was caught by `drizzle/0099` trying to copy §3C's list verbatim: §4.1 and D4 both grant
+the permission to "Administrator, Owner **and OrgAdmin**", while §3C's list omitted it. **D4 governs**
+— it is the later ruling and the one that reasoned about the permission rather than merely listing a
+role. Its content was that *establishing* a trust relationship differs from *operating* one, so the
+role that operates the link must not decide whose signature this instance believes. That names
+**FederationAdmin** as the withholding, and it is the only one. Withholding it from OrgAdmin as well
+would leave an org whose only pairing principals are Owner and the D5-deprecated Administrator —
+unadministrable in exactly the dimension OrgAdmin exists to cover. §3C corrected to match.
+
+*Process note worth keeping:* a first draft of 0099 withheld it **fail-closed** and escalated rather
+than guessing, which was the right instinct — adding a permission later is an `array_append`, whereas
+removing one from a shared singleton row narrows every org on every deployment at once and has no safe
+shape (§2). When two clauses of this document disagree, fail-closed and escalate; do not let a seed
+literal silently pick a side.
+
 ### 7.3 Still open
 1. **Instance-tier credential redesign in this programme, or does `SCP_OPERATOR_TOKEN` stand?**
    *Recommend:* keep the token for now, schedule the redesign as its own milestone — but **record it
@@ -554,6 +581,7 @@ not the cheap preconditions. Steps 1 and 2 follow it rather than preceding it.
    charter-level act and should be made deliberately rather than by omission.
    **D5 sharpens this:** with Administrator deprecated, an org that wants a broad general-purpose role
    has no built-in to bind and no API to author one.
+*(Item 3 — whether `OrgAdmin` holds `federation:pair` — is **closed**; see D6 in §7.1.)*
 
 ---
 

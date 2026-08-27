@@ -396,7 +396,18 @@ export async function createTestOrg(server: TestServer, label = "org"): Promise<
 }
 
 export interface TestUserBinding {
-  /** Built-in role name: Viewer | Operator | Approver | Administrator | Owner. */
+  /**
+   * Built-in role name — resolved by `findFirst(org_id IS NULL AND name = ...)`, so ANY seeded
+   * built-in works, not only the five ladder rungs:
+   *   the cumulative ladder  Viewer | Operator | Approver | Administrator | Owner (drizzle/0002)
+   *   the purpose roles      SecurityOfficer | FederationAdmin | OrgAdmin | ServiceAdmin |
+   *                          ComponentAdmin (drizzle/0099, role-model.md §3)
+   *
+   * A purpose role's `bindable_at` is NOT checked here, and that is faithful rather than lax: the
+   * column is advisory until the role-binding write door validates it (role-model.md §5 step 5),
+   * so a binding this helper writes at an unlisted scope behaves exactly as one written through
+   * hand SQL on a live deployment does today.
+   */
   role: string;
   /** Scope object id, or "self" for the user's own graph object. */
   scope: string | "self";
@@ -479,17 +490,17 @@ export async function createTestUser(
 /**
  * Writes a `role_bindings` row whose `effect` is NEITHER 'allow' NOR 'deny'.
  *
- * drizzle/0096's `role_bindings_effect_check` makes such a row unwritable through any ordinary
+ * drizzle/0097's `role_bindings_effect_check` makes such a row unwritable through any ordinary
  * connection — deliberately: `hasPermission` and `readableRootsFor` classify by EXACT string
  * equality, so an 'ALLOW' row grants nothing and denies nothing while reading, to anyone looking
  * at the table, as authority.
  *
  * WHY THE ROW IS STILL WORTH BUILDING. A CHECK constrains what can be WRITTEN from the moment it
  * exists; it cannot un-write what is already there, and PostgreSQL never re-checks a row on the way
- * OUT. 0096 deletes the ones it finds at upgrade time, but the shape stays reachable two ways that
+ * OUT. 0097 deletes the ones it finds at upgrade time, but the shape stays reachable two ways that
  * are not hypothetical:
  *
- *   - a database restored from a pre-0096 `pg_dump`. That dump carries the pre-0096 SCHEMA — no
+ *   - a database restored from a pre-0097 `pg_dump`. That dump carries the pre-0097 SCHEMA — no
  *     CHECK — so the illegal rows load intact, and they stay readable by the application for as
  *     long as it is pointed at that database before (or without) the migrations being run;
  *   - any superuser/table-owner path that is not `scp_app`, which is exactly what this helper is.

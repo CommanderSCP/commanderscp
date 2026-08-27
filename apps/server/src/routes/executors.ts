@@ -190,10 +190,18 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // `secret:write` at the org root, NOT `object:write` — role-model.md §1.3d, drizzle/0099.
+        // The permission SUBSTITUTES the generic write verb here; the SCOPE is unchanged and stays
+        // one of §8.6's deliberate escalation bars, because these are the tokens SCP uses to reach
+        // GitHub/ArgoCD/Terraform and no narrower binding should ever reach them.
+        //
+        // BREAKING, DELIBERATELY: an org-root `object:write` holder who does not also hold
+        // `secret:write` is now 403 here. drizzle/0099 grants it to Owner, Administrator and
+        // OrgAdmin, so the built-in ladder is unaffected.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
+          permission: "secret:write",
           scopeObjectId: auth.orgId
         });
         await putSecret(tx, {
@@ -248,10 +256,15 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // `secret:write`, the same substitution `PUT` above takes and for a strictly larger reason:
+        // DELETING an execution-system credential is an availability kill switch for all
+        // coordination on this deployment (role-model.md §1.3d). Symmetry with `PUT` is also the
+        // point — a permission that could store a credential but not remove it would make rotation
+        // harder than creation.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
+          permission: "secret:write",
           scopeObjectId: auth.orgId
         });
         await deleteSecret(tx, auth.orgId, request.params.key);

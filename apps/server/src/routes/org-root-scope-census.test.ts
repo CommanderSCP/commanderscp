@@ -222,14 +222,14 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     why: "role-model.md §8.6 — the second CI ingress door, same robot principal, same deliberate org-root pin"
   },
   {
-    site: "routes/change-sources.ts :: PUT /api/v1/change-sources/:sourceKind/webhook-secret :: object:write",
+    site: "routes/change-sources.ts :: PUT /api/v1/change-sources/:sourceKind/webhook-secret :: secret:write",
     cls: "escalation-bar",
-    why: "role-model.md §8.6 — a credential door; §1.3d wants it SPLIT into secret:write, not widened, and a sweep would hand a ComponentAdmin the org's webhook secret"
+    why: "role-model.md §8.6 — a credential door, now SPLIT onto secret:write (drizzle/0099) rather than widened: whoever sets this HMAC secret can thereafter forge signed source events, so a sweep would have handed a ComponentAdmin the org's webhook secret. The org-root SCOPE is unchanged and stays deliberate; only the permission moved"
   },
   {
-    site: "routes/executors.ts :: PUT /api/v1/secrets/:key :: object:write",
+    site: "routes/executors.ts :: PUT /api/v1/secrets/:key :: secret:write",
     cls: "escalation-bar",
-    why: "role-model.md §8.6 — the org's execution-system credentials; §1.3d wants secret:write, not a widening"
+    why: "role-model.md §8.6/§1.3d — the org's execution-system credentials, SPLIT onto secret:write by drizzle/0099 rather than widened. The permission substituted object:write here; the org-root scope is unchanged, because no narrower binding should ever reach the tokens SCP dials GitHub/ArgoCD/Terraform with"
   },
   {
     site: "routes/executors.ts :: GET /api/v1/secrets :: object:read",
@@ -237,9 +237,9 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     why: "lists which credential keys the org holds; belongs with the credential doors above, not with the object reads"
   },
   {
-    site: "routes/executors.ts :: DELETE /api/v1/secrets/:key :: object:write",
+    site: "routes/executors.ts :: DELETE /api/v1/secrets/:key :: secret:write",
     cls: "escalation-bar",
-    why: "role-model.md §8.6 — deleting an execution-system credential is the same credential door as PUT"
+    why: "role-model.md §8.6 — deleting an execution-system credential is the same credential door as PUT and takes the same secret:write (drizzle/0099); it is also an availability kill switch for all coordination on the deployment, so if the two ever differ this is the one that should be HARDER"
   },
   {
     site: "routes/executors.ts :: POST /api/v1/discovery/run :: object:read",
