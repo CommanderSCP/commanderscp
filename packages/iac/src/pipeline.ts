@@ -9,6 +9,7 @@ import {
   type IService
 } from "./construct.js";
 import type { PlaceableTarget } from "./infra.js";
+import { productsModuleSource } from "./products.js";
 import { normalizeWaveItems, type WaveItem, type WaveTarget } from "./waves.js";
 
 /**
@@ -383,6 +384,20 @@ export abstract class PipelineBase<K extends ExecutorType> extends Construct {
   placeAt(target: PlaceableTarget<K>): this {
     this.stack.addPlacement(this.attachedTo, target as unknown as IResourceRef);
     return this;
+  }
+
+  /**
+   * D20's products module, for THIS pipeline's own owned infra products (`Cluster`/`InstanceGroup`/
+   * …, `infra.ts`) — pure TypeScript source text, exactly like `stack.synth()` is a pure manifest
+   * (no I/O here); `synthProductsModuleToFile` (`index.ts`) is the impure sibling that writes it to
+   * disk, the same split `synthToFile` already makes for the manifest itself. Every `PipelineBase`
+   * can call this (not just `InfrastructurePipeline`/`ConfigurationPipeline`) because nothing stops
+   * an infra product from being scoped to a build-kind pipeline that also manages its own substrate
+   * — it is simply empty (`renderProductsModule([])`) for the common case of a pipeline that owns
+   * none.
+   */
+  synthProducts(): string {
+    return productsModuleSource(this);
   }
 }
 

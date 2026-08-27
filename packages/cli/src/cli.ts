@@ -101,6 +101,13 @@ import {
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
 import { verifyAuditChain } from "@scp/schemas/audit-chain";
+import {
+  MANIFEST_ONLY_DISCLAIMER,
+  renderManifestPipelines,
+  renderManifestSection,
+  updateGeneratedSection,
+  type RenderedPipeline
+} from "@scp/iac";
 import { saveCredentials } from "./config-store.js";
 import { clientFromStoredCredentials, resolveLoginBaseUrl } from "./client-factory.js";
 import { promptLine } from "./prompt.js";
@@ -1670,6 +1677,24 @@ function printApplyResult(plan: Plan, summary: PlanDiffSummary, output: OutputFo
     return;
   }
   console.log(`Applied plan ${plan.id} (${plan.stackName}): ${summaryLine(summary)}`);
+}
+
+/**
+ * `scp iac render`'s `--output json` shape — one entry per `RenderedPipeline` plus the SAME honesty
+ * disclaimer the text picture always carries (D21(d)): JSON output is not exempt from "the picture
+ * must be the truth" any more than the table/comment-block form is, so it is echoed here too rather
+ * than dropped as prose only the human-readable path bothers with.
+ */
+function renderCliJson(pipelines: readonly RenderedPipeline[]): unknown {
+  return {
+    pipelines: pipelines.map((p) => ({
+      componentUrn: p.componentUrn,
+      name: p.name,
+      kind: p.kind,
+      lines: p.lines
+    })),
+    disclaimer: MANIFEST_ONLY_DISCLAIMER
+  };
 }
 
 /**
@@ -3294,6 +3319,49 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const plan = await client.plans.get(id);
       printPlanResult(plan, opts.output);
+    });
+
+  // -------------------------------------------------------------------------------------
+  // `scp iac render` (team-pipeline-iac.md D21(d), §12) — regenerates the human-readable pipeline
+  // picture from a SYNTHESIZED manifest. Deliberately OFFLINE (no `clientFromStoredCredentials`,
+  // no `--base-url`): D21(d)'s own honesty requirement is that render states plainly what it CANNOT
+  // know from a manifest alone (`@scp/iac`'s `render.ts` module doc), which is only true if it never
+  // reaches for a network call to paper over that gap. `--write` is committed, drift-checkable
+  // codegen — the same convention `scp gen`'s SDK output and `products.ts`'s D20 module both follow.
+  // -------------------------------------------------------------------------------------
+  const iacCmd = program.command("iac").description("Local, offline tools for @scp/iac manifests");
+
+  iacCmd
+    .command("render")
+    .description(
+      "Render the human-readable pipeline picture from a synthesized manifest (D21(d)): every gate " +
+        "the manifest declares, plus the FIXED estate-imposed gates the canonical journey always " +
+        "applies — never a picture that looks complete and silently isn't"
+    )
+    .requiredOption("--manifest <path>", "path to a synthesized DesiredStateManifest JSON file")
+    .option(
+      "--write <path>",
+      "write/update the generated picture at the bottom of this TS source file in place " +
+        "(committed, drift-checkable codegen); prints to stdout when omitted"
+    )
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: { manifest: string; write?: string; output: OutputFormat }) => {
+      const manifest = await readManifestFile(opts.manifest);
+      const pipelines = renderManifestPipelines(manifest);
+
+      if (opts.output === "json") {
+        console.log(JSON.stringify(renderCliJson(pipelines), null, 2));
+        return;
+      }
+
+      const section = renderManifestSection(manifest);
+      if (opts.write) {
+        const existing = await readFile(opts.write, "utf8").catch(() => "");
+        await writeFile(opts.write, updateGeneratedSection(existing, section), "utf8");
+        console.log(`Wrote generated pipeline picture to ${opts.write}`);
+        return;
+      }
+      console.log(section);
     });
 
   // -------------------------------------------------------------------------------------
