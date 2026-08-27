@@ -687,6 +687,13 @@
       "when": 1788157000000,
       "tag": "0097_rbac_role_preconditions",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1788157001000,
+      "tag": "0098_pipeline_hook_runs",
+      "breakpoints": true
     }
   ]
 }
