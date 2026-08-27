@@ -36,6 +36,20 @@ export interface ScopedHttpRequest {
   headers?: Record<string, string>;
   /** Must be JSON-serializable — the call crosses the host/plugin process boundary. */
   body?: unknown;
+  /**
+   * Optional hard ceiling on the response BODY size in bytes, enforced by every conforming
+   * `ScopedHttpClient` implementation DURING accumulation — never after the full body already
+   * sits in memory (M21.2 review MAJOR 5: a cap checked post-buffer is not a cap). Exceeding it
+   * aborts the read mid-stream (the implementation cancels the underlying transport read rather
+   * than letting it run to completion) and the call REJECTS with a
+   * {@link ScopedHttpResponseTooLargeError} — never a silently truncated body.
+   *
+   * OPT-IN, not a default: `undefined` preserves the pre-existing unbounded-accumulation
+   * behavior for any call site that has not been migrated to set it yet — adding this field does
+   * not, by itself, change what an existing caller experiences. `@scp/git-provider-core`'s
+   * `readFileAtRef`/`api()` helpers are the first callers to set it on every request they make.
+   */
+  maxResponseBytes?: number;
 }
 
 export interface ScopedHttpResponse {
@@ -47,6 +61,50 @@ export interface ScopedHttpResponse {
 /** Egress-controlled, instrumented HTTP — the only network path a plugin is given. */
 export interface ScopedHttpClient {
   request(req: ScopedHttpRequest): Promise<ScopedHttpResponse>;
+}
+
+// -------------------------------------------------------------------------------------------
+// ScopedHttpResponseTooLargeError — the typed, loud failure `maxResponseBytes` produces. Lives
+// here (not in a single implementation) because every conforming `ScopedHttpClient` — the
+// production fetch-backed one (`apps/server/src/plugin-host/subprocess-entry.ts`) AND every
+// package's own `node:http`/`node:https`-backed test client (`*-test-support.ts`, needed because
+// `nock` does not intercept `fetch` — see those files' module docs) — throws the SAME shape, so a
+// consumer like `@scp/git-provider-core`'s `wrapProviderRequestError` can recognize it by
+// property regardless of which transport produced it.
+// -------------------------------------------------------------------------------------------
+
+/** Thrown by a `ScopedHttpClient.request()` call whose `maxResponseBytes` bound was exceeded. */
+export interface ScopedHttpResponseTooLargeError extends Error {
+  responseTooLarge: true;
+  /** The bound that was exceeded (echoes `ScopedHttpRequest.maxResponseBytes`). */
+  limitBytes: number;
+  url: string;
+}
+
+export function isScopedHttpResponseTooLargeError(
+  err: unknown
+): err is ScopedHttpResponseTooLargeError {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { responseTooLarge?: unknown }).responseTooLarge === true
+  );
+}
+
+/** Builds a {@link ScopedHttpResponseTooLargeError} — the one place the message is worded, so
+ *  every `ScopedHttpClient` implementation reports the limit identically. */
+export function scopedHttpResponseTooLargeError(
+  url: string,
+  limitBytes: number
+): ScopedHttpResponseTooLargeError {
+  return Object.assign(
+    new Error(
+      `response body for ${url} exceeded the ${limitBytes}-byte response ceiling — the read was ` +
+        `aborted mid-stream (cancelled at the transport) before the excess bytes were buffered; ` +
+        `this is never a silent truncation`
+    ),
+    { responseTooLarge: true as const, limitBytes, url }
+  );
 }
 
 export interface PluginContext {
