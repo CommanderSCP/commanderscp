@@ -158,6 +158,15 @@ interface RelationshipDecl {
   properties?: Record<string, unknown> | undefined;
 }
 
+/** A projection-collection entry paired with the construct-tree LOCATION that declared it
+ *  (D16(5)) — `locationOf()`'s output at the time the `addXxx` call was made. `Stack.synth()` keeps
+ *  this alongside the resolved manifest entry through sorting, so a validation error on entry N of
+ *  the sorted array can still name where entry N came from. */
+interface LocatedDecl<T> {
+  readonly entry: T;
+  readonly location: string;
+}
+
 /**
  * Root scope holding one or more `Stack`s. `App` itself never appears in a manifest — it's purely
  * an in-memory aggregation point, mirroring real CDK's `App`.
@@ -283,11 +292,11 @@ export class Stack extends Construct {
   readonly stackName: string;
   private readonly resources: ResourceConstruct[] = [];
   private readonly relationshipDecls: RelationshipDecl[] = [];
-  private readonly sourceMappingDecls: ManifestSourceMapping[] = [];
-  private readonly placementDecls: ManifestPlacement[] = [];
-  private readonly executorBindingDecls: ManifestExecutorBinding[] = [];
-  private readonly dependencyProducerDecls: ManifestDependencyProducer[] = [];
-  private readonly governanceMoveRungDecls: ManifestGovernanceMoveRung[] = [];
+  private readonly sourceMappingDecls: LocatedDecl<ManifestSourceMapping>[] = [];
+  private readonly placementDecls: LocatedDecl<ManifestPlacement>[] = [];
+  private readonly executorBindingDecls: LocatedDecl<ManifestExecutorBinding>[] = [];
+  private readonly dependencyProducerDecls: LocatedDecl<ManifestDependencyProducer>[] = [];
+  private readonly governanceMoveRungDecls: LocatedDecl<ManifestGovernanceMoveRung>[] = [];
   /** L1 raw objects (D16(1)) — entries added via `addManifestEntry`, never through a typed
    *  construct. Kept separate from `resources` (which holds typed CONSTRUCTS, not manifest
    *  objects) so `_toManifestObject()` is only ever called on something that actually has one. */
@@ -374,13 +383,16 @@ export class Stack extends Construct {
    */
   addSourceMapping(component: IComponent | string, spec: SourceMappingSpec): this {
     this.sourceMappingDecls.push({
-      componentUrn: resolveUrn(component),
-      sourceKind: spec.sourceKind,
-      ...(spec.repoPattern !== undefined ? { repoPattern: spec.repoPattern } : {}),
-      ...(spec.pathPattern !== undefined ? { pathPattern: spec.pathPattern } : {}),
-      ...(spec.type !== undefined ? { type: spec.type } : {}),
-      // Omitted stays OMITTED (not `null`): the two mean different things server-side (§10.6).
-      ...(spec.scope !== undefined ? { scope: spec.scope } : {})
+      location: locationOf(component),
+      entry: {
+        componentUrn: resolveUrn(component),
+        sourceKind: spec.sourceKind,
+        ...(spec.repoPattern !== undefined ? { repoPattern: spec.repoPattern } : {}),
+        ...(spec.pathPattern !== undefined ? { pathPattern: spec.pathPattern } : {}),
+        ...(spec.type !== undefined ? { type: spec.type } : {}),
+        // Omitted stays OMITTED (not `null`): the two mean different things server-side (§10.6).
+        ...(spec.scope !== undefined ? { scope: spec.scope } : {})
+      }
     });
     return this;
   }
@@ -405,8 +417,11 @@ export class Stack extends Construct {
    */
   addPlacement(component: IComponent | string, deploymentTarget: IDeploymentTarget | string): this {
     this.placementDecls.push({
-      componentUrn: resolveUrn(component),
-      deploymentTargetUrn: resolveUrn(deploymentTarget)
+      location: locationOf(component),
+      entry: {
+        componentUrn: resolveUrn(component),
+        deploymentTargetUrn: resolveUrn(deploymentTarget)
+      }
     });
     return this;
   }
@@ -429,17 +444,23 @@ export class Stack extends Construct {
     spec: ExecutorBindingSpec = {}
   ): this {
     this.executorBindingDecls.push({
-      targetUrn: resolveUrn(component),
-      deploymentTargetUrn: resolveUrn(deploymentTarget),
-      ...executorBindingFields(spec)
+      location: locationOf(component),
+      entry: {
+        targetUrn: resolveUrn(component),
+        deploymentTargetUrn: resolveUrn(deploymentTarget),
+        ...executorBindingFields(spec)
+      }
     });
     return this;
   }
 
   addExecutorBinding(target: IResourceRef | string, spec: ExecutorBindingSpec = {}): this {
     this.executorBindingDecls.push({
-      targetUrn: resolveUrn(target),
-      ...executorBindingFields(spec)
+      location: locationOf(target),
+      entry: {
+        targetUrn: resolveUrn(target),
+        ...executorBindingFields(spec)
+      }
     });
     return this;
   }
@@ -483,9 +504,12 @@ export class Stack extends Construct {
    */
   addDependencyProducer(component: IComponent | string, spec: DependencyProducerSpec): this {
     this.dependencyProducerDecls.push({
-      producerUrn: resolveUrn(component),
-      ecosystem: spec.ecosystem,
-      coordinate: spec.coordinate
+      location: locationOf(component),
+      entry: {
+        producerUrn: resolveUrn(component),
+        ecosystem: spec.ecosystem,
+        coordinate: spec.coordinate
+      }
     });
     return this;
   }
@@ -542,7 +566,10 @@ export class Stack extends Construct {
    * cannot be turned off below, and the apply fails 409 naming the upper rung.
    */
   addGovernanceMoveRung(subject: IResourceRef | string): this {
-    this.governanceMoveRungDecls.push({ subjectIdOrUrn: resolveUrn(subject) });
+    this.governanceMoveRungDecls.push({
+      location: locationOf(subject),
+      entry: { subjectIdOrUrn: resolveUrn(subject) }
+    });
     return this;
   }
 
@@ -558,52 +585,74 @@ export class Stack extends Construct {
     // objects — by URN, same as everything else — so which door an object came through leaves no
     // trace in the synthesized bytes (D16(1): "an L1-authored entry and its L2 equivalent
     // synthesize identically").
-    const objects: ManifestObject[] = [
-      ...this.resources.map((r) => r._toManifestObject()),
-      ...this.rawObjectDecls
-    ].sort((a, b) => a.urn.localeCompare(b.urn));
+    const locatedObjects = [
+      ...this.resources.map((r) => ({ entry: r._toManifestObject(), location: r.path })),
+      ...this.rawObjectDecls.map((entry) => ({ entry, location: entry.urn }))
+    ].sort((a, b) => a.entry.urn.localeCompare(b.entry.urn));
+    const objects: ManifestObject[] = locatedObjects.map((o) => o.entry);
+    const objectLocations: string[] = locatedObjects.map((o) => o.location);
 
-    const relationships: ManifestRelationship[] = this.relationshipDecls
-      .map((decl): ManifestRelationship => ({
-        typeId: decl.typeId,
-        fromUrn: typeof decl.from === "string" ? decl.from : decl.from.urn,
-        toUrn: typeof decl.to === "string" ? decl.to : decl.to.urn,
-        ...(decl.properties ? { properties: decl.properties } : {})
+    const locatedRelationships = this.relationshipDecls
+      .map((decl) => ({
+        entry: {
+          typeId: decl.typeId,
+          fromUrn: typeof decl.from === "string" ? decl.from : decl.from.urn,
+          toUrn: typeof decl.to === "string" ? decl.to : decl.to.urn,
+          ...(decl.properties ? { properties: decl.properties } : {})
+        } satisfies ManifestRelationship,
+        location: locationOf(decl.from)
       }))
-      .sort((a, b) => relationshipSortKey(a).localeCompare(relationshipSortKey(b)));
+      .sort((a, b) => relationshipSortKey(a.entry).localeCompare(relationshipSortKey(b.entry)));
+    const relationships: ManifestRelationship[] = locatedRelationships.map((r) => r.entry);
+    const relationshipLocations: string[] = locatedRelationships.map((r) => r.location);
 
     // C1's two collections are OMITTED WHEN EMPTY rather than emitted as `[]`, so a stack that
     // declares neither synthesizes the byte-identical manifest it did before C1 — the interchange
     // format stays stable for every existing program, and an absent key already means "declares
     // none" server-side (`DesiredStateManifestSchema`).
-    const sourceMappings: ManifestSourceMapping[] = [...this.sourceMappingDecls].sort((a, b) =>
-      sourceMappingSortKey(a).localeCompare(sourceMappingSortKey(b))
+    const sortedSourceMappings = [...this.sourceMappingDecls].sort((a, b) =>
+      sourceMappingSortKey(a.entry).localeCompare(sourceMappingSortKey(b.entry))
     );
-    const executorBindings: ManifestExecutorBinding[] = [...this.executorBindingDecls].sort(
-      (a, b) => executorBindingSortKey(a).localeCompare(executorBindingSortKey(b))
+    const sourceMappings: ManifestSourceMapping[] = sortedSourceMappings.map((d) => d.entry);
+    const sourceMappingLocations: string[] = sortedSourceMappings.map((d) => d.location);
+
+    const sortedExecutorBindings = [...this.executorBindingDecls].sort((a, b) =>
+      executorBindingSortKey(a.entry).localeCompare(executorBindingSortKey(b.entry))
     );
+    const executorBindings: ManifestExecutorBinding[] = sortedExecutorBindings.map((d) => d.entry);
+    const executorBindingLocations: string[] = sortedExecutorBindings.map((d) => d.location);
     // Sorted on the PAIR, which is the whole identity (ADR-0026 D3) — so declaration order in code
     // never changes the synthesized bytes, only content does.
-    const placements: ManifestPlacement[] = [...this.placementDecls].sort((a, b) =>
-      `${a.componentUrn}\u0000${a.deploymentTargetUrn}`.localeCompare(
-        `${b.componentUrn}\u0000${b.deploymentTargetUrn}`
+    const sortedPlacements = [...this.placementDecls].sort((a, b) =>
+      `${a.entry.componentUrn}\u0000${a.entry.deploymentTargetUrn}`.localeCompare(
+        `${b.entry.componentUrn}\u0000${b.entry.deploymentTargetUrn}`
       )
     );
+    const placements: ManifestPlacement[] = sortedPlacements.map((d) => d.entry);
+    const placementLocations: string[] = sortedPlacements.map((d) => d.location);
     // Sorted on `(ecosystem, coordinate)` — the declaration's identity, and NOT the producer, which
     // is the row's value. Two programs that declare the same coordinate from differently-ordered
     // code synthesize the same bytes; one that re-points it does not, which is correct.
-    const producers: ManifestDependencyProducer[] = [...this.dependencyProducerDecls].sort((a, b) =>
-      `${a.ecosystem}\u0000${a.coordinate}`.localeCompare(`${b.ecosystem}\u0000${b.coordinate}`)
+    const sortedProducers = [...this.dependencyProducerDecls].sort((a, b) =>
+      `${a.entry.ecosystem}\u0000${a.entry.coordinate}`.localeCompare(
+        `${b.entry.ecosystem}\u0000${b.entry.coordinate}`
+      )
     );
+    const producers: ManifestDependencyProducer[] = sortedProducers.map((d) => d.entry);
+    const producerLocations: string[] = sortedProducers.map((d) => d.location);
     // Sorted on the SUBJECT, which is the whole identity — a rung has no value beyond existing, so
     // there is nothing else two entries could differ in. Duplicates are left in rather than
     // de-duplicated here: `synth()` reports what the program said, and the server collapses two
     // declarations of one subject into one rung (a repeated rung is idempotent, not ambiguous).
-    const governanceMoveRungs: ManifestGovernanceMoveRung[] = [
-      ...this.governanceMoveRungDecls
-    ].sort((a, b) => a.subjectIdOrUrn.localeCompare(b.subjectIdOrUrn));
+    const sortedGovernanceMoveRungs = [...this.governanceMoveRungDecls].sort((a, b) =>
+      a.entry.subjectIdOrUrn.localeCompare(b.entry.subjectIdOrUrn)
+    );
+    const governanceMoveRungs: ManifestGovernanceMoveRung[] = sortedGovernanceMoveRungs.map(
+      (d) => d.entry
+    );
+    const governanceMoveRungLocations: string[] = sortedGovernanceMoveRungs.map((d) => d.location);
 
-    return DesiredStateManifestSchema.parse({
+    const candidate = {
       stackName: this.stackName,
       objects,
       relationships,
@@ -622,7 +671,34 @@ export class Stack extends Construct {
       // rung. This is the more dangerous of the two omissions to get wrong: pruning here would turn
       // OFF a governance bar, and the symptom would be an absence of refusals.
       ...(governanceMoveRungs.length > 0 ? { governanceMoveRungs } : {})
+    };
+
+    const parsed = DesiredStateManifestSchema.safeParse(candidate);
+    if (parsed.success) return parsed.data;
+
+    // D16(5): every synth validation error names the construct-tree PATH that produced the entry
+    // it is about. A `safeParse` failure's `issue.path` starts with the collection name and, for a
+    // collection member, the array index into it — the SAME index `objectLocations`/
+    // `relationshipLocations`/… line up with, because every array above was built and sorted in
+    // lockstep with its location array.
+    const locationsByCollection: Record<string, string[] | undefined> = {
+      objects: objectLocations,
+      relationships: relationshipLocations,
+      sourceMappings: sourceMappingLocations,
+      executorBindings: executorBindingLocations,
+      placements: placementLocations,
+      producers: producerLocations,
+      governanceMoveRungs: governanceMoveRungLocations
+    };
+    const lines = parsed.error.issues.map((issue) => {
+      const [collection, index] = issue.path;
+      const locations =
+        typeof collection === "string" ? locationsByCollection[collection] : undefined;
+      const location = typeof index === "number" ? locations?.[index] : undefined;
+      const where = location ? ` [construct: ${location}]` : "";
+      return `  ${issue.path.join(".")}${where}: ${issue.message}`;
     });
+    throw new Error(`Stack "${this.stackName}" failed synth validation:\n${lines.join("\n")}`);
   }
 }
 
@@ -1011,6 +1087,19 @@ export const ServiceAccount = defineResourceConstruct("service-account");
  *  the URN it already carries (D16(2): "a reference must never create an object in the manifest"). */
 function resolveUrn(target: IResourceRef | string): string {
   return typeof target === "string" ? target : target.urn;
+}
+
+/**
+ * Best-effort human-readable LOCATION for a synth validation error (D16(5)): the construct's tree
+ * PATH when the reference is an owned construct in this program, else the raw URN/id string it
+ * names (an external reference, a `fromXxx()` placeholder, or a bare id — none of which sit in this
+ * program's construct tree, so there is no path to report beyond the identifier itself). Used to
+ * annotate every entry `Stack.synth()` pushes into a collection the final schema validation checks,
+ * so a refusal names the file/construct a team actually wrote, not just an array index.
+ */
+function locationOf(ref: IResourceRef | string): string {
+  if (typeof ref === "string") return ref;
+  return ref instanceof ResourceConstruct ? ref.path : ref.urn;
 }
 
 export interface ReleaseTopologyWaveSpec {

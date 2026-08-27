@@ -1022,3 +1022,57 @@ describe("@scp/iac constructs: the L1 escape hatch (D16(1))", () => {
     expect(obj?.typeId).toBe("service");
   });
 });
+
+/**
+ * D16(5) — construct-path in synth errors (synth-side half). Every `DesiredStateManifestSchema`
+ * validation failure now names the construct-tree PATH that produced the offending entry, not just
+ * a bare array index into the assembled manifest — the whole point being that a large multi-
+ * construct file's refusal maps back to the ONE construct a team actually wrote.
+ */
+describe("@scp/iac: construct-path in synth errors (D16(5))", () => {
+  it("Construct.path is the slash-joined tree path from the root, excluding App", () => {
+    const stack = new Stack("payments-api");
+    const svc = new Service(stack, "billing", { name: "Billing" });
+    expect(stack.path).toBe("payments-api");
+    expect(svc.path).toBe("payments-api/billing");
+  });
+
+  it("an executor-binding validation refusal names the binding's construct path", () => {
+    const stack = new Stack("mode-a-conflict-path");
+    const svc = new Service(stack, "billing", { name: "Billing" });
+    const api = new Component(stack, "api", { name: "API", service: svc });
+    api.bindsExecutor({
+      executionSystem: "urn:scp:x:execution-system:argocd",
+      config: { serverUrl: "https://attacker.example" }
+    });
+    expect(() => stack.synth()).toThrow(/mode-a-conflict-path\/api/);
+  });
+
+  it("a relationship validation refusal names the FROM construct's path", () => {
+    const stack = new Stack("rel-path");
+    const svc = new Service(stack, "svc", { name: "Svc" });
+    svc.dependsOn("not-a-valid-urn"); // fails UrnSchema on the `to` side
+    expect(() => stack.synth()).toThrow(/rel-path\/svc/);
+  });
+
+  it("an L1 addManifestEntry validation refusal falls back to the entry's own URN (no construct exists to have a path)", () => {
+    const stack = new Stack("l1-path-fallback");
+    stack.addManifestEntry({
+      urn: "urn:scp:l1-path-fallback:service:x",
+      typeId: "service",
+      name: "", // fails ManifestObjectSchema's name.min(1)
+      properties: {},
+      labels: {}
+    });
+    expect(() => stack.synth()).toThrow(/urn:scp:l1-path-fallback:service:x/);
+  });
+
+  it("the error message identifies which manifest field failed, not just that synth failed", () => {
+    // Guards against a regression that reports the construct path but loses the underlying Zod
+    // message — both must survive, since only the message says WHAT was wrong.
+    const stack = new Stack("message-preserved");
+    const svc = new Service(stack, "svc", { name: "Svc" });
+    svc.dependsOn("not-a-valid-urn");
+    expect(() => stack.synth()).toThrow(/must match urn:scp/);
+  });
+});
