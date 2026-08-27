@@ -31,16 +31,5 @@ export function slugify(input: string): string {
  * stable keys past that point (DESIGN.md §4.1).
  */
 export function deriveConstructUrn(stackName: string, typeId: string, constructId: string): string {
-  // `typeId` is slugified too (round B addition, team-pipeline-iac.md D19/D24): every typeId round A
-  // shipped ("service", "deployment-target", "release-topology", …) is already lowercase-with-
-  // hyphens, so this is a no-op for all of them — `UrnSchema`'s type segment
-  // (`[a-z0-9_-]+`, `@scp/schemas/graph.ts`) already matched. It stops being a no-op the moment a
-  // typeId is NOT already slug-shaped, which round B's infra-product kinds are: `InfraKindSchema`
-  // spells one of them `instanceGroup` (camelCase, matching the wire vocabulary's own spelling,
-  // `pipeline-behaviors.ts`) — passing it through unslugified would derive an invalid URN
-  // (`urn:scp:...:instanceGroup:...` fails the schema's lowercase-only type segment) despite every
-  // other part of the URN being fine. The OBJECT's own `typeId` FIELD is never touched here — only
-  // the URN's type segment, which has always been allowed to differ from a stored value elsewhere in
-  // this scheme (the URN is an opaque stable key past construction, this file's own module doc).
-  return `urn:scp:${slugify(stackName)}:${slugify(typeId)}:${slugify(constructId)}`;
+  return `urn:scp:${slugify(stackName)}:${typeId}:${slugify(constructId)}`;
 }

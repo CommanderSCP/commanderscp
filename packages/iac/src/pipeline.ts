@@ -357,30 +357,31 @@ export abstract class PipelineBase<K extends ExecutorType> extends Construct {
    * `PlaceableTarget<"rpm">` is `IInstanceGroup` only.
    *
    * ============================================================================================
-   * WHY THIS EMITS A `deploys_to` RELATIONSHIP, NOT A `placements` ENTRY — READ BEFORE "FIXING" IT
+   * A REAL `placements` ENTRY — AN INFRA PRODUCT IS A `deployment-target` OBJECT (see `infra.ts`)
    * ============================================================================================
-   * D19/D20's prose describes this as "a placement refined onto a cluster", which reads as if it
-   * belonged in the manifest's `placements` collection. MEASURED on `main`,
-   * `apps/server/src/graph/placements-repo.ts`'s `createPlacement` TYPE-CHECKS its second endpoint
-   * and REFUSES anything whose `typeId !== "deployment-target"` — an infra product's `typeId` is its
-   * `InfraKind` (`"cluster"`, `"instanceGroup"`, …), so writing this pair into `placements` would
-   * synth cleanly (the manifest schema's `deploymentTargetUrn` is a bare `UrnSchema`, untyped) and
-   * then hard-fail every apply against today's server. That check belongs to the D19/D20/D24 "plan
-   * (hard)" rung, which the proposal itself marks unbuilt (§14's build-time verifications; increment
-   * 5/8). This package is confined to `packages/iac/` for this increment and cannot change
-   * `apps/server`, so it cannot make that rung exist here.
+   * An earlier version of this method emitted a bespoke `deploys_to` relationship instead, to route
+   * around what looked like a type mismatch: `Cluster`/`InstanceGroup`/… carried their OWN `typeId`
+   * (`"cluster"`, …), and `apps/server/src/graph/placements-repo.ts`'s `createPlacement` refuses any
+   * placement target whose `typeId !== "deployment-target"`. That workaround was itself broken,
+   * MEASURED on `main`: `deploys_to`'s registered relationship type excludes every infra kind as a
+   * `to` endpoint (`apps/server/drizzle/0002_rls_rbac_seed.sql`: `to_types = ['deployment-target']`
+   * only), and `deploys_to` is explicitly legacy on the component path
+   * (`apps/server/drizzle/0055_assembly_object_type.sql`: "ADR-0026 made the component/target pair a
+   * `placement`, so this edge is legacy on the component path already") — so the edge would have
+   * synthesized cleanly and then failed apply for a DIFFERENT reason than the one it was dodging.
    *
-   * `deploys_to` (component → infra product) is therefore the honest choice available today: an
-   * ordinary relationship (no `typeId` registry to satisfy, `Stack.addRelationship`'s L1 door),
-   * schema-legal right now, and forward-compatible — once the plan-time matrix check lands, THIS
-   * edge is the natural input to it, and nothing here needs to change. The STAGE-level placement
-   * (the component at `prodAmer`, say) still comes from D8's wave inference above, independently —
-   * `placeAt` never touches `placements` and therefore never needs to resolve which stage a
-   * cross-package product reference (`@corp/payments-infra`'s emitted `products.payBlue: ICluster`,
-   * D20) sits `within`, which a bare interface-typed ref does not carry anyway.
+   * The real fix is `infra.ts`'s own premise correction: `docs/GLOSSARY.md` already defines
+   * "deployment target" as *"the graph object type an executor acts on (cluster, host, environment,
+   * region) — deliberately broad,"* naming *cluster* as an example. D24's infra kinds are SUBTYPES
+   * of `deployment-target`, not a parallel type — so every `Cluster`/`InstanceGroup`/… synthesizes
+   * with `typeId: "deployment-target"` and its kind riding as `properties.kind` (an already-open
+   * property schema, `apps/server/drizzle/0081_target_facet_and_publishes_to.sql`). `createPlacement`
+   * therefore accepts it exactly as it accepts any other deployment-target — no server change needed,
+   * no migration, and D19's "the graph object and the real infrastructure share one managing
+   * pipeline" holds through `managed_by_stack` unchanged.
    */
   placeAt(target: PlaceableTarget<K>): this {
-    this.stack.addRelationship("deploys_to", this.attachedTo, target as unknown as IResourceRef);
+    this.stack.addPlacement(this.attachedTo, target as unknown as IResourceRef);
     return this;
   }
 }

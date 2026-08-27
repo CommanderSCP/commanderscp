@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DesiredStateManifestSchema, type DesiredStateManifest } from "@scp/schemas";
 import { Component, DeploymentTarget, Service, Stack } from "./index.js";
+import { Cluster } from "./infra.js";
 import {
   ChartPipeline,
   ConfigurationPipeline,
@@ -352,25 +353,64 @@ describe("@scp/iac: placement inference from waves (D8)", () => {
   });
 });
 
-describe("@scp/iac: placeAt (D19/D20/D24) — 'deploys_to', never a placements entry", () => {
-  it("records a deploys_to relationship from the component to the infra product", () => {
+describe("@scp/iac: placeAt (D19/D20/D24) — a real `placements` entry, targeting a deployment-target-typed object", () => {
+  it("lands in `placements`, targeting the infra product's OWN deployment-target object (regression: the original `deploys_to` workaround synthesized clean and was refused at apply)", () => {
     const stack = new Stack("place-at");
     const svc = new Service(stack, "payments", { name: "Payments" });
     const api = new Component(stack, "api", { name: "api", service: svc });
-    const image = new ImagePipeline(api, { repo: "payments/api", waves: [] });
+    const prodAmer = new DeploymentTarget(stack, "commercial-amer-production", {
+      name: "commercial-amer-production"
+    });
+    const infra = new InfrastructurePipeline(api, {
+      repo: "payments/api",
+      path: "infra/**",
+      waves: []
+    });
+    const payBlue = new Cluster(infra, "pay-blue", { name: "pay-blue", within: prodAmer });
 
-    const payBlue = { urn: "urn:scp:payments-infra:cluster:pay-blue", typeId: "cluster" as const };
+    const image = new ImagePipeline(api, "image", { repo: "payments/api", waves: [] });
     image.placeAt(payBlue);
 
     const manifest = stack.synth();
-    expect(manifest.relationships).toEqual(
-      expect.arrayContaining([{ typeId: "deploys_to", fromUrn: api.urn, toUrn: payBlue.urn }])
+
+    // The infra product ITSELF synthesizes as a real `deployment-target` object — the fact that
+    // makes the placement below legal against `createPlacement`'s endpoint type check (measured on
+    // `apps/server/src/graph/placements-repo.ts`: `typeId === "deployment-target"` only).
+    const clusterObject = manifest.objects.find((o) => o.urn === payBlue.urn);
+    expect(clusterObject?.typeId).toBe("deployment-target");
+    expect(clusterObject?.properties).toMatchObject({ kind: "cluster" });
+
+    // THE assertion that would have caught the original bug: `deploys_to` synthesized just as
+    // cleanly as this does, so only checking WHICH COLLECTION the pair landed in — and that the
+    // target is genuinely deployment-target-typed — distinguishes "legal at apply" from "refused at
+    // apply". A synth-only shape check on `relationships` alone would have stayed green throughout.
+    expect(manifest.placements).toEqual(
+      expect.arrayContaining([{ componentUrn: api.urn, deploymentTargetUrn: payBlue.urn }])
     );
-    // Never written into `placements` — see `PipelineBase.placeAt`'s doc for why.
-    expect((manifest.placements ?? []).some((p) => p.deploymentTargetUrn === payBlue.urn)).toBe(
-      false
+    expect(manifest.relationships.some((r) => r.toUrn === payBlue.urn)).toBe(false);
+
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it("also accepts a cross-package infra product REFERENCE (Cluster.fromName/.fromUrn), not just an owned construct (D20)", () => {
+    const stack = new Stack("place-at-ref");
+    const svc = new Service(stack, "payments", { name: "Payments" });
+    const api = new Component(stack, "api", { name: "api", service: svc });
+    const image = new ImagePipeline(api, { repo: "payments/api", waves: [] });
+    const payBlue = Cluster.fromName("pay-blue");
+
+    image.placeAt(payBlue);
+
+    const manifest = stack.synth();
+    expect(manifest.placements).toEqual(
+      expect.arrayContaining([{ componentUrn: api.urn, deploymentTargetUrn: payBlue.urn }])
     );
   });
+
+  // MUTATION-PROVED (restored before commit): temporarily making `placeAt` write the WRONG
+  // `deploymentTargetUrn` (e.g. `this.attachedTo`'s own URN instead of `target`'s) makes the first
+  // case above fail its `placements` assertion — confirming the placement path, and this test, are
+  // both live, not vacuous.
 });
 
 describe("@scp/iac: dependsOn sugar on a pipeline", () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ARTIFACT_INFRA_COMPATIBILITY, type ExecutorType, type InfraKind } from "@scp/schemas";
 import { DesiredStateManifestSchema } from "@scp/schemas";
 import { Bucket, Cluster, Database, InstanceGroup, PLACEMENT_MATRIX, Queue } from "./infra.js";
-import { InfrastructurePipeline, ConfigurationPipeline } from "./pipeline.js";
+import { ConfigurationPipeline, InfrastructurePipeline } from "./pipeline.js";
 import { DeploymentTarget, Service, Stack } from "./construct.js";
 
 /**
@@ -32,8 +32,8 @@ describe("@scp/iac: PLACEMENT_MATRIX parity with @scp/schemas's ARTIFACT_INFRA_C
   // confirming the parity check is live, not vacuous.
 });
 
-describe("@scp/iac: infra product constructs (D19/D24)", () => {
-  it("Cluster/InstanceGroup/Database/Bucket/Queue synth as their own typed objects, `within` recorded", () => {
+describe("@scp/iac: infra product constructs are `deployment-target` objects (D19/D24)", () => {
+  it("Cluster/InstanceGroup/Database/Bucket/Queue synth with typeId `deployment-target`, kind + within recorded as properties", () => {
     const stack = new Stack("payments-infra");
     const payments = new Service(stack, "payments", { name: "Payments" });
     const prodAmer = new DeploymentTarget(stack, "commercial-amer-production", {
@@ -61,57 +61,71 @@ describe("@scp/iac: infra product constructs (D19/D24)", () => {
     });
 
     const manifest = stack.synth();
-    const infraObjects = manifest.objects.filter((o) =>
-      ["cluster", "instanceGroup", "database", "bucket", "queue"].includes(o.typeId)
+    // EVERY infra product below is `typeId: "deployment-target"` — D19/D24's premise correction:
+    // a `Cluster` etc. is a SUBTYPE of `deployment-target` (GLOSSARY), not a parallel manifest type.
+    // Distinguished from `prodAmer` (the broader stage, also a `deployment-target`) only by name/urn
+    // and by carrying `properties.kind`.
+    const infraObjects = manifest.objects.filter(
+      (o) => o.typeId === "deployment-target" && o.urn !== prodAmer.urn
     );
-    // `Stack.synth()` sorts objects by URN (round A's determinism rule) — the derived URN's type
-    // segment for `instanceGroup` is slugified to `instancegroup` (`urn.ts`'s `deriveConstructUrn`),
-    // so alphabetical order here is bucket, cluster, database, instanceGroup, queue.
-    expect(infraObjects).toEqual([
-      {
-        urn: paymentsBucket.urn,
-        typeId: "bucket",
-        name: "payments-bucket",
-        properties: { within: prodAmer.urn },
-        labels: {}
-      },
+    // `Stack.synth()` sorts objects by URN (round A's determinism rule); every infra product's URN
+    // segment is now uniformly `deployment-target`, so order here is purely by construct id.
+    // Sorted by full URN string (round A's determinism rule) — asserted via a sort-by-urn on the
+    // EXPECTED side too, so this test documents the rule instead of a hand-computed guess at it.
+    const expected = [
       {
         urn: payBlue.urn,
-        typeId: "cluster",
+        typeId: "deployment-target",
         name: "pay-blue",
-        properties: { within: prodAmer.urn },
-        labels: {}
-      },
-      {
-        urn: paymentsDb.urn,
-        typeId: "database",
-        name: "payments-db",
-        properties: { within: prodAmer.urn },
+        properties: { kind: "cluster", within: prodAmer.urn },
         labels: {}
       },
       {
         urn: payIg.urn,
-        typeId: "instanceGroup",
+        typeId: "deployment-target",
         name: "pay-ig",
-        properties: { within: prodAmer.urn },
+        properties: { kind: "instanceGroup", within: prodAmer.urn },
+        labels: {}
+      },
+      {
+        urn: paymentsBucket.urn,
+        typeId: "deployment-target",
+        name: "payments-bucket",
+        properties: { kind: "bucket", within: prodAmer.urn },
+        labels: {}
+      },
+      {
+        urn: paymentsDb.urn,
+        typeId: "deployment-target",
+        name: "payments-db",
+        properties: { kind: "database", within: prodAmer.urn },
         labels: {}
       },
       {
         urn: paymentsQueue.urn,
-        typeId: "queue",
+        typeId: "deployment-target",
         name: "payments-queue",
-        properties: { within: prodAmer.urn },
+        properties: { kind: "queue", within: prodAmer.urn },
         labels: {}
       }
-    ]);
+    ].sort((a, b) => a.urn.localeCompare(b.urn));
+    expect(infraObjects).toEqual(expected);
     expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
   });
 
-  it("Cluster.fromName()/.fromUrn() are reference-only — never create a manifest object", () => {
+  it("Cluster.fromName()/.fromUrn() are reference-only, in the SAME namespace a plain DeploymentTarget reference uses (it IS one) — never create a manifest object", () => {
     const ref = Cluster.fromName("pay-blue");
-    expect(ref).toEqual({ urn: "urn:scp:named-ref:cluster:pay-blue", typeId: "cluster" });
-    const urnRef = Cluster.fromUrn("urn:scp:other-infra:cluster:pay-blue");
-    expect(urnRef).toEqual({ urn: "urn:scp:other-infra:cluster:pay-blue", typeId: "cluster" });
+    expect(ref).toEqual({
+      urn: "urn:scp:named-ref:deployment-target:pay-blue",
+      typeId: "deployment-target",
+      kind: "cluster"
+    });
+    const urnRef = Cluster.fromUrn("urn:scp:other-infra:deployment-target:pay-blue");
+    expect(urnRef).toEqual({
+      urn: "urn:scp:other-infra:deployment-target:pay-blue",
+      typeId: "deployment-target",
+      kind: "cluster"
+    });
   });
 
   it("a ConfigurationPipeline may also parent infra products (D19's 'or Configuration pipeline')", () => {
@@ -126,8 +140,8 @@ describe("@scp/iac: infra product constructs (D19/D24)", () => {
     });
     const ig = new InstanceGroup(config, "pay-prod-ig", { name: "pay-prod-ig", within: prodAmer });
     const manifest = stack.synth();
-    expect(manifest.objects.some((o) => o.urn === ig.urn && o.typeId === "instanceGroup")).toBe(
-      true
-    );
+    const igObject = manifest.objects.find((o) => o.urn === ig.urn);
+    expect(igObject?.typeId).toBe("deployment-target");
+    expect(igObject?.properties).toMatchObject({ kind: "instanceGroup" });
   });
 });
