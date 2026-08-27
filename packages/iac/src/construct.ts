@@ -28,6 +28,31 @@ import { deriveConstructUrn, slugify } from "./urn.js";
  * import per relationship type. The tradeoff: relationship declarations live on `Stack` internally
  * (`_registerRelationship`), not as their own addressable construct id — acceptable here since
  * relationships have no independent lifecycle state to reference later within a single synth.
+ *
+ * ## Layering: L1 / L2 / L3 (team-pipeline-iac.md D16(1))
+ *
+ * **L1 — the raw manifest entry.** `Stack.addManifestEntry(object)` appends a `ManifestObject`
+ * verbatim; `Stack.addRelationship(typeId, from, to, properties?)` does the same for an edge; every
+ * `ResourceConstruct` additionally offers `overrideManifestEntry(patch)` to patch fields its own
+ * typed props don't expose. None of these doors consult a registry of "known" typeIds — a `typeId`
+ * no typed construct in this package has ever heard of synthesizes exactly as well as `"service"`
+ * does. That is what makes "no L2 construct may block reaching L1" structurally true: there is no
+ * gate to bypass, because the L2 constructs below are themselves built on these same doors and
+ * contribute to the SAME collections `synth()` sorts and emits.
+ *
+ * **L2 — the typed constructs.** Everything exported from this module below this comment:
+ * `Service`, `Component`, `Campaign`, `ReleaseTopology`, the `add*`/fluent sugar. Each is a thin
+ * layer that resolves references to URNs and calls the L1 doors underneath — `Component.placeAt`
+ * constructs a `Placement`, which calls `Stack.addPlacement`; `ResourceConstruct.dependsOn` calls
+ * `Stack._registerRelationship`. An L1-authored entry and its L2 equivalent synthesize IDENTICALLY
+ * (pinned in `construct.test.ts`), because the L2 form is never anything more than the L1 call
+ * plus ergonomics.
+ *
+ * **L3 — patterns shipped via standards packages.** Not part of `@scp/iac` itself: an org's
+ * `@corp/scp-standards`-style package (D10) composes L2 constructs into higher-level authoring
+ * patterns (a `waves.standard` wave shape, a `repos()` helper) and publishes them like any other
+ * package. `@scp/iac` has no special knowledge of L3 — it is ordinary code built on L1/L2's public
+ * surface, which is exactly why nothing here needs to change for a new L3 pattern to exist.
  */
 
 // -------------------------------------------------------------------------------------------
@@ -263,6 +288,10 @@ export class Stack extends Construct {
   private readonly executorBindingDecls: ManifestExecutorBinding[] = [];
   private readonly dependencyProducerDecls: ManifestDependencyProducer[] = [];
   private readonly governanceMoveRungDecls: ManifestGovernanceMoveRung[] = [];
+  /** L1 raw objects (D16(1)) — entries added via `addManifestEntry`, never through a typed
+   *  construct. Kept separate from `resources` (which holds typed CONSTRUCTS, not manifest
+   *  objects) so `_toManifestObject()` is only ever called on something that actually has one. */
+  private readonly rawObjectDecls: ManifestObject[] = [];
 
   /**
    * `new Stack("platform-estate")` is the authoring form (D15a): `App` is internal synth plumbing
@@ -293,6 +322,42 @@ export class Stack extends Construct {
   /** @internal called by `ResourceConstruct`'s relationship fluent methods. */
   _registerRelationship(decl: RelationshipDecl): void {
     this.relationshipDecls.push(decl);
+  }
+
+  /**
+   * L1 — the guaranteed raw manifest-entry door (D16(1)). Appends `object` to this stack's
+   * `objects` VERBATIM, exactly as if a typed construct had synthesized it — no L2 construct
+   * (`Service`, `Component`, …) sits between this call and the manifest, and none of them can
+   * block it: this method takes any `typeId`, including one no typed construct in this package
+   * knows about yet. It is what makes "no L2 construct may block reaching L1" structurally true
+   * rather than a promise — there is no registry of "known" typeIds this checks against.
+   *
+   * The one thing it does NOT do that a typed construct does: derive a URN when one is omitted.
+   * `ManifestObjectSchema.urn` is required, so callers supply it — `deriveConstructUrn` (`urn.ts`,
+   * also exported from `./index.js`) is the same deterministic algorithm every typed construct
+   * uses, so an L1 entry can reproduce an L2 one byte-for-byte (see `construct.test.ts`'s "an L1
+   * addManifestEntry object and its L2 equivalent synthesize identically" case).
+   */
+  addManifestEntry(object: ManifestObject): this {
+    this.rawObjectDecls.push(object);
+    return this;
+  }
+
+  /**
+   * L1 — the guaranteed raw relationship door (D16(1)). Declares an edge of ANY `typeId`, from and
+   * to any construct/reference/URN — the same escape hatch `addManifestEntry` is for objects.
+   * `dependsOn`/`consumes`/`owns` are convenience sugar over exactly this call (with `from` fixed
+   * to `this`); reach for this one directly for an edge type none of those three name, or when
+   * `from` is not the construct doing the declaring.
+   */
+  addRelationship(
+    typeId: string,
+    from: IResourceRef | string,
+    to: IResourceRef | string,
+    properties?: Record<string, unknown>
+  ): this {
+    this._registerRelationship({ typeId, from, to, properties });
+    return this;
   }
 
   /**
@@ -489,9 +554,14 @@ export class Stack extends Construct {
    * `construct.determinism.test.ts` exercises.
    */
   synth(): DesiredStateManifest {
-    const objects: ManifestObject[] = this.resources
-      .map((r) => r._toManifestObject())
-      .sort((a, b) => a.urn.localeCompare(b.urn));
+    // L1 raw entries (`addManifestEntry`) sort in seamlessly alongside typed constructs' own
+    // objects — by URN, same as everything else — so which door an object came through leaves no
+    // trace in the synthesized bytes (D16(1): "an L1-authored entry and its L2 equivalent
+    // synthesize identically").
+    const objects: ManifestObject[] = [
+      ...this.resources.map((r) => r._toManifestObject()),
+      ...this.rawObjectDecls
+    ].sort((a, b) => a.urn.localeCompare(b.urn));
 
     const relationships: ManifestRelationship[] = this.relationshipDecls
       .map((decl): ManifestRelationship => ({
@@ -670,6 +740,25 @@ export class ResourceConstruct<TypeId extends string = string>
   // apply time via `assertCampaignTargetsWithinAuthority`). Offering a `.coordinates()` synth
   // method here would just produce a manifest that fails at apply — so it doesn't exist.
 
+  private manifestOverride: Partial<Omit<ManifestObject, "urn" | "typeId">> = {};
+
+  /**
+   * L1 escape hatch, PER-CONSTRUCT (D16(1)): patches this construct's own synthesized manifest
+   * object with fields its typed L2 props don't expose — `name`, `domainId`, `properties`, or
+   * `labels`, applied AFTER whatever the construct's own props computed, so an override always
+   * wins. `urn`/`typeId` are excluded on purpose: those are identity, already settled by the
+   * constructor, and an override that disagreed with them would desynchronize this construct's
+   * `.urn` (still used by every reference to it) from what actually lands in `objects`.
+   *
+   * Composable with repeated calls — each patches over the last, `properties`/`labels` replaced
+   * wholesale (not deep-merged) so the override is exactly what the caller wrote, not a guess at
+   * how to combine it with the construct's own value.
+   */
+  overrideManifestEntry(patch: Partial<Omit<ManifestObject, "urn" | "typeId">>): this {
+    this.manifestOverride = { ...this.manifestOverride, ...patch };
+    return this;
+  }
+
   /** @internal */
   _toManifestObject(): ManifestObject {
     return {
@@ -678,7 +767,8 @@ export class ResourceConstruct<TypeId extends string = string>
       name: this.props.name,
       domainId: this.props.domainId,
       properties: this.props.properties ?? {},
-      labels: this.props.labels ?? {}
+      labels: this.props.labels ?? {},
+      ...this.manifestOverride
     };
   }
 }

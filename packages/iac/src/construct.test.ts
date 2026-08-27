@@ -21,6 +21,7 @@ import {
   synthToFile
 } from "./index.js";
 import { canonicalJson } from "./canonical.js";
+import { deriveConstructUrn } from "./urn.js";
 
 /**
  * Example-based synth test for a realistic small stack (goal statement): two services, a team
@@ -918,5 +919,106 @@ describe("@scp/iac constructs: fromXxx() reference statics (D16(2))", () => {
       ])
     );
     expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+});
+
+/**
+ * D16(1) — the guaranteed L1 escape hatch: `Stack.addManifestEntry`/`addRelationship` (raw doors)
+ * and `ResourceConstruct.overrideManifestEntry` (per-construct patch). Follows the house
+ * "synthesizes identically through the sugar and the stack-level door" pattern already used for
+ * placements/producers/rungs above.
+ */
+describe("@scp/iac constructs: the L1 escape hatch (D16(1))", () => {
+  it("an L1 addManifestEntry object and its L2 equivalent synthesize identically", () => {
+    const l2 = new Stack("l1-vs-l2");
+    new Service(l2, "checkout", { name: "Checkout", properties: { tier: "critical" } });
+
+    const l1 = new Stack("l1-vs-l2"); // same stack name -> same derived URN
+    l1.addManifestEntry({
+      urn: deriveConstructUrn("l1-vs-l2", "service", "checkout"),
+      typeId: "service",
+      name: "Checkout",
+      properties: { tier: "critical" },
+      labels: {}
+    });
+
+    expect(l1.synth()).toEqual(l2.synth());
+  });
+
+  it("addManifestEntry is NOT gated by any registry of known typeIds — an L2-unknown kind synthesizes exactly like any other", () => {
+    // The whole point of D16(1): no L2 construct can block reaching L1. There is no typed
+    // `FuturePipeline` construct in this package; the raw door does not care.
+    const stack = new Stack("l1-unknown-kind");
+    stack.addManifestEntry({
+      urn: "urn:scp:l1-unknown-kind:future-thing:widget",
+      typeId: "future-thing",
+      name: "Widget",
+      properties: {},
+      labels: {}
+    });
+    const manifest = stack.synth();
+    expect(manifest.objects).toEqual([
+      {
+        urn: "urn:scp:l1-unknown-kind:future-thing:widget",
+        typeId: "future-thing",
+        name: "Widget",
+        properties: {},
+        labels: {}
+      }
+    ]);
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it("an L1 addRelationship and the owns() fluent sugar synthesize identically", () => {
+    const sugar = new Stack("l1-rel-sugar");
+    const team = new Team(sugar, "team", { name: "Team" });
+    const svc = new Service(sugar, "svc", { name: "Svc" });
+    team.owns(svc);
+
+    const raw = new Stack("l1-rel-sugar");
+    const rawTeam = new Team(raw, "team", { name: "Team" });
+    const rawSvc = new Service(raw, "svc", { name: "Svc" });
+    raw.addRelationship("owns", rawTeam, rawSvc);
+
+    expect(sugar.synth()).toEqual(raw.synth());
+  });
+
+  it("addRelationship accepts an arbitrary typeId no fluent method names", () => {
+    const stack = new Stack("l1-rel-arbitrary");
+    const a = new Service(stack, "a", { name: "A" });
+    const b = new Service(stack, "b", { name: "B" });
+    stack.addRelationship("publishes_to", a, b, { channel: "stable" });
+    expect(stack.synth().relationships).toEqual([
+      { typeId: "publishes_to", fromUrn: a.urn, toUrn: b.urn, properties: { channel: "stable" } }
+    ]);
+  });
+
+  it("overrideManifestEntry patches fields the typed props don't expose, and WINS over the construct's own properties", () => {
+    const stack = new Stack("l1-override");
+    const svc = new Service(stack, "svc", { name: "Svc", properties: { tier: "low" } });
+    svc.overrideManifestEntry({ properties: { tier: "critical", extra: "field" } });
+
+    const manifest = stack.synth();
+    expect(manifest.objects[0]).toEqual({
+      urn: svc.urn,
+      typeId: "service",
+      name: "Svc",
+      properties: { tier: "critical", extra: "field" },
+      labels: {}
+    });
+  });
+
+  it("overrideManifestEntry composes across repeated calls — each patches over the last", () => {
+    const stack = new Stack("l1-override-compose");
+    const svc = new Service(stack, "svc", { name: "Svc" });
+    svc.overrideManifestEntry({ name: "Renamed" });
+    svc.overrideManifestEntry({ labels: { owner: "platform" } });
+
+    const obj = stack.synth().objects[0];
+    expect(obj?.name).toBe("Renamed");
+    expect(obj?.labels).toEqual({ owner: "platform" });
+    // urn/typeId are excluded from the override surface by design — identity never drifts.
+    expect(obj?.urn).toBe(svc.urn);
+    expect(obj?.typeId).toBe("service");
   });
 });
