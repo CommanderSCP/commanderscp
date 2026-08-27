@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { manifest as argoWorkflowsManifest } from "@scp/plugin-argo-workflows";
 import { MANIFEST_BY_MODULE, validatePluginConfig } from "./plugin-manifests.js";
-import { KNOWN_EXECUTOR_MODULES, isKnownExecutorModule } from "../coordination/executor-bindings-repo.js";
+import {
+  KNOWN_EXECUTOR_MODULES,
+  isKnownExecutorModule
+} from "../coordination/executor-bindings-repo.js";
 
 /**
  * team-pipeline-iac increment 8 — `argo-workflows` IS REACHABLE FROM THE SERVER, not merely from

@@ -406,7 +406,10 @@ async function abort(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResu
     `/api/v1/workflows/${config.namespace}/${encodeURIComponent(name)}`
   );
   if (getStatus === 404) {
-    return { aborted: false, detail: `argo-workflows: workflow '${name}' not found — nothing to abort` };
+    return {
+      aborted: false,
+      detail: `argo-workflows: workflow '${name}' not found — nothing to abort`
+    };
   }
   if (getStatus < 200 || getStatus >= 300) {
     return {
@@ -484,7 +487,8 @@ async function observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEven
     // The workflow's own most-recently-known transition — finish, else start, else creation. Two
     // DISTINCT occurrences (submission, then completion) each get their own occurredAt, so a
     // long-running workflow's eventual completion is not swallowed by an early `since` watermark.
-    const occurredAtRaw = wf.status?.finishedAt ?? wf.status?.startedAt ?? wf.metadata?.creationTimestamp;
+    const occurredAtRaw =
+      wf.status?.finishedAt ?? wf.status?.startedAt ?? wf.metadata?.creationTimestamp;
     if (!occurredAtRaw) continue;
     const occurredAtMs = new Date(occurredAtRaw).getTime();
     if (Number.isNaN(occurredAtMs) || occurredAtMs <= sinceTime) continue;

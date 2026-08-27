@@ -111,9 +111,7 @@ describe("trigger()", () => {
 
   it("throws when the submit response carries no metadata.name/uid, rather than minting a bogus ref", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, namespace: NAMESPACE, token: "test-token" });
-    nock(SERVER_URL)
-      .post(`/api/v1/workflows/${NAMESPACE}/submit`)
-      .reply(200, { metadata: {} });
+    nock(SERVER_URL).post(`/api/v1/workflows/${NAMESPACE}/submit`).reply(200, { metadata: {} });
 
     await expect(
       createArgoWorkflowsExecutorPlugin().trigger(ctx, {
@@ -327,7 +325,10 @@ describe("abort()", () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, namespace: NAMESPACE, token: "test-token" });
     nock(SERVER_URL)
       .get(`/api/v1/workflows/${NAMESPACE}/running-wf`)
-      .reply(200, { metadata: { name: "running-wf", uid: "uid-running" }, status: { phase: "Running" } });
+      .reply(200, {
+        metadata: { name: "running-wf", uid: "uid-running" },
+        status: { phase: "Running" }
+      });
     const terminateScope = nock(SERVER_URL)
       .put(`/api/v1/workflows/${NAMESPACE}/running-wf/terminate`)
       .reply(200, {});
@@ -355,7 +356,10 @@ describe("abort()", () => {
     const ctx = testCtx({ serverUrl: SERVER_URL, namespace: NAMESPACE, token: "test-token" });
     nock(SERVER_URL)
       .get(`/api/v1/workflows/${NAMESPACE}/done-wf`)
-      .reply(200, { metadata: { name: "done-wf", uid: "uid-done" }, status: { phase: "Succeeded" } });
+      .reply(200, {
+        metadata: { name: "done-wf", uid: "uid-done" },
+        status: { phase: "Succeeded" }
+      });
     const terminateScope = nock(SERVER_URL)
       .put(`/api/v1/workflows/${NAMESPACE}/done-wf/terminate`)
       .reply(200, {});
@@ -386,9 +390,7 @@ describe("abort()", () => {
         metadata: { name: "fail-abort-wf", uid: "uid-fail-abort" },
         status: { phase: "Running" }
       });
-    nock(SERVER_URL)
-      .put(`/api/v1/workflows/${NAMESPACE}/fail-abort-wf/terminate`)
-      .reply(500, {});
+    nock(SERVER_URL).put(`/api/v1/workflows/${NAMESPACE}/fail-abort-wf/terminate`).reply(500, {});
 
     const result = await createArgoWorkflowsExecutorPlugin().abort(ctx, {
       externalId: "fail-abort-wf::uid-fail-abort"
@@ -447,7 +449,9 @@ describe("observe()", () => {
 
     expect(firstPoll[0]?.correlation.stateRef).toBe("uid-stable::Running");
     expect(secondPoll[0]?.correlation.stateRef).toBe(firstPoll[0]?.correlation.stateRef);
-    expect(secondPoll[0]?.correlation.correlationKey).toBe(firstPoll[0]?.correlation.correlationKey);
+    expect(secondPoll[0]?.correlation.correlationKey).toBe(
+      firstPoll[0]?.correlation.correlationKey
+    );
   });
 
   it("a phase transition (Running -> Succeeded, finishedAt now set) produces a DIFFERENT stateRef and a NEW occurredAt — a genuine transition is not swallowed", async () => {
@@ -613,15 +617,11 @@ describe("auth", () => {
 describe("config validation", () => {
   it("throws when config.serverUrl is missing", async () => {
     const ctx = testCtx({ namespace: NAMESPACE });
-    await expect(
-      createArgoWorkflowsExecutorPlugin().observe(ctx)
-    ).rejects.toThrow(/serverUrl/);
+    await expect(createArgoWorkflowsExecutorPlugin().observe(ctx)).rejects.toThrow(/serverUrl/);
   });
 
   it("throws when config.namespace is missing", async () => {
     const ctx = testCtx({ serverUrl: SERVER_URL });
-    await expect(
-      createArgoWorkflowsExecutorPlugin().observe(ctx)
-    ).rejects.toThrow(/namespace/);
+    await expect(createArgoWorkflowsExecutorPlugin().observe(ctx)).rejects.toThrow(/namespace/);
   });
 });
