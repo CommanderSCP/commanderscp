@@ -1433,6 +1433,38 @@ describe("readFileAtRef()", () => {
     expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 4096 });
   });
 
+  // -----------------------------------------------------------------------------------------
+  // THE TRANSPORT bound (M21.2 review MAJOR 5, closed) — a SEPARATE, larger ceiling from the
+  // decode-bound `too_large` refusals above. GitHub is incidentally bounded by its OWN
+  // `encoding: "none"` cutoff above 1MB (the very next test), but this adapter now sends an
+  // explicit transport ceiling on every call regardless — defense in depth, not a dependency on
+  // that provider behavior.
+  // -----------------------------------------------------------------------------------------
+
+  it("THROWS on a response so large it exceeds the TRANSPORT ceiling, before decodeBoundedBase64 ever runs", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    const hostileContent = "A".repeat(2_500_000);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/huge.bin`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "huge.bin",
+        sha: "blobhuge",
+        type: "file",
+        encoding: "base64",
+        content: hostileContent
+        // Deliberately NO `size` field — must be caught by the TRANSPORT bound, not gate 2.
+      });
+
+    await expect(
+      githubAdapter.readFileAtRef(ctx, { path: "huge.bin", ref: "main" })
+    ).rejects.toThrow(
+      /github readFileAtRef: response from .* exceeded the \d+-byte transport ceiling/
+    );
+  });
+
   it('refuses GitHub\'s 1MB–100MB response shape (`content: ""`, `encoding: "none"`) as too_large, NOT as an empty file', async () => {
     const { config, ctx, authHeader, base } = setup();
     nockResolveRef(base, authHeader, config);
@@ -1743,6 +1775,233 @@ describe("readFileAtRef()", () => {
   });
 });
 
+// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads. GitHub's
+// recursive tree listing (`GET .../git/trees/{sha}?recursive=1`) is one response, `truncated:
+// true` when it hit GitHub's own ceiling.
+// -------------------------------------------------------------------------------------------
+
+describe("readFilesAtRef()", () => {
+  const TREE_COMMIT_SHA = "6f".repeat(20);
+
+  /** GitHub wraps contents base64 at 60 chars with `\n`. Fixtures do the same (see
+   *  `readFileAtRef()`'s own `githubBase64` — a separate `describe` scope, hence duplicated). */
+  function githubBase64(text: string): string {
+    const flat = Buffer.from(text, "utf8").toString("base64");
+    return (flat.match(/.{1,60}/g) ?? []).join("\n");
+  }
+
+  function nockResolveTreeRef(base: string, authHeader: string, config: GithubConfig) {
+    return nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits/main`)
+      .reply(200, { sha: TREE_COMMIT_SHA });
+  }
+
+  it("lists the tree ONCE, matches globs, and reads every matched file at the SAME resolved commit", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveTreeRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/git/trees/${TREE_COMMIT_SHA}`)
+      .query({ recursive: "1" })
+      .reply(200, {
+        tree: [
+          { path: "service-a", type: "tree" },
+          { path: "service-a/go.mod", type: "blob" },
+          { path: "service-a/main.go", type: "blob" },
+          { path: "service-b", type: "tree" },
+          { path: "service-b/package.json", type: "blob" },
+          { path: "README.md", type: "blob" }
+        ],
+        truncated: false
+      });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/service-a/go.mod`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        path: "service-a/go.mod",
+        sha: "blobgomod",
+        type: "file",
+        size: 18,
+        encoding: "base64",
+        content: githubBase64("module a\n\ngo 1.22\n")
+      });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/service-b/package.json`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        path: "service-b/package.json",
+        sha: "blobpkg",
+        type: "file",
+        size: 2,
+        encoding: "base64",
+        content: githubBase64("{}")
+      });
+
+    const result = await githubAdapter.readFilesAtRef(ctx, {
+      ref: "main",
+      globs: ["**/go.mod", "**/package.json"]
+    });
+
+    expect(result.outcome).toBe("found");
+    if (result.outcome !== "found") throw new Error("unreachable");
+    expect(result.commitSha).toBe(TREE_COMMIT_SHA);
+    expect(result.files.map((f) => f.path).sort()).toEqual([
+      "service-a/go.mod",
+      "service-b/package.json"
+    ]);
+    for (const file of result.files) {
+      expect(file.result.outcome).toBe("found");
+      if (file.result.outcome !== "found") throw new Error("unreachable");
+      expect(file.result.commitSha).toBe(TREE_COMMIT_SHA);
+    }
+  });
+
+  it("refuses an EMPTY globs array before any HTTP happens", async () => {
+    // Deliberately NOT `setup()`: that helper pre-registers the installation-token nock every
+    // OTHER test in this file consumes via `getInstallationToken`, but this call refuses before
+    // ANY HTTP (including the token exchange), so a pre-registered-but-uncalled interceptor would
+    // fail the file-wide `afterEach` for the wrong reason.
+    const ctx = buildTestCtx(buildGithubConfig());
+    await expect(githubAdapter.readFilesAtRef(ctx, { ref: "main", globs: [] })).rejects.toThrow(
+      /github readFilesAtRef: globs must be a non-empty array/
+    );
+  });
+
+  it("a single OVERSIZE matched file is a routine per-file `refused` entry, not a batch failure", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveTreeRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/git/trees/${TREE_COMMIT_SHA}`)
+      .query({ recursive: "1" })
+      .reply(200, { tree: [{ path: "package.json", type: "blob" }], truncated: false });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/package.json`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        path: "package.json",
+        sha: "blobbig",
+        type: "file",
+        size: 9_000_000,
+        encoding: "base64",
+        content: githubBase64("{}")
+      });
+
+    const result = await githubAdapter.readFilesAtRef(ctx, {
+      ref: "main",
+      globs: ["package.json"]
+    });
+    expect(result.outcome).toBe("found");
+    if (result.outcome !== "found") throw new Error("unreachable");
+    expect(result.files).toEqual([
+      {
+        path: "package.json",
+        result: expect.objectContaining({ outcome: "refused", reason: "too_large" })
+      }
+    ]);
+  });
+
+  it("THROWS a typed GitProviderTreeBoundError when matched files exceed maxFiles — loud, not a silent first-N", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveTreeRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/git/trees/${TREE_COMMIT_SHA}`)
+      .query({ recursive: "1" })
+      .reply(200, {
+        tree: [
+          { path: "a/go.mod", type: "blob" },
+          { path: "b/go.mod", type: "blob" },
+          { path: "c/go.mod", type: "blob" }
+        ],
+        truncated: false
+      });
+    // NEGATIVE CONTROL: no `contents` interceptor registered.
+
+    await expect(
+      githubAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["**/go.mod"], maxFiles: 2 })
+    ).rejects.toThrow(/github readFilesAtRef: exceeded maxFiles \(2\)/);
+  });
+
+  it("THROWS a typed GitProviderTreeBoundError when cumulative bytes exceed maxTotalBytes", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveTreeRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/git/trees/${TREE_COMMIT_SHA}`)
+      .query({ recursive: "1" })
+      .reply(200, {
+        tree: [
+          { path: "a.txt", type: "blob" },
+          { path: "b.txt", type: "blob" }
+        ],
+        truncated: false
+      });
+    const chunk = "x".repeat(600);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/a.txt`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        path: "a.txt",
+        sha: "bloba",
+        type: "file",
+        size: 600,
+        encoding: "base64",
+        content: githubBase64(chunk)
+      });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/b.txt`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        path: "b.txt",
+        sha: "blobb",
+        type: "file",
+        size: 600,
+        encoding: "base64",
+        content: githubBase64(chunk)
+      });
+
+    await expect(
+      githubAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["*.txt"], maxTotalBytes: 1000 })
+    ).rejects.toThrow(/github readFilesAtRef: exceeded maxTotalBytes \(1000\)/);
+  });
+
+  it("THROWS a typed GitProviderTreeBoundError when GitHub's OWN listing reports truncated:true", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveTreeRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/git/trees/${TREE_COMMIT_SHA}`)
+      .query({ recursive: "1" })
+      .reply(200, { tree: [{ path: "go.mod", type: "blob" }], truncated: true });
+
+    await expect(
+      githubAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["**/go.mod"] })
+    ).rejects.toThrow(/github readFilesAtRef: exceeded maxEntriesScanned/);
+  });
+
+  it("an unresolvable ref is not_found, same shape as readFileAtRef's", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits/no-such-branch`)
+      .reply(404, { message: "Not Found" });
+
+    const result = await githubAdapter.readFilesAtRef(ctx, {
+      ref: "no-such-branch",
+      globs: ["**/go.mod"]
+    });
+    expect(result).toMatchObject({ outcome: "not_found", missing: "ref" });
+  });
+});
+
 /**
  * ============================================================================================
  * THIS ADAPTER WRITES NOTHING (owner decision 2026-08-15; ADR-0032 §9)
@@ -1765,5 +2024,6 @@ describe("github adapter surface — read-only", () => {
       expect(hook in githubAdapter, `${hook} must not be on the github adapter`).toBe(false);
     }
     expect(typeof githubAdapter.readFileAtRef).toBe("function");
+    expect(typeof githubAdapter.readFilesAtRef).toBe("function");
   });
 });

@@ -15,20 +15,33 @@ import type {
 } from "@scp/plugin-api";
 import {
   assertNoRedirect,
+  assertNonEmptyGlobs,
   assertSafeRef,
   assertSafeRepo,
   assertSafeRepoPath,
   createExecutorPluginFromAdapter,
+  createTreeReadAccumulator,
+  createTreeScanAccumulator,
   decodeBoundedBase64,
+  DEFAULT_API_RESPONSE_MAX_BYTES,
+  DEFAULT_TREE_RESPONSE_MAX_BYTES,
   encodePathSegments,
+  gitProviderTreeBoundError,
   normalizeCorrelation,
   resolveMaxBytes,
+  resolveMaxEntriesScanned,
+  resolveMaxFiles,
+  resolveMaxResponseBytes,
+  resolveMaxTotalBytes,
   resolveProviderBaseUrl,
   wrapProviderRequestError,
   type GitProviderAdapter,
   type GitProviderEventHint,
   type ReadFileAtRefRequest,
-  type ReadFileAtRefResult
+  type ReadFileAtRefResult,
+  type ReadTreeAtRefFile,
+  type ReadTreeAtRefRequest,
+  type ReadTreeAtRefResult
 } from "@scp/git-provider-core";
 
 /**
@@ -178,7 +191,10 @@ async function getInstallationToken(ctx: PluginContext, config: GithubConfig): P
   const response = await ctx.http.request({
     method: "POST",
     url: `${config.apiBaseUrl}/app/installations/${config.installationId}/access_tokens`,
-    headers: { authorization: `Bearer ${jwt}`, accept: "application/vnd.github+json" }
+    headers: { authorization: `Bearer ${jwt}`, accept: "application/vnd.github+json" },
+    // Same census property as every other call in this file (M21.2 review MAJOR 5): this response
+    // is a small JSON token object, but "small in practice" is not a bound — this is one.
+    maxResponseBytes: DEFAULT_API_RESPONSE_MAX_BYTES
   });
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`github: installation token request returned HTTP ${response.status}`);
@@ -206,19 +222,27 @@ async function githubApiHeaders(
   };
 }
 
+/**
+ * `maxResponseBytes` defaults to {@link DEFAULT_API_RESPONSE_MAX_BYTES} — bounding EVERY call
+ * through this function, not just `readFileAtRef`'s (M21.2 review MAJOR 5's fix, applied to the
+ * one funnel every GitHub REST call in this adapter goes through). `readGet`'s contents fetch
+ * overrides it with the tighter, decode-bound-derived ceiling from `resolveMaxResponseBytes`.
+ */
 async function api(
   ctx: PluginContext,
   config: GithubConfig,
   method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
   path: string,
-  body?: unknown
+  body?: unknown,
+  maxResponseBytes: number = DEFAULT_API_RESPONSE_MAX_BYTES
 ): Promise<{ status: number; body: unknown; headers: Record<string, string> }> {
   const headers = await githubApiHeaders(ctx, config);
   const response = await ctx.http.request({
     method,
     url: `${config.apiBaseUrl}${path}`,
     headers,
-    body
+    body,
+    maxResponseBytes
   });
   // Response headers are carried through (additively — every pre-M21.2 call site destructures only
   // `{ status, body }` and is unaffected) so the read path can name a redirect's `Location` in its
@@ -698,16 +722,133 @@ interface GithubContentFile {
 async function readGet(
   ctx: PluginContext,
   config: GithubConfig,
-  path: string
+  path: string,
+  maxResponseBytes: number = DEFAULT_API_RESPONSE_MAX_BYTES
 ): Promise<{ status: number; body: unknown }> {
   const url = `${config.apiBaseUrl}${path}`;
   try {
-    const response = await api(ctx, config, "GET", path);
+    const response = await api(ctx, config, "GET", path, undefined, maxResponseBytes);
     assertNoRedirect("github", url, response.status, response.headers.location);
     return response;
   } catch (err) {
     throw wrapProviderRequestError("github", url, err);
   }
+}
+
+/** See gitea's `RefResolution` for why this is deliberately narrower than
+ *  `ReadFileAtRefNotFound`/`ReadTreeAtRefNotFound` and shared between `readFileAtRef` (one file)
+ *  and `readFilesAtRef` (a whole batch reads ONE resolution and re-uses it). */
+type RefResolution =
+  | { outcome: "resolved"; commitSha: string }
+  | { outcome: "not_found"; missing: "ref"; detail: string };
+
+/** STEP 1 — resolve `ref` to a commit sha. Reading the blob at that SHA (rather than at the ref
+ *  again) closes the window where a branch moves between resolution and content fetch. */
+async function resolveGithubRefToCommit(
+  ctx: PluginContext,
+  config: GithubConfig,
+  repoPath: string,
+  repo: string,
+  ref: string,
+  maxResponseBytes: number
+): Promise<RefResolution> {
+  const resolved = await readGet(
+    ctx,
+    config,
+    `/repos/${repoPath}/commits/${encodePathSegments(ref)}`,
+    maxResponseBytes
+  );
+  if (resolved.status === 404) {
+    // GitHub 404s an unknown ref AND an inaccessible repo identically (it hides private repos
+    // behind 404 by design), so this cannot distinguish "no such branch" from "no access" — the
+    // detail says so rather than asserting the more flattering one.
+    return {
+      outcome: "not_found",
+      missing: "ref",
+      detail: `github: no commit for ref '${ref}' in ${repo} (GitHub also returns 404 for a repo the installation cannot see)`
+    };
+  }
+  if (resolved.status < 200 || resolved.status >= 300) {
+    throw new Error(`github readFileAtRef: resolving ref returned HTTP ${resolved.status}`);
+  }
+  const commitSha = (resolved.body as { sha?: unknown } | undefined)?.sha;
+  if (typeof commitSha !== "string" || commitSha.length === 0) {
+    throw new Error(
+      `github readFileAtRef: commit response for ref '${ref}' carried no sha — refusing to report a resolved commit this call did not actually resolve`
+    );
+  }
+  return { outcome: "resolved", commitSha };
+}
+
+/** STEP 2 — the blob, pinned to an already-resolved commit sha. Factored out of `readFileAtRef` so
+ *  `readFilesAtRef` can call it once per matched path against the SAME resolved commit. */
+async function readGithubFileAtCommit(
+  ctx: PluginContext,
+  config: GithubConfig,
+  repoPath: string,
+  repo: string,
+  commitSha: string,
+  path: string,
+  requestedRef: string,
+  maxBytes: number,
+  maxResponseBytes: number
+): Promise<ReadFileAtRefResult> {
+  const contents = await readGet(
+    ctx,
+    config,
+    `/repos/${repoPath}/contents/${encodePathSegments(path)}?ref=${encodeURIComponent(commitSha)}`,
+    maxResponseBytes
+  );
+  if (contents.status === 404) {
+    return {
+      outcome: "not_found",
+      missing: "path",
+      path,
+      requestedRef,
+      detail: `github: no file at '${path}' in ${repo}@${commitSha}`
+    };
+  }
+  if (contents.status < 200 || contents.status >= 300) {
+    throw new Error(`github readFileAtRef: contents returned HTTP ${contents.status}`);
+  }
+
+  // A directory comes back as an ARRAY from the very same route — the one shape difference that
+  // separates "read a file" from the marker-file walk `discover()` does.
+  if (Array.isArray(contents.body)) {
+    return {
+      outcome: "refused",
+      reason: "not_a_file",
+      detail: `github: '${path}' is a directory (contents returned a listing of ${contents.body.length} entries), not a file`,
+      path,
+      requestedRef
+    };
+  }
+
+  const entry = (contents.body ?? {}) as GithubContentFile;
+  if (entry.type !== "file") {
+    // `symlink` and `submodule` are the other two documented `type` values; neither carries bytes
+    // this can honestly hand back as the file's content.
+    return {
+      outcome: "refused",
+      reason: "not_a_file",
+      detail: `github: '${path}' has content type '${entry.type ?? "unknown"}', not 'file'`,
+      path,
+      requestedRef,
+      sizeBytes: entry.size
+    };
+  }
+
+  return decodeBoundedBase64({
+    provider: "github",
+    path,
+    requestedRef,
+    commitSha,
+    base64: entry.content ?? "",
+    encoding: entry.encoding,
+    declaredSizeBytes: entry.size,
+    maxBytes,
+    blobSha: entry.sha
+  });
 }
 
 /** Adapter `readFileAtRef` hook — see `GitProviderAdapter.readFileAtRef` for the contract. */
@@ -718,6 +859,13 @@ async function readFileAtRef(
   const config = asConfig(ctx.config);
   const repo = request.repo ?? `${config.owner}/${config.repo}`;
   const maxBytes = resolveMaxBytes(request.maxBytes);
+  // The TRANSPORT ceiling passed to every HTTP call this flow makes (M21.2 review MAJOR 5) — see
+  // `resolveMaxResponseBytes`'s doc for why it is derived from `maxBytes` rather than a flat
+  // constant. Applied to the ref-resolution call too, not just the contents fetch: harmless (that
+  // response is tiny) and simpler than threading two different bounds through one flow. GitHub's
+  // contents API is incidentally bounded already (`encoding: "none"` above 1MB) but this makes the
+  // bound explicit rather than relying on that provider behavior.
+  const maxResponseBytes = resolveMaxResponseBytes(maxBytes);
   // All THREE caller-supplied strings that reach a route are asserted before any HTTP happens.
   // `repo` and `ref` are not decoration: `encodeURIComponent("..")` is `".."`, so encoding alone
   // let a ref of `../../../../user` reach `GET https://api.github.com/user` with this binding's
@@ -738,94 +886,144 @@ async function readFileAtRef(
   // (a space in a path, for instance).
   const repoPath = repo;
 
-  // STEP 1 — resolve the ref to a commit sha, and STEP 2 reads at that SHA rather than at the ref.
-  // The two-call shape is forced (GitHub's contents response carries a blob sha, never a commit
-  // sha), but reading at the resolved sha is a deliberate choice on top of it: a branch can move
-  // between the two calls, and an inventory row that says "read at commit X" must be true of the
-  // bytes actually parsed. Reading at the ref again would make that a claim rather than a fact.
-  const resolved = await readGet(
+  // STEP 1 resolves the ref to a commit sha; STEP 2 reads at that SHA rather than at the ref
+  // again — the two-call shape is forced (GitHub's contents response carries a blob sha, never a
+  // commit sha), but reading at the resolved sha is a deliberate choice on top of it: a branch can
+  // move between the two calls, and an inventory row that says "read at commit X" must be true of
+  // the bytes actually parsed.
+  const resolution = await resolveGithubRefToCommit(
     ctx,
     config,
-    `/repos/${repoPath}/commits/${encodePathSegments(request.ref)}`
+    repoPath,
+    repo,
+    request.ref,
+    maxResponseBytes
   );
-  if (resolved.status === 404) {
-    // GitHub 404s an unknown ref AND an inaccessible repo identically (it hides private repos
-    // behind 404 by design), so this cannot distinguish "no such branch" from "no access" — the
-    // detail says so rather than asserting the more flattering one.
+  if (resolution.outcome === "not_found") {
+    return { ...resolution, path: request.path, requestedRef: request.ref };
+  }
+
+  return readGithubFileAtCommit(
+    ctx,
+    config,
+    repoPath,
+    repo,
+    resolution.commitSha,
+    request.path,
+    request.ref,
+    maxBytes,
+    maxResponseBytes
+  );
+}
+
+// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads. GitHub's
+// Trees API returns EVERY entry in ONE response (`recursive=1`, no page/per_page for that mode),
+// capped at GitHub's own internal ceiling (100,000 entries / 7MB) and flagged `truncated: true` if
+// it hit that ceiling — there is no follow-up page to ask for, so a truncated response is refused
+// here as `maxEntriesScanned` rather than silently matching only what arrived.
+// -------------------------------------------------------------------------------------------
+
+interface GithubTreeEntry {
+  path?: string;
+  type?: string;
+}
+
+interface GithubTreeResponse {
+  tree?: GithubTreeEntry[];
+  truncated?: boolean;
+}
+
+/** Adapter `readFilesAtRef` hook — see `GitProviderAdapter.readFilesAtRef` for the contract. */
+async function readFilesAtRef(
+  ctx: PluginContext,
+  request: ReadTreeAtRefRequest
+): Promise<ReadTreeAtRefResult> {
+  assertNonEmptyGlobs("github", request.globs);
+  const config = asConfig(ctx.config);
+  const repo = request.repo ?? `${config.owner}/${config.repo}`;
+  const maxFileBytes = resolveMaxBytes(request.maxFileBytes);
+  const maxFiles = resolveMaxFiles(request.maxFiles);
+  const maxTotalBytes = resolveMaxTotalBytes(request.maxTotalBytes);
+  const maxEntriesScanned = resolveMaxEntriesScanned(request.maxEntriesScanned);
+  const maxResponseBytes = resolveMaxResponseBytes(maxFileBytes);
+  assertSafeRepo("github", repo, 2);
+  assertSafeRef("github", request.ref);
+  const repoPath = repo;
+
+  const resolution = await resolveGithubRefToCommit(
+    ctx,
+    config,
+    repoPath,
+    repo,
+    request.ref,
+    maxResponseBytes
+  );
+  if (resolution.outcome === "not_found") {
     return {
       outcome: "not_found",
-      missing: "ref",
-      path: request.path,
+      missing: resolution.missing,
       requestedRef: request.ref,
-      detail: `github: no commit for ref '${request.ref}' in ${repo} (GitHub also returns 404 for a repo the installation cannot see)`
+      detail: resolution.detail
     };
   }
-  if (resolved.status < 200 || resolved.status >= 300) {
-    throw new Error(`github readFileAtRef: resolving ref returned HTTP ${resolved.status}`);
+  const { commitSha } = resolution;
+
+  // ONE call: the recursive tree listing for the whole repo at this commit, transport-bounded so
+  // a provider that ignores `recursive`/its own truncation contract cannot hand back an unbounded
+  // response.
+  const listing = await readGet(
+    ctx,
+    config,
+    `/repos/${repoPath}/git/trees/${encodeURIComponent(commitSha)}?recursive=1`,
+    DEFAULT_TREE_RESPONSE_MAX_BYTES
+  );
+  if (listing.status < 200 || listing.status >= 300) {
+    throw new Error(`github readFilesAtRef: tree listing returned HTTP ${listing.status}`);
   }
-  const commitSha = (resolved.body as { sha?: unknown } | undefined)?.sha;
-  if (typeof commitSha !== "string" || commitSha.length === 0) {
-    throw new Error(
-      `github readFileAtRef: commit response for ref '${request.ref}' carried no sha — refusing to report a resolved commit this call did not actually resolve`
+  const tree = (listing.body ?? {}) as GithubTreeResponse;
+  const accumulator = createTreeScanAccumulator(
+    "github",
+    request.globs,
+    maxFiles,
+    maxEntriesScanned
+  );
+  if (tree.truncated) {
+    throw gitProviderTreeBoundError(
+      "github",
+      "maxEntriesScanned",
+      maxEntriesScanned,
+      `github's own tree listing for ${repo}@${commitSha} reported truncated:true — the repo has ` +
+        `more entries than github will return in one recursive listing, so this call cannot ` +
+        `honestly enumerate it to completion`
     );
   }
-
-  // STEP 2 — the blob, pinned to the sha from step 1.
-  const contents = await readGet(
-    ctx,
-    config,
-    `/repos/${repoPath}/contents/${encodePathSegments(request.path)}?ref=${encodeURIComponent(commitSha)}`
+  accumulator.addPage(
+    (tree.tree ?? []).map((entry) => ({
+      path: entry.path ?? "",
+      type: entry.type ?? "unknown"
+    }))
   );
-  if (contents.status === 404) {
-    return {
-      outcome: "not_found",
-      missing: "path",
-      path: request.path,
-      requestedRef: request.ref,
-      detail: `github: no file at '${request.path}' in ${repo}@${commitSha}`
-    };
-  }
-  if (contents.status < 200 || contents.status >= 300) {
-    throw new Error(`github readFileAtRef: contents returned HTTP ${contents.status}`);
+
+  const readAccumulator = createTreeReadAccumulator("github", maxTotalBytes);
+  const files: ReadTreeAtRefFile[] = [];
+  for (const path of accumulator.matched) {
+    const result = await readGithubFileAtCommit(
+      ctx,
+      config,
+      repoPath,
+      repo,
+      commitSha,
+      path,
+      request.ref,
+      maxFileBytes,
+      maxResponseBytes
+    );
+    if (result.outcome === "found") readAccumulator.addFileBytes(result.sizeBytes);
+    files.push({ path, result });
   }
 
-  // A directory comes back as an ARRAY from the very same route — the one shape difference that
-  // separates "read a file" from the marker-file walk `discover()` does.
-  if (Array.isArray(contents.body)) {
-    return {
-      outcome: "refused",
-      reason: "not_a_file",
-      detail: `github: '${request.path}' is a directory (contents returned a listing of ${contents.body.length} entries), not a file`,
-      path: request.path,
-      requestedRef: request.ref
-    };
-  }
-
-  const entry = (contents.body ?? {}) as GithubContentFile;
-  if (entry.type !== "file") {
-    // `symlink` and `submodule` are the other two documented `type` values; neither carries bytes
-    // this can honestly hand back as the file's content.
-    return {
-      outcome: "refused",
-      reason: "not_a_file",
-      detail: `github: '${request.path}' has content type '${entry.type ?? "unknown"}', not 'file'`,
-      path: request.path,
-      requestedRef: request.ref,
-      sizeBytes: entry.size
-    };
-  }
-
-  return decodeBoundedBase64({
-    provider: "github",
-    path: request.path,
-    requestedRef: request.ref,
-    commitSha,
-    base64: entry.content ?? "",
-    encoding: entry.encoding,
-    declaredSizeBytes: entry.size,
-    maxBytes,
-    blobSha: entry.sha
-  });
+  return { outcome: "found", requestedRef: request.ref, commitSha, files };
 }
 
 /**
@@ -850,7 +1048,8 @@ export const githubAdapter: GitProviderAdapter = {
   verifyWebhook: verifyGithubWebhookSignature,
   mapEvent: mapGithubWebhookEventToHint,
   mapStatusToPhase: mapConclusionToPhase,
-  readFileAtRef
+  readFileAtRef,
+  readFilesAtRef
 };
 
 export const githubExecutorPlugin: ExecutorPlugin = createExecutorPluginFromAdapter(githubAdapter);

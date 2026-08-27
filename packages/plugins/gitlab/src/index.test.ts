@@ -873,6 +873,35 @@ describe("readFileAtRef()", () => {
     expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 4096 });
   });
 
+  // -----------------------------------------------------------------------------------------
+  // THE TRANSPORT bound (M21.2 review MAJOR 5, closed) — a SEPARATE, larger ceiling from the
+  // decode-bound `too_large` refusals above. GitLab was the provider with the CLEAREST exposure:
+  // no `encoding: "none"` cutoff of any kind, arbitrarily large blobs served inline as base64.
+  // -----------------------------------------------------------------------------------------
+
+  it("THROWS on a response so large it exceeds the TRANSPORT ceiling, before decodeBoundedBase64 ever runs", async () => {
+    const { ctx, token, base, pid } = setup();
+    const hostileContent = "A".repeat(2_500_000);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/huge.bin`)
+      .query({ ref: "main" })
+      .reply(200, {
+        file_path: "huge.bin",
+        encoding: "base64",
+        content: hostileContent,
+        blob_id: "blobhuge",
+        commit_id: COMMIT_ID
+        // Deliberately NO `size` field — must be caught by the TRANSPORT bound, not gate 2.
+      });
+
+    await expect(
+      gitlabAdapter.readFileAtRef(ctx, { path: "huge.bin", ref: "main" })
+    ).rejects.toThrow(
+      /gitlab readFileAtRef: response from .* exceeded the \d+-byte transport ceiling/
+    );
+  });
+
   it("refuses a BINARY file rather than returning replacement-character mojibake", async () => {
     const { ctx, token, base, pid } = setup();
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
@@ -1065,6 +1094,218 @@ describe("readFileAtRef()", () => {
   });
 });
 
+// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads. GitLab is the
+// one provider that genuinely PAGINATES its tree listing (`repository/tree?recursive=true`,
+// standard `per_page`/`page`) and carries no commit identity in that listing, so this resolves
+// `ref` to a commit sha FIRST via `repository/commits/:sha_or_ref`.
+// -------------------------------------------------------------------------------------------
+
+describe("readFilesAtRef()", () => {
+  const TREE_COMMIT_SHA = "7a".repeat(20);
+
+  function nockResolveTreeRef(base: string, token: string, pid: string) {
+    return nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/commits/main`)
+      .reply(200, { id: TREE_COMMIT_SHA });
+  }
+
+  it("resolves the ref to a commit, lists the tree across PAGES, matches globs, and reads every matched file at the SAME resolved commit", async () => {
+    const { ctx, token, base, pid } = setup();
+    nockResolveTreeRef(base, token, pid);
+    // Page 1: exactly 100 entries (a FULL page — the loop must ask for page 2 rather than
+    // assuming this was the last one).
+    const page1 = Array.from({ length: 100 }, (_, i) => ({
+      path: `pkg${i}/file${i}.txt`,
+      type: "blob"
+    }));
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/tree`)
+      .query({ recursive: "true", ref: TREE_COMMIT_SHA, per_page: "100", page: "1" })
+      .reply(200, page1);
+    // Page 2: SHORT (2 entries) — the signal this was the last page. One of the two matches.
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/tree`)
+      .query({ recursive: "true", ref: TREE_COMMIT_SHA, per_page: "100", page: "2" })
+      .reply(200, [
+        { path: "service-a", type: "tree" },
+        { path: "service-a/go.mod", type: "blob" }
+      ]);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/service-a%2Fgo.mod`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        file_path: "service-a/go.mod",
+        size: 18,
+        encoding: "base64",
+        content: Buffer.from("module a\n\ngo 1.22\n", "utf8").toString("base64"),
+        blob_id: "blobgomod",
+        commit_id: TREE_COMMIT_SHA
+      });
+
+    const result = await gitlabAdapter.readFilesAtRef(ctx, {
+      ref: "main",
+      globs: ["**/go.mod"]
+    });
+
+    expect(result.outcome).toBe("found");
+    if (result.outcome !== "found") throw new Error("unreachable");
+    expect(result.commitSha).toBe(TREE_COMMIT_SHA);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]).toMatchObject({
+      path: "service-a/go.mod",
+      result: { outcome: "found", commitSha: TREE_COMMIT_SHA, requestedRef: "main" }
+    });
+  });
+
+  it("refuses an EMPTY globs array before any HTTP happens", async () => {
+    const { ctx } = setup();
+    await expect(gitlabAdapter.readFilesAtRef(ctx, { ref: "main", globs: [] })).rejects.toThrow(
+      /gitlab readFilesAtRef: globs must be a non-empty array/
+    );
+  });
+
+  it("a single OVERSIZE matched file is a routine per-file `refused` entry, not a batch failure", async () => {
+    const { ctx, token, base, pid } = setup();
+    nockResolveTreeRef(base, token, pid);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/tree`)
+      .query({ recursive: "true", ref: TREE_COMMIT_SHA, per_page: "100", page: "1" })
+      .reply(200, [{ path: "package.json", type: "blob" }]);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/package.json`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        file_path: "package.json",
+        size: 9_000_000,
+        encoding: "base64",
+        content: Buffer.from("{}", "utf8").toString("base64"),
+        blob_id: "blobbig",
+        commit_id: TREE_COMMIT_SHA
+      });
+
+    const result = await gitlabAdapter.readFilesAtRef(ctx, {
+      ref: "main",
+      globs: ["package.json"]
+    });
+    expect(result.outcome).toBe("found");
+    if (result.outcome !== "found") throw new Error("unreachable");
+    expect(result.files).toEqual([
+      {
+        path: "package.json",
+        result: expect.objectContaining({ outcome: "refused", reason: "too_large" })
+      }
+    ]);
+  });
+
+  it("THROWS a typed GitProviderTreeBoundError when matched files exceed maxFiles — loud, not a silent first-N", async () => {
+    const { ctx, token, base, pid } = setup();
+    nockResolveTreeRef(base, token, pid);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/tree`)
+      .query({ recursive: "true", ref: TREE_COMMIT_SHA, per_page: "100", page: "1" })
+      .reply(200, [
+        { path: "a/go.mod", type: "blob" },
+        { path: "b/go.mod", type: "blob" },
+        { path: "c/go.mod", type: "blob" }
+      ]);
+    // NEGATIVE CONTROL: no page-2 or `files` interceptor registered — if maxFiles were not
+    // enforced DURING the scan, this test would fail on an unmatched nock interceptor instead.
+
+    await expect(
+      gitlabAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["**/go.mod"], maxFiles: 2 })
+    ).rejects.toThrow(/gitlab readFilesAtRef: exceeded maxFiles \(2\)/);
+  });
+
+  it("THROWS a typed GitProviderTreeBoundError when cumulative bytes exceed maxTotalBytes", async () => {
+    const { ctx, token, base, pid } = setup();
+    nockResolveTreeRef(base, token, pid);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/tree`)
+      .query({ recursive: "true", ref: TREE_COMMIT_SHA, per_page: "100", page: "1" })
+      .reply(200, [
+        { path: "a.txt", type: "blob" },
+        { path: "b.txt", type: "blob" }
+      ]);
+    const chunk = "x".repeat(600);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/a.txt`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        file_path: "a.txt",
+        size: 600,
+        encoding: "base64",
+        content: Buffer.from(chunk, "utf8").toString("base64"),
+        blob_id: "bloba",
+        commit_id: TREE_COMMIT_SHA
+      });
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/b.txt`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        file_path: "b.txt",
+        size: 600,
+        encoding: "base64",
+        content: Buffer.from(chunk, "utf8").toString("base64"),
+        blob_id: "blobb",
+        commit_id: TREE_COMMIT_SHA
+      });
+
+    await expect(
+      gitlabAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["*.txt"], maxTotalBytes: 1000 })
+    ).rejects.toThrow(/gitlab readFilesAtRef: exceeded maxTotalBytes \(1000\)/);
+  });
+
+  it("THROWS a typed GitProviderTreeBoundError when the tree has more entries than maxEntriesScanned, across PAGES", async () => {
+    const { ctx, token, base, pid } = setup();
+    nockResolveTreeRef(base, token, pid);
+    // Two FULL pages (100 + 100 = 200 entries) exceed a maxEntriesScanned of 150 — the bound must
+    // trip DURING page 2, before a (non-existent) page 3 would ever be requested.
+    const page1 = Array.from({ length: 100 }, (_, i) => ({ path: `a${i}.txt`, type: "blob" }));
+    const page2 = Array.from({ length: 100 }, (_, i) => ({ path: `b${i}.txt`, type: "blob" }));
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/tree`)
+      .query({ recursive: "true", ref: TREE_COMMIT_SHA, per_page: "100", page: "1" })
+      .reply(200, page1);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/tree`)
+      .query({ recursive: "true", ref: TREE_COMMIT_SHA, per_page: "100", page: "2" })
+      .reply(200, page2);
+    // NEGATIVE CONTROL: no page-3 interceptor registered — if the bound were not enforced PER
+    // PAGE, this test would fail on an unmatched nock interceptor instead of the bound.
+
+    await expect(
+      gitlabAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["*.txt"], maxEntriesScanned: 150 })
+    ).rejects.toThrow(/gitlab readFilesAtRef: exceeded maxEntriesScanned \(150\)/);
+  });
+
+  it("an unresolvable ref is not_found, same shape as readFileAtRef's", async () => {
+    const { ctx, token, base, pid } = setup();
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/commits/no-such-branch`)
+      .reply(404, { message: "404 Commit Not Found" });
+
+    const result = await gitlabAdapter.readFilesAtRef(ctx, {
+      ref: "no-such-branch",
+      globs: ["**/go.mod"]
+    });
+    expect(result).toMatchObject({ outcome: "not_found", missing: "unknown" });
+  });
+});
+
 /**
  * ============================================================================================
  * THIS ADAPTER WRITES NOTHING (owner decision 2026-08-15; ADR-0032 §9)
@@ -1087,5 +1328,6 @@ describe("gitlab adapter surface — read-only", () => {
       expect(hook in gitlabAdapter, `${hook} must not be on the gitlab adapter`).toBe(false);
     }
     expect(typeof gitlabAdapter.readFileAtRef).toBe("function");
+    expect(typeof gitlabAdapter.readFilesAtRef).toBe("function");
   });
 });

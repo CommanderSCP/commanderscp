@@ -23,14 +23,24 @@ import type {
   ScopedHttpRequest,
   ScopedHttpResponse
 } from "@scp/plugin-api";
+import { scopedHttpResponseTooLargeError } from "@scp/plugin-api";
 import type { GithubConfig } from "./index.js";
 
 // -------------------------------------------------------------------------------------------
 // Real (nock-interceptable) ScopedHttpClient
 // -------------------------------------------------------------------------------------------
 
-/** Builds a `ScopedHttpClient` backed by Node's `http`/`https` core modules — see module doc for
- *  why this, and not `fetch`, is what makes `nock` fixtures actually apply. */
+/**
+ * Builds a `ScopedHttpClient` backed by Node's `http`/`https` core modules — see module doc for
+ * why this, and not `fetch`, is what makes `nock` fixtures actually apply.
+ *
+ * Honors `ScopedHttpRequest.maxResponseBytes` the SAME way the production client
+ * (`apps/server/src/plugin-host/subprocess-entry.ts`'s `scopedFetchHttpClient`) does — bound
+ * checked DURING accumulation, in the `data` handler itself, not after `end` — so this package's
+ * own bound tests exercise the real transport-level enforcement over a real (loopback) HTTP
+ * connection, not a mock of it. `res.destroy()` on the incoming message aborts the read at the
+ * socket the moment the bound trips, mirroring the production client's `reader.cancel()`.
+ */
 export function createRealHttpClient(): ScopedHttpClient {
   return {
     request(req: ScopedHttpRequest): Promise<ScopedHttpResponse> {
@@ -45,8 +55,22 @@ export function createRealHttpClient(): ScopedHttpClient {
 
         const clientReq = requestFn(url, { method: req.method, headers }, (res) => {
           const chunks: Buffer[] = [];
-          res.on("data", (chunk: Buffer) => chunks.push(chunk));
+          let total = 0;
+          let settled = false;
+          res.on("data", (chunk: Buffer) => {
+            if (settled) return;
+            total += chunk.length;
+            if (req.maxResponseBytes !== undefined && total > req.maxResponseBytes) {
+              settled = true;
+              res.destroy();
+              reject(scopedHttpResponseTooLargeError(req.url, req.maxResponseBytes));
+              return;
+            }
+            chunks.push(chunk);
+          });
           res.on("end", () => {
+            if (settled) return;
+            settled = true;
             const raw = Buffer.concat(chunks).toString("utf8");
             let parsedBody: unknown;
             if (raw.length === 0) {
@@ -64,6 +88,11 @@ export function createRealHttpClient(): ScopedHttpClient {
               else if (Array.isArray(value)) responseHeaders[key] = value.join(", ");
             }
             resolve({ status: res.statusCode ?? 0, headers: responseHeaders, body: parsedBody });
+          });
+          res.on("error", (err) => {
+            if (settled) return;
+            settled = true;
+            reject(err);
           });
         });
         clientReq.on("error", reject);

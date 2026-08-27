@@ -985,6 +985,42 @@ describe("readFileAtRef()", () => {
     expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 4096 });
   });
 
+  // -----------------------------------------------------------------------------------------
+  // THE TRANSPORT bound (M21.2 review MAJOR 5, closed) — a SEPARATE, larger ceiling from the
+  // decode-bound `too_large` refusals above. Those two tests prove `decodeBoundedBase64`'s gates;
+  // this one proves the response never gets there in the first place when it is far past what any
+  // legitimate manifest could be. Gitea is the provider where this mattered most: unlike GitHub,
+  // it has no `encoding: "none"` cutoff and serves arbitrarily large blobs inline.
+  // -----------------------------------------------------------------------------------------
+
+  it("THROWS on a response so large it exceeds the TRANSPORT ceiling, before decodeBoundedBase64 ever runs", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    // Larger than `resolveMaxResponseBytes(resolveMaxBytes(undefined))` (~1.46 MB for the 1 MiB
+    // default decode bound) — a hostile/misconfigured Gitea instance shape, not a legitimate
+    // oversized manifest (that case is the `too_large` refusal tests above).
+    const hostileContent = "A".repeat(2_500_000);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/huge.bin`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "huge.bin",
+        sha: "blobhuge",
+        type: "file",
+        encoding: "base64",
+        content: hostileContent
+        // Deliberately NO `size` field — this must be caught by the TRANSPORT bound, not by gate 2
+        // (declared size), proving the ceiling does not depend on the provider self-reporting.
+      });
+
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, { path: "huge.bin", ref: "main" })
+    ).rejects.toThrow(
+      /gitea readFileAtRef: response from .* exceeded the \d+-byte transport ceiling/
+    );
+  });
+
   it("refuses a DIRECTORY (array response) and a SUBMODULE (type != 'file')", async () => {
     const { config, ctx, authHeader, base } = setup();
     nockResolveRef(base, authHeader, config);
@@ -1169,6 +1205,224 @@ describe("readFileAtRef()", () => {
   });
 });
 
+// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads. Gitea's
+// recursive tree listing is GITHUB-COMPATIBLE (`GET .../git/trees/{sha}?recursive=true`, one
+// response, `truncated: true` when it hit Gitea's own ceiling).
+// -------------------------------------------------------------------------------------------
+
+describe("readFilesAtRef()", () => {
+  const TREE_COMMIT_SHA = "5e".repeat(20);
+
+  function nockResolveTreeRef(base: string, authHeader: string, config: GiteaConfig) {
+    return nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query({ sha: "main", limit: "1" })
+      .reply(200, [{ sha: TREE_COMMIT_SHA }]);
+  }
+
+  it("lists the tree ONCE, matches globs, and reads every matched file at the SAME resolved commit", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveTreeRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/git/trees/${TREE_COMMIT_SHA}`)
+      .query({ recursive: "true" })
+      .reply(200, {
+        tree: [
+          { path: "service-a", type: "tree" },
+          { path: "service-a/go.mod", type: "blob" },
+          { path: "service-a/main.go", type: "blob" },
+          { path: "service-b", type: "tree" },
+          { path: "service-b/package.json", type: "blob" },
+          { path: "README.md", type: "blob" }
+        ],
+        truncated: false
+      });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/service-a/go.mod`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        path: "service-a/go.mod",
+        sha: "blobgomod",
+        type: "file",
+        size: 18,
+        encoding: "base64",
+        content: Buffer.from("module a\n\ngo 1.22\n", "utf8").toString("base64")
+      });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/service-b/package.json`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        path: "service-b/package.json",
+        sha: "blobpkg",
+        type: "file",
+        size: 2,
+        encoding: "base64",
+        content: Buffer.from("{}", "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFilesAtRef(ctx, {
+      ref: "main",
+      globs: ["**/go.mod", "**/package.json"]
+    });
+
+    expect(result.outcome).toBe("found");
+    if (result.outcome !== "found") throw new Error("unreachable");
+    expect(result.commitSha).toBe(TREE_COMMIT_SHA);
+    expect(result.files).toHaveLength(2);
+    expect(result.files.map((f) => f.path).sort()).toEqual([
+      "service-a/go.mod",
+      "service-b/package.json"
+    ]);
+    for (const file of result.files) {
+      expect(file.result.outcome).toBe("found");
+      if (file.result.outcome !== "found") throw new Error("unreachable");
+      // Every matched file was read at the ONE commit the ref resolved to for the whole batch.
+      expect(file.result.commitSha).toBe(TREE_COMMIT_SHA);
+    }
+  });
+
+  it("refuses an EMPTY globs array before any HTTP happens", async () => {
+    const { ctx } = setup();
+    await expect(giteaAdapter.readFilesAtRef(ctx, { ref: "main", globs: [] })).rejects.toThrow(
+      /gitea readFilesAtRef: globs must be a non-empty array/
+    );
+  });
+
+  it("a single OVERSIZE matched file is a routine per-file `refused` entry, not a batch failure", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveTreeRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/git/trees/${TREE_COMMIT_SHA}`)
+      .query({ recursive: "true" })
+      .reply(200, { tree: [{ path: "package.json", type: "blob" }], truncated: false });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/package.json`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        path: "package.json",
+        sha: "blobbig",
+        type: "file",
+        size: 9_000_000,
+        encoding: "base64",
+        content: Buffer.from("{}", "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["package.json"] });
+    expect(result.outcome).toBe("found");
+    if (result.outcome !== "found") throw new Error("unreachable");
+    expect(result.files).toEqual([
+      {
+        path: "package.json",
+        result: expect.objectContaining({ outcome: "refused", reason: "too_large" })
+      }
+    ]);
+  });
+
+  it("THROWS a typed GitProviderTreeBoundError when matched files exceed maxFiles — loud, not a silent first-N", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveTreeRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/git/trees/${TREE_COMMIT_SHA}`)
+      .query({ recursive: "true" })
+      .reply(200, {
+        tree: [
+          { path: "a/go.mod", type: "blob" },
+          { path: "b/go.mod", type: "blob" },
+          { path: "c/go.mod", type: "blob" }
+        ],
+        truncated: false
+      });
+    // NEGATIVE CONTROL: no `contents` interceptor registered — if maxFiles were not enforced
+    // BEFORE reading, this test would fail on an unmatched nock interceptor instead of the bound.
+
+    await expect(
+      giteaAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["**/go.mod"], maxFiles: 2 })
+    ).rejects.toThrow(/gitea readFilesAtRef: exceeded maxFiles \(2\)/);
+  });
+
+  it("THROWS a typed GitProviderTreeBoundError when cumulative bytes exceed maxTotalBytes", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveTreeRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/git/trees/${TREE_COMMIT_SHA}`)
+      .query({ recursive: "true" })
+      .reply(200, {
+        tree: [
+          { path: "a.txt", type: "blob" },
+          { path: "b.txt", type: "blob" }
+        ],
+        truncated: false
+      });
+    const chunk = "x".repeat(600);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/a.txt`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        path: "a.txt",
+        sha: "bloba",
+        type: "file",
+        size: 600,
+        encoding: "base64",
+        content: Buffer.from(chunk, "utf8").toString("base64")
+      });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/b.txt`)
+      .query({ ref: TREE_COMMIT_SHA })
+      .reply(200, {
+        path: "b.txt",
+        sha: "blobb",
+        type: "file",
+        size: 600,
+        encoding: "base64",
+        content: Buffer.from(chunk, "utf8").toString("base64")
+      });
+
+    await expect(
+      giteaAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["*.txt"], maxTotalBytes: 1000 })
+    ).rejects.toThrow(/gitea readFilesAtRef: exceeded maxTotalBytes \(1000\)/);
+  });
+
+  it("THROWS a typed GitProviderTreeBoundError when Gitea's OWN listing reports truncated:true", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveTreeRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/git/trees/${TREE_COMMIT_SHA}`)
+      .query({ recursive: "true" })
+      .reply(200, { tree: [{ path: "go.mod", type: "blob" }], truncated: true });
+
+    await expect(
+      giteaAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["**/go.mod"] })
+    ).rejects.toThrow(/gitea readFilesAtRef: exceeded maxEntriesScanned/);
+  });
+
+  it("an unresolvable ref is not_found, same shape as readFileAtRef's", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query({ sha: "no-such-branch", limit: "1" })
+      .reply(200, []);
+
+    const result = await giteaAdapter.readFilesAtRef(ctx, {
+      ref: "no-such-branch",
+      globs: ["**/go.mod"]
+    });
+    expect(result).toMatchObject({ outcome: "not_found", missing: "ref" });
+  });
+});
+
 /**
  * ============================================================================================
  * THIS ADAPTER WRITES NOTHING (owner decision 2026-08-15; ADR-0032 §9)
@@ -1191,5 +1445,6 @@ describe("gitea adapter surface — read-only", () => {
       expect(hook in giteaAdapter, `${hook} must not be on the gitea adapter`).toBe(false);
     }
     expect(typeof giteaAdapter.readFileAtRef).toBe("function");
+    expect(typeof giteaAdapter.readFilesAtRef).toBe("function");
   });
 });
