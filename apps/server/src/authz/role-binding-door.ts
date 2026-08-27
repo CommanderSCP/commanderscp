@@ -887,9 +887,20 @@ export interface BindableRole {
   bindableAt: string[] | null;
 }
 
-/** `true` when this row is a built-in the write door refuses new bindings to (D5). */
+/**
+ * `true` when this row is a built-in the write door refuses new bindings to (D5).
+ *
+ * `Object.hasOwn` RATHER THAN A BARE INDEX, and it is not defensive noise: `roles.name` is a plain
+ * `text` column and the lookup key comes straight off it, so `DEPRECATED_BUILTIN_ROLES[name]` for a
+ * built-in row named `'toString'` or `'constructor'` resolves through `Object.prototype` and returns
+ * a FUNCTION. `?? null` does not filter it — it is not nullish — so the value would be reported as
+ * `Role.deprecationReason` (a non-string where the schema promises `string | null`) and handed to
+ * {@link assertRoleAcceptsNewBindings}, whose 422 detail would then be a function body. Own-property
+ * lookup is the same fix `governance/governance-labels.ts` makes for the same property.
+ */
 export function roleDeprecationReason(role: { orgId: string | null; name: string }): string | null {
   if (role.orgId !== null) return null;
+  if (!Object.hasOwn(DEPRECATED_BUILTIN_ROLES, role.name)) return null;
   return DEPRECATED_BUILTIN_ROLES[role.name] ?? null;
 }
 
