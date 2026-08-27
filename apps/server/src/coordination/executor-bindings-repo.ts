@@ -998,9 +998,11 @@ export function managedRunnerSettings(): {
  * `packages/plugins/managed-dep/src/repo-write.ts` for the charter clauses this reconciles.
  *
  * WHY THERE IS NO NEW EXECUTOR `type` FOR THIS CLASS (schemas/executors.ts's closed enum
- * image|rpm|deb|npm|infrastructure|configuration, "extensible only by deliberate owner decision").
+ * image|rpm|deb|npm|maven|python|go|chart|vm-image|infrastructure|configuration, "extensible only by
+ * deliberate owner decision" — the build family grew by 5 members in the team-pipeline-IaC rework,
+ * D13/D24, but the reasoning below is unchanged: none of the build-family members describe this).
  *
- * A dependency bump fits NONE of the six honestly. It is not a build (it turns no source into an
+ * A dependency bump fits NONE of the eleven honestly. It is not a build (it turns no source into an
  * artifact), not `infrastructure`, and not `configuration` (it applies no desired state to a running
  * system). The `npm` member is a near-miss worth naming explicitly so nobody reaches for it later:
  * it means "an executor that BUILDS an npm artifact", not "an executor that touches npm packages",

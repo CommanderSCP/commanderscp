@@ -267,7 +267,7 @@ describe("DesiredStateManifestSchema — the three new collections are additive"
       rollouts: [
         {
           componentUrn: COMPONENT_URN,
-          targetClass: "kubernetes",
+          targetClass: "cluster",
           rollout: {
             strategy: "canary",
             steps: [{ weightPercent: 25 }, { weightPercent: 100 }]

@@ -24,15 +24,28 @@ import { SbomRefSchema, ScanMethodSchema } from "./supply-chain.js";
  * old buckets fanned out — `software → {configuration, a build Type}`, `infra → {infrastructure,
  * configuration}` — so this is a split-and-rename, not a straight alias.
  *
- *   build family → image | rpm | deb | npm  (turn source into an artifact)
+ *   build family → image | rpm | deb | npm | maven | python | go | chart | vm-image
+ *                             (turn source into an artifact)
  *   infrastructure           (stand up / change the IaC substrate)
  *   configuration            (apply declarative desired state to a running system — GitOps sync)
+ *
+ * `maven`/`python`/`go`/`chart`/`vm-image` were added by the team-pipeline-IaC rework (D13/D24,
+ * owner ruling 2026-08-26): D13 reads "Type stays the closed three-value enum", which names this
+ * package's **Category** (below), not Type — Type was always meant to cover the full artifact-class
+ * vocabulary D13 also lists, and before this it did not. One vocabulary, not two: `ArtifactClass`
+ * (`pipeline-behaviors.ts`) is now a DERIVED SUBSET of this enum rather than a hand-written second
+ * list, so Type is where a new build kind is actually added.
  */
 export const ExecutorTypeSchema = z.enum([
   "image",
   "rpm",
   "deb",
   "npm",
+  "maven",
+  "python",
+  "go",
+  "chart",
+  "vm-image",
   "infrastructure",
   "configuration"
 ]);
@@ -101,6 +114,11 @@ export const CATEGORY_OF_TYPE: Record<ExecutorType, ExecutorCategory> = {
   rpm: "build",
   deb: "build",
   npm: "build",
+  maven: "build",
+  python: "build",
+  go: "build",
+  chart: "build",
+  "vm-image": "build",
   infrastructure: "infrastructure",
   configuration: "configuration"
 };

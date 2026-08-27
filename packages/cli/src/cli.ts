@@ -92,6 +92,7 @@ import type {
 } from "@scp/schemas";
 import {
   DesiredStateManifestSchema,
+  ExecutorTypeSchema,
   outpostClaimantTokens,
   OutpostTrustTierSchema,
   ScanMethodSchema,
@@ -3320,7 +3321,7 @@ export function buildProgram(): Command {
     .option("--emergency", "mark this change as an emergency (DESIGN.md §9)")
     .option(
       "--type <type>",
-      "routing Type (ADR-0007): image|rpm|deb|npm (Category build) | infrastructure | configuration — " +
+      "routing Type (ADR-0007): image|rpm|deb|npm|maven|python|go|chart|vm-image (Category build) | infrastructure | configuration — " +
         "WHICH pipeline this change rolls, selecting each target's executor binding. Defaults to configuration"
     )
     .option(
@@ -3862,7 +3863,7 @@ export function buildProgram(): Command {
     .option("--description <text>", "campaign description")
     .option(
       "--type <type>",
-      "routing Type (ADR-0007): image|rpm|deb|npm | infrastructure | configuration — WHICH pipeline " +
+      "routing Type (ADR-0007): image|rpm|deb|npm|maven|python|go|chart|vm-image | infrastructure | configuration — WHICH pipeline " +
         "every change this campaign fans out rolls (e.g. infrastructure for 'patch the base AMI " +
         "everywhere'). Defaults to configuration"
     )
@@ -4326,7 +4327,7 @@ export function buildProgram(): Command {
   // -------------------------------------------------------------------------------------
   // instance scanner-assignments (M13.3a — ADR-0020 §2). The executor Type -> managed scan
   // method(s) registry the commander's promotion scan step selects scanners from. Keyed on the
-  // EXISTING ExecutorType taxonomy (image|rpm|deb|npm|infrastructure|configuration). Like scan
+  // EXISTING ExecutorType taxonomy (image|rpm|deb|npm|maven|python|go|chart|vm-image|infrastructure|configuration). Like scan
   // floors these are INSTANCE-scoped: they bind EVERY org on the deployment, so authoring one is an
   // OPERATOR action gated by SCP_OPERATOR_TOKEN — never a tenant role. Reading is an ordinary
   // authenticated call. An empty methods set CLEARS the assignment (that Type produces no managed
@@ -4360,7 +4361,7 @@ export function buildProgram(): Command {
     .description(
       "Assign managed scan methods to an executor Type (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; an empty --methods clears the assignment, leaving that Type with no managed scanner)"
     )
-    .requiredOption("--type <executorType>", "image|rpm|deb|npm|infrastructure|configuration")
+    .requiredOption("--type <executorType>", "image|rpm|deb|npm|maven|python|go|chart|vm-image|infrastructure|configuration")
     .option(
       "--methods <list>",
       "comma-separated scan methods (trivy|openscap); empty/omitted clears the assignment",
@@ -4381,16 +4382,15 @@ export function buildProgram(): Command {
             "SCP_OPERATOR_TOKEN is not set — scanner assignments bind every org on the deployment, so authoring one requires the deployment operator token, not your tenant login."
           );
         }
-        const validTypes = [
-          "image",
-          "rpm",
-          "deb",
-          "npm",
-          "infrastructure",
-          "configuration"
-        ] as const;
-        if (!(validTypes as readonly string[]).includes(opts.type)) {
-          throw new Error(`--type must be one of ${validTypes.join("|")} (got '${opts.type}')`);
+        // Validate against the SCHEMA's type set, never a hand-copied literal list — same
+        // discipline as the `methods` validation just below: a new ExecutorType (this session
+        // added maven/python/go/chart/vm-image, D13/D24) must not need a matching edit here to be
+        // usable, and a stale copy would reject a type the server accepts.
+        const typeParsed = ExecutorTypeSchema.safeParse(opts.type);
+        if (!typeParsed.success) {
+          throw new Error(
+            `--type must be one of ${ExecutorTypeSchema.options.join("|")} (got '${opts.type}')`
+          );
         }
         const methods = opts.methods
           .split(",")
@@ -4412,7 +4412,7 @@ export function buildProgram(): Command {
         const client = await clientFromStoredCredentials(opts);
         const assignment = await client.scannerAssignments.put(
           {
-            executorType: opts.type as (typeof validTypes)[number],
+            executorType: typeParsed.data,
             methods: parsedMethods
           },
           operatorToken
@@ -6233,7 +6233,7 @@ export function buildProgram(): Command {
     )
     .option(
       "--type <type>",
-      "routing Type (ADR-0007) this binding drives: image|rpm|deb|npm (Category build) | " +
+      "routing Type (ADR-0007) this binding drives: image|rpm|deb|npm|maven|python|go|chart|vm-image (Category build) | " +
         "infrastructure | configuration (default: configuration). A target may hold ONE binding per " +
         "Type, so this ADDS a pipeline of that Type alongside the others rather than replacing one"
     )
@@ -6319,7 +6319,7 @@ export function buildProgram(): Command {
     .description("Relabel which pipeline (routing Type, ADR-0007) a target's binding drives")
     .requiredOption(
       "--to <type>",
-      "the new routing Type: image|rpm|deb|npm|infrastructure|configuration"
+      "the new routing Type: image|rpm|deb|npm|maven|python|go|chart|vm-image|infrastructure|configuration"
     )
     .option("--from <type>", "the binding's current routing Type (default: configuration)")
     .option("--base-url <url>", "API base URL override")
@@ -6561,7 +6561,7 @@ export function buildProgram(): Command {
     )
     .option(
       "--type <type>",
-      "routing Type (ADR-0007): image|rpm|deb|npm|infrastructure|configuration (default: configuration)"
+      "routing Type (ADR-0007): image|rpm|deb|npm|maven|python|go|chart|vm-image|infrastructure|configuration (default: configuration)"
     )
     .option(
       "--classification <label>",
