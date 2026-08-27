@@ -134,7 +134,11 @@ describe("evaluateBakeGate — the safety interlock", () => {
     const reports = [
       report("rollout_analysis", deployedAt, windowEnd, []),
       report("pushed", deployedAt, windowEnd, [
-        { name: "cpu-high", severity: "critical", firedAt: new Date(deployedAt.getTime() + 100).toISOString() }
+        {
+          name: "cpu-high",
+          severity: "critical",
+          firedAt: new Date(deployedAt.getTime() + 100).toISOString()
+        }
       ])
     ];
     const verdict = evaluateBakeGate(hook, reports, deployedAt, NOW);
@@ -146,7 +150,11 @@ describe("evaluateBakeGate — the safety interlock", () => {
     const reports = [
       report("pushed", deployedAt, windowEnd, []),
       report("rollout_analysis", deployedAt, windowEnd, [
-        { name: "5xx-rate", severity: "warning", firedAt: new Date(deployedAt.getTime() + 100).toISOString() }
+        {
+          name: "5xx-rate",
+          severity: "warning",
+          firedAt: new Date(deployedAt.getTime() + 100).toISOString()
+        }
       ])
     ];
     const verdict = evaluateBakeGate(hook, reports, deployedAt, NOW);
@@ -168,10 +176,7 @@ describe("evaluateBakeGate — the safety interlock", () => {
 
   it("the SAME two reports made contiguous DO cover the window", () => {
     const midpoint = new Date(deployedAt.getTime() + (hook.quietWindowSeconds * 1000) / 2);
-    const reports = [
-      report("pushed", deployedAt, midpoint),
-      report("pushed", midpoint, windowEnd)
-    ];
+    const reports = [report("pushed", deployedAt, midpoint), report("pushed", midpoint, windowEnd)];
     const verdict = evaluateBakeGate(hook, reports, deployedAt, NOW);
     expect(verdict.satisfied).toBe(true);
     expect(verdict.reason).toBe("quiet");
@@ -221,7 +226,9 @@ describe("buildHookFreshnessContext — byte-stable across ticks, no now inside"
     );
 
     const parsed = HookFreshnessContextSchema.parse(context);
-    expect(parsed.staleAfter).toBe(new Date(new Date(completedAt).getTime() + 60_000).toISOString());
+    expect(parsed.staleAfter).toBe(
+      new Date(new Date(completedAt).getTime() + 60_000).toISOString()
+    );
 
     // No field in the record equals NOW itself — the record carries only data derived from the
     // evidence's own completedAt and the declared maxAgeSeconds, never the clock it was built at.
