@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
-import { App, Component, Service, Stack } from "@scp/iac";
+import { Component, Service, Stack } from "@scp/iac";
 import type { DependencyEcosystem } from "@scp/schemas";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { auditEvents, decisions } from "../db/schema.js";
@@ -139,8 +139,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       // because `Stack.synth()` drops an empty one — which is exactly the shape that makes
       // "unmanaged" and "I declare none" indistinguishable, and exactly why absent must not prune.
       function build(declaring: boolean) {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const service = new Service(stack, "svc", { name: "Svc" });
         const component = new Component(stack, "lib", { name: "lib", service });
         if (declaring) component.producesDependency(key);
@@ -187,8 +186,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const key = npm("wiring");
 
       function build() {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const service = new Service(stack, "svc", { name: "Svc" });
         new Component(stack, "lib", { name: "lib", service }).producesDependency(key);
         return stack.synth();
@@ -237,8 +235,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const key = npm("poisoned");
 
       function build(declaring: boolean) {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const service = new Service(stack, "svc", { name: "Svc" });
         const component = new Component(stack, "lib", { name: "lib", service });
         // A SECOND declaration that is always present, so the "retract one" manifest below still
@@ -317,8 +314,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
       const key = npm("recorded");
 
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       new Component(stack, "lib", { name: "lib", service }).producesDependency(key);
       await applyLatest(stack.synth());
@@ -374,8 +370,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const b = npm("drop");
 
       function build(keys: { ecosystem: DependencyEcosystem; coordinate: string }[]) {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const service = new Service(stack, "svc", { name: "Svc" });
         const component = new Component(stack, "lib", { name: "lib", service });
         for (const k of keys) component.producesDependency(k);
@@ -407,14 +402,12 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const victimStack = `stack-${randomUUID().slice(0, 8)}`;
       const attackerStack = `stack-${randomUUID().slice(0, 8)}`;
 
-      const victim = new App();
-      const vStack = new Stack(victim, victimStack);
+      const vStack = new Stack(victimStack);
       const vService = new Service(vStack, "svc", { name: "Svc" });
       new Component(vStack, "lib", { name: "lib", service: vService });
       await applyLatest(vStack.synth());
 
-      const attacker = new App();
-      const aStack = new Stack(attacker, attackerStack);
+      const aStack = new Stack(attackerStack);
       const aService = new Service(aStack, "svc", { name: "Svc" });
       new Component(aStack, "own", { name: "own", service: aService });
       aStack.addDependencyProducer(`urn:scp:${victimStack}:component:lib`, npm("stolen"));
@@ -424,8 +417,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
 
     it("a SERVICE-valued producer is refused, exactly as the typed verb refuses one", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       new Component(stack, "lib", { name: "lib", service });
       // The fluent method is on `Component` precisely to make this hard to write; the stack-level
@@ -440,8 +432,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const thiefStack = `stack-${randomUUID().slice(0, 8)}`;
       const key = npm("contested");
 
-      const owned = new App();
-      const oStack = new Stack(owned, ownerStack);
+      const oStack = new Stack(ownerStack);
       const oService = new Service(oStack, "svc", { name: "Svc" });
       new Component(oStack, "lib", { name: "lib", service: oService }).producesDependency(key);
       await applyLatest(oStack.synth());
@@ -452,8 +443,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       // is that the coordinate's CURRENT producer belongs to a stack this manifest never mentions —
       // and `ON CONFLICT DO UPDATE` would have moved it with nothing deleted, leaving the row
       // outside the owner stack's pool forever.
-      const thief = new App();
-      const tStack = new Stack(thief, thiefStack);
+      const tStack = new Stack(thiefStack);
       const tService = new Service(tStack, "svc", { name: "Svc" });
       new Component(tStack, "mine", { name: "mine", service: tService }).producesDependency(key);
 
@@ -466,8 +456,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const key = npm("moved");
 
       function build(producer: "old" | "new") {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const service = new Service(stack, "svc", { name: "Svc" });
         const oldLib = new Component(stack, "old", { name: "old", service });
         const newLib = new Component(stack, "new", { name: "new", service });
@@ -518,8 +507,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
 
     it("applying a plan that DECLARES a producer is refused on a deployment that is not a declared commander", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       new Component(stack, "lib", { name: "lib", service }).producesDependency(npm("elsewhere"));
 
@@ -539,8 +527,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
 
     it("a plan that touches NO producer declaration still applies there — the refusal is scoped to the collection, not to IaC", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       new Component(stack, "lib", { name: "lib", service });
 
@@ -606,8 +593,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
       const key = npm("claimed-late");
 
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       new Component(stack, "lib", { name: "lib", service }).producesDependency(key);
 
@@ -641,8 +627,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const key = npm("displaced-late");
 
       function build(producer: "old" | "new") {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const service = new Service(stack, "svc", { name: "Svc" });
         const oldLib = new Component(stack, "old", { name: "old", service });
         const newLib = new Component(stack, "new", { name: "new", service });
@@ -684,8 +669,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const drop = npm("drop-late");
 
       function build(keys: { ecosystem: DependencyEcosystem; coordinate: string }[]) {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const service = new Service(stack, "svc", { name: "Svc" });
         const component = new Component(stack, "lib", { name: "lib", service });
         for (const k of keys) component.producesDependency(k);
@@ -718,8 +702,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
       const key = npm("unmoved");
 
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       new Component(stack, "lib", { name: "lib", service }).producesDependency(key);
 
@@ -764,8 +747,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
 
     it("(a) an Operator bound at the ORG ROOT applies a plan that declares NO producer", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       new Component(stack, "lib", { name: "lib", service });
 
@@ -777,8 +759,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
     it("(b) …and the SAME Operator is REFUSED a plan that declares one — object:write over every object in the org is not authority over a coordinate", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
       const key = npm("unauthorized");
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       new Component(stack, "lib", { name: "lib", service }).producesDependency(key);
 
@@ -823,8 +804,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const secondStack = `stack-${randomUUID().slice(0, 8)}`;
       const key = npm("stranded");
 
-      const app = new App();
-      const stack = new Stack(app, firstStack);
+      const stack = new Stack(firstStack);
       const service = new Service(stack, "svc", { name: "Svc" });
       new Component(stack, "lib", { name: "lib", service }).producesDependency(key);
       await applyLatest(stack.synth());
@@ -833,8 +813,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
 
       // THE STRANDING. The same stack, minus the component and WITHOUT a `producers` key: the
       // component is pruned and rule (1) retracts nothing, so the declaration outlives its producer.
-      const emptied = new App();
-      const emptiedStack = new Stack(emptied, firstStack);
+      const emptiedStack = new Stack(firstStack);
       new Service(emptiedStack, "svc", { name: "Svc" });
       const strand = emptiedStack.synth();
       expect(strand).not.toHaveProperty("producers");
@@ -850,8 +829,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
 
       // A DIFFERENT stack now claims the coordinate on a component it owns. Destination ownership
       // is satisfied, so refusal (1) passes; what must refuse it is that the coordinate is HELD.
-      const second = new App();
-      const sStack = new Stack(second, secondStack);
+      const sStack = new Stack(secondStack);
       const sService = new Service(sStack, "svc", { name: "Svc" });
       new Component(sStack, "mine", { name: "mine", service: sService }).producesDependency(key);
 

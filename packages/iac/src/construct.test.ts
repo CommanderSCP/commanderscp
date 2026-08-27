@@ -4,7 +4,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DesiredStateManifestSchema } from "@scp/schemas";
 import {
-  App,
   Campaign,
   Component,
   DeploymentTarget,
@@ -141,17 +140,6 @@ describe("@scp/iac: example stack synth", () => {
     expect(canonicalJson(stack.synth())).toBe(canonicalJson(stack.synth()));
   });
 
-  it("App.synth() returns every stack's manifest, sorted by stack name", () => {
-    const app = new App();
-    const stackB = new Stack(app, "zzz-stack");
-    new Service(stackB, "svc-b", { name: "Svc B" });
-    const stackA = new Stack(app, "aaa-stack");
-    new Service(stackA, "svc-a", { name: "Svc A" });
-
-    const manifests = app.synth();
-    expect(manifests.map((m) => m.stackName)).toEqual(["aaa-stack", "zzz-stack"]);
-  });
-
   it("synthToFile writes canonical JSON that round-trips through DesiredStateManifestSchema", async () => {
     const stack = new Stack("file-stack");
     new Service(stack, "svc", { name: "Svc", properties: { b: 2, a: 1 } });
@@ -173,25 +161,51 @@ describe("@scp/iac: example stack synth", () => {
     }
   });
 
-  it("synthToFile rejects a multi-stack App (ambiguous which manifest to write)", async () => {
-    const app = new App();
-    const stackA = new Stack(app, "stack-a");
-    new Service(stackA, "svc", { name: "Svc" });
-    new Stack(app, "stack-b");
-
-    const dir = await mkdtemp(path.join(os.tmpdir(), "scp-iac-test-"));
-    try {
-      await expect(synthToFile(app, path.join(dir, "manifest.json"))).rejects.toThrow(
-        /exactly one stack/
-      );
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
   it("rejects an empty stack name", () => {
     expect(() => new Stack("")).toThrow();
     expect(() => new Stack("   ")).toThrow();
+  });
+
+  it("two independently-constructed stacks never share state, even though each auto-creates its own App (D15a: no App argument, ever)", () => {
+    // The pre-D15a two-argument `new Stack(app, name)` form let several stacks share one `App`
+    // instance; that form no longer exists (`Stack`'s constructor takes only a name), so every
+    // `Stack` gets its OWN internal `App`. This pins down that isolation: same construct id in
+    // two different stacks derives two different URNs/paths, with nothing leaking between them.
+    const stackA = new Stack("stack-a");
+    const svcA = new Service(stackA, "svc", { name: "Svc A" });
+    const stackB = new Stack("stack-b");
+    const svcB = new Service(stackB, "svc", { name: "Svc B" });
+
+    expect(svcA.path).toBe("stack-a/svc");
+    expect(svcB.path).toBe("stack-b/svc");
+    expect(svcA.urn).not.toBe(svcB.urn);
+    expect(stackA.synth().objects).toHaveLength(1);
+    expect(stackB.synth().objects).toHaveLength(1);
+  });
+
+  it("synthToFile writes exactly the one stack passed to it, never a second stack that happens to exist", async () => {
+    // `App` is no longer exported and `synthToFile` no longer accepts one (only a `Stack`), so the
+    // old "ambiguous multi-stack App" runtime rejection is now a compile error at the call site
+    // instead — there is no longer a runtime path that could confuse which stack to write.
+    const stackA = new Stack("multi-a");
+    new Service(stackA, "svc-a", { name: "Svc A" });
+    const stackB = new Stack("multi-b");
+    new Service(stackB, "svc-b", { name: "Svc B" });
+
+    const dir = await mkdtemp(path.join(os.tmpdir(), "scp-iac-test-"));
+    try {
+      const fileA = path.join(dir, "a.json");
+      const fileB = path.join(dir, "b.json");
+      await synthToFile(stackA, fileA);
+      await synthToFile(stackB, fileB);
+
+      const parsedA = DesiredStateManifestSchema.parse(JSON.parse(await readFile(fileA, "utf8")));
+      const parsedB = DesiredStateManifestSchema.parse(JSON.parse(await readFile(fileB, "utf8")));
+      expect(parsedA.stackName).toBe("multi-a");
+      expect(parsedB.stackName).toBe("multi-b");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

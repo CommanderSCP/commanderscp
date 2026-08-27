@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
-import { App, Component, Service, Stack, Team } from "@scp/iac";
+import { Component, Service, Stack, Team } from "@scp/iac";
 import {
   createTestOrg,
   createTestUser,
@@ -32,8 +32,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
 
     function buildManifest() {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const svcA = new Service(stack, "svc-a", { name: "Service A", properties: { tier: "high" } });
       const svcB = new Service(stack, "svc-b", { name: "Service B" });
       const team = new Team(stack, "team", { name: "Team" });
@@ -98,8 +97,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
 
     function build(tier: string) {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       new Service(stack, "svc", { name: "Svc", properties: { tier } });
       return stack.synth();
     }
@@ -131,15 +129,13 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     });
 
     function buildTwo() {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       new Service(stack, "svc-a", { name: "Svc A" });
       new Service(stack, "svc-b", { name: "Svc B" });
       return stack.synth();
     }
     function buildOne() {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       new Service(stack, "svc-a", { name: "Svc A" });
       return stack.synth();
     }
@@ -171,8 +167,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const domainA = await admin.domains.create({ name: `domain-a-${randomUUID().slice(0, 8)}` });
     const domainB = await admin.domains.create({ name: `domain-b-${randomUUID().slice(0, 8)}` });
 
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     new Service(stack, "svc-a", { name: "Svc A", domainId: domainA.id });
     new Service(stack, "svc-b", { name: "Svc B", domainId: domainB.id });
     const manifest = stack.synth();
@@ -213,8 +208,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
 
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     new Service(stack, "svc", { name: "Svc" });
     const plan = await admin.plans.create(stack.synth());
 
@@ -242,8 +236,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
 
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const checkout = new Service(stack, "checkout", { name: "Checkout" });
     new Component(stack, "api", { name: "checkout-api", service: checkout });
     const manifest = stack.synth();
@@ -295,8 +288,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
 
     // Both services in both manifests (so neither is pruned) — only the component's service changes.
     function manifest(componentService: "a" | "b") {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const svcA = new Service(stack, "svc-a", { name: "Service A" });
       const svcB = new Service(stack, "svc-b", { name: "Service B" });
       new Component(stack, "api", { name: "api", service: componentService === "a" ? svcA : svcB });
@@ -342,8 +334,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
 
     function build() {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "billing", { name: "Billing" });
       const component = new Component(stack, "api", { name: "api", service });
       component.mapsSource({ sourceKind: "github", repoPattern: `acme/${stackName}` });
@@ -389,8 +380,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
 
     function build(serverUrl: string, repo: string) {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "billing", { name: "Billing" });
       const component = new Component(stack, "api", { name: "api", service });
       component.mapsSource({ sourceKind: "github", repoPattern: repo });
@@ -437,8 +427,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const repo = `acme/${stackName}`;
 
     function build(scope: "global" | "domain" | null | undefined) {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "billing", { name: "Billing" });
       const component = new Component(stack, "api", { name: "api", service });
       component.mapsSource({
@@ -516,8 +505,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     // stack's manifests. Its rows must survive the first stack's prune untouched. This is the
     // property the whole ownership-scoping decision exists for.
     function otherStack() {
-      const app = new App();
-      const stack = new Stack(app, otherStackName);
+      const stack = new Stack(otherStackName);
       const service = new Service(stack, "other", { name: "Other" });
       const component = new Component(stack, "api", { name: "api", service });
       component.mapsSource({ sourceKind: "github", repoPattern: `acme/${otherStackName}` });
@@ -532,8 +520,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     await admin.plans.apply(otherPlan.id);
 
     function build(withProjections: boolean) {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "billing", { name: "Billing" });
       const component = new Component(stack, "api", { name: "api", service });
       if (withProjections) {
@@ -579,8 +566,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const consumerStack = `stack-${randomUUID().slice(0, 8)}`;
 
     // The owner stack's component carries a mapping and a binding.
-    const ownerApp = new App();
-    const owner = new Stack(ownerApp, ownerStack);
+    const owner = new Stack(ownerStack);
     const ownerService = new Service(owner, "owner", { name: "Owner" });
     const ownerComponent = new Component(owner, "api", { name: "api", service: ownerService });
     ownerComponent.mapsSource({ sourceKind: "github", repoPattern: `acme/${ownerStack}` });
@@ -599,8 +585,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     // not confer ownership: the consumer declares no mappings/bindings, so if the reference pulled
     // the owner's rows into its pool they would be pruned as "not in the desired manifest".
     function consumer() {
-      const app = new App();
-      const stack = new Stack(app, consumerStack);
+      const stack = new Stack(consumerStack);
       const service = new Service(stack, "consumer", { name: "Consumer" });
       const component = new Component(stack, "web", { name: "web", service });
       component.dependsOn(ownerUrn);
@@ -628,8 +613,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     // query (they filter on a live target) and outside every future plan's ownership pool (built
     // from LIVE labelled objects) — permanently unreachable garbage nothing could ever remove.
     function build(withComponent: boolean) {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "billing", { name: "Billing" });
       if (withComponent) {
         const component = new Component(stack, "api", { name: "api", service });
@@ -670,8 +654,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
 
     function build(withMapping: boolean) {
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "billing", { name: "Billing" });
       const component = new Component(stack, "api", { name: "api", service });
       if (withMapping) {
@@ -715,8 +698,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const attackerStack = `stack-${randomUUID().slice(0, 8)}`;
 
     function victim() {
-      const app = new App();
-      const stack = new Stack(app, victimStack);
+      const stack = new Stack(victimStack);
       const service = new Service(stack, "victim", { name: "Victim" });
       new Component(stack, "api", { name: "api", service });
       return stack.synth();
@@ -728,8 +710,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     // The attacker's stack declares NO object of its own for that URN — it just points a binding
     // and a mapping at the victim's component. Without the ownership guard this would write rows
     // the attacker's stack could never see again and the victim's next apply would prune.
-    const app = new App();
-    const stack = new Stack(app, attackerStack);
+    const stack = new Stack(attackerStack);
     const service = new Service(stack, "attacker", { name: "Attacker" });
     new Component(stack, "own", { name: "own", service });
     stack.addExecutorBinding(victimUrn, {
@@ -750,8 +731,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
 
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
     const component = new Component(stack, "api", { name: "api", service });
     component.bindsExecutor({ pluginModule: "webhook-control", pluginInstanceId: "nope" });
@@ -764,8 +744,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     const stackName = `stack-${randomUUID().slice(0, 8)}`;
 
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing" });
     const component = new Component(stack, "api", { name: "api", service });
     // managed-iac's configSchema is additionalProperties:false with no runnerImage — this is the
@@ -788,8 +767,7 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     const domainA = await admin.domains.create({ name: `domain-a-${randomUUID().slice(0, 8)}` });
     const domainB = await admin.domains.create({ name: `domain-b-${randomUUID().slice(0, 8)}` });
 
-    const app = new App();
-    const stack = new Stack(app, stackName);
+    const stack = new Stack(stackName);
     const service = new Service(stack, "billing", { name: "Billing", domainId: domainB.id });
     const component = new Component(stack, "api", {
       name: "api",

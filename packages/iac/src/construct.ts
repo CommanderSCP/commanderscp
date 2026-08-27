@@ -168,41 +168,15 @@ interface LocatedDecl<T> {
 }
 
 /**
- * Root scope holding one or more `Stack`s. `App` itself never appears in a manifest — it's purely
- * an in-memory aggregation point, mirroring real CDK's `App`.
- *
- * SYNTH PLUMBING, not authoring surface (team-pipeline-iac.md D15a): `new Stack("platform-estate")`
- * auto-creates one of these internally, so no user-facing IaC file ever needs to write `new App()`.
- * It stays exported (and constructible) for the two cases that still need it directly: synthesizing
- * SEVERAL stacks together via `app.synth()` / `app.listStacks()`, and the pre-D15a two-argument
- * `new Stack(app, stackName)` form that some existing callers still use (see `Stack`'s constructor
- * doc) — both legitimate, neither the form any NEW authoring code should reach for.
+ * Root scope every `Stack` sits under. `App` itself never appears in a manifest — it is purely
+ * in-memory synth plumbing (`Construct.path` excludes it, mirroring real CDK's `App`), and it is
+ * NOT part of `@scp/iac`'s public surface (D15a: "`App` disappears from user code entirely").
+ * `new Stack("platform-estate")` auto-creates one internally; no user-facing IaC file ever needs to
+ * write `new App()`, because there is no longer any form of `Stack`'s constructor that accepts one.
  */
-export class App extends Construct {
-  private readonly stacks: Stack[] = [];
-
+class App extends Construct {
   constructor() {
     super(undefined, "App");
-  }
-
-  /** @internal called by `Stack`'s constructor. */
-  _registerStack(stack: Stack): void {
-    this.stacks.push(stack);
-  }
-
-  listStacks(): readonly Stack[] {
-    return this.stacks;
-  }
-
-  /**
-   * Synthesizes every stack in this app. Sorted by `stackName` (not registration order) so an app
-   * whose stacks were added in a different order still produces the same array — same determinism
-   * discipline as `Stack.synth()`'s object/relationship ordering.
-   */
-  synth(): DesiredStateManifest[] {
-    return [...this.stacks]
-      .sort((a, b) => a.stackName.localeCompare(b.stackName))
-      .map((s) => s.synth());
   }
 }
 
@@ -303,24 +277,14 @@ export class Stack extends Construct {
   private readonly rawObjectDecls: ManifestObject[] = [];
 
   /**
-   * `new Stack("platform-estate")` is the authoring form (D15a): `App` is internal synth plumbing
-   * and is auto-created when omitted — nothing in a component's, team's, or estate's file ever
-   * writes `new App()`. The two-argument form (`new Stack(app, stackName)`) is kept for callers that
-   * already construct an `App` themselves to synthesize several stacks together (`app.synth()`);
-   * `apps/server`'s integration tests are the one place in this repo that still does, and this
-   * overload is what lets them keep compiling unmodified — it is not the form new authoring code
-   * should reach for.
+   * `new Stack("platform-estate")` is the ONLY form (D15a): `App` is internal synth plumbing,
+   * auto-created here, and never appears in user code — nothing in a component's, team's, or
+   * estate's file ever writes `new App()`.
    */
-  constructor(stackName: string);
-  constructor(app: App, stackName: string);
-  constructor(appOrStackName: App | string, maybeStackName?: string) {
-    const explicitApp = appOrStackName instanceof App ? appOrStackName : undefined;
-    const stackName = explicitApp ? (maybeStackName ?? "") : (appOrStackName as string);
-    const app = explicitApp ?? new App();
-    super(app, stackName);
+  constructor(stackName: string) {
+    super(new App(), stackName);
     if (stackName.trim().length === 0) throw new Error("Stack name must be non-empty");
     this.stackName = stackName;
-    app._registerStack(this);
   }
 
   /** @internal called by `ResourceConstruct`'s constructor. */

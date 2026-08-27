@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
-import { App, Component, Domain, Service, Stack } from "@scp/iac";
+import { Component, Domain, Service, Stack } from "@scp/iac";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { auditEvents, decisions } from "../db/schema.js";
 import { GOVERNANCE_MOVE_DECISION_KIND } from "../governance/move-rung-write.js";
@@ -119,8 +119,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
       // because `Stack.synth()` drops an empty one — which is exactly the shape that makes
       // "unmanaged" and "I declare none" indistinguishable, and exactly why absent must not prune.
       function build(declaring: boolean) {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const service = new Service(stack, "svc", { name: "Svc" });
         if (declaring) stack.addGovernanceMoveRung(service);
         return stack.synth();
@@ -160,8 +159,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
   describe("(2) WIRING", () => {
     it("apply ENABLES the rung — delete the rung loops in executePlanDiff and this goes red", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       stack.addGovernanceMoveRung(service);
 
@@ -196,8 +194,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
   describe("(3) the apply performs the WHOLE act, not the row", () => {
     it("records its own Decision and audit event, so the Decision log still answers 'every rung ever enabled'", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       stack.addGovernanceMoveRung(service);
       await applyLatest(stack.synth());
@@ -246,8 +243,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
     it("the second plan says noop, and the rung is neither re-created nor disturbed", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
       function build() {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const service = new Service(stack, "svc", { name: "Svc" });
         stack.addGovernanceMoveRung(service);
         return stack.synth();
@@ -283,8 +279,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
     it("dropping B from [A, B] disables B and leaves A enforced", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
       function build(subjects: ("a" | "b")[]) {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const a = new Service(stack, "a", { name: "A" });
         const b = new Service(stack, "b", { name: "B" });
         for (const s of subjects) stack.addGovernanceMoveRung(s === "a" ? a : b);
@@ -331,8 +326,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
 
     it("(a) an Operator bound at the ORG ROOT applies a plan that declares NO rung", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       new Service(stack, "svc", { name: "Svc" });
 
       const plan = await operator.plans.create(stack.synth());
@@ -342,8 +336,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
 
     it("(b) …and the SAME Operator is REFUSED a plan that declares one — object:write over every object in the org is not authority over a governance bar", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const service = new Service(stack, "svc", { name: "Svc" });
       stack.addGovernanceMoveRung(service);
 
@@ -375,8 +368,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
     it("(c) …and the SAME Operator is REFUSED a plan that DISABLES one — the authority covers deletes, not just creates", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
       function build(subjects: ("a" | "b")[]) {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const a = new Service(stack, "a", { name: "A" });
         const b = new Service(stack, "b", { name: "B" });
         for (const s of subjects) stack.addGovernanceMoveRung(s === "a" ? a : b);
@@ -418,15 +410,13 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
       // The domain must EXIST before the service can name it in `domainId` (`ResourceProps.domainId`
       // is a real object id), so this is two applies of one stack — which is also the honest shape:
       // an operator adds the domain, then nests under it.
-      const seed = new App();
-      const seedStack = new Stack(seed, stackName);
+      const seedStack = new Stack(stackName);
       new Domain(seedStack, "platform", { name: "Platform" });
       await applyLatest(seedStack.synth());
       const domain = await admin.domains.get(`urn:scp:${stackName}:domain:platform`);
 
       function build(withLower: boolean) {
-        const app = new App();
-        const stack = new Stack(app, stackName);
+        const stack = new Stack(stackName);
         const dom = new Domain(stack, "platform", { name: "Platform" });
         const svc = new Service(stack, "svc", { name: "Svc", domainId: domain.id });
         stack.addGovernanceMoveRung(dom);
@@ -484,8 +474,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
 
     it("an Operator is REFUSED a containment move out of the governed service, and an Administrator makes the identical move", async () => {
       const stackName = `stack-${randomUUID().slice(0, 8)}`;
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       const keep = new Service(stack, "keep", { name: "Keep" });
       const dest = new Service(stack, "dest", { name: "Dest" });
       new Component(stack, "x", { name: "x", service: keep });

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { App, Service, Stack, synthToFile } from "@scp/iac";
+import { Service, Stack, synthToFile } from "@scp/iac";
 import {
   createTestOrg,
   listenTestServer,
@@ -57,8 +57,7 @@ describe("plans: CLI-driven no-op-on-second-apply (DoD (b))", () => {
       // imports/executes the IaC TypeScript program itself, only the synthesized JSON (module
       // doc, packages/cli/src/cli.ts's plan/apply section).
       const stackName = `cli-stack-${randomUUID().slice(0, 8)}`;
-      const app = new App();
-      const stack = new Stack(app, stackName);
+      const stack = new Stack(stackName);
       new Service(stack, "svc", { name: "Svc", properties: { tier: "high" } });
       const manifestPath = path.join(dir, "manifest.json");
       await synthToFile(stack, manifestPath);
