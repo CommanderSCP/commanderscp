@@ -441,11 +441,19 @@ async function resolveChangeArtifactDigest(
   changeObjectId: string
 ): Promise<string | undefined> {
   const row = await getChangeRow(tx, orgId, changeObjectId).catch(() => null);
-  // The SHARED reader (`coordination/artifact-facts.ts`) — the same keys, in the same order, the
-  // export projection and the pipeline tile read (`artifact_digest` / `artifactDigest` / the
-  // importer's `artifactDigests[]`); the FIRST non-empty digest is the one a single-digest control
-  // context binds to.
-  return ociDigestsOfSourceRef(row?.sourceRef ?? {}).find((d) => d.length > 0);
+  return artifactDigestOfSourceRef(row?.sourceRef ?? {});
+}
+
+/** The row-free half of {@link resolveChangeArtifactDigest} — the SHARED reader
+ *  (`coordination/artifact-facts.ts`), the same keys in the same order the export projection and
+ *  the pipeline tile read (`artifact_digest` / `artifactDigest` / the importer's
+ *  `artifactDigests[]`); the FIRST non-empty digest is the one a single-digest binding uses.
+ *
+ *  EXPORTED so `coordination/pipeline-hook-gate.ts` binds its `postDeploy` / `bakeAlarms` evidence
+ *  lookups to the SAME digest a control context binds to. Two readings of "which artifact is this
+ *  change about" is how a gate ends up asking about different bytes than the control beside it. */
+export function artifactDigestOfSourceRef(sourceRef: unknown): string | undefined {
+  return ociDigestsOfSourceRef(sourceRef ?? {}).find((d) => d.length > 0);
 }
 
 /**
@@ -470,7 +478,19 @@ async function resolveChangeCommitSha(
   changeObjectId: string
 ): Promise<string | undefined> {
   const row = await getChangeRow(tx, orgId, changeObjectId).catch(() => null);
-  const sourceRef = (row?.sourceRef ?? {}) as Record<string, unknown>;
+  return commitShaOfSourceRef(row?.sourceRef ?? {});
+}
+
+/** The row-free half of {@link resolveChangeCommitSha}, and the ONE definition of "which commit is
+ *  this change about" that reads a `source_ref`.
+ *
+ *  EXPORTED so `coordination/pipeline-hook-gate.ts` binds `postMerge` evidence to the same commit a
+ *  `github-check` control binds to — `postMerge` runs before any artifact exists, so the COMMIT is
+ *  its only binding (`pipeline_evidence.artifact_digest`'s column doc). The key list is pinned to
+ *  what `webhook-processor.ts`'s `commitShaFromPayload` WRITES; a key one of them knows and the
+ *  other does not is a gate asked about nothing. */
+export function commitShaOfSourceRef(sourceRefValue: unknown): string | undefined {
+  const sourceRef = (sourceRefValue ?? {}) as Record<string, unknown>;
   const direct =
     sourceRef.commit_sha ??
     sourceRef.commitSha ??

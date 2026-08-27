@@ -1,8 +1,8 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { AlarmStateEvidence, PipelineHookKind, TestRunEvidence } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { pipelineEvidence, pipelineHooks } from "../db/schema.js";
+import { objects, pipelineEvidence, pipelineHooks } from "../db/schema.js";
 import type { BakeAlarmReport } from "./pipeline-hook-verdicts.js";
 
 /**
@@ -482,4 +482,109 @@ export async function alarmReportsInWindow(
       }
     };
   });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Admission support — the two reads the gate (`pipeline-hook-gate.ts`) and the per-target hold
+// (`continuous-hold.ts`) both need, defined ONCE here rather than twice beside them.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * INERTNESS PROBE — does this org declare ANY hook of this kind, at all?
+ *
+ * The property this buys is the one `governance/freeze-scope.ts` states for freezes and has its own
+ * counting test for: an org that declares nothing pays ONE indexed read per change per tick and
+ * nothing else — no placement resolution, no per-target evidence query, no per-hook loop. Both
+ * admission callers ask this first and return an empty verdict set when it is false.
+ *
+ * It is a `LIMIT 1` existence read, not a count: the answer is a boolean and counting the rows of an
+ * estate-sized table to produce one would be the same query written the expensive way. The
+ * `(org_id, component_object_id, kind, hook_id)` unique index is a usable prefix scan on `org_id`.
+ */
+export async function orgDeclaresHookKind(
+  tx: TenantTx,
+  orgId: string,
+  kind: PipelineHookKind
+): Promise<boolean> {
+  const rows = await tx
+    .select({ id: pipelineHooks.id })
+    .from(pipelineHooks)
+    .where(and(eq(pipelineHooks.orgId, orgId), eq(pipelineHooks.kind, kind)))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * WHAT A WAVE TARGET IS, in the two coordinates every hook and every evidence row is keyed by.
+ *
+ * `pipeline_evidence` is keyed `(component_object_id, target_object_id, hook_id)` and
+ * `pipeline_hooks` is keyed on the COMPONENT — but a wave target is a `placement` object id, which
+ * is neither. This resolves the pair.
+ *
+ * BATCHED, and that is the whole reason it lives here rather than being `resolvePlacementPair`
+ * called in a loop: `stage-dependency-hold.ts`'s single-target resolver issues one query per target,
+ * which is exactly the N+1 `listHooksForComponents` was written to avoid on the line above it.
+ *
+ * A TARGET THAT IS NOT A PLACEMENT IS ITS OWN COMPONENT. A legacy-shaped wave target names a
+ * component directly (see `resolvePlacementPair`, which returns `null` for one), and the honest
+ * reading of "which component is this target about" is then the target itself. Evidence for such a
+ * target is therefore keyed `(target, target, hookId)`. Returning nothing instead would make every
+ * declared hook silently inapplicable on a legacy topology — a gate that is declared, rendered by
+ * `scp iac render`, and enforces nothing.
+ *
+ * A SOFT-DELETED target resolves to NOTHING and is absent from the map: `containmentChain` does not
+ * filter `deleted_at` on its base row and this one deliberately does, for the same reason
+ * `freeze-hold.ts` refuses to hold a dead target — a hook cannot be about an object that was
+ * deleted.
+ */
+export interface PipelineHookSubject {
+  targetObjectId: string;
+  componentObjectId: string;
+  /** `null` for a legacy component-shaped wave target, which names no place. Reported for the
+   *  Decision's explanation; nothing keys on it. */
+  deploymentTargetObjectId: string | null;
+}
+
+export async function resolveHookSubjects(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectIds: string[]
+): Promise<Map<string, PipelineHookSubject>> {
+  const subjects = new Map<string, PipelineHookSubject>();
+  if (targetObjectIds.length === 0) return subjects;
+
+  const rows = await tx
+    .select({ id: objects.id, typeId: objects.typeId, properties: objects.properties })
+    .from(objects)
+    .where(
+      and(
+        eq(objects.orgId, orgId),
+        inArray(objects.id, [...new Set(targetObjectIds)]),
+        isNull(objects.deletedAt)
+      )
+    );
+
+  for (const row of rows) {
+    if (row.typeId !== "placement") {
+      subjects.set(row.id, {
+        targetObjectId: row.id,
+        componentObjectId: row.id,
+        deploymentTargetObjectId: null
+      });
+      continue;
+    }
+    const props = row.properties as { componentId?: unknown; deploymentTargetId?: unknown };
+    if (typeof props.componentId !== "string" || typeof props.deploymentTargetId !== "string") {
+      // A placement missing either half resolves to nothing rather than to a guess. It is absent
+      // from the map, so every caller treats it as "no hooks apply" — the same reading a target
+      // whose object was deleted gets.
+      continue;
+    }
+    subjects.set(row.id, {
+      targetObjectId: row.id,
+      componentObjectId: props.componentId,
+      deploymentTargetObjectId: props.deploymentTargetId
+    });
+  }
+  return subjects;
 }
