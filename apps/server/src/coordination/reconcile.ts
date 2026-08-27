@@ -29,6 +29,12 @@ import {
   evaluateFreezeHolds,
   type FreezeHoldVerdict
 } from "./freeze-hold.js";
+import {
+  describeContinuousHeldTargets,
+  describeContinuousHold,
+  evaluateContinuousHolds,
+  type ContinuousHoldTargetVerdict
+} from "./continuous-hold.js";
 import { rollbackExemptible } from "../governance/freeze-scope.js";
 import { transitionChange } from "./transition.js";
 import { triggerRollback } from "./rollback.js";
@@ -769,6 +775,27 @@ async function reconcileExecutingChange(
    */
   const isRollback = change.rollbackOfObjectId !== null;
 
+  /**
+   * INCREMENT 8 — THE WAVE THIS ADMISSION IS THE EXIT OF (team-pipeline-iac D21).
+   *
+   * "Gating promotion OUT of wave N" IS "gating entry INTO wave N+1", so a `postDeploy` /
+   * `bakeAlarms` gate on `activeWave` is evaluated against the components and targets of the wave
+   * BEFORE it. Resolved here, from the plan `reconcileExecutingChange` already loaded, so the gate
+   * adapter costs no extra query to learn which wave that is.
+   *
+   * THE NEAREST PRECEDING WAVE **WITH TARGETS**, not simply `waveIndex - 1`. A stage wave whose
+   * place holds none of this change's components is born `skipped` with zero targets
+   * (`plan-service.ts`), and treating one as "the previous wave" would silently produce an empty
+   * gate — a declared hook that renders in `scp iac render` and enforces nothing, which is the
+   * failure mode this whole increment exists to close. `undefined` means this is the first wave
+   * that has anything in it, which has no exit to gate: that case gates on `postMerge` instead
+   * (`ManifestPostMergeHookSchema` — the first thing SCP genuinely controls is the change entering
+   * its first wave).
+   */
+  const previousWaveWithTargets = [...plan.waves]
+    .filter((w) => w.waveIndex < activeWave.waveIndex && w.targets.length > 0)
+    .sort((a, b) => b.waveIndex - a.waveIndex)[0];
+
   if (activeWave.status === "pending") {
     // MULTI-REPLICA SINGLE-FLIGHT (M8 hardening follow-up, adversarial review MINOR #5): the SAME
     // per-change advisory lock advanceProposedChanges/advanceEvaluatedChanges/
@@ -812,7 +839,39 @@ async function reconcileExecutingChange(
             topologyObjectId: plan.topologyObjectId,
             waveIndex: activeWave.waveIndex,
             targetObjectIds: activeWave.targets.map((t) => t.targetObjectId),
-            isRollback
+            isRollback,
+            pipelineHooks: {
+              changeObjectId: change.objectId,
+              previousWave: previousWaveWithTargets
+                ? {
+                    waveIndex: previousWaveWithTargets.waveIndex,
+                    // `change_waves.name` IS the stage name — `plan-compiler.ts` copies the topology
+                    // wave's name onto every step it produces, and D6 makes the vocabulary operator
+                    // data SCP never enforces.
+                    stage: previousWaveWithTargets.name,
+                    targets: previousWaveWithTargets.targets
+                      // ONLY TARGETS THAT ACTUALLY DEPLOYED. A `postDeploy` result or a bake window
+                      // for a target that never ran is evidence that can never arrive, and
+                      // requiring it would hold the next wave open forever. A previous wave with a
+                      // failed target has already parked the change on the `failed` branch above,
+                      // so this filter is about skipped/never-triggered rows, not about hiding
+                      // failures.
+                      .filter((t) => t.status === "succeeded")
+                      .map((t) => ({
+                        targetObjectId: t.targetObjectId,
+                        // THE DEPLOY INSTANT, AS DATA. `lastObservedAt` is when reconcile observed
+                        // this target succeed; `updatedAt` is the fallback for a row whose success
+                        // was recorded without an observation. Both are STABLE for a terminal
+                        // target — nothing writes them again — which is required, because this
+                        // value becomes the bake window's start inside a Decision record.
+                        deployedAt: t.lastObservedAt ?? t.updatedAt
+                      }))
+                  }
+                : null,
+              admittedTargets: activeWave.targets.map((t) => ({
+                targetObjectId: t.targetObjectId
+              }))
+            }
           },
           gateDeps
         );
@@ -1011,6 +1070,35 @@ async function reconcileExecutingChange(
     ));
 
   /**
+   * THE CONTINUOUS-TEST HOLD (increment 8) — resolved ONCE per change per tick, for the WHOLE wave,
+   * and memoised exactly like the freeze holds above it, for the same three reasons.
+   *
+   * ONE CALL FOR THE WAVE, NOT ONE PER TARGET. `evaluateContinuousHolds` opens with a single
+   * indexed existence read ("does this org declare any `continuous` hook at all?") and returns an
+   * empty map before resolving a single placement when the answer is no. Calling it per target
+   * would issue that read per target instead.
+   *
+   * LAZY: the call sits inside the trigger branch, so a wave that is purely POLLING in-flight
+   * targets does not consult hooks at all. A probe going stale cannot withdraw a trigger already
+   * made — `ExecutorPlugin` has no pause verb (ADR-0008) — so there is nothing for it to say about
+   * a target already in flight. What it withholds is the NEXT trigger.
+   *
+   * RESOLVED EVERY TICK, never once at the wave boundary. `evaluateWaveGate` fires exactly once on
+   * `pending -> running`, so a probe that goes stale MID-WAVE would never be seen there — and
+   * freshness is a read-time comparison redone every tick by construction (ADR-0033), which is the
+   * whole point of `maxAgeSeconds`. Memoisation is per tick, so the next tick asks again, which is
+   * also how a hold CLEARS the second fresh green evidence lands.
+   */
+  let continuousHolds: Map<string, ContinuousHoldTargetVerdict> | undefined;
+  const loadContinuousHolds = async (): Promise<Map<string, ContinuousHoldTargetVerdict>> =>
+    (continuousHolds ??= await withTenantTx(db, orgId, (tx) =>
+      evaluateContinuousHolds(tx, {
+        orgId,
+        targetObjectIds: activeWave.targets.map((t) => t.targetObjectId)
+      })
+    ));
+
+  /**
    * THE ONE QUALIFIER ON D7'S ROLLBACK EXEMPTION — see `originalChangeDispatchedTarget`.
    *
    * `false` for every non-rollback change WITHOUT touching the database, so the ordinary path pays
@@ -1070,6 +1158,15 @@ async function reconcileExecutingChange(
    *  If that ordering ever changes, the arithmetic at the bottom of this loop goes negative and a
    *  wave with live targets terminalizes. */
   const frozenTargets: FreezeHoldVerdict[] = [];
+
+  /** Every target this tick whose declared `continuous` probe is holding it (increment 8, D21).
+   *  Collected separately from `heldTargets` and `frozenTargets` because all three carry different
+   *  explanations and write different Decisions — but ALL THREE are counted together in the
+   *  terminalization below, and the three sets are DISJOINT BY CONSTRUCTION because only one
+   *  `continue` can fire per target and this one is placed LAST of the three. If that ordering ever
+   *  changes, the arithmetic at the bottom of this loop goes wrong in one of the two ways stated
+   *  there. */
+  const continuousHeldTargets: ContinuousHoldTargetVerdict[] = [];
 
   for (const target of activeWave.targets) {
     if (target.status === "succeeded") continue;
@@ -1254,6 +1351,49 @@ async function reconcileExecutingChange(
           );
         }
       }
+
+      // ==========================================================================================
+      // THE CONTINUOUS-TEST HOLD (increment 8, D21) — THIS `continue` IS THE REFUSAL
+      // ==========================================================================================
+      // Delete it and a target whose canary probe has gone stale, has never reported, or last
+      // reported FAILED triggers anyway, and every test in
+      // `pipeline-hook-admission.integration.test.ts` that asserts a held target's status stays
+      // `pending` goes red. Nothing else in this file withholds a trigger for probe freshness: the
+      // wave gate deliberately never sees `continuous` at all (`pipeline-hook-gate.ts` asserts it).
+      //
+      // WHY A HOLD AND NOT A GATE, in one sentence, because it is the entire design:
+      // `pipeline-behaviors.ts`'s mechanism table — "a stale canary probe on target A says nothing
+      // about target B, so blocking B would be a lie about what is known". SIBLINGS MUST PROCEED,
+      // and that has its own integration test rather than being left as an emergent property.
+      //
+      // THREE INVARIANTS, each copied verbatim from the two holds above and each load-bearing:
+      //
+      //   1. COUNTED FIRST. `nonTerminalTargets++` happened at the top of this branch, BEFORE this
+      //      `continue`. A held target is still in flight; without that, a wave whose only remaining
+      //      target is held marks itself `succeeded` and the change completes green with a target
+      //      that never ran — silent-success masking, the class ADR-0006 exists to prevent.
+      //   2. BEFORE `triggerWaveTarget`. No advisory trigger-claim lock is taken and no executor
+      //      binding is re-read for a call we are not going to make, so `attempt` stays 0 on a
+      //      target held from its first tick.
+      //   3. LAST OF THE THREE HOLDS — after the freeze `continue` and after the stage-dependency
+      //      one. Only one `continue` can fire per target, so the three hold sets stay DISJOINT BY
+      //      CONSTRUCTION, which is exactly what the terminalization arithmetic at the bottom of
+      //      this loop depends on. Stated consequence, the same one the freeze hold states: a
+      //      target that is both frozen and probe-held records only the freeze this tick, and
+      //      starts producing `continuous_test` verdicts the tick the freeze lifts. Ordering it
+      //      before the freeze would also spend a hook read per tick on a target no evidence could
+      //      release, and would make a frozen target's Decision name the wrong reason.
+      //
+      // AND AFTER THE BACKOFF GATE, for the reason both holds above state: a `triggering` target
+      // has already been handed to its executor and no hold can un-ring that bell. For a `pending`
+      // target — every first trigger, the case this is about — `backoffMs` is 0 and the orders are
+      // identical anyway.
+      const probeHeld = (await loadContinuousHolds()).get(target.targetObjectId);
+      if (probeHeld) {
+        continuousHeldTargets.push(probeHeld);
+        continue;
+      }
+
       try {
         // `anyTargetTriggered` is what gates the freeze hold's RELEASE row below (§1.5): a hold
         // clears on the tick a previously-held target actually reaches its executor, which is the
@@ -1378,6 +1518,12 @@ async function reconcileExecutingChange(
     await clearFreezeAdmissionHold(db, orgId, change, activeWave);
   }
 
+  if (continuousHeldTargets.length > 0) {
+    await recordContinuousHold(db, orgId, change, activeWave, continuousHeldTargets);
+  } else if (anyTargetTriggered) {
+    await clearContinuousHold(db, orgId, change, activeWave);
+  }
+
   // TERMINALIZATION, IN TWO RULES RATHER THAN ONE — because a held target is in flight (invariant 1
   // above) and a single `if (!allTerminal) return` therefore kept an already-FAILED wave alive
   // forever. A wave with one failed target and one held one never reached `markWaveTerminal`, so the
@@ -1410,7 +1556,15 @@ async function reconcileExecutingChange(
   // The two sets are DISJOINT BY CONSTRUCTION: the freeze `continue` in the loop above fires
   // before the stage-dependency evaluation can run, so no target can appear in both. That is a
   // property of the ordering, not of the data, which is why it is stated at both places.
-  const heldCount = heldTargets.length + frozenTargets.length;
+  // INCREMENT 8 ADDS A THIRD HOLD SET TO BOTH LINES, and the two failure modes M25.2 named for the
+  // second one apply unchanged to it: miss it here and `nonTerminalTargets - heldCount` goes wrong,
+  // the guard passes, and a wave with genuinely live targets terminalizes; miss it in the SECOND
+  // guard below and a wave whose only remaining targets are probe-held falls through to
+  // `markWaveTerminal(..., "succeeded")` — the wave completes GREEN with a target that was never
+  // deployed. All three sets are DISJOINT BY CONSTRUCTION (one `continue` per target, in a fixed
+  // order), which is a property of the ordering rather than of the data — which is why it is stated
+  // at all four places.
+  const heldCount = heldTargets.length + frozenTargets.length + continuousHeldTargets.length;
   if (nonTerminalTargets - heldCount > 0) {
     // ROUND-ROBIN BUMP (4 of 5) — THE FIFTH INSTANCE OF THE STARVATION CLASS, and the one the
     // gate-blocked bump ~300 lines up does NOT cover. That bump fires only while the wave is still
@@ -1744,6 +1898,131 @@ async function clearFreezeAdmissionHold(
     // Best effort, exactly like the hold's own logging: failing to record that a hold RELEASED must
     // never fail the tick that released it. The next trigger on this change retries.
     logChangeError(orgId, change, "freeze-admission-release", err);
+  });
+}
+
+/**
+ * THE EXPLAINABILITY HALF OF THE CONTINUOUS-TEST HOLD (increment 8, charter principle 6).
+ *
+ * Every property `recordFreezeAdmissionHold` states applies here verbatim, so the reasoning is not
+ * repeated — only what is DIFFERENT, and the one thing that is specific to this hold.
+ *
+ * ITS OWN `kind`, `continuous_test`, never shared with `gate` or `freeze_admission`.
+ * `insertDecisionIfChanged` compares against the LATEST row of the same `(subject_id, kind)`, so
+ * two mechanisms sharing a kind would make their rows ALTERNATE — each differing from the one
+ * before it — and suppression would never fire once. That is ADR-0024's measured 1.44 GB/day
+ * rebuilt from parts.
+ *
+ * `verdict: "hold"`, NEVER `"block"`, for the reason `recordStageDependencyHold` states at length:
+ * `latestBlockDecisionForSubject` filters on the VERDICT ALONE and nothing ever writes a clearing
+ * `block`, so a `block` here would mark the component permanently blocked on the service board —
+ * and this hold fires on every release of a component that declares a probe, by design.
+ *
+ * ============================================================================================
+ * `inputContext` CARRIES `buildHookFreshnessContext`'s OUTPUT AND NEVER A CLOCK
+ * ============================================================================================
+ * This is the property to read twice. The record carries `completedAt` (off the evidence row), the
+ * declared `maxAgeSeconds`, and `staleAfter` (their sum) — all DATA, all byte-identical for as long
+ * as the evidence is unchanged. The COMPARISON against the clock is `evaluateContinuousHold`'s job
+ * and is redone every tick (ADR-0033), so a probe that goes stale, comes back, and goes stale again
+ * produces three rows rather than one per second. `gate-orchestrator.ts` does exactly this for
+ * freezes ("NOTHING HERE IS DERIVED FROM A CLOCK") and this follows it.
+ *
+ * Putting `now` in here instead is the shape that produced the measured 1.44 GB/day incident, and
+ * it has a dedicated test: two consecutive evaluations against unchanged evidence must produce a
+ * BYTE-IDENTICAL `inputContext`.
+ *
+ * ONE ROW PER CHANGE, NOT PER TARGET, and both sorts (targets by `targetObjectId` in
+ * `describeContinuousHeldTargets`, hooks by `hookId` inside each entry) are load-bearing for the
+ * same reason the freeze hold's two are.
+ *
+ * THE `reconcile_cursor_at` BUMP IS NOT OPTIONAL — bump 7 of 7, in the same transaction as the
+ * Decision, and `candidate-loop-registry.test.ts` is the CI gate that notices if it goes missing. A
+ * change whose targets are all probe-held stays `executing` with its wave `running`, so nothing
+ * else moves its cursor, and a dead prober is a condition that lasts days. That is the property
+ * that stopped all coordination on the homelab for 13 days behind green health checks.
+ */
+async function recordContinuousHold(
+  db: Db,
+  orgId: string,
+  change: ChangeRow,
+  activeWave: { id: string; waveIndex: number },
+  probeHeldTargets: ContinuousHoldTargetVerdict[]
+): Promise<void> {
+  const held = describeContinuousHeldTargets(probeHeldTargets);
+
+  const firstHold = await withTenantTx(db, orgId, async (tx) => {
+    const recorded = await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "continuous_test",
+      subjectId: change.objectId,
+      verdict: "hold",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held },
+      reasonTree: {
+        summary: `${held.length} wave target(s) held: a declared continuous probe has not reported a fresh pass — siblings proceed`,
+        held: probeHeldTargets
+          .map((verdict) => describeContinuousHold(verdict))
+          .sort((a, b) => a.localeCompare(b))
+      }
+    });
+    await tx
+      .update(changes)
+      .set({ reconcileCursorAt: new Date() })
+      .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)));
+    return recorded;
+  });
+
+  if (firstHold.created) {
+    console.info(
+      `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex}: ${held.length} target(s) held by a continuous test hook — decision ${firstHold.decision.id} (scp decision get ${firstHold.decision.id}); re-evaluated every tick until fresh evidence lands`
+    );
+  }
+}
+
+/**
+ * HOLD -> RELEASE for the continuous hold — the same clearing counterpart, and for the same defect
+ * `clearFreezeAdmissionHold` documents: a hold Decision is a historical record with no clearing
+ * row, so it still reads `hold` long after fresh green evidence arrived and the target shipped.
+ *
+ * The three guards are identical: called only on a tick where nothing is probe-held AND some target
+ * triggered; it reads the latest `(subject_id, kind)` row first and returns unless that row is a
+ * `hold`; and `insertDecisionIfChanged` suppresses a duplicate anyway. NO CURSOR BUMP, deliberately
+ * and for the same reason — reaching here means a target was triggered on this very tick, so there
+ * is no not-advanced path to starve, and `candidate-loop-registry.test.ts` deliberately does not
+ * name this function.
+ */
+async function clearContinuousHold(
+  db: Db,
+  orgId: string,
+  change: ChangeRow,
+  activeWave: { id: string; waveIndex: number }
+): Promise<void> {
+  await withTenantTx(db, orgId, async (tx) => {
+    const latest = await latestDecisionForSubjectKind(
+      tx,
+      orgId,
+      change.objectId,
+      "continuous_test"
+    );
+    if (!latest || latest.verdict !== "hold") return;
+    await insertDecisionIfChanged(tx, {
+      orgId,
+      kind: "continuous_test",
+      subjectId: change.objectId,
+      verdict: "allow",
+      inputContext: { waveId: activeWave.id, waveIndex: activeWave.waveIndex, held: [] },
+      reasonTree: {
+        summary:
+          "no wave target is held by a continuous test hook any more — fresh passing evidence " +
+          "landed inside its declared freshness window and the previously-held target has been " +
+          "handed to its executor",
+        releases: latest.id
+      }
+    });
+  }).catch((err) => {
+    // Best effort, exactly like the freeze release: failing to record that a hold RELEASED must
+    // never fail the tick that released it. The next trigger on this change retries.
+    logChangeError(orgId, change, "continuous-test-release", err);
   });
 }
 

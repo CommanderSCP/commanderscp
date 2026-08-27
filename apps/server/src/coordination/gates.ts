@@ -8,6 +8,12 @@ import { evaluateGovernanceGate } from "../governance/gate-orchestrator.js";
 import type { TargetFreezes } from "../governance/freeze-scope.js";
 import { targetObjectIdsOf } from "./changes-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import {
+  describePipelineHookGate,
+  evaluatePipelineHookGate,
+  type PipelineHookGateContext,
+  type PipelineHookGateEntry
+} from "./pipeline-hook-gate.js";
 
 /**
  * The gate-binding SEAM (BUILD_AND_TEST.md §8 M3 item 1), filled in by M4 (BUILD_AND_TEST.md §8
@@ -61,6 +67,18 @@ export interface GateVerdict {
    *  `coordination/freeze-hold.ts`. This field explains a verdict; it does not withhold anything.
    *  Internal TS, never a wire schema. */
   frozenTargets?: TargetFreezes[] | undefined;
+  /** Increment 8 — the DECLARED-HOOK contributor's per-(hook x target) verdicts, populated only by
+   *  `evaluateWaveGate` and only when the caller supplied `pipelineHooks` context.
+   *
+   *  INTERNAL TS, NEVER A WIRE SCHEMA — the same posture as `frozenTargets` above. `GateVerdict`
+   *  itself lives only in this file and no response schema carries a gate reason, so the reason a
+   *  declared hook blocked a wave reaches an operator through the `gate` DECISION's `inputContext`
+   *  (which `reconcile.ts` writes from this field) and through `scp change explain` / `scp decision
+   *  get`. That satisfies charter principle 6 — a blocked outcome always carries a resolvable
+   *  `decision_id` naming its inputs — and an API projection of the hook verdicts is a DELIBERATE
+   *  FOLLOW-UP rather than an oversight: adding one is an `openapi.v1.json` + generated-SDK change
+   *  that this increment does not make. */
+  pipelineHooks?: PipelineHookGateEntry[] | undefined;
 }
 
 function allowVerdict(reason: string, extra: Record<string, unknown> = {}): GateVerdict {
@@ -193,6 +211,23 @@ export interface EvaluateWaveGateContext {
    *  because a campaign is not a rollback (campaign rollback mints its own per-member rollback
    *  Changes, and each of those carries this flag on its own wave). */
   isRollback?: boolean | undefined;
+  /**
+   * Increment 8 — THE THIRD CONTRIBUTOR (team-pipeline-iac D21), beside the `gate_bindings` rows
+   * this file already reads and the policy engine's `requireControls`. Declared `postDeploy` /
+   * `bakeAlarms` hooks on the components of the PREVIOUS wave, because gating promotion OUT of wave
+   * N IS gating entry INTO wave N+1; `postMerge` when there is no previous wave.
+   *
+   * OPTIONAL, AND ITS ABSENCE MEANS "DO NOT EVALUATE", not "evaluate over nothing". Only
+   * `reconcile.ts` supplies it. `campaign-reconcile.ts` calls this same function over CAMPAIGN wave
+   * targets — which are member changes, not placements — and there is no component to resolve a
+   * hook on there; a fabricated empty context would read as "no hooks declared" and be
+   * indistinguishable from a genuine one. Each member change carries its own waves and gets its own
+   * hook gate on its own reconcile pass, which is where the hooks actually apply.
+   *
+   * Everything except `orgId` (taken from `ctx.orgId`) is supplied here, because this adapter has
+   * the boundary framing and the caller has the plan.
+   */
+  pipelineHooks?: Omit<PipelineHookGateContext, "orgId"> | undefined;
 }
 
 /**
@@ -233,15 +268,62 @@ export async function evaluateWaveGate(
     isRollback: ctx.isRollback ?? false
   });
 
+  // ============================================================================================
+  // THE THIRD CONTRIBUTOR — declared pipeline hooks (increment 8)
+  // ============================================================================================
+  // ADDED BESIDE the other two, never replacing either: the verdict below is the AND of the
+  // orchestrator's answer (policies, controls, approvals, freezes) and this one. A component that
+  // declares no hooks contributes `allowed: true` with an empty entry list and changes nothing.
+  //
+  // EVALUATED EVEN WHEN THE ORCHESTRATOR ALREADY BLOCKED, deliberately. The Decision must explain
+  // EVERY reason the wave is not moving, or an operator clears the policy block and discovers a
+  // second one they were never told about — one round trip per contributor. The cost is bounded by
+  // `evaluatePipelineHookGate`'s inertness gate (two indexed existence reads for an org that
+  // declares nothing).
+  //
+  // `awaiting` / `no_source` / `window_not_covered` BLOCK AND KEEP BLOCKING, and that is safe here
+  // rather than a deadlock: this gate is re-evaluated on EVERY tick while the wave stays `pending`
+  // (only the transition fires once — `gate-orchestrator.ts`: "waiting at a wave boundary can never
+  // deadlock the engine"), so an in-flight suite that finishes, or a first alarm report that
+  // arrives, is noticed within a tick with no scheduler and no status flip.
+  const hookGate = ctx.pipelineHooks
+    ? await evaluatePipelineHookGate(tx, { orgId: ctx.orgId, ...ctx.pipelineHooks })
+    : undefined;
+
+  const hookBlock = hookGate !== undefined && !hookGate.allowed ? hookGate : undefined;
+
   return {
-    verdict: outcome.verdict,
+    verdict: outcome.verdict === "block" || hookBlock !== undefined ? "block" : "allow",
     inputContext: {
       ...outcome.inputContext,
       topologyObjectId: ctx.topologyObjectId,
       waveIndex: ctx.waveIndex,
-      explicitGatesBound: explicitlyBound.length
+      explicitGatesBound: explicitlyBound.length,
+      // NOTHING HERE IS DERIVED FROM A CLOCK — every entry field is an id, a declared number, or an
+      // instant read straight off a stored row (see `PipelineHookGateEntry`). That is what keeps a
+      // re-evaluated block byte-identical on every tick so `insertDecisionIfChanged` suppresses it,
+      // which is ADR-0024's 1.44 GB/day contract. Omitted entirely when no hook context was
+      // supplied, so an unchanged campaign-side Decision keeps exactly the bytes it had.
+      ...(hookGate ? { pipelineHooks: hookGate.entries } : {})
     },
-    reasonTree: outcome.reasonTree,
-    frozenTargets: outcome.frozenTargets
+    // The hook contributor's sentence is ADDED under its own key, always. `summary` is additionally
+    // REPLACED only when the hook gate is the SOLE blocker — an operator reading a Decision whose
+    // summary says "no policy blocked this" while the verdict is `block` has been told the opposite
+    // of the truth. When the orchestrator blocked too, its summary stands and this rides beside it,
+    // so neither reason hides the other.
+    reasonTree:
+      hookBlock === undefined
+        ? outcome.reasonTree
+        : {
+            ...outcome.reasonTree,
+            pipelineHooks: describePipelineHookGate(hookBlock),
+            ...(outcome.verdict === "block"
+              ? {}
+              : {
+                  summary: `blocked by declared pipeline hooks: ${describePipelineHookGate(hookBlock)}`
+                })
+          },
+    frozenTargets: outcome.frozenTargets,
+    ...(hookGate ? { pipelineHooks: hookGate.entries } : {})
   };
 }
