@@ -673,6 +673,13 @@
       "when": 1788155000000,
       "tag": "0095_artifact_object_type",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1788156000000,
+      "tag": "0096_pipeline_hooks_and_evidence",
+      "breakpoints": true
     }
   ]
 }

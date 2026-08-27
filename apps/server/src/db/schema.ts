@@ -2751,3 +2751,161 @@ export const scanFindings = pgTable(
     check("scan_findings_retention_class_check", sql`${table.retentionClass} IN ('E','O')`)
   ]
 );
+
+// -------------------------------------------------------------------------------------------
+// Pipeline hooks and their evidence (team-pipeline-iac increment 8, migration 0096).
+// Contract: packages/schemas/src/pipeline-behaviors.ts. Verdicts: coordination/pipeline-hook-verdicts.ts.
+// -------------------------------------------------------------------------------------------
+
+/**
+ * The four DECLARED test hooks per component (D11/D21) — `postMerge`, `postDeploy`, `continuous`,
+ * `bakeAlarms`.
+ *
+ * IDENTITY is `(orgId, componentObjectId, kind, hookId)` and it is a real UNIQUE constraint, not a
+ * convention the writer observes. `ManifestPipelineHookSchema` states the rule: there is no update
+ * path keyed on a subset, so a changed hook is a delete + create.
+ *
+ * NO `managedByStack` COLUMN, AND NONE IS EVER ADDED. `packages/schemas/src/iac.ts` settles this for
+ * the whole family of per-object configuration tables and this is one of them: "OWNERSHIP IS DERIVED
+ * FROM THE OWNING OBJECT ... neither table has a `labels` column, and neither gets one. A row belongs
+ * to stack S iff the graph object it hangs off (`component_object_id` / `target_object_id`) is one
+ * THIS stack owns." A stack-label column would be a SECOND answer to "who owns this row", and the
+ * moment it can disagree with the first, a plan's prune set and its apply's prune set are computed
+ * from different facts. `source_mappings` and `executor_bindings` are the precedents.
+ *
+ * The per-kind nullable columns are not split into four tables: the closed per-kind shape is enforced
+ * by the Zod discriminated union at every write door, and a CHECK matrix here would be a second,
+ * driftable copy of it.
+ */
+export const pipelineHooks = pgTable(
+  "pipeline_hooks",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** The component whose pipeline declares this hook — AND the ownership pointer (see above).
+     *  Org-unbound `REFERENCES objects(id)`, the form `changes.object_id` already uses. */
+    componentObjectId: uuid("component_object_id").notNull(),
+    /** 'postMerge'|'postDeploy'|'continuous'|'bakeAlarms'. Plain text, no pg enum and no CHECK — the
+     *  closed set lives ONCE, in `PipelineHookKindSchema`, exactly as for `sourceMappings.type`. */
+    kind: text("kind").notNull(),
+    /** Defaulted at synth to the construct kind (D16(6)), ALWAYS explicit on the wire. */
+    hookId: text("hook_id").notNull(),
+    /** `WorkflowRefSchema` — (repo, branch, path, templateName?). NULL on `bakeAlarms` only, which
+     *  triggers nothing and so carries no workflow. */
+    workflow: jsonb("workflow"),
+    /** `postDeploy`/`bakeAlarms`. NULL = EVERY wave, the STRICT end of the range: adding a `stage`
+     *  REMOVES gates. Operator vocabulary (D6) — SCP never enforces the value set. */
+    stage: text("stage"),
+    /** `continuous` only. DESCRIPTIVE — Argo runs the cron, SCP does not schedule it. */
+    everySeconds: integer("every_seconds"),
+    /** `continuous` only, REQUIRED there. Evidence older than this reads as ABSENT — not stale-pass
+     *  and not fail (`evaluateContinuousHold`). */
+    maxAgeSeconds: integer("max_age_seconds"),
+    /** `bakeAlarms` only — `evaluateBakeGate`'s `quietWindowSeconds`. */
+    quietWindowSeconds: integer("quiet_window_seconds"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("pipeline_hooks_identity").on(
+      table.orgId,
+      table.componentObjectId,
+      table.kind,
+      table.hookId
+    )
+  ]
+);
+
+/**
+ * Concluded test runs and asserted alarm-state windows (D21(b)/D23).
+ *
+ * ===========================================================================================
+ * `source` AND `producerSubjectId` ARE SERVER-STAMPED. THEY ARE NEVER SETTABLE FROM A REQUEST BODY.
+ * ===========================================================================================
+ * `SubmitPipelineEvidenceRequestSchema` carries no `producer`/`source`/`reportedBy` field and must
+ * never gain one. The rule, already written down in `federation/scan-evidence.ts`: PROVENANCE —
+ * which authenticated principal and which module produced the row — IS THE AUTHORIZATION BOUNDARY,
+ * NOT THE PAYLOAD SHAPE, because a shape-valid payload is forgeable by anyone who can read the
+ * schema. Both columns are filled at INSERT from the authenticated subject and from which door the
+ * row arrived through, the same way `controlRuns.pluginModule` is stamped.
+ *
+ * That matters beyond bookkeeping: `evaluateBakeGate` evaluates window coverage PER SOURCE (source
+ * A's reports never fill source B's gaps), so a caller who could choose its own `source` could
+ * manufacture single-source coverage of a window it never observed.
+ *
+ * TWO WRITE SEMANTICS, ON PURPOSE — `testRun` rows supersede newest-wins (enforced by the partial
+ * unique index `pipeline_evidence_test_run_identity`, migration 0096), `alarmState` rows ACCUMULATE.
+ * See `recordTestRunEvidence` / `recordAlarmEvidence` for why each is the semantics rather than a
+ * retention choice.
+ */
+export const pipelineEvidence = pgTable(
+  "pipeline_evidence",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    componentObjectId: uuid("component_object_id").notNull(),
+    /** The deployment target this evidence is ABOUT. Required even for `postMerge`, whose run is not
+     *  target-specific, because the AUTHORIZATION is scoped at the target — "an evidence row nobody
+     *  can attribute is an evidence row nobody can revoke". */
+    targetObjectId: uuid("target_object_id").notNull(),
+    hookId: text("hook_id").notNull(),
+    /** 'testRun'|'alarmState'. Plain text, Zod-enforced — see `pipelineHooks.kind`. */
+    kind: text("kind").notNull(),
+    /** EXACTLY ONE binding is what the consuming hook requires: `postMerge` binds to the built
+     *  COMMIT (it runs before any artifact exists), the other three to the artifact DIGEST. Both are
+     *  permitted on the wire and the CONSUMER requires the one its hook needs — a mismatch is a
+     *  refusal, never a widening. Unbound evidence is read as covering whatever deploys next. */
+    artifactDigest: text("artifact_digest"),
+    commitSha: text("commit_sha"),
+    /** SERVER-STAMPED, never settable from a request body (see above). CHECKed in SQL rather than by
+     *  Zod precisely BECAUSE it is not on the wire: no request schema stands over this column, so
+     *  the constraint is the only guard. */
+    source: text("source").notNull(),
+    /** SERVER-STAMPED, never settable from a request body (see above). NULLABLE and deliberately
+     *  un-FK'd: an `executor_observed` row has no human subject, and evidence must outlive a deleted
+     *  subject — "who said the window was quiet" cannot be answered by a row that cascaded away. */
+    producerSubjectId: uuid("producer_subject_id"),
+    /** The parsed `PipelineEvidenceSchema` body, verbatim. The columns beside it are the ones that
+     *  get QUERIED; everything else stays in the bag rather than being shredded into columns that
+     *  would have to be kept in step with the Zod contract by hand. */
+    payload: jsonb("payload").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    /** "The latest evidence for this (org, target, hook)" — `created_at DESC` is IN the index so the
+     *  read stops at the first row instead of sorting every report ever filed against the target. */
+    index("pipeline_evidence_latest").on(
+      table.orgId,
+      table.targetObjectId,
+      table.hookId,
+      table.createdAt.desc()
+    ),
+    /** Bake window-coverage lookups. `kind` earns its place: the overlap predicate is a range scan
+     *  over jsonb window bounds, so keeping the far more numerous `testRun` rows out of the scan
+     *  entirely is the point. */
+    index("pipeline_evidence_bake_window").on(
+      table.orgId,
+      table.targetObjectId,
+      table.hookId,
+      table.kind
+    ),
+    /** Newest-wins supersession for test runs, ENFORCED. `coalesce(..., '')` because the binding is
+     *  "digest OR commit" with the unused one NULL, and NULL never equals NULL in a unique index —
+     *  without it this index would permit unlimited duplicates of exactly the rows it collapses.
+     *  PARTIAL on `kind = 'testRun'`: alarm rows accumulate on purpose and must not be caught. */
+    uniqueIndex("pipeline_evidence_test_run_identity")
+      .on(
+        table.orgId,
+        table.componentObjectId,
+        table.targetObjectId,
+        table.hookId,
+        sql`coalesce(${table.artifactDigest}, '')`,
+        sql`coalesce(${table.commitSha}, '')`
+      )
+      .where(sql`${table.kind} = 'testRun'`),
+    check(
+      "pipeline_evidence_source_check",
+      sql`${table.source} IN ('rollout_analysis','pushed','executor_observed')`
+    )
+  ]
+);
