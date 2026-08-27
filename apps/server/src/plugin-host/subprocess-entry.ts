@@ -158,6 +158,10 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
       const mod = await import("@scp/plugin-argocd");
       return { kind: "discovery", plugin: mod.createArgoCdDiscoveryPlugin() };
     }
+    case "argo-workflows": {
+      const mod = await import("@scp/plugin-argo-workflows");
+      return { kind: "executor", plugin: mod.createArgoWorkflowsExecutorPlugin() };
+    }
     case "terraform": {
       const mod = await import("@scp/plugin-terraform");
       return { kind: "executor", plugin: mod.createTerraformExecutorPlugin() };

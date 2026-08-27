@@ -83,6 +83,9 @@ importers:
       '@scp/plugin-api':
         specifier: workspace:*
         version: link:../../packages/plugin-api
+      '@scp/plugin-argo-workflows':
+        specifier: workspace:*
+        version: link:../../packages/plugins/argo-workflows
       '@scp/plugin-argocd':
         specifier: workspace:*
         version: link:../../packages/plugins/argocd
@@ -426,6 +429,25 @@ importers:
         specifier: workspace:*
         version: link:../test-tmpdir
     devDependencies:
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(lightningcss@1.32.0)
+
+  packages/plugins/argo-workflows:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
+    devDependencies:
+      '@scp/plugin-testkit':
+        specifier: workspace:*
+        version: link:../../plugin-testkit
+      nock:
+        specifier: ^13.5.0
+        version: 13.5.6
       typescript:
         specifier: ~5.8.0
         version: 5.8.3

@@ -30,6 +30,7 @@
     "@scp/cosign": "workspace:*",
     "@scp/dependency-manifests": "workspace:*",
     "@scp/plugin-api": "workspace:*",
+    "@scp/plugin-argo-workflows": "workspace:*",
     "@scp/plugin-argocd": "workspace:*",
     "@scp/plugin-dependency-index-oci": "workspace:*",
     "@scp/plugin-dependency-index-registries": "workspace:*",

@@ -14,6 +14,7 @@ import {
   manifest as argocdManifest,
   discoveryManifest as argocdDiscoveryManifest
 } from "@scp/plugin-argocd";
+import { manifest as argoWorkflowsManifest } from "@scp/plugin-argo-workflows";
 import { manifest as terraformManifest } from "@scp/plugin-terraform";
 import { manifest as pipelineGenericManifest } from "@scp/plugin-pipeline-generic";
 import { manifest as managedIacManifest } from "@scp/plugin-managed-iac";
@@ -82,6 +83,7 @@ export const BUNDLED_PLUGIN_MANIFESTS: ApiPluginManifest[] = [
   gitlabDiscoveryManifest,
   argocdManifest,
   argocdDiscoveryManifest,
+  argoWorkflowsManifest,
   terraformManifest,
   managedIacManifest,
   webhookNotifyManifest,
@@ -155,6 +157,7 @@ export const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
   "gitlab-discovery": gitlabDiscoveryManifest,
   argocd: argocdManifest,
   "argocd-discovery": argocdDiscoveryManifest,
+  "argo-workflows": argoWorkflowsManifest,
   terraform: terraformManifest,
   "pipeline-generic": pipelineGenericManifest,
   "managed-iac": managedIacManifest,

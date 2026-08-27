@@ -169,6 +169,7 @@ export type PluginModule =
   | "gitlab-discovery"
   | "argocd"
   | "argocd-discovery"
+  | "argo-workflows"
   | "terraform"
   | "pipeline-generic"
   | "managed-iac"
