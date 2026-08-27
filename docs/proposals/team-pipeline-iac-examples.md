@@ -165,7 +165,10 @@ That is the whole file: the component takes the pipeline's name, the source is t
 **The shared exception (D8)** is the same class at a different scope — a `Pipeline` scoped to a *service* is the deliberate rung exception, in the team repo:
 
 ```ts
-new ImagePipeline(payments, "payments-release", { waves: waves.standard });
+new ImagePipeline(payments, "payments-release", {
+  repo: repos("payments/payments-api"), // required even at the shared rung (D18)
+  waves: waves.standard,
+});
 // components that declare their own pipeline still win by rung (ADR-0027/0029)
 ```
 
@@ -215,7 +218,7 @@ export const widePod = (regions: string[]) => [
 | **retrans** | relay at the CDS boundary | nothing to declare — pairing + inbox/outbox delivery config only; relays signed bundles, validates, never terminates a promotion |
 | **airgap outpost** | air-gapped, `trustTier: il5` | WHAT arrives as `.scpbundle` via retrans (the M13.1a inbox loop — untouched by D1); its HOW stack applied locally from the same media run |
 
-## 7. The authoring surface in detail — the D15–D17 grammar
+## 7. The authoring surface in detail — the D15–D24 grammar
 
 The grammar: the file roots at the **typed pipeline class** (or at `Component` when one repo holds several pipelines); **composition over configuration** — a prop that names another declared thing takes a construct, and scope chains carry the context; **closed vocabularies are closed types**, with references via CDK's `fromXxx()` statics returning interface types (`IService`) so owned and referenced objects are interchangeable. The L1 escape hatch is guaranteed (`pipeline.addManifestEntry(...)`), synth/plan errors carry the construct tree path (`payments-api/image/unit`), and every construct exports its named props interface (D16). Free text survives only where the value is genuinely operator data (names, paths, environment strings per D6). The full-featured file — one component, two pipelines, one repo:
 
@@ -303,7 +306,7 @@ The trailing block is **generated, committed codegen** — `scp iac render --wri
 ```ts
 new BindingPolicy(bindings, "tests", {
   scope: DeploymentTarget.fromName("commercial-amer-staging"),
-  type: ExecutorType.build, // dedicated test lane vs build lane: main doc §14.11
+  type: ExecutorType.build, // resolved: dedicated `test` lane, build-lane fallback (§14 res 7)
   executionSystem: ExecutionSystem.fromName("workflows-hq"),
 });
 ```
@@ -342,7 +345,7 @@ image.placeAt(products.payBlue); // no such product → COMPILE error
 
 The ladder is compile → plan (hard) → readiness (loud), and a refused plan re-plans on every config-source sync, so infra-lands-then-image-succeeds converges without sequencing PRs. Per D24 the compile arm also checks **kind**: the artifact-class × infra-kind matrix lives once in `@scp/schemas`, the server re-checks it at plan on the explicit manifest (L1 authors cannot bypass it), and the domain reconciler only binds executor classes that serve the target's kind — RPM→cluster and image→RDS die at the earliest layer that sees them.
 
-**Rollout: the strategy is the construct** (`CanaryRollout`, `RollingRollout` — no strategy strings), scoped to its pipeline and keyed to a `TargetClass` — an `RpmPipeline` would declare `new RollingRollout(rpm, { on: TargetClass.instanceGroup, batchPercent: 25, pauseBetween: Duration.minutes(5) })`. Authoritative for `scp-runner-*` classes; trigger-parameters-or-verified for coordinated executors (the plugin declares which, §14.8) — declared-vs-observed divergence is loud, and SCP never moves traffic itself.
+**Rollout: the strategy is the construct** (`CanaryRollout`, `RollingRollout` — no strategy strings), scoped to its pipeline and keyed to a `TargetClass` — an `RpmPipeline` would declare `new RollingRollout(rpm, { on: TargetClass.instanceGroup, batchPercent: 25, pauseBetween: Duration.minutes(5) })`. Authoritative for `scp-runner-*` classes; trigger-parameters-or-verified for coordinated executors (the plugin declares which — §14 build verification) — declared-vs-observed divergence is loud, and SCP never moves traffic itself.
 
 
 ## 8. The whole estate in one file — accounting for everything
