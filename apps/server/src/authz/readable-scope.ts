@@ -105,8 +105,10 @@ import type { Permission } from "./resolve.js";
 export interface ReadableRoot {
   /** `role_bindings.scope_object_id` — the object the binding is anchored at. */
   rootId: string;
-  /** RAW `role_bindings.effect`. The column is bare `text` with NO check constraint, so this is
-   *  whatever was written — see {@link partitionReadableRoots}. */
+  /** RAW `role_bindings.effect` — whatever the row holds, not a narrowed union. `text` constrained
+   *  to 'allow'|'deny' by `role_bindings_effect_check` (drizzle/0096) SINCE that migration, and by
+   *  nothing at all before it; a database restored from a pre-0096 dump still carries whatever was
+   *  written. Classified in {@link partitionReadableRoots}. */
   effect: string;
 }
 
@@ -173,15 +175,22 @@ export async function readableRootsFor(
  * Split {@link readableRootsFor}'s rows into the allow roots and the deny roots — by EXACT string
  * equality, which is the whole point of this function existing.
  *
- * ⚠️ `role_bindings.effect` IS BARE `text` WITH NO CHECK CONSTRAINT (`db/schema.ts`), and
- * `hasPermission` classifies it in JS: `effects.includes('deny')` then `effects.includes('allow')`.
- * So a row spelled `'ALLOW'` matches NEITHER branch and grants NOTHING — it falls through to the
- * default deny. Any classification here that is looser than that is a SILENT WIDENING of authority
- * relative to the function it mirrors: written `effect !== 'deny'`, an `'ALLOW'` row that grants
- * nothing on a get-by-id door would grant a whole subtree on every list door. Hence `=== "allow"`
- * exactly, and `=== "deny"` exactly, and a row that is neither lands in neither set.
- * (Mutation-proven: `readable-scope.integration.test.ts`'s "malformed effect" case goes red the
- * moment this is relaxed.)
+ * ⚠️ A `role_bindings.effect` THAT IS NEITHER STRING IS STILL REACHABLE, and `hasPermission`
+ * classifies it in JS: `effects.includes('deny')` then `effects.includes('allow')`. So a row
+ * spelled `'ALLOW'` matches NEITHER branch and grants NOTHING — it falls through to the default
+ * deny. Any classification here that is looser than that is a SILENT WIDENING of authority relative
+ * to the function it mirrors: written `effect !== 'deny'`, an `'ALLOW'` row that grants nothing on
+ * a get-by-id door would grant a whole subtree on every list door. Hence `=== "allow"` exactly, and
+ * `=== "deny"` exactly, and a row that is neither lands in neither set.
+ *
+ * `role_bindings_effect_check` (drizzle/0096) makes the database refuse such a row on INSERT and
+ * UPDATE, and 0096 deletes the ones it finds. That is an OUTER layer, not a replacement for this
+ * one: a CHECK cannot un-write a row that pre-dates it, so any deployment restored from a pre-0096
+ * dump — or touched by a superuser path that is not `scp_app` — can still present one here. This
+ * function is what makes that row harmless. (Mutation-proven: `readable-scope.integration.test.ts`
+ * and `inverse-walk-drift.integration.test.ts` both build such a row deliberately, via
+ * `test-support/harness.ts`'s `insertMalformedEffectRoleBinding`, and both go red the moment this
+ * is relaxed.)
  *
  * The classification lives in JS rather than in the SQL above for one reason: `hasPermission`'s
  * lives in JS, and two comparisons written in two languages are two things to keep in step.

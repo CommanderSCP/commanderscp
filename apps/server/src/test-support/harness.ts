@@ -477,6 +477,115 @@ export async function createTestUser(
 }
 
 /**
+ * Writes a `role_bindings` row whose `effect` is NEITHER 'allow' NOR 'deny'.
+ *
+ * drizzle/0096's `role_bindings_effect_check` makes such a row unwritable through any ordinary
+ * connection — deliberately: `hasPermission` and `readableRootsFor` classify by EXACT string
+ * equality, so an 'ALLOW' row grants nothing and denies nothing while reading, to anyone looking
+ * at the table, as authority.
+ *
+ * WHY THE ROW IS STILL WORTH BUILDING. A CHECK constrains what can be WRITTEN from the moment it
+ * exists; it cannot un-write what is already there, and PostgreSQL never re-checks a row on the way
+ * OUT. 0096 deletes the ones it finds at upgrade time, but the shape stays reachable two ways that
+ * are not hypothetical:
+ *
+ *   - a database restored from a pre-0096 `pg_dump`. That dump carries the pre-0096 SCHEMA — no
+ *     CHECK — so the illegal rows load intact, and they stay readable by the application for as
+ *     long as it is pointed at that database before (or without) the migrations being run;
+ *   - any superuser/table-owner path that is not `scp_app`, which is exactly what this helper is.
+ *
+ * So the resolver's fail-closed classification is the INNER layer of a defence in depth, and an
+ * inner layer that stops being exercised is an inner layer that silently rots: the day this helper
+ * is deleted as "unreachable" is the day `effect !== 'deny'` can be reintroduced into
+ * `partitionReadableRoots` with every test still green.
+ *
+ * HOW. The migration-owner connection, with the CHECK momentarily dropped inside ONE transaction
+ * and restored `NOT VALID` — still enforced on every later INSERT and UPDATE (NOT VALID skips only
+ * the initial scan of EXISTING rows), so the table stays protected for the rest of the file while
+ * holding the one row this made on purpose. A plain re-ADD would scan and reject that row.
+ *
+ * Three self-checks, because a fixture that silently no-ops turns "a malformed effect grants
+ * NOTHING" into a test that passes because there is no binding at all:
+ *   1. a legal `effect` is REFUSED, so this cannot quietly become the general-purpose write door
+ *      (every legal binding goes through `createTestUser` / the repo layer);
+ *   2. the row is READ BACK after COMMIT and its `effect` compared to what was asked for;
+ *   3. the CHECK is confirmed present again, and confirmed to still BITE, before returning.
+ */
+export async function insertMalformedEffectRoleBinding(opts: {
+  orgId: string;
+  subjectId: string;
+  roleId: string;
+  scopeObjectId: string;
+  effect: string;
+}): Promise<string> {
+  if (opts.effect === "allow" || opts.effect === "deny") {
+    throw new Error(
+      `insertMalformedEffectRoleBinding is for MALFORMED effects only — '${opts.effect}' is legal and must be written through the ordinary path`
+    );
+  }
+  const id = uuidv7();
+  const client = new pg.Client({ connectionString: testDatabaseUrl() });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    // The DROP takes ACCESS EXCLUSIVE on `role_bindings`. Bounded so that a lingering
+    // idle-in-transaction connection from the test server's pool surfaces as a 55P03 naming this
+    // statement, rather than as the suite's 60s hook timeout naming nothing.
+    await client.query("SET LOCAL lock_timeout = '10s'");
+    await client.query('ALTER TABLE role_bindings DROP CONSTRAINT "role_bindings_effect_check"');
+    await client.query(
+      `INSERT INTO role_bindings (id, org_id, subject_id, role_id, scope_object_id, effect)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, opts.orgId, opts.subjectId, opts.roleId, opts.scopeObjectId, opts.effect]
+    );
+    await client.query(
+      `ALTER TABLE role_bindings ADD CONSTRAINT "role_bindings_effect_check"
+       CHECK (effect IN ('allow', 'deny')) NOT VALID`
+    );
+    await client.query("COMMIT");
+
+    const readBack = await client.query<{ effect: string }>(
+      `SELECT effect FROM role_bindings WHERE id = $1`,
+      [id]
+    );
+    if (readBack.rowCount !== 1 || readBack.rows[0]!.effect !== opts.effect) {
+      throw new Error(
+        `insertMalformedEffectRoleBinding did not land: expected one row ${id} with effect ${JSON.stringify(opts.effect)}, read back ${JSON.stringify(readBack.rows)}. Every assertion resting on this row would have passed VACUOUSLY.`
+      );
+    }
+
+    // The constraint has to be back AND biting, or the rest of the file runs against an
+    // unconstrained table. `NOT VALID` is easy to mis-remember as "disabled"; this measures it
+    // instead of trusting the memory.
+    await client.query("BEGIN");
+    let probeAccepted = false;
+    try {
+      await client.query(
+        `INSERT INTO role_bindings (id, org_id, subject_id, role_id, scope_object_id, effect)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, 'NOT-A-LEGAL-EFFECT')`,
+        [opts.orgId, opts.subjectId, opts.roleId, opts.scopeObjectId]
+      );
+      probeAccepted = true;
+    } catch (err) {
+      if ((err as { code?: unknown }).code !== "23514") throw err;
+    } finally {
+      await client.query("ROLLBACK");
+    }
+    if (probeAccepted) {
+      throw new Error(
+        "insertMalformedEffectRoleBinding left `role_bindings_effect_check` NOT ENFORCING — the table is unconstrained for the rest of this file"
+      );
+    }
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    await client.end();
+  }
+  return id;
+}
+
+/**
  * A raw `pg.Client` that AUTHENTICATES as the least-privileged `scp_app` login role (no SET
  * ROLE, no BYPASSRLS) — the exact identity the production runtime pool uses (PR #4 security
  * review, CRITICAL 3). Used by adversarial RLS tests to probe the database directly, bypassing

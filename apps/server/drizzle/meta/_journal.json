@@ -680,6 +680,13 @@
       "when": 1788156000000,
       "tag": "0096_pipeline_hooks_and_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1788157000000,
+      "tag": "0097_rbac_role_preconditions",
+      "breakpoints": true
     }
   ]
 }

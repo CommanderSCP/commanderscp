@@ -5,10 +5,14 @@
 get-by-id re-scopes plus `authz/org-root-arm.ts`) as **PR #288**; **2.5b** (LIST-door filtering, the
 `readable-scope` → `list-door-scope` → `list-scope` stack, and the inverse-walk drift detector) as
 **PR #291**.
-**Not started:** steps 1, 2 and 3–10 — the roles themselves. Per **D5** the role seed (step 3) and the
+**Built, not yet merged:** **step 1** (DDL hardening, `drizzle/0097_rbac_role_preconditions.sql`) and
+**step 2** (the mutation-proven RBAC-across-assembly test), on branch `rbac-role-preconditions`.
+Neither adds a role or a permission — they make the tables able to hold them safely, and pin the
+`service → assembly → component` chaining the shared ComponentAdmin role depends on.
+**Not started:** steps 3–10 — the roles themselves. Per **D5** the role seed (step 3) and the
 role-binding write door (step 5) are **one shippable unit**, since deprecating `Administrator` before
 any purpose-role binding exists would 403 the obvious migration target from day one.
-**Date:** 2026-08-25, last revised 2026-08-26
+**Date:** 2026-08-25, last revised 2026-08-27
 **Prompted by:** owner ask — *"review the permissions and create the proper roles for each. Generally
 we'll want some for security/compliance (global scans and overrides), commander-wide admin, org
 admin, service admin, assembly & component admin (share a role)."*
@@ -140,11 +144,30 @@ anything that is not literally `'deny'` is silently treated as not-a-deny. `scp_
 SELECT/INSERT/UPDATE but **no DELETE** on `role_bindings` (`0002:27-31`) — a revoke verb could not
 revoke.
 
+> **Closed by step 1 — `drizzle/0097_rbac_role_preconditions.sql`.** The paragraph above describes
+> the state on main *before* 0097 and is kept as the statement of the defect; it is no longer a
+> description of the schema. 0097 adds the partial unique index `roles(name) WHERE org_id IS NULL`,
+> `UNIQUE (org_id, subject_id, role_id, scope_object_id, effect)` on `role_bindings`,
+> `CHECK (effect IN ('allow','deny'))`, and `GRANT DELETE ON role_bindings TO scp_app`; it cleans
+> pre-existing duplicates and illegal-effect rows first, since each constraint would otherwise
+> hard-fail on a populated database. **Two things the constraint does not do**, both still live:
+> the resolver's exact-string classification remains the inner layer for rows that pre-date it
+> (§8.3), and duplicate built-in roles whose `permissions` have **diverged** are *not* collapsed —
+> 0097 §1a aborts the upgrade naming the ids and the delta, because either survivor choice changes
+> some subject's authority and a migration must not invent that answer. Divergence is not exotic:
+> a re-executed 0002 seed writes the M1-era 11-permission `Owner` beside today's 20-permission one,
+> and `gen_random_uuid()` decides which holds the lower id.
+
 **(h) No validation that a binding's scope is a sensible object type.** `role_bindings.scope_object_id`
 is `uuid NOT NULL REFERENCES objects(id)` with no type constraint, no `scope_kind` column, and no
 CHECK. A binding at a `user`, a `change` or a `group` is accepted and silently **inert** — and because
 `objects.domain_id` carries no type constraint either (`containment.ts:432-434` says so explicitly),
 an object parented under a group would make such a binding *suddenly confer authority*.
+
+> **Still open after step 1.** 0097 adds the `roles.bindable_at text[]` column this will be
+> validated against, NULL on every existing built-in row (= "any scope", their behaviour today), and
+> deliberately **enforces nothing**: the check belongs at the role-binding write door, which is step
+> 5. Until then a binding at a nonsensical scope is still accepted and still inert.
 
 **(i) `requireApprovals.fromRole` is an unvalidated free-form string.**
 `packages/schemas/src/governance.ts:131` types it as bare `z.string()`; nothing validates it, and
@@ -448,6 +471,10 @@ time.**
 
 - **DESIGN §7** describes the chain as `component -> service -> domain -> organization`. The shipped
   walk is **four routes**, covering assembly, placement and deployment-target.
+- **DESIGN.md:355-366**'s `roles` / `role_bindings` DDL snippet is stale as of step 1: it shows
+  `effect text NOT NULL DEFAULT 'allow'` with no CHECK, no `roles.bindable_at`, and neither unique
+  constraint. Bring it in line with `drizzle/0097` (and with `db/schema.ts`, which the
+  `rbac-ddl-preconditions` suite holds to the live DDL from both sides).
 - **DESIGN.md:358** names `change:accept` in its one and only "example role bindings" comment. A
   filterless census finds it at exactly one place in the tree — **that line itself** — while
   `resolve.ts:41` claims to implement that example *"exactly."*
@@ -622,10 +649,20 @@ Three corollaries that are each a silent-failure class:
   depth > 10 into a loud `walkDepthExceeded`. Downward there is no such conversion: a component 11
   levels below its binding just does not appear, and the two walks then disagree — one throwing, one
   returning an empty list.
-- **`role_bindings.effect` is bare text with no CHECK.** `hasPermission` tests
+- **A `role_bindings.effect` that is neither `'allow'` nor `'deny'`.** `hasPermission` tests
   `effects.includes('deny')` then `includes('allow')` in JS, so `'ALLOW'` grants nothing. A SQL filter
   written `effect <> 'deny'` would silently **widen** authority relative to the function it mirrors.
-  It must be `effect = 'allow'` exactly.
+  It must be `effect = 'allow'` exactly. **Step 1 added `role_bindings_effect_check`** (drizzle/0097),
+  which refuses such a row on INSERT and UPDATE and deletes the ones the upgrade finds — but that is
+  the outer layer only. A CHECK constrains writes, not reads: a database restored from a pre-0097
+  `pg_dump` carries the pre-0097 schema with its illegal rows intact, and a superuser/table-owner
+  path that is not `scp_app` can write one at any time — either way the row reaches the resolver
+  unchanged, so the exact-string classification stays load-bearing and stays tested.
+  `readable-scope.integration.test.ts` and `inverse-walk-drift.integration.test.ts` build the row the
+  only way it can now arise, via `test-support/harness.ts`'s `insertMalformedEffectRoleBinding`,
+  which read-backs the row it wrote — without that guard the same fixture no-ops silently and both
+  suites go green with no binding in the table at all (measured: 0 failed / 15 passed in
+  `inverse-walk-drift`).
 - **Deny is a subtraction, not an absence.** Omitting the second descend makes a deny binding inert on
   list doors while still working on get-by-id — a deny that fails **open**.
 

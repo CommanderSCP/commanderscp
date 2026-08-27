@@ -16,6 +16,7 @@ import {
   createOrphanComponent,
   createTestOrg,
   createTestUser,
+  insertMalformedEffectRoleBinding,
   listenTestServer,
   type ListeningTestServer,
   type TestOrg
@@ -34,7 +35,8 @@ import {
  *   1. UPWARD AND DOWNWARD ARE EXACT INVERSES — "the two walks agree object by object" below is the
  *      drift detector for the whole increment. An object `authorize()` admits at its own id but the
  *      list omits reads as a cache bug, not an authz bug, and would be debugged as one.
- *   2. `role_bindings.effect` IS BARE TEXT WITH NO CHECK — "a malformed effect grants NOTHING".
+ *   2. A MALFORMED `role_bindings.effect` — "a malformed effect grants NOTHING". drizzle/0096
+ *      now refuses one at the DB, but a row predating that constraint still has to fail closed.
  *   3. DENY IS A SUBTRACTION, NOT AN ABSENCE — "a deny below an allow subtracts its subtree".
  *   4. DOWNWARD TRUNCATION IS SILENT — "the bound is the same constant" pins the boundary case that
  *      makes the two directions inverses *including* their bound.
@@ -49,6 +51,7 @@ import {
  * | `partitionReadableRoots`: `effect === "allow"` → `effect !== "deny"` | **3 fail.** "a malformed effect ('ALLOW') grants NOTHING": `expected [ …(5) ] to deeply equal []`. "the two walks agree object by object": `subject 'malformed' — upward and downward disagree`. "`readableRootsFor` returns the raw effect…": `expected Set{ …(3) } to deeply equal Set{ …(2) }`. A row that grants nothing through `hasPermission` would grant a whole subtree through every list door. |
  * | `containmentChildrenSql`: delete arm 2 (the `contains` inverse) | **6 fail**, incl. "a binding at a SERVICE reaches its assemblies and components" (`expected Set{ 1 id } to deeply equal Set{ …(5) }`), the inverse test, and the drizzle-composition case (`expected Set{} to deeply equal Set{ …(2) }`). The drift the exported fragment exists to make impossible. |
  * | `readableObjectFilterSql`: return `null` instead of `MATCHES_NOTHING` for an empty allow set | **4 fail.** "no allow binding at all matches NOTHING": `an empty allow set must NOT be the no-filter answer: expected null not to be null`; the inverse test reports 33 disagreements for `subject 'malformed'`. The two `null`s mean opposite things, and collapsing them lets a subject with no grant read the entire org. |
+ * | `insertMalformedEffectRoleBinding`: skip its `INSERT` (the FIXTURE, not the code under test) | **4 fail**, every one with `insertMalformedEffectRoleBinding did not land … Every assertion resting on this row would have passed VACUOUSLY.` Then the SAME mutation with that read-back guard ALSO removed: **1 fail** here (only "`readableRootsFor` returns the raw effect…", which reads the row directly — `expected undefined to be 'ALLOW'`) and **0 fail, 15 passed, in `inverse-walk-drift.integration.test.ts`**. Both "a malformed effect grants NOTHING" cases go GREEN with no binding in the table at all. Since drizzle/0096 this fixture has to drop a CHECK to do its job, which is exactly what makes a silent no-op possible — hence the guard, and hence this row. |
  *
  * ------------------------------------------------------------------------------------------------
  * FIXTURE — every one of the four containment routes, exercised in both directions
@@ -97,24 +100,44 @@ describe("readable scope: the containment walk run DOWNWARD (role-model.md §8.2
   const uniq = (p: string) => `${p}-${randomUUID().slice(0, 8)}`;
 
   /** A role binding written with an ARBITRARY `effect` string — the only thing here not built
-   *  through the API, because `role_bindings.effect` is bare text with no check constraint and no
-   *  door will write anything but 'allow'/'deny'. That is the hazard being pinned. */
+   *  through the API, because no door will ever write anything but 'allow'/'deny'.
+   *
+   *  Since drizzle/0096 the DATABASE refuses anything else too (`role_bindings_effect_check`), so a
+   *  malformed value is routed to `insertMalformedEffectRoleBinding` — which builds the row THE ONLY
+   *  WAY IT CAN STILL EXIST (a privileged path with the CHECK momentarily dropped, i.e. what a
+   *  pre-0096 `pg_dump` restores or a DBA does) rather than pretending the shape went away. See that
+   *  helper's doc for why the constraint does not retire these cases: it stops the row being
+   *  written, not the row being READ, and the resolver's exact-string classification is the inner
+   *  layer that keeps it harmless. Legal effects still take the ordinary path, unchanged. */
   async function bindRaw(
     subjectId: string,
     roleName: string,
     scopeObjectId: string,
     effect: string
   ): Promise<void> {
-    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+    const roleId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const role = await tx.query.roles.findFirst({
         where: and(isNull(roles.orgId), eq(roles.name, roleName))
       });
       if (!role) throw new Error(`built-in role '${roleName}' not found`);
+      return role.id;
+    });
+    if (effect !== "allow" && effect !== "deny") {
+      await insertMalformedEffectRoleBinding({
+        orgId: org.orgId,
+        subjectId,
+        roleId,
+        scopeObjectId,
+        effect
+      });
+      return;
+    }
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       await tx.insert(roleBindings).values({
         id: uuidv7(),
         orgId: org.orgId,
         subjectId,
-        roleId: role.id,
+        roleId,
         scopeObjectId,
         effect
       });
@@ -328,7 +351,10 @@ describe("readable scope: the containment walk run DOWNWARD (role-model.md §8.2
   });
 
   // ---------------------------------------------------------------------------------------------
-  // 3. §8.3 hazard: `role_bindings.effect` IS BARE TEXT WITH NO CHECK.
+  // 3. §8.3 hazard: A `role_bindings.effect` THAT IS NEITHER 'allow' NOR 'deny'.
+  //    `role_bindings_effect_check` (drizzle/0096) refuses one at the database now; these rows are
+  //    built through `insertMalformedEffectRoleBinding`, which reproduces the only way one can
+  //    still exist — pre-dating the constraint, in a restored dump. See `bindRaw` above.
   // ---------------------------------------------------------------------------------------------
 
   it("a malformed effect ('ALLOW') grants NOTHING — exactly as hasPermission treats it", async () => {
