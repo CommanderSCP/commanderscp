@@ -380,8 +380,16 @@ export class Stack extends Construct {
    * else with a 400 —
    * ownership of a mapping is inherited from its component, so a stack cannot configure a component
    * it does not manage.
+   *
+   * DELIBERATELY typed `IResourceRef`, not `IComponent`: this is the L1-adjacent escape hatch, not
+   * the typed sugar (`Component.mapsSource`) — it exists precisely so a caller CAN write something
+   * `Component.mapsSource` cannot, and the SERVER is the authority on whether the target is a
+   * component (`iac-dependency-producers.integration.test.ts`'s analogous
+   * "…refused, exactly as the typed verb refuses one" pins the same shape for
+   * `addDependencyProducer`). Narrowing the parameter here would make that a compile error instead
+   * of the intended 400.
    */
-  addSourceMapping(component: IComponent | string, spec: SourceMappingSpec): this {
+  addSourceMapping(component: IResourceRef | string, spec: SourceMappingSpec): this {
     this.sourceMappingDecls.push({
       location: locationOf(component),
       entry: {
@@ -414,8 +422,12 @@ export class Stack extends Construct {
    *
    * There is no `urn` argument and cannot be: a placement's URN is DERIVED from both endpoints
    * (ADR-0026 D3), so supplying one could disagree with what the server mints.
+   *
+   * DELIBERATELY typed `IResourceRef` on both parameters, not `IComponent`/`IDeploymentTarget` —
+   * see `addSourceMapping`'s doc for why the stack-level escape hatch stays loose while the sugar
+   * (`Component.placeAt`) stays typed.
    */
-  addPlacement(component: IComponent | string, deploymentTarget: IDeploymentTarget | string): this {
+  addPlacement(component: IResourceRef | string, deploymentTarget: IResourceRef | string): this {
     this.placementDecls.push({
       location: locationOf(component),
       entry: {
@@ -437,10 +449,12 @@ export class Stack extends Construct {
    * The pair must ALSO be declared as a placement by this same stack — `POST /plans` refuses a
    * binding on a pair the manifest does not declare, because apply would otherwise write it onto a
    * placement the same apply just pruned.
+   *
+   * DELIBERATELY typed `IResourceRef` — see `addSourceMapping`'s doc.
    */
   addPlacementExecutorBinding(
-    component: IComponent | string,
-    deploymentTarget: IDeploymentTarget | string,
+    component: IResourceRef | string,
+    deploymentTarget: IResourceRef | string,
     spec: ExecutorBindingSpec = {}
   ): this {
     this.executorBindingDecls.push({
@@ -501,8 +515,15 @@ export class Stack extends Construct {
    * (`POST /dependencies/producers/retract`) — which is the better path anyway, because only the
    * verb reports the bumps SCP has already authored and cannot recall. A hand-authored manifest
    * carrying `"producers": []` also works; `@scp/iac` cannot emit one.
+   *
+   * DELIBERATELY typed `IResourceRef`, not `IComponent`: this stack-level door is the escape hatch,
+   * not the typed sugar (`Component.producesDependency`) — it must stay able to express a
+   * SERVICE-valued producer so the server's own refusal of one is testable
+   * (`iac-dependency-producers.integration.test.ts`'s "a SERVICE-valued producer is refused, exactly
+   * as the typed verb refuses one"). Narrowing this parameter would turn that server-authority test
+   * into a compile error instead.
    */
-  addDependencyProducer(component: IComponent | string, spec: DependencyProducerSpec): this {
+  addDependencyProducer(component: IResourceRef | string, spec: DependencyProducerSpec): this {
     this.dependencyProducerDecls.push({
       location: locationOf(component),
       entry: {
