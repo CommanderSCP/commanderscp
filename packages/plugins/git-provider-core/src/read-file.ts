@@ -1,4 +1,5 @@
 import type { PluginContext } from "@scp/plugin-api";
+import { isScopedHttpResponseTooLargeError } from "@scp/plugin-api";
 
 /**
  * `readFileAtRef` — the provider-neutral half of the "read ONE file out of a repo at a ref"
@@ -181,6 +182,60 @@ export function resolveMaxBytes(requested?: number): number {
   return Math.min(Math.floor(requested), HARD_MAX_FILE_BYTES);
 }
 
+// -------------------------------------------------------------------------------------------
+// The TRANSPORT bound — M21.2 review MAJOR 5, closed. Everything above bounds what this file
+// DECODES; everything below bounds what a `ScopedHttpClient` is allowed to BUFFER on the way to
+// this file, via `ScopedHttpRequest.maxResponseBytes` (`@scp/plugin-api`). The two bounds serve
+// different jobs and are deliberately set to different NUMBERS: the decode bound protects the
+// dependency inventory from an oversized-but-legitimate manifest (routine, refused as
+// `too_large`); the transport bound protects THIS PROCESS's memory from a hostile or
+// misconfigured host that ignores every polite signal (`declaredSizeBytes`, `encoding: "none"`)
+// and just keeps sending bytes — measured concretely as the gap: Gitea and GitLab serve arbitrarily
+// large blobs inline as base64 with no analogue of GitHub's `encoding: "none"` cutoff, so
+// `ctx.http.request()` used to buffer the WHOLE body (`apps/server/src/plugin-host/
+// subprocess-entry.ts`'s pre-fix `await res.text()`) before `decodeBoundedBase64`'s gates ever ran.
+// -------------------------------------------------------------------------------------------
+
+/**
+ * Headroom added on top of the base64-inflated decode bound when sizing the TRANSPORT ceiling for
+ * a contents fetch. Base64 inflates by 4/3; on top of that, every provider wraps the blob in a
+ * small JSON envelope (path, sha, encoding, links, …) — a few KB at most across all three
+ * providers' shapes (`GithubContentFile`/`GiteaContentFile`/`GitlabRepositoryFile`). 64 KiB is
+ * generous relative to that envelope and cheap relative to `maxBytes`, so it never becomes the
+ * binding constraint — a legitimate response for a file within the decode bound is never rejected
+ * at the transport layer for a reason `decodeBoundedBase64`'s own gates never get to explain.
+ */
+const RESPONSE_ENVELOPE_HEADROOM_BYTES = 64 * 1024;
+
+/**
+ * The `ScopedHttpRequest.maxResponseBytes` an adapter's contents-fetch call should pass, derived
+ * from the (already-clamped, via {@link resolveMaxBytes}) decode bound for this call. Deliberately
+ * a FUNCTION of `maxBytes` rather than a second flat constant: the transport ceiling must always be
+ * strictly above the decode bound it is protecting (otherwise a legitimately-sized file would be
+ * refused at the transport layer with a message that never mentions `decodeBoundedBase64`'s own,
+ * more specific gates), and coupling it structurally to `maxBytes` is what keeps that true if
+ * `HARD_MAX_FILE_BYTES` or a caller's `request.maxBytes` ever changes.
+ *
+ * When THIS bound trips (rather than one of `decodeBoundedBase64`'s), it means the response was
+ * far past what any legitimate manifest could be — a multi-gigabyte blob, not an oversized
+ * `pom.xml` — and the read is refused before the bytes finish arriving, which is the entire point.
+ */
+export function resolveMaxResponseBytes(maxBytes: number): number {
+  return Math.ceil((maxBytes * 4) / 3) + RESPONSE_ENVELOPE_HEADROOM_BYTES;
+}
+
+/**
+ * Default `ScopedHttpRequest.maxResponseBytes` for every OTHER git-provider REST call this
+ * package's adapters make (trigger/poll/status/abort/discover) — not just `readFileAtRef`'s
+ * contents fetch. Same property, per CLAUDE.md's census discipline: every one of those calls also
+ * went through `ctx.http.request()` unbounded before this fix, and a hostile or misconfigured host
+ * answering a runs-list or a commits-list with gigabytes of JSON is the identical OOM shape, just
+ * on a different endpoint. Sized generously for a legitimate list response (thousands of runs or
+ * commits, each a few hundred bytes of JSON) while still bounding memory against a host that does
+ * not behave.
+ */
+export const DEFAULT_API_RESPONSE_MAX_BYTES = 16 * 1_048_576;
+
 /**
  * Decoded byte length of a base64 payload, computed from its length WITHOUT allocating the decode.
  * This is what lets the size refusal happen before the memory is spent.
@@ -244,33 +299,35 @@ export interface DecodeBoundedBase64Input {
  * `Buffer.from(…, "base64")` can produce (it ignores characters it cannot decode), so gate 3 already
  * bounds the allocation.
  *
- * HONEST LIMIT — READ THIS AS A LIVE GAP, NOT AS A HANDLED ONE. These gates bound what SCP
- * DECODES. **Nothing here bounds what the transport BUFFERS**, and the two are not the same number:
- * the plugin host's `ScopedHttpClient` does `await res.text()` over the whole response
- * (`apps/server/src/plugin-host/subprocess-entry.ts:297`) with no cap, no content-length pre-check
- * and no `Range` header, and no adapter sends a bound to the wire. So the body is fully in the
- * plugin subprocess's memory — roughly 1.37x the file's size, base64 — *before* gate 1 runs.
+ * CLOSED — M21.2 review MAJOR 5. These gates bound what SCP DECODES; the TRANSPORT bound (a
+ * SEPARATE, larger number — {@link resolveMaxResponseBytes}) now bounds what a `ScopedHttpClient`
+ * is allowed to BUFFER on the way here, enforced DURING accumulation by every conforming
+ * `ScopedHttpClient` (`apps/server/src/plugin-host/subprocess-entry.ts`'s `scopedFetchHttpClient`
+ * in production; each package's own `node:http`-backed test client in tests — see
+ * `ScopedHttpRequest.maxResponseBytes` in `@scp/plugin-api`).
  *
- * Per provider, measured against what each API actually serves:
+ * What was measured, per provider, before the fix:
  *
- *  - **GitHub is incidentally bounded**, by the provider and not by us: its contents API stops
+ *  - **GitHub was incidentally bounded**, by the provider and not by us: its contents API stops
  *    returning inline content above 1 MB and answers with `encoding: "none"` instead (gate 1's
- *    `too_large` case), so a GitHub blob response cannot exceed ~1.4 MB whatever the file's size.
- *  - **Gitea and GitLab are NOT bounded.** Both serve arbitrarily large blobs inline as base64, so
- *    any file a binding can reach buffers in full. This is a real exposure, not a theoretical one.
+ *    `too_large` case), so a GitHub blob response could not exceed ~1.4 MB whatever the file's
+ *    size. Still given the same explicit transport bound as the other two now, for defense in
+ *    depth — nothing in this package's contract should depend on a provider's incidental behavior.
+ *  - **Gitea and GitLab were NOT bounded.** Both serve arbitrarily large blobs inline as base64, so
+ *    any file a binding could reach buffered in full — `ctx.http.request()` did `await res.text()`
+ *    over the WHOLE response with no cap, no content-length pre-check and no `Range` header, so the
+ *    body sat fully in the plugin subprocess's memory — roughly 1.37x the file's size, base64 —
+ *    *before* gate 1 ran. This was a real exposure, not a theoretical one.
  *
- * It is NOT fixed per-adapter here, and the reason is that neither available mitigation actually
- * closes it: GitLab's metadata-only view of a blob is `HEAD .../repository/files/:path`
- * (`X-Gitlab-Size`), and `ScopedHttpRequest.method` (`packages/plugin-api/src/index.ts:34`) is
- * `GET|POST|PUT|PATCH|DELETE` — a plugin cannot issue a HEAD at all; Gitea's is the parent
- * DIRECTORY listing, a second round trip per read whose own response grows with the sibling count,
- * which reduces the exposure rather than removing it and leaves GitLab untouched. Fixing one of
- * three providers with a half-measure is the shape of fix this repo's census discipline exists to
- * prevent (CLAUDE.md).
- *
- * The fix that closes the CLASS is host-side and covers every plugin, not just these three: cap
- * `res.text()` in `subprocess-entry.ts` (and/or add `HEAD` to `ScopedHttpRequest.method` so an
- * adapter can pre-check a size). Tracked as M21.2 review MAJOR 5.
+ * It is fixed HOST-SIDE (covers every plugin, not just these three) rather than per-adapter with a
+ * pre-check: GitLab's metadata-only view of a blob is `HEAD .../repository/files/:path`
+ * (`X-Gitlab-Size`), and `ScopedHttpRequest.method` is `GET|POST|PUT|PATCH|DELETE` — a plugin
+ * cannot issue a HEAD at all; Gitea's is the parent DIRECTORY listing, a second round trip per read
+ * whose own response grows with the sibling count, which would have reduced the exposure rather
+ * than removed it and left GitLab untouched. Fixing one of three providers with a half-measure is
+ * the shape of fix this repo's census discipline exists to prevent (CLAUDE.md) — the transport
+ * bound closes the class for all three (and every other `ScopedHttpClient` caller that opts in) in
+ * one place instead.
  */
 export function decodeBoundedBase64(input: DecodeBoundedBase64Input): ReadFileAtRefResult {
   const { path, requestedRef, maxBytes } = input;
@@ -627,10 +684,14 @@ export function assertNoRedirect(
 
 /**
  * Turns whatever `ctx.http.request` threw into an error an operator can act on, without changing any
- * policy. Three cases, all deliberately non-swallowing:
+ * policy. Four cases, all deliberately non-swallowing:
  *
  *  - **Already ours** (`assertNoRedirect`'s product) — passed through untouched, so the redirect
  *    explanation is not buried under a generic transport message.
+ *  - **Response too large** (`ScopedHttpResponseTooLargeError`, `@scp/plugin-api` —
+ *    `ScopedHttpRequest.maxResponseBytes` was exceeded and the read was aborted mid-stream, M21.2
+ *    review MAJOR 5) — re-stated naming the limit and that this is a REFUSAL, not a truncation: the
+ *    caller never receives partial bytes to mistake for the whole file.
  *  - **Egress-guard refusal** (`egressBlocked: true`, `apps/server/src/plugin-host/egress-guard.ts:83`)
  *    — re-stated with the self-hosted case named, because that is the failure a self-hosted Gitea or
  *    GitLab actually hits: the guard blocks loopback/private addresses for every TENANT-configurable
@@ -650,6 +711,18 @@ export function wrapProviderRequestError(
   if (isGitProviderReadError(err)) return err;
 
   const message = err instanceof Error ? err.message : String(err);
+
+  if (isScopedHttpResponseTooLargeError(err)) {
+    return gitProviderReadError(
+      provider,
+      url,
+      `${provider} readFileAtRef: response from ${url} exceeded the ${err.limitBytes}-byte transport ` +
+        `ceiling and was aborted mid-stream — never a silent truncation. This bound exists so a hostile ` +
+        `or misconfigured ${provider} instance cannot exhaust this process's memory by serving an ` +
+        `oversized blob (M21.2 review MAJOR 5).`,
+      err
+    );
+  }
 
   if (
     typeof err === "object" &&

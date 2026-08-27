@@ -15,11 +15,17 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "./read-file.js";
+import type { ReadTreeAtRefRequest, ReadTreeAtRefResult } from "./read-tree.js";
 
 /** The read-a-file-at-a-ref capability (M21.2, ADR-0032 §4) — its vocabulary, decode bound and
  *  failure classifiers live in `read-file.ts` and are re-exported here so `@scp/git-provider-core`
  *  keeps a single entry point (`package.json` main = `dist/index.js`). */
 export * from "./read-file.js";
+
+/** The bounded multi-file/tree read capability (team-pipeline-iac proposal §12) — its vocabulary,
+ *  bounds and typed bound-exceeded error live in `read-tree.ts`, re-exported here for the same
+ *  single-entry-point reason. */
+export * from "./read-tree.js";
 
 /**
  * `@scp/git-provider-core` — the **provider-neutral** machinery shared by every git-provider
@@ -279,6 +285,18 @@ export interface GitProviderAdapter {
    * structurally enforces "coordination, not execution". This hook reads; it can never write.
    */
   readFileAtRef(ctx: PluginContext, request: ReadFileAtRefRequest): Promise<ReadFileAtRefResult>;
+
+  /**
+   * Bounded multi-file/tree read (team-pipeline-iac proposal §12): given a repo, a ref and one or
+   * more path globs, lists matching paths and reads them, bounded on every axis (`read-tree.ts`'s
+   * module doc). Same NOT-AN-EXECUTOR-VERB posture as {@link readFileAtRef} — read-only, never
+   * surfaced by `createExecutorPluginFromAdapter`.
+   *
+   * REQUIRED, not optional, for the same reason `readFileAtRef` is required: every implementer
+   * lives in this monorepo, so a required hook makes a fourth provider's omission a compile error
+   * instead of a silently-unavailable capability for that provider.
+   */
+  readFilesAtRef(ctx: PluginContext, request: ReadTreeAtRefRequest): Promise<ReadTreeAtRefResult>;
 }
 
 // -------------------------------------------------------------------------------------------

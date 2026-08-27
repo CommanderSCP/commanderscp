@@ -15,20 +15,33 @@ import type {
 } from "@scp/plugin-api";
 import {
   assertNoRedirect,
+  assertNonEmptyGlobs,
   assertSafeRef,
   assertSafeRepo,
   assertSafeRepoPath,
   createExecutorPluginFromAdapter,
+  createTreeReadAccumulator,
+  createTreeScanAccumulator,
   decodeBoundedBase64,
+  DEFAULT_API_RESPONSE_MAX_BYTES,
+  DEFAULT_TREE_RESPONSE_MAX_BYTES,
   encodePathSegments,
+  gitProviderTreeBoundError,
   normalizeCorrelation,
   resolveMaxBytes,
+  resolveMaxEntriesScanned,
+  resolveMaxFiles,
+  resolveMaxResponseBytes,
+  resolveMaxTotalBytes,
   resolveProviderBaseUrl,
   wrapProviderRequestError,
   type GitProviderAdapter,
   type GitProviderEventHint,
   type ReadFileAtRefRequest,
-  type ReadFileAtRefResult
+  type ReadFileAtRefResult,
+  type ReadTreeAtRefFile,
+  type ReadTreeAtRefRequest,
+  type ReadTreeAtRefResult
 } from "@scp/git-provider-core";
 
 /**
@@ -154,19 +167,27 @@ async function giteaApiHeaders(
   };
 }
 
+/**
+ * `maxResponseBytes` defaults to {@link DEFAULT_API_RESPONSE_MAX_BYTES} — bounding EVERY call
+ * through this function, not just `readFileAtRef`'s (M21.2 review MAJOR 5's fix, applied to the
+ * one funnel every Gitea REST call in this adapter goes through). `readGet`'s contents fetch
+ * overrides it with the tighter, decode-bound-derived ceiling from `resolveMaxResponseBytes`.
+ */
 async function api(
   ctx: PluginContext,
   config: GiteaConfig,
   method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
   path: string,
-  body?: unknown
+  body?: unknown,
+  maxResponseBytes: number = DEFAULT_API_RESPONSE_MAX_BYTES
 ): Promise<{ status: number; body: unknown; headers: Record<string, string> }> {
   const headers = await giteaApiHeaders(ctx, config);
   const response = await ctx.http.request({
     method,
     url: `${apiBase(config)}${path}`,
     headers,
-    body
+    body,
+    maxResponseBytes
   });
   // Response headers are carried through (additively — every pre-M21.2 call site destructures only
   // `{ status, body }` and is unaffected) so the read path can name a redirect's `Location` in its
@@ -586,16 +607,145 @@ interface GiteaContentFile {
 async function readGet(
   ctx: PluginContext,
   config: GiteaConfig,
-  path: string
+  path: string,
+  maxResponseBytes: number = DEFAULT_API_RESPONSE_MAX_BYTES
 ): Promise<{ status: number; body: unknown }> {
   const url = `${apiBase(config)}${path}`;
   try {
-    const response = await api(ctx, config, "GET", path);
+    const response = await api(ctx, config, "GET", path, undefined, maxResponseBytes);
     assertNoRedirect("gitea", url, response.status, response.headers.location);
     return response;
   } catch (err) {
     throw wrapProviderRequestError("gitea", url, err);
   }
+}
+
+/**
+ * What resolving a ref costs a caller: either a commit sha, or a minimal not_found shape — deliberately
+ * NARROWER than `ReadFileAtRefNotFound`/`ReadTreeAtRefNotFound` (`missing` is always `"ref"` here,
+ * never `"path"`/`"unknown"`, since resolving a ref cannot fail any other way) so each caller can
+ * widen it into its OWN result shape (one carries `path`, the batch does not) without a cast.
+ * Shared between `readFileAtRef` (one file) and `readFilesAtRef` (a whole batch reads ONE
+ * resolution and re-uses it — ADR-0030's `(repo, path, ref)` identity is per FILE, but the commit
+ * a batch is read AT is one shared fact, the same way `ReadTreeAtRefFound.commitSha` says).
+ */
+type RefResolution =
+  | { outcome: "resolved"; commitSha: string }
+  | { outcome: "not_found"; missing: "ref"; detail: string };
+
+/** STEP 1 — resolve `ref` to a commit sha via the same documented list-commits endpoint
+ *  `pollCommits` uses. Reading the blob at that SHA (rather than at the ref again) closes the
+ *  window where a branch moves between resolution and content fetch: an inventory row that says
+ *  "read at commit X" has to be true of the bytes that were actually parsed. */
+async function resolveGiteaRefToCommit(
+  ctx: PluginContext,
+  config: GiteaConfig,
+  repoPath: string,
+  repo: string,
+  ref: string,
+  maxResponseBytes: number
+): Promise<RefResolution> {
+  const resolved = await readGet(
+    ctx,
+    config,
+    `/repos/${repoPath}/commits?sha=${encodeURIComponent(ref)}&limit=1`,
+    maxResponseBytes
+  );
+  if (resolved.status === 404) {
+    return {
+      outcome: "not_found",
+      missing: "ref",
+      detail: `gitea: no commits for ref '${ref}' in ${repo}`
+    };
+  }
+  if (resolved.status < 200 || resolved.status >= 300) {
+    throw new Error(`gitea readFileAtRef: resolving ref returned HTTP ${resolved.status}`);
+  }
+  const commits = Array.isArray(resolved.body)
+    ? (resolved.body as Array<{ sha?: unknown }>)
+    : undefined;
+  const commitSha = commits?.[0]?.sha;
+  if (typeof commitSha !== "string" || commitSha.length === 0) {
+    // An EMPTY list is a real, non-error answer for a ref that exists nowhere — Gitea 200s the
+    // list endpoint for an unknown branch on some versions rather than 404ing, so this arm is the
+    // one that actually catches a bad ref most of the time. Reported as not_found, not as a crash.
+    return {
+      outcome: "not_found",
+      missing: "ref",
+      detail: `gitea: ref '${ref}' resolved to no commit in ${repo}`
+    };
+  }
+  return { outcome: "resolved", commitSha };
+}
+
+/** STEP 2 — the blob, pinned to an already-resolved commit sha. Factored out of `readFileAtRef` so
+ *  `readFilesAtRef` can call it once per matched path against the SAME resolved commit, without
+ *  re-resolving the ref (and without re-deriving `repoPath`) for every file in a batch. */
+async function readGiteaFileAtCommit(
+  ctx: PluginContext,
+  config: GiteaConfig,
+  repoPath: string,
+  repo: string,
+  commitSha: string,
+  path: string,
+  requestedRef: string,
+  maxBytes: number,
+  maxResponseBytes: number
+): Promise<ReadFileAtRefResult> {
+  const contents = await readGet(
+    ctx,
+    config,
+    `/repos/${repoPath}/contents/${encodePathSegments(path)}?ref=${encodeURIComponent(commitSha)}`,
+    maxResponseBytes
+  );
+  if (contents.status === 404) {
+    return {
+      outcome: "not_found",
+      missing: "path",
+      path,
+      requestedRef,
+      detail: `gitea: no file at '${path}' in ${repo}@${commitSha}`
+    };
+  }
+  if (contents.status < 200 || contents.status >= 300) {
+    throw new Error(`gitea readFileAtRef: contents returned HTTP ${contents.status}`);
+  }
+
+  if (Array.isArray(contents.body)) {
+    return {
+      outcome: "refused",
+      reason: "not_a_file",
+      detail: `gitea: '${path}' is a directory (contents returned a listing of ${contents.body.length} entries), not a file`,
+      path,
+      requestedRef
+    };
+  }
+
+  const entry = (contents.body ?? {}) as GiteaContentFile;
+  if (entry.type !== "file") {
+    // Gitea's other documented `type` values are `dir`, `symlink` and `submodule`; none of them
+    // carries bytes this can honestly hand back as the file's content.
+    return {
+      outcome: "refused",
+      reason: "not_a_file",
+      detail: `gitea: '${path}' has content type '${entry.type ?? "unknown"}', not 'file'`,
+      path,
+      requestedRef,
+      sizeBytes: entry.size
+    };
+  }
+
+  return decodeBoundedBase64({
+    provider: "gitea",
+    path,
+    requestedRef,
+    commitSha,
+    base64: entry.content ?? "",
+    encoding: entry.encoding,
+    declaredSizeBytes: entry.size,
+    maxBytes,
+    blobSha: entry.sha
+  });
 }
 
 /** Adapter `readFileAtRef` hook — see `GitProviderAdapter.readFileAtRef` for the contract. */
@@ -606,6 +756,11 @@ async function readFileAtRef(
   const config = asConfig(ctx.config);
   const repo = request.repo ?? `${config.owner}/${config.repo}`;
   const maxBytes = resolveMaxBytes(request.maxBytes);
+  // The TRANSPORT ceiling passed to every HTTP call this flow makes (M21.2 review MAJOR 5) — see
+  // `resolveMaxResponseBytes`'s doc for why it is derived from `maxBytes` rather than a flat
+  // constant. Applied to the ref-resolution call too, not just the contents fetch: harmless (that
+  // response is tiny) and simpler than threading two different bounds through one flow.
+  const maxResponseBytes = resolveMaxResponseBytes(maxBytes);
   // All THREE caller-supplied strings that reach a route are asserted before any HTTP happens —
   // the same three asserts the github adapter runs, for the same reason: a raw `repo` of
   // `acme/widgets/../../..` built `.../repos/acme/widgets/../../../commits?sha=main`, and
@@ -623,97 +778,144 @@ async function readFileAtRef(
   // `ref` below still encode for real; their charsets do contain characters needing an escape.
   const repoPath = repo;
 
-  // STEP 1 — resolve the ref to a commit sha. Reading the blob at that SHA (step 2) rather than at
-  // the ref closes the window where a branch moves between the two calls: an inventory row that
-  // says "read at commit X" has to be true of the bytes that were actually parsed.
-  const resolved = await readGet(
+  const resolution = await resolveGiteaRefToCommit(
     ctx,
     config,
-    `/repos/${repoPath}/commits?sha=${encodeURIComponent(request.ref)}&limit=1`
+    repoPath,
+    repo,
+    request.ref,
+    maxResponseBytes
   );
-  if (resolved.status === 404) {
-    return {
-      outcome: "not_found",
-      missing: "ref",
-      path: request.path,
-      requestedRef: request.ref,
-      detail: `gitea: no commits for ref '${request.ref}' in ${repo}`
-    };
-  }
-  if (resolved.status < 200 || resolved.status >= 300) {
-    throw new Error(`gitea readFileAtRef: resolving ref returned HTTP ${resolved.status}`);
-  }
-  const commits = Array.isArray(resolved.body)
-    ? (resolved.body as Array<{ sha?: unknown }>)
-    : undefined;
-  const commitSha = commits?.[0]?.sha;
-  if (typeof commitSha !== "string" || commitSha.length === 0) {
-    // An EMPTY list is a real, non-error answer for a ref that exists nowhere — Gitea 200s the
-    // list endpoint for an unknown branch on some versions rather than 404ing, so this arm is the
-    // one that actually catches a bad ref most of the time. Reported as not_found, not as a crash.
-    return {
-      outcome: "not_found",
-      missing: "ref",
-      path: request.path,
-      requestedRef: request.ref,
-      detail: `gitea: ref '${request.ref}' resolved to no commit in ${repo}`
-    };
+  if (resolution.outcome === "not_found") {
+    return { ...resolution, path: request.path, requestedRef: request.ref };
   }
 
-  // STEP 2 — the blob, pinned to the sha from step 1.
-  const contents = await readGet(
+  return readGiteaFileAtCommit(
     ctx,
     config,
-    `/repos/${repoPath}/contents/${encodePathSegments(request.path)}?ref=${encodeURIComponent(commitSha)}`
-  );
-  if (contents.status === 404) {
-    return {
-      outcome: "not_found",
-      missing: "path",
-      path: request.path,
-      requestedRef: request.ref,
-      detail: `gitea: no file at '${request.path}' in ${repo}@${commitSha}`
-    };
-  }
-  if (contents.status < 200 || contents.status >= 300) {
-    throw new Error(`gitea readFileAtRef: contents returned HTTP ${contents.status}`);
-  }
-
-  if (Array.isArray(contents.body)) {
-    return {
-      outcome: "refused",
-      reason: "not_a_file",
-      detail: `gitea: '${request.path}' is a directory (contents returned a listing of ${contents.body.length} entries), not a file`,
-      path: request.path,
-      requestedRef: request.ref
-    };
-  }
-
-  const entry = (contents.body ?? {}) as GiteaContentFile;
-  if (entry.type !== "file") {
-    // Gitea's other documented `type` values are `dir`, `symlink` and `submodule`; none of them
-    // carries bytes this can honestly hand back as the file's content.
-    return {
-      outcome: "refused",
-      reason: "not_a_file",
-      detail: `gitea: '${request.path}' has content type '${entry.type ?? "unknown"}', not 'file'`,
-      path: request.path,
-      requestedRef: request.ref,
-      sizeBytes: entry.size
-    };
-  }
-
-  return decodeBoundedBase64({
-    provider: "gitea",
-    path: request.path,
-    requestedRef: request.ref,
-    commitSha,
-    base64: entry.content ?? "",
-    encoding: entry.encoding,
-    declaredSizeBytes: entry.size,
+    repoPath,
+    repo,
+    resolution.commitSha,
+    request.path,
+    request.ref,
     maxBytes,
-    blobSha: entry.sha
-  });
+    maxResponseBytes
+  );
+}
+
+// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads. Gitea's own
+// tree listing is GITHUB-COMPATIBLE: `GET /repos/{o}/{r}/git/trees/{sha}?recursive=true` returns
+// EVERY entry in ONE response (no page/per_page for the recursive form), capped by Gitea's own
+// internal ceiling and flagged `truncated: true` if it hit that ceiling — there is no follow-up
+// page to ask for, so a truncated response is refused here as `maxEntriesScanned` rather than
+// silently matching only what arrived.
+// -------------------------------------------------------------------------------------------
+
+interface GiteaTreeEntry {
+  path?: string;
+  type?: string;
+}
+
+interface GiteaTreeResponse {
+  tree?: GiteaTreeEntry[];
+  truncated?: boolean;
+}
+
+/** Adapter `readFilesAtRef` hook — see `GitProviderAdapter.readFilesAtRef` for the contract. */
+async function readFilesAtRef(
+  ctx: PluginContext,
+  request: ReadTreeAtRefRequest
+): Promise<ReadTreeAtRefResult> {
+  assertNonEmptyGlobs("gitea", request.globs);
+  const config = asConfig(ctx.config);
+  const repo = request.repo ?? `${config.owner}/${config.repo}`;
+  const maxFileBytes = resolveMaxBytes(request.maxFileBytes);
+  const maxFiles = resolveMaxFiles(request.maxFiles);
+  const maxTotalBytes = resolveMaxTotalBytes(request.maxTotalBytes);
+  const maxEntriesScanned = resolveMaxEntriesScanned(request.maxEntriesScanned);
+  const maxResponseBytes = resolveMaxResponseBytes(maxFileBytes);
+  assertSafeRepo("gitea", repo, 2);
+  assertSafeRef("gitea", request.ref);
+  const repoPath = repo;
+
+  const resolution = await resolveGiteaRefToCommit(
+    ctx,
+    config,
+    repoPath,
+    repo,
+    request.ref,
+    maxResponseBytes
+  );
+  if (resolution.outcome === "not_found") {
+    return {
+      outcome: "not_found",
+      missing: resolution.missing,
+      requestedRef: request.ref,
+      detail: resolution.detail
+    };
+  }
+  const { commitSha } = resolution;
+
+  // ONE call: the recursive tree listing for the whole repo at this commit, transport-bounded so
+  // a provider that ignores `recursive`/its own truncation contract cannot hand back an unbounded
+  // response (`DEFAULT_TREE_RESPONSE_MAX_BYTES` — the same principle as `resolveMaxResponseBytes`,
+  // applied to a listing instead of a blob).
+  const listing = await readGet(
+    ctx,
+    config,
+    `/repos/${repoPath}/git/trees/${encodeURIComponent(commitSha)}?recursive=true`,
+    DEFAULT_TREE_RESPONSE_MAX_BYTES
+  );
+  if (listing.status < 200 || listing.status >= 300) {
+    throw new Error(`gitea readFilesAtRef: tree listing returned HTTP ${listing.status}`);
+  }
+  const tree = (listing.body ?? {}) as GiteaTreeResponse;
+  const accumulator = createTreeScanAccumulator(
+    "gitea",
+    request.globs,
+    maxFiles,
+    maxEntriesScanned
+  );
+  if (tree.truncated) {
+    throw gitProviderTreeBoundError(
+      "gitea",
+      "maxEntriesScanned",
+      maxEntriesScanned,
+      `gitea's own tree listing for ${repo}@${commitSha} reported truncated:true — the repo has ` +
+        `more entries than gitea will return in one recursive listing, so this call cannot honestly ` +
+        `enumerate it to completion`
+    );
+  }
+  accumulator.addPage(
+    (tree.tree ?? []).map((entry) => ({
+      path: entry.path ?? "",
+      // Passed through as-is (not defaulted to "blob"): `RawTreeEntry.type` accepts any string,
+      // and `createTreeScanAccumulator` only ever MATCHES `"blob"` — an unrecognized type still
+      // counts toward `maxEntriesScanned` but is correctly never mistaken for a file.
+      type: entry.type ?? "unknown"
+    }))
+  );
+
+  const readAccumulator = createTreeReadAccumulator("gitea", maxTotalBytes);
+  const files: ReadTreeAtRefFile[] = [];
+  for (const path of accumulator.matched) {
+    const result = await readGiteaFileAtCommit(
+      ctx,
+      config,
+      repoPath,
+      repo,
+      commitSha,
+      path,
+      request.ref,
+      maxFileBytes,
+      maxResponseBytes
+    );
+    if (result.outcome === "found") readAccumulator.addFileBytes(result.sizeBytes);
+    files.push({ path, result });
+  }
+
+  return { outcome: "found", requestedRef: request.ref, commitSha, files };
 }
 
 /** observe() for gitea layers package/OCI pushes on top of the core's commits+runs poll — the core
@@ -735,7 +937,8 @@ export const giteaAdapter: GitProviderAdapter = {
   verifyWebhook: verifyGiteaWebhookSignature,
   mapEvent: mapGiteaWebhookEventToHint,
   mapStatusToPhase: mapGiteaStatusToPhase,
-  readFileAtRef
+  readFileAtRef,
+  readFilesAtRef
 };
 
 const baseGiteaPlugin: ExecutorPlugin = createExecutorPluginFromAdapter(giteaAdapter);

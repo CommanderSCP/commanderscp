@@ -54,6 +54,7 @@ import type {
   SecretsAccessor,
   TriggerIntent
 } from "@scp/plugin-api";
+import { scopedHttpResponseTooLargeError } from "@scp/plugin-api";
 import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
 import { encodeMessage, parseMessage, type RpcRequest } from "./rpc-protocol.js";
 import { assertEgressAllowed } from "./egress-guard.js";
@@ -318,6 +319,52 @@ function loadFederationMtlsMaterial(): { cert: string; key: string; ca?: string 
   };
 }
 
+/**
+ * Reads a fetch `Response` body as text, enforcing `maxResponseBytes` DURING accumulation rather
+ * than after (M21.2 review MAJOR 5 — the gap this closes: `res.text()` used to buffer the WHOLE
+ * body before anything downstream got a chance to refuse it, so a hostile or misconfigured host
+ * serving a multi-gigabyte blob exhausted this process before `@scp/git-provider-core`'s decode
+ * bound ever ran).
+ *
+ * Reads via `getReader()` chunk-by-chunk rather than `for await…of res.body` so the abort path is
+ * explicit: the moment the running total exceeds the bound, the reader is `cancel()`ed (which
+ * signals the underlying transport to stop pulling bytes off the wire, not merely "stop looking at
+ * them") and the promise REJECTS with a {@link scopedHttpResponseTooLargeError} — verified
+ * empirically (a throw from inside a bare `for await` loop over a fetch body does eventually
+ * unwind, but does not reliably signal the server to stop; an explicit `cancel()` does, and exits
+ * promptly rather than leaving a dangling response read).
+ *
+ * Typed as accepting only the two members this needs (`body`, `text()`) rather than the concrete
+ * `Response` type, because `undiciFetch`'s and the global `fetch`'s `Response` types are two
+ * separately-vendored shapes that do not structurally unify without a cast (see the comment on the
+ * two fetch branches below) — this narrower shape is satisfied by both without one.
+ */
+async function readBoundedResponseText(
+  res: { body: ReadableStream<Uint8Array> | null; text(): Promise<string> },
+  url: string,
+  maxResponseBytes: number
+): Promise<string> {
+  if (!res.body) return res.text();
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value || value.byteLength === 0) continue;
+    total += value.byteLength;
+    if (total > maxResponseBytes) {
+      await reader.cancel("maxResponseBytes exceeded").catch(() => {
+        // The provider may already have closed the connection; cancel()'s own failure is not the
+        // error we report — the size ceiling is.
+      });
+      throw scopedHttpResponseTooLargeError(url, maxResponseBytes);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+}
+
 function scopedFetchHttpClient(
   allowedHosts: string[],
   allowInternalPrivate: boolean,
@@ -365,7 +412,10 @@ function scopedFetchHttpClient(
             // handles; plugins must target final URLs. (No M7 plugin's fixtures rely on redirects.)
             redirect: "error"
           });
-      const text = await res.text();
+      const text =
+        req.maxResponseBytes !== undefined
+          ? await readBoundedResponseText(res, req.url, req.maxResponseBytes)
+          : await res.text();
       let body: unknown = text;
       try {
         body = text ? JSON.parse(text) : undefined;

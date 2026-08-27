@@ -112,6 +112,15 @@ function buildFakeAdapter(opts: { statePath?: string } = {}): {
       commitSha: "fake-commit-sha",
       content: "{}",
       sizeBytes: 2
+    }),
+    // Required by the interface (bounded tree reads). Trivial for the same reason readFileAtRef's
+    // fake is trivial — the real bound/listing behavior is covered in `read-tree.test.ts` and each
+    // provider's own nock suite; this call site only proves the hook is part of the contract.
+    readFilesAtRef: async (_ctx, request) => ({
+      outcome: "found",
+      requestedRef: request.ref,
+      commitSha: "fake-commit-sha",
+      files: []
     })
   };
   return { adapter, calls };

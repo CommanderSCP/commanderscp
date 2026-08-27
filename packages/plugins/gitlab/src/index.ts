@@ -15,19 +15,31 @@ import type {
 } from "@scp/plugin-api";
 import {
   assertNoRedirect,
+  assertNonEmptyGlobs,
   assertSafeRef,
   assertSafeRepo,
   assertSafeRepoPath,
   createExecutorPluginFromAdapter,
+  createTreeReadAccumulator,
+  createTreeScanAccumulator,
   decodeBoundedBase64,
+  DEFAULT_API_RESPONSE_MAX_BYTES,
+  DEFAULT_TREE_RESPONSE_MAX_BYTES,
   normalizeCorrelation,
   resolveMaxBytes,
+  resolveMaxEntriesScanned,
+  resolveMaxFiles,
+  resolveMaxResponseBytes,
+  resolveMaxTotalBytes,
   resolveProviderBaseUrl,
   wrapProviderRequestError,
   type GitProviderAdapter,
   type GitProviderEventHint,
   type ReadFileAtRefRequest,
-  type ReadFileAtRefResult
+  type ReadFileAtRefResult,
+  type ReadTreeAtRefFile,
+  type ReadTreeAtRefRequest,
+  type ReadTreeAtRefResult
 } from "@scp/git-provider-core";
 
 /**
@@ -178,19 +190,27 @@ async function gitlabApiHeaders(
   };
 }
 
+/**
+ * `maxResponseBytes` defaults to {@link DEFAULT_API_RESPONSE_MAX_BYTES} — bounding EVERY call
+ * through this function, not just `readFileAtRef`'s (M21.2 review MAJOR 5's fix, applied to the
+ * one funnel every GitLab REST call in this adapter goes through). `readGet`'s file fetch
+ * overrides it with the tighter, decode-bound-derived ceiling from `resolveMaxResponseBytes`.
+ */
 async function api(
   ctx: PluginContext,
   config: GitlabConfig,
   method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
   path: string,
-  body?: unknown
+  body?: unknown,
+  maxResponseBytes: number = DEFAULT_API_RESPONSE_MAX_BYTES
 ): Promise<{ status: number; body: unknown; headers: Record<string, string> }> {
   const headers = await gitlabApiHeaders(ctx, config);
   const response = await ctx.http.request({
     method,
     url: `${apiBase(config)}${path}`,
     headers,
-    body
+    body,
+    maxResponseBytes
   });
   // Response headers are carried through (additively — every pre-M21.2 call site destructures only
   // `{ status, body }` and is unaffected) so the read path can name a redirect's `Location` in its
@@ -543,16 +563,84 @@ interface GitlabRepositoryFile {
 async function readGet(
   ctx: PluginContext,
   config: GitlabConfig,
-  path: string
+  path: string,
+  maxResponseBytes: number = DEFAULT_API_RESPONSE_MAX_BYTES
 ): Promise<{ status: number; body: unknown }> {
   const url = `${apiBase(config)}${path}`;
   try {
-    const response = await api(ctx, config, "GET", path);
+    const response = await api(ctx, config, "GET", path, undefined, maxResponseBytes);
     assertNoRedirect("gitlab", url, response.status, response.headers.location);
     return response;
   } catch (err) {
     throw wrapProviderRequestError("gitlab", url, err);
   }
+}
+
+/**
+ * The single-call read shared by `readFileAtRef` (`refQuery` = the caller's own `ref`) and
+ * `readFilesAtRef` (`refQuery` = an already-resolved commit sha, `requestedRef` = the ORIGINAL
+ * `ref` the caller asked for — see `resolveGitlabRefToCommit` for why the batch path resolves
+ * once and pins every file read to that one commit, the same discipline github/gitea's two-step
+ * flow already has and gitlab's own single-call `readFileAtRef` does not need for ONE file).
+ */
+async function readGitlabFileAt(
+  ctx: PluginContext,
+  config: GitlabConfig,
+  pid: string,
+  path: string,
+  refQuery: string,
+  requestedRef: string,
+  maxBytes: number,
+  maxResponseBytes: number
+): Promise<ReadFileAtRefResult> {
+  // See difference (2) in the module comment above: WHOLE-string encoding, slashes included. Not
+  // `encodePathSegments`.
+  const filePath = encodeURIComponent(path);
+  const response = await readGet(
+    ctx,
+    config,
+    `/projects/${pid}/repository/files/${filePath}?ref=${encodeURIComponent(refQuery)}`,
+    maxResponseBytes
+  );
+
+  if (response.status === 404) {
+    const message = (response.body as { message?: unknown } | undefined)?.message;
+    return {
+      outcome: "not_found",
+      // "unknown", not a guess: GitLab returns 404 for a missing file, a missing ref and a missing/
+      // invisible project alike, and separates them only in `message`. See the section comment.
+      missing: "unknown",
+      path,
+      requestedRef,
+      detail: typeof message === "string" ? `gitlab: ${message}` : "gitlab: HTTP 404"
+    };
+  }
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`gitlab readFileAtRef: repository file returned HTTP ${response.status}`);
+  }
+
+  const file = (response.body ?? {}) as GitlabRepositoryFile;
+  const commitSha = file.commit_id;
+  if (typeof commitSha !== "string" || commitSha.length === 0) {
+    throw new Error(
+      `gitlab readFileAtRef: repository-file response for '${path}' carried no commit_id — refusing to report a resolved commit this call did not actually resolve`
+    );
+  }
+
+  // No directory case to detect: unlike github/gitea, GitLab's files endpoint does not serve
+  // directories at all — a directory path simply 404s there (it is `repository/tree` that lists
+  // one). So `not_a_file` is unreachable for this provider, and there is nothing to fake.
+  return decodeBoundedBase64({
+    provider: "gitlab",
+    path,
+    requestedRef,
+    commitSha,
+    base64: file.content ?? "",
+    encoding: file.encoding,
+    declaredSizeBytes: file.size,
+    maxBytes,
+    blobSha: file.blob_id
+  });
 }
 
 /** Adapter `readFileAtRef` hook — see `GitProviderAdapter.readFileAtRef` for the contract. */
@@ -562,6 +650,11 @@ async function readFileAtRef(
 ): Promise<ReadFileAtRefResult> {
   const config = asConfig(ctx.config);
   const maxBytes = resolveMaxBytes(request.maxBytes);
+  // The TRANSPORT ceiling passed to this flow's one HTTP call (M21.2 review MAJOR 5) — see
+  // `resolveMaxResponseBytes`'s doc for why it is derived from `maxBytes` rather than a flat
+  // constant. GitLab was the provider with the CLEAREST unbounded-buffer exposure: it serves
+  // arbitrarily large blobs inline as base64 with no analogue of GitHub's `encoding: "none"` cutoff.
+  const maxResponseBytes = resolveMaxResponseBytes(maxBytes);
   assertSafeRepoPath("gitlab", request.path);
   // `ref` is asserted here for the same reason the other two adapters assert it, even though this
   // adapter's whole-string `encodeURIComponent` already makes a `..` inert as a query VALUE: the
@@ -574,52 +667,157 @@ async function readFileAtRef(
   if (request.repo !== undefined) assertSafeRepo("gitlab", request.repo);
   const pid = request.repo ? encodeURIComponent(request.repo) : projectId(config);
 
-  // See difference (2) above: WHOLE-string encoding, slashes included. Not `encodePathSegments`.
-  const filePath = encodeURIComponent(request.path);
-  const response = await readGet(
+  return readGitlabFileAt(
     ctx,
     config,
-    `/projects/${pid}/repository/files/${filePath}?ref=${encodeURIComponent(request.ref)}`
+    pid,
+    request.path,
+    request.ref,
+    request.ref,
+    maxBytes,
+    maxResponseBytes
   );
+}
 
-  if (response.status === 404) {
-    const message = (response.body as { message?: unknown } | undefined)?.message;
+// -------------------------------------------------------------------------------------------
+// readFilesAtRef (team-pipeline-iac proposal §12) — bounded multi-file/tree reads.
+//
+// GITLAB IS THE ONE PROVIDER THAT GENUINELY PAGINATES HERE. Unlike github/gitea's recursive tree
+// call (one response, `truncated: true` past an internal ceiling, no `page` parameter for that
+// mode), GitLab's `repository/tree?recursive=true` is standard GitLab REST pagination
+// (`per_page`/`page`, a short/empty page means "done") — so this is the one adapter whose
+// `maxEntriesScanned` bound is enforced across MULTIPLE round trips, not inside one already-
+// arrived response. Each page is still transport-bounded (`DEFAULT_TREE_RESPONSE_MAX_BYTES`), and
+// `createTreeScanAccumulator.addPage` is called once per page — a repo whose match set is decided
+// long before its last page is never walked to completion, because `addPage` throws the instant
+// either bound is exceeded and the loop below never issues the next page's request.
+//
+// GitLab's tree listing also carries no commit identity (unlike a single `readFileAtRef` call,
+// whose ONE response includes `commit_id`), so this resolves `ref` to a commit sha FIRST (the
+// same two-step shape github/gitea already have) and reads every matched file at that pinned
+// commit sha — ADR-0030's "read at commit X" discipline, extended to the one provider whose
+// single-file path did not previously need it.
+// -------------------------------------------------------------------------------------------
+
+/** A GitLab repository-tree entry, as `repository/tree` returns it (`type` is `tree`|`blob`). */
+interface GitlabRepoTreeEntry {
+  path?: string;
+  type?: string;
+}
+
+/** STEP 1 — resolve `ref` to a commit sha via `GET /projects/:id/repository/commits/:sha_or_ref`,
+ *  the documented GitLab endpoint that accepts a branch, tag OR sha and returns that commit's
+ *  `id`. Mirrors github/gitea's own ref-resolution step; gitlab's single-file `readFileAtRef`
+ *  above does not need this because its ONE response already carries `commit_id`. */
+async function resolveGitlabRefToCommit(
+  ctx: PluginContext,
+  config: GitlabConfig,
+  pid: string,
+  ref: string,
+  maxResponseBytes: number
+): Promise<{ outcome: "resolved"; commitSha: string } | { outcome: "not_found"; detail: string }> {
+  const resolved = await readGet(
+    ctx,
+    config,
+    `/projects/${pid}/repository/commits/${encodeURIComponent(ref)}`,
+    maxResponseBytes
+  );
+  if (resolved.status === 404) {
+    const message = (resolved.body as { message?: unknown } | undefined)?.message;
     return {
       outcome: "not_found",
-      // "unknown", not a guess: GitLab returns 404 for a missing file, a missing ref and a missing/
-      // invisible project alike, and separates them only in `message`. See the section comment.
-      missing: "unknown",
-      path: request.path,
-      requestedRef: request.ref,
       detail: typeof message === "string" ? `gitlab: ${message}` : "gitlab: HTTP 404"
     };
   }
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`gitlab readFileAtRef: repository file returned HTTP ${response.status}`);
+  if (resolved.status < 200 || resolved.status >= 300) {
+    throw new Error(`gitlab readFilesAtRef: resolving ref returned HTTP ${resolved.status}`);
   }
-
-  const file = (response.body ?? {}) as GitlabRepositoryFile;
-  const commitSha = file.commit_id;
+  const commitSha = (resolved.body as { id?: unknown } | undefined)?.id;
   if (typeof commitSha !== "string" || commitSha.length === 0) {
     throw new Error(
-      `gitlab readFileAtRef: repository-file response for '${request.path}' carried no commit_id — refusing to report a resolved commit this call did not actually resolve`
+      `gitlab readFilesAtRef: commit response for ref '${ref}' carried no id — refusing to report a resolved commit this call did not actually resolve`
     );
   }
+  return { outcome: "resolved", commitSha };
+}
 
-  // No directory case to detect: unlike github/gitea, GitLab's files endpoint does not serve
-  // directories at all — a directory path simply 404s there (it is `repository/tree` that lists
-  // one). So `not_a_file` is unreachable for this provider, and there is nothing to fake.
-  return decodeBoundedBase64({
-    provider: "gitlab",
-    path: request.path,
-    requestedRef: request.ref,
-    commitSha,
-    base64: file.content ?? "",
-    encoding: file.encoding,
-    declaredSizeBytes: file.size,
-    maxBytes,
-    blobSha: file.blob_id
-  });
+/** Entries per page for the tree listing — GitLab's own documented maximum for this endpoint. */
+const TREE_LIST_PER_PAGE = 100;
+
+/** Adapter `readFilesAtRef` hook — see `GitProviderAdapter.readFilesAtRef` for the contract. */
+async function readFilesAtRef(
+  ctx: PluginContext,
+  request: ReadTreeAtRefRequest
+): Promise<ReadTreeAtRefResult> {
+  assertNonEmptyGlobs("gitlab", request.globs);
+  const config = asConfig(ctx.config);
+  const maxFileBytes = resolveMaxBytes(request.maxFileBytes);
+  const maxFiles = resolveMaxFiles(request.maxFiles);
+  const maxTotalBytes = resolveMaxTotalBytes(request.maxTotalBytes);
+  const maxEntriesScanned = resolveMaxEntriesScanned(request.maxEntriesScanned);
+  const maxResponseBytes = resolveMaxResponseBytes(maxFileBytes);
+  assertSafeRef("gitlab", request.ref);
+  if (request.repo !== undefined) assertSafeRepo("gitlab", request.repo);
+  const pid = request.repo ? encodeURIComponent(request.repo) : projectId(config);
+
+  const resolution = await resolveGitlabRefToCommit(
+    ctx,
+    config,
+    pid,
+    request.ref,
+    maxResponseBytes
+  );
+  if (resolution.outcome === "not_found") {
+    return {
+      outcome: "not_found",
+      missing: "unknown",
+      requestedRef: request.ref,
+      detail: resolution.detail
+    };
+  }
+  const { commitSha } = resolution;
+
+  const accumulator = createTreeScanAccumulator(
+    "gitlab",
+    request.globs,
+    maxFiles,
+    maxEntriesScanned
+  );
+  for (let page = 1; ; page += 1) {
+    const listing = await readGet(
+      ctx,
+      config,
+      `/projects/${pid}/repository/tree?recursive=true&ref=${encodeURIComponent(commitSha)}&per_page=${TREE_LIST_PER_PAGE}&page=${page}`,
+      DEFAULT_TREE_RESPONSE_MAX_BYTES
+    );
+    if (listing.status < 200 || listing.status >= 300) {
+      throw new Error(`gitlab readFilesAtRef: tree listing returned HTTP ${listing.status}`);
+    }
+    const entries = Array.isArray(listing.body) ? (listing.body as GitlabRepoTreeEntry[]) : [];
+    accumulator.addPage(
+      entries.map((entry) => ({ path: entry.path ?? "", type: entry.type ?? "unknown" }))
+    );
+    if (entries.length < TREE_LIST_PER_PAGE) break; // short page — this was the last one
+  }
+
+  const readAccumulator = createTreeReadAccumulator("gitlab", maxTotalBytes);
+  const files: ReadTreeAtRefFile[] = [];
+  for (const path of accumulator.matched) {
+    const result = await readGitlabFileAt(
+      ctx,
+      config,
+      pid,
+      path,
+      commitSha,
+      request.ref,
+      maxFileBytes,
+      maxResponseBytes
+    );
+    if (result.outcome === "found") readAccumulator.addFileBytes(result.sizeBytes);
+    files.push({ path, result });
+  }
+
+  return { outcome: "found", requestedRef: request.ref, commitSha, files };
 }
 
 /** The GitLab `GitProviderAdapter`. `readFileAtRef` is an adapter-only hook (ADR-0032 §9) — the
@@ -638,7 +836,8 @@ export const gitlabAdapter: GitProviderAdapter = {
   verifyWebhook: verifyGitlabWebhookToken,
   mapEvent: mapGitlabWebhookEventToHint,
   mapStatusToPhase: mapGitlabStatusToPhase,
-  readFileAtRef
+  readFileAtRef,
+  readFilesAtRef
 };
 
 export const gitlabExecutorPlugin: ExecutorPlugin = createExecutorPluginFromAdapter(gitlabAdapter);
