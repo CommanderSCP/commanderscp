@@ -4361,7 +4361,10 @@ export function buildProgram(): Command {
     .description(
       "Assign managed scan methods to an executor Type (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; an empty --methods clears the assignment, leaving that Type with no managed scanner)"
     )
-    .requiredOption("--type <executorType>", "image|rpm|deb|npm|maven|python|go|chart|vm-image|infrastructure|configuration")
+    .requiredOption(
+      "--type <executorType>",
+      "image|rpm|deb|npm|maven|python|go|chart|vm-image|infrastructure|configuration"
+    )
     .option(
       "--methods <list>",
       "comma-separated scan methods (trivy|openscap); empty/omitted clears the assignment",

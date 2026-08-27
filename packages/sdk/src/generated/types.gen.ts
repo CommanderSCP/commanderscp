@@ -8165,7 +8165,7 @@ export type GetServiceBoardResponses = {
                 status: string;
                 kinds: Array<{
                     category: 'build' | 'infrastructure' | 'configuration';
-                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 }>;
                 targetCount: number;
                 failedTargets: number;
@@ -10956,7 +10956,7 @@ export type CreatePlanData = {
                 repoPattern?: string;
                 pathPattern?: string;
                 refPattern?: string;
-                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 classification?: 'dev' | 'beta';
                 mirrorOfShared?: boolean;
                 enabled?: boolean;
@@ -10965,7 +10965,7 @@ export type CreatePlanData = {
             executorBindings?: Array<{
                 targetUrn: string;
                 deploymentTargetUrn?: string;
-                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 pluginModule?: string;
                 pluginInstanceId?: string;
                 config?: {
@@ -11044,7 +11044,7 @@ export type CreatePlanData = {
             }>;
             rollouts?: Array<{
                 componentUrn: string;
-                targetClass: 'kubernetes' | 'instanceGroup';
+                targetClass: 'cluster' | 'instanceGroup';
                 rollout: {
                     strategy: 'canary';
                     steps: Array<{
@@ -11148,7 +11148,7 @@ export type CreatePlanResponses = {
                 repoPattern?: string;
                 pathPattern?: string;
                 refPattern?: string;
-                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 classification?: 'dev' | 'beta';
                 mirrorOfShared?: boolean;
                 enabled?: boolean;
@@ -11157,7 +11157,7 @@ export type CreatePlanResponses = {
             executorBindings?: Array<{
                 targetUrn: string;
                 deploymentTargetUrn?: string;
-                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 pluginModule?: string;
                 pluginInstanceId?: string;
                 config?: {
@@ -11236,7 +11236,7 @@ export type CreatePlanResponses = {
             }>;
             rollouts?: Array<{
                 componentUrn: string;
-                targetClass: 'kubernetes' | 'instanceGroup';
+                targetClass: 'cluster' | 'instanceGroup';
                 rollout: {
                     strategy: 'canary';
                     steps: Array<{
@@ -11292,7 +11292,7 @@ export type CreatePlanResponses = {
                 repoPattern: string | null;
                 pathPattern: string | null;
                 refPattern: string | null;
-                type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 classification: 'dev' | 'beta' | null;
                 mirrorOfShared: boolean;
                 enabled: boolean;
@@ -11311,7 +11311,7 @@ export type CreatePlanResponses = {
                 action: 'create' | 'update' | 'delete' | 'noop';
                 targetUrn: string;
                 deploymentTargetUrn?: string;
-                type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 reason: string;
                 target?: {
                     pluginModule: string | null;
@@ -11444,7 +11444,7 @@ export type GetPlanResponses = {
                 repoPattern?: string;
                 pathPattern?: string;
                 refPattern?: string;
-                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 classification?: 'dev' | 'beta';
                 mirrorOfShared?: boolean;
                 enabled?: boolean;
@@ -11453,7 +11453,7 @@ export type GetPlanResponses = {
             executorBindings?: Array<{
                 targetUrn: string;
                 deploymentTargetUrn?: string;
-                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 pluginModule?: string;
                 pluginInstanceId?: string;
                 config?: {
@@ -11532,7 +11532,7 @@ export type GetPlanResponses = {
             }>;
             rollouts?: Array<{
                 componentUrn: string;
-                targetClass: 'kubernetes' | 'instanceGroup';
+                targetClass: 'cluster' | 'instanceGroup';
                 rollout: {
                     strategy: 'canary';
                     steps: Array<{
@@ -11588,7 +11588,7 @@ export type GetPlanResponses = {
                 repoPattern: string | null;
                 pathPattern: string | null;
                 refPattern: string | null;
-                type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 classification: 'dev' | 'beta' | null;
                 mirrorOfShared: boolean;
                 enabled: boolean;
@@ -11607,7 +11607,7 @@ export type GetPlanResponses = {
                 action: 'create' | 'update' | 'delete' | 'noop';
                 targetUrn: string;
                 deploymentTargetUrn?: string;
-                type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                 reason: string;
                 target?: {
                     pluginModule: string | null;
@@ -11752,7 +11752,7 @@ export type ApplyPlanResponses = {
                     repoPattern?: string;
                     pathPattern?: string;
                     refPattern?: string;
-                    type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                     classification?: 'dev' | 'beta';
                     mirrorOfShared?: boolean;
                     enabled?: boolean;
@@ -11761,7 +11761,7 @@ export type ApplyPlanResponses = {
                 executorBindings?: Array<{
                     targetUrn: string;
                     deploymentTargetUrn?: string;
-                    type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                     pluginModule?: string;
                     pluginInstanceId?: string;
                     config?: {
@@ -11840,7 +11840,7 @@ export type ApplyPlanResponses = {
                 }>;
                 rollouts?: Array<{
                     componentUrn: string;
-                    targetClass: 'kubernetes' | 'instanceGroup';
+                    targetClass: 'cluster' | 'instanceGroup';
                     rollout: {
                         strategy: 'canary';
                         steps: Array<{
@@ -11896,7 +11896,7 @@ export type ApplyPlanResponses = {
                     repoPattern: string | null;
                     pathPattern: string | null;
                     refPattern: string | null;
-                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                     classification: 'dev' | 'beta' | null;
                     mirrorOfShared: boolean;
                     enabled: boolean;
@@ -11915,7 +11915,7 @@ export type ApplyPlanResponses = {
                     action: 'create' | 'update' | 'delete' | 'noop';
                     targetUrn: string;
                     deploymentTargetUrn?: string;
-                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                     reason: string;
                     target?: {
                         pluginModule: string | null;
@@ -12065,7 +12065,7 @@ export type ProposeChangeData = {
         correlationKey?: string;
         emergency?: boolean;
         topology?: string;
-        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         provides?: Array<string>;
         requires?: Array<{
             key: string;
@@ -12347,7 +12347,7 @@ export type ExplainChangeResponses = {
                     targetObjectId: string;
                     targetUrn?: string;
                     targetName?: string;
-                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
                     category: 'build' | 'infrastructure' | 'configuration';
                     executorPluginId: string | null;
                     executorRef: {
@@ -13105,7 +13105,7 @@ export type DeleteSourceMappingData = {
         repoPattern: string | null;
         pathPattern: string | null;
         refPattern?: string | null;
-        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
     };
     path: {
         sourceKind: string;
@@ -13223,7 +13223,7 @@ export type ListSourceMappingsResponses = {
             pathPattern: string | null;
             refPattern: string | null;
             componentObjectId: string;
-            type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+            type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
             category: 'build' | 'infrastructure' | 'configuration';
             classification: 'dev' | 'beta' | null;
             mirrorOfShared: boolean;
@@ -13246,7 +13246,7 @@ export type CreateSourceMappingData = {
         pathPattern?: string;
         refPattern?: string;
         component: string;
-        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         classification?: 'dev' | 'beta';
         mirrorOfShared?: boolean;
         enabled?: boolean;
@@ -13320,7 +13320,7 @@ export type CreateSourceMappingResponses = {
         pathPattern: string | null;
         refPattern: string | null;
         componentObjectId: string;
-        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         category: 'build' | 'infrastructure' | 'configuration';
         classification: 'dev' | 'beta' | null;
         mirrorOfShared: boolean;
@@ -13408,7 +13408,7 @@ export type SetSourceMappingEnabledResponses = {
         pathPattern: string | null;
         refPattern: string | null;
         componentObjectId: string;
-        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         category: 'build' | 'infrastructure' | 'configuration';
         classification: 'dev' | 'beta' | null;
         mirrorOfShared: boolean;
@@ -13495,7 +13495,7 @@ export type SetSourceMappingScopeResponses = {
         pathPattern: string | null;
         refPattern: string | null;
         componentObjectId: string;
-        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         category: 'build' | 'infrastructure' | 'configuration';
         classification: 'dev' | 'beta' | null;
         mirrorOfShared: boolean;
@@ -16525,7 +16525,7 @@ export type ListScannerAssignmentsResponses = {
      */
     200: {
         items: Array<{
-            executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+            executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
             methods: Array<'trivy' | 'openscap' | 'trivy-vm'>;
             updatedAt: string;
         }>;
@@ -16536,7 +16536,7 @@ export type ListScannerAssignmentsResponse = ListScannerAssignmentsResponses[key
 
 export type PutScannerAssignmentData = {
     body: {
-        executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         methods: Array<'trivy' | 'openscap' | 'trivy-vm'>;
     };
     path?: never;
@@ -16576,7 +16576,7 @@ export type PutScannerAssignmentResponses = {
      * Success
      */
     200: {
-        executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        executorType: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         methods: Array<'trivy' | 'openscap' | 'trivy-vm'>;
         updatedAt: string;
     };
@@ -18370,7 +18370,7 @@ export type ProposeCampaignData = {
             [key: string]: unknown;
         };
         topology?: string;
-        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         recipe?: {
             version: 1;
             trigger: {
@@ -21763,7 +21763,7 @@ export type DeleteExecutorBindingData = {
         idOrUrn: string;
     };
     query?: {
-        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
     };
     url: '/executors/{idOrUrn}/binding';
 };
@@ -21813,7 +21813,7 @@ export type DeleteExecutorBindingResponses = {
     200: {
         id: string;
         targetObjectId: string;
-        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         category: 'build' | 'infrastructure' | 'configuration';
         pluginModule: string;
         pluginInstanceId: string;
@@ -21835,7 +21835,7 @@ export type GetExecutorBindingData = {
         idOrUrn: string;
     };
     query?: {
-        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
     };
     url: '/executors/{idOrUrn}/binding';
 };
@@ -21885,7 +21885,7 @@ export type GetExecutorBindingResponses = {
     200: {
         id: string;
         targetObjectId: string;
-        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         category: 'build' | 'infrastructure' | 'configuration';
         pluginModule: string;
         pluginInstanceId: string;
@@ -21903,13 +21903,13 @@ export type GetExecutorBindingResponse = GetExecutorBindingResponses[keyof GetEx
 
 export type RepurposeExecutorBindingData = {
     body: {
-        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
     };
     path: {
         idOrUrn: string;
     };
     query?: {
-        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
     };
     url: '/executors/{idOrUrn}/binding';
 };
@@ -21970,7 +21970,7 @@ export type RepurposeExecutorBindingResponses = {
     200: {
         id: string;
         targetObjectId: string;
-        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         category: 'build' | 'infrastructure' | 'configuration';
         pluginModule: string;
         pluginInstanceId: string;
@@ -21999,7 +21999,7 @@ export type PutExecutorBindingData = {
         allowedHosts?: Array<string>;
         externalRef?: string;
         executionSystemId?: string;
-        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
     };
     path: {
         idOrUrn: string;
@@ -22053,7 +22053,7 @@ export type PutExecutorBindingResponses = {
     200: {
         id: string;
         targetObjectId: string;
-        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         category: 'build' | 'infrastructure' | 'configuration';
         pluginModule: string;
         pluginInstanceId: string;
@@ -22124,7 +22124,7 @@ export type ListExecutorBindingsResponses = {
         items: Array<{
             id: string;
             targetObjectId: string;
-            type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+            type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
             category: 'build' | 'infrastructure' | 'configuration';
             pluginModule: string;
             pluginInstanceId: string;
@@ -22147,7 +22147,7 @@ export type GetRegionalExecutorsData = {
         environment: string;
     };
     query?: {
-        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
     };
     url: '/environments/{environment}/regional-executors';
 };
@@ -22185,7 +22185,7 @@ export type GetRegionalExecutorsResponses = {
      */
     200: {
         environment: string;
-        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         expectedModule: 'argocd';
         regions: Array<{
             region: string;
@@ -22453,7 +22453,7 @@ export type RunDiscoveryResponses = {
             sourceKind: string;
             repoPattern?: string;
             pathPattern?: string;
-            type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+            type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
         }>;
     };
 };
@@ -22487,7 +22487,7 @@ export type AcceptDiscoveryProposalData = {
                 sourceKind: string;
                 repoPattern?: string;
                 pathPattern?: string;
-                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
             }>;
         };
     };
@@ -22574,7 +22574,7 @@ export type BackfillSourceMappingsData = {
                 sourceKind: string;
                 repoPattern?: string;
                 pathPattern?: string;
-                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
             }>;
         };
     };

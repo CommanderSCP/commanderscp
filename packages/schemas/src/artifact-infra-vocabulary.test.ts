@@ -57,7 +57,9 @@ describe("InfraKindSchema — D24's closed infra-kind taxonomy", () => {
 
 describe("RolloutTargetClassSchema really is the deploy-target narrowing of InfraKind, not a second list", () => {
   it("is exactly {cluster, instanceGroup} — the two kinds an artifact can be deployed onto", () => {
-    expect([...RolloutTargetClassSchema.options].sort()).toEqual(["cluster", "instanceGroup"].sort());
+    expect([...RolloutTargetClassSchema.options].sort()).toEqual(
+      ["cluster", "instanceGroup"].sort()
+    );
   });
 
   it("is a proper subset of InfraKindSchema — every member parses as an InfraKind", () => {
@@ -101,10 +103,13 @@ describe("ARTIFACT_INFRA_COMPATIBILITY is a total map over ExecutorType", () => 
   });
 
   const neverPlacedRows: ExecutorType[] = ["npm", "maven", "python", "go", "infrastructure"];
-  it.each(neverPlacedRows)("%s (publish-only / not a placement subject) resolves to an empty set", (type) => {
-    expect(ARTIFACT_INFRA_COMPATIBILITY[type]).toEqual([]);
-    expect(compatibleInfraKinds(type)).toEqual([]);
-  });
+  it.each(neverPlacedRows)(
+    "%s (publish-only / not a placement subject) resolves to an empty set",
+    (type) => {
+      expect(ARTIFACT_INFRA_COMPATIBILITY[type]).toEqual([]);
+      expect(compatibleInfraKinds(type)).toEqual([]);
+    }
+  );
 });
 
 describe("compatibleInfraKinds / isPlacementCompatible", () => {

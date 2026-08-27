@@ -126,3 +126,57 @@ is, as before, **not** a precedent for post-GA `/v1` breakage.
 label; job **3b** reads the label and this entry (both are required — the label alone leaves 3b
 red) and reports green-with-warning. Job **3 (codegen drift)** stays green — the regenerated
 `tools/openapi/openapi.v1.json` and `packages/sdk/src/generated/*` are committed on the branch.
+
+### team-pipeline-IaC increment 2a — `ExecutorType` grows the build family; `RolloutTargetClass`'s kubernetes kind renamed to `cluster` (2026-08-26)
+
+**Spec:** [docs/proposals/team-pipeline-iac.md](../../docs/proposals/team-pipeline-iac.md) D13/D24,
+owner ruling this session. No migration — this is a `@scp/schemas` vocabulary change only.
+
+**What breaks (deliberate, one-time), MEASURED with the vendored `oasdiff breaking` (not assumed):**
+
+Running `tools/openapi/check.sh` against this branch reports **139 changes: 1 error, 138 warning**.
+Only the one ERR-level change trips `--fail-on ERR` / job 3b; the 138 are all
+`response-property-enum-value-added` at WARN severity (oasdiff does not, by default, treat an
+_added_ response enum member as breaking) and would not fail the gate on their own — they are
+recorded here anyway because they are the visible fingerprint of the same deliberate change and a
+reviewer scanning job 3b's output should be able to match every line back to this entry.
+
+- **The ERR:** `request-property-enum-value-removed` on `POST /plans`, the request property
+  `manifest/rollouts/items/targetClass` — the enum value `kubernetes` was removed (renamed to
+  `cluster`). This is `RolloutTargetClassSchema` (`@scp/schemas/pipeline-behaviors.ts`), which
+  merged onto `main` in the immediately prior session (PR #294, "pipeline behaviour contract") as a
+  **provisional** declaration explicitly marked for this session to delete and replace with the D24
+  canonical vocabulary. It is renamed here from `kubernetes` to `cluster` to match `InfraKindSchema`
+  (D24: the kubernetes product kind is named `Cluster`) — see `InfraKindSchema`'s doc comment for the
+  full reconciliation. The same rename propagates to `@scp/plugin-api`'s sanctioned hand-written
+  twin (`RolloutTargetClass`) and its pinning test
+  (`apps/server/src/coordination/rollout-capability-vocabulary.test.ts`), so no side is left holding
+  the old spelling.
+- **The 138 WARNs:** `ExecutorTypeSchema` (`@scp/schemas/executors.ts`) grows from six members
+  (`image | rpm | deb | npm | infrastructure | configuration`) to eleven, adding `maven`, `python`,
+  `go`, `chart`, `vm-image` — D13's ruling this session that Type, not Category, is where D13's full
+  artifact-class vocabulary belongs (D13's "Type stays the closed three-value enum" names this
+  package's _Category_, which is untouched and still exactly `{build, infrastructure,
+configuration}`). The five new values surface as enum-value additions on every response containing
+  an executor `type`/`executorType` field across `POST /plans`, `POST /plans/{id}/apply`,
+  `GET/PUT /instance/scanner-assignments`, `GET/PATCH/PUT/DELETE /executors/{idOrUrn}/binding(s)`,
+  `GET/POST/PATCH /change-sources/{sourceKind}/mappings(/{id}/scope)`, `POST /discovery/run`,
+  `GET /changes/{id}/explain`, `GET /services/{idOrUrn}/board`, and
+  `GET /environments/{environment}/regional-executors` — all additive-in-response, none request-only,
+  so none trip `--fail-on ERR`.
+
+**Why it is acceptable here:** the same single-instance, no-external-SDK-consumer reasoning
+ADR-0007/ADR-0021/ADR-0036 relied on still holds — CommanderSCP is dev-stage, pre-release, runs as
+one instance, and the CLI/IaC/web UI are the only callers, all shipping from this commit. D24's own
+requirement is stronger than "acceptable": it states the compatibility matrix and the full artifact
+vocabulary must "live once" in `@scp/schemas`, which is unreachable while `ExecutorTypeSchema` is
+missing five of the values D13 already named. `RolloutTargetClassSchema` was merged as an explicitly
+PROVISIONAL placeholder one session ago specifically so this rename could land before anything (a
+construct, a real manifest, a federated peer) came to depend on the `kubernetes` spelling — this is
+the cheapest this rename will ever be, the same argument ADR-0021 D5 made for `promote`→`accept`.
+
+**How the gate is satisfied:** the PR carries the **`api-v2-exception`** label; job 3b reads the
+label and this entry and reports green-with-warning instead of red. Job **3 (codegen drift)** stays
+green — `tools/openapi/openapi.v1.json` and `packages/sdk/src/generated/*` are regenerated (`@scp/
+schemas` built first, per CLAUDE.md — `pnpm gen` reads `packages/schemas/dist`, not source) and
+committed in this PR.

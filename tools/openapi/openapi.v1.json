@@ -33036,6 +33036,11 @@
                                           "rpm",
                                           "deb",
                                           "npm",
+                                          "maven",
+                                          "python",
+                                          "go",
+                                          "chart",
+                                          "vm-image",
                                           "infrastructure",
                                           "configuration"
                                         ]
@@ -43682,6 +43687,11 @@
                                 "rpm",
                                 "deb",
                                 "npm",
+                                "maven",
+                                "python",
+                                "go",
+                                "chart",
+                                "vm-image",
                                 "infrastructure",
                                 "configuration"
                               ]
@@ -43741,6 +43751,11 @@
                                 "rpm",
                                 "deb",
                                 "npm",
+                                "maven",
+                                "python",
+                                "go",
+                                "chart",
+                                "vm-image",
                                 "infrastructure",
                                 "configuration"
                               ]
@@ -44090,7 +44105,7 @@
                             "targetClass": {
                               "type": "string",
                               "enum": [
-                                "kubernetes",
+                                "cluster",
                                 "instanceGroup"
                               ]
                             },
@@ -44371,6 +44386,11 @@
                                   "rpm",
                                   "deb",
                                   "npm",
+                                  "maven",
+                                  "python",
+                                  "go",
+                                  "chart",
+                                  "vm-image",
                                   "infrastructure",
                                   "configuration"
                                 ]
@@ -44430,6 +44450,11 @@
                                   "rpm",
                                   "deb",
                                   "npm",
+                                  "maven",
+                                  "python",
+                                  "go",
+                                  "chart",
+                                  "vm-image",
                                   "infrastructure",
                                   "configuration"
                                 ]
@@ -44779,7 +44804,7 @@
                               "targetClass": {
                                 "type": "string",
                                 "enum": [
-                                  "kubernetes",
+                                  "cluster",
                                   "instanceGroup"
                                 ]
                               },
@@ -45095,6 +45120,11 @@
                                   "rpm",
                                   "deb",
                                   "npm",
+                                  "maven",
+                                  "python",
+                                  "go",
+                                  "chart",
+                                  "vm-image",
                                   "infrastructure",
                                   "configuration"
                                 ]
@@ -45226,6 +45256,11 @@
                                   "rpm",
                                   "deb",
                                   "npm",
+                                  "maven",
+                                  "python",
+                                  "go",
+                                  "chart",
+                                  "vm-image",
                                   "infrastructure",
                                   "configuration"
                                 ]
@@ -45800,6 +45835,11 @@
                                   "rpm",
                                   "deb",
                                   "npm",
+                                  "maven",
+                                  "python",
+                                  "go",
+                                  "chart",
+                                  "vm-image",
                                   "infrastructure",
                                   "configuration"
                                 ]
@@ -45859,6 +45899,11 @@
                                   "rpm",
                                   "deb",
                                   "npm",
+                                  "maven",
+                                  "python",
+                                  "go",
+                                  "chart",
+                                  "vm-image",
                                   "infrastructure",
                                   "configuration"
                                 ]
@@ -46208,7 +46253,7 @@
                               "targetClass": {
                                 "type": "string",
                                 "enum": [
-                                  "kubernetes",
+                                  "cluster",
                                   "instanceGroup"
                                 ]
                               },
@@ -46524,6 +46569,11 @@
                                   "rpm",
                                   "deb",
                                   "npm",
+                                  "maven",
+                                  "python",
+                                  "go",
+                                  "chart",
+                                  "vm-image",
                                   "infrastructure",
                                   "configuration"
                                 ]
@@ -46655,6 +46705,11 @@
                                   "rpm",
                                   "deb",
                                   "npm",
+                                  "maven",
+                                  "python",
+                                  "go",
+                                  "chart",
+                                  "vm-image",
                                   "infrastructure",
                                   "configuration"
                                 ]
@@ -47232,6 +47287,11 @@
                                       "rpm",
                                       "deb",
                                       "npm",
+                                      "maven",
+                                      "python",
+                                      "go",
+                                      "chart",
+                                      "vm-image",
                                       "infrastructure",
                                       "configuration"
                                     ]
@@ -47291,6 +47351,11 @@
                                       "rpm",
                                       "deb",
                                       "npm",
+                                      "maven",
+                                      "python",
+                                      "go",
+                                      "chart",
+                                      "vm-image",
                                       "infrastructure",
                                       "configuration"
                                     ]
@@ -47640,7 +47705,7 @@
                                   "targetClass": {
                                     "type": "string",
                                     "enum": [
-                                      "kubernetes",
+                                      "cluster",
                                       "instanceGroup"
                                     ]
                                   },
@@ -47956,6 +48021,11 @@
                                       "rpm",
                                       "deb",
                                       "npm",
+                                      "maven",
+                                      "python",
+                                      "go",
+                                      "chart",
+                                      "vm-image",
                                       "infrastructure",
                                       "configuration"
                                     ]
@@ -48087,6 +48157,11 @@
                                       "rpm",
                                       "deb",
                                       "npm",
+                                      "maven",
+                                      "python",
+                                      "go",
+                                      "chart",
+                                      "vm-image",
                                       "infrastructure",
                                       "configuration"
                                     ]
@@ -48649,6 +48724,11 @@
                       "rpm",
                       "deb",
                       "npm",
+                      "maven",
+                      "python",
+                      "go",
+                      "chart",
+                      "vm-image",
                       "infrastructure",
                       "configuration"
                     ]
@@ -50244,6 +50324,11 @@
                                             "rpm",
                                             "deb",
                                             "npm",
+                                            "maven",
+                                            "python",
+                                            "go",
+                                            "chart",
+                                            "vm-image",
                                             "infrastructure",
                                             "configuration"
                                           ]
@@ -53709,6 +53794,11 @@
                       "rpm",
                       "deb",
                       "npm",
+                      "maven",
+                      "python",
+                      "go",
+                      "chart",
+                      "vm-image",
                       "infrastructure",
                       "configuration"
                     ]
@@ -53807,6 +53897,11 @@
                         "rpm",
                         "deb",
                         "npm",
+                        "maven",
+                        "python",
+                        "go",
+                        "chart",
+                        "vm-image",
                         "infrastructure",
                         "configuration"
                       ]
@@ -54139,6 +54234,11 @@
                       "rpm",
                       "deb",
                       "npm",
+                      "maven",
+                      "python",
+                      "go",
+                      "chart",
+                      "vm-image",
                       "infrastructure",
                       "configuration"
                     ]
@@ -54439,6 +54539,11 @@
                               "rpm",
                               "deb",
                               "npm",
+                              "maven",
+                              "python",
+                              "go",
+                              "chart",
+                              "vm-image",
                               "infrastructure",
                               "configuration"
                             ]
@@ -54765,6 +54870,11 @@
                         "rpm",
                         "deb",
                         "npm",
+                        "maven",
+                        "python",
+                        "go",
+                        "chart",
+                        "vm-image",
                         "infrastructure",
                         "configuration"
                       ]
@@ -55156,6 +55266,11 @@
                         "rpm",
                         "deb",
                         "npm",
+                        "maven",
+                        "python",
+                        "go",
+                        "chart",
+                        "vm-image",
                         "infrastructure",
                         "configuration"
                       ]
@@ -66972,6 +67087,11 @@
                               "rpm",
                               "deb",
                               "npm",
+                              "maven",
+                              "python",
+                              "go",
+                              "chart",
+                              "vm-image",
                               "infrastructure",
                               "configuration"
                             ]
@@ -67120,6 +67240,11 @@
                       "rpm",
                       "deb",
                       "npm",
+                      "maven",
+                      "python",
+                      "go",
+                      "chart",
+                      "vm-image",
                       "infrastructure",
                       "configuration"
                     ]
@@ -67161,6 +67286,11 @@
                         "rpm",
                         "deb",
                         "npm",
+                        "maven",
+                        "python",
+                        "go",
+                        "chart",
+                        "vm-image",
                         "infrastructure",
                         "configuration"
                       ]
@@ -74248,6 +74378,11 @@
                       "rpm",
                       "deb",
                       "npm",
+                      "maven",
+                      "python",
+                      "go",
+                      "chart",
+                      "vm-image",
                       "infrastructure",
                       "configuration"
                     ]
@@ -88848,6 +88983,11 @@
                       "rpm",
                       "deb",
                       "npm",
+                      "maven",
+                      "python",
+                      "go",
+                      "chart",
+                      "vm-image",
                       "infrastructure",
                       "configuration"
                     ]
@@ -88884,6 +89024,11 @@
                         "rpm",
                         "deb",
                         "npm",
+                        "maven",
+                        "python",
+                        "go",
+                        "chart",
+                        "vm-image",
                         "infrastructure",
                         "configuration"
                       ]
@@ -89119,6 +89264,11 @@
                 "rpm",
                 "deb",
                 "npm",
+                "maven",
+                "python",
+                "go",
+                "chart",
+                "vm-image",
                 "infrastructure",
                 "configuration"
               ]
@@ -89151,6 +89301,11 @@
                         "rpm",
                         "deb",
                         "npm",
+                        "maven",
+                        "python",
+                        "go",
+                        "chart",
+                        "vm-image",
                         "infrastructure",
                         "configuration"
                       ]
@@ -89386,6 +89541,11 @@
                 "rpm",
                 "deb",
                 "npm",
+                "maven",
+                "python",
+                "go",
+                "chart",
+                "vm-image",
                 "infrastructure",
                 "configuration"
               ]
@@ -89418,6 +89578,11 @@
                         "rpm",
                         "deb",
                         "npm",
+                        "maven",
+                        "python",
+                        "go",
+                        "chart",
+                        "vm-image",
                         "infrastructure",
                         "configuration"
                       ]
@@ -89653,6 +89818,11 @@
                 "rpm",
                 "deb",
                 "npm",
+                "maven",
+                "python",
+                "go",
+                "chart",
+                "vm-image",
                 "infrastructure",
                 "configuration"
               ]
@@ -89674,6 +89844,11 @@
                       "rpm",
                       "deb",
                       "npm",
+                      "maven",
+                      "python",
+                      "go",
+                      "chart",
+                      "vm-image",
                       "infrastructure",
                       "configuration"
                     ]
@@ -89713,6 +89888,11 @@
                         "rpm",
                         "deb",
                         "npm",
+                        "maven",
+                        "python",
+                        "go",
+                        "chart",
+                        "vm-image",
                         "infrastructure",
                         "configuration"
                       ]
@@ -90012,6 +90192,11 @@
                               "rpm",
                               "deb",
                               "npm",
+                              "maven",
+                              "python",
+                              "go",
+                              "chart",
+                              "vm-image",
                               "infrastructure",
                               "configuration"
                             ]
@@ -90256,6 +90441,11 @@
                 "rpm",
                 "deb",
                 "npm",
+                "maven",
+                "python",
+                "go",
+                "chart",
+                "vm-image",
                 "infrastructure",
                 "configuration"
               ]
@@ -90281,6 +90471,11 @@
                         "rpm",
                         "deb",
                         "npm",
+                        "maven",
+                        "python",
+                        "go",
+                        "chart",
+                        "vm-image",
                         "infrastructure",
                         "configuration"
                       ]
@@ -91155,6 +91350,11 @@
                               "rpm",
                               "deb",
                               "npm",
+                              "maven",
+                              "python",
+                              "go",
+                              "chart",
+                              "vm-image",
                               "infrastructure",
                               "configuration"
                             ]
@@ -91440,6 +91640,11 @@
                                 "rpm",
                                 "deb",
                                 "npm",
+                                "maven",
+                                "python",
+                                "go",
+                                "chart",
+                                "vm-image",
                                 "infrastructure",
                                 "configuration"
                               ]
@@ -91779,6 +91984,11 @@
                                 "rpm",
                                 "deb",
                                 "npm",
+                                "maven",
+                                "python",
+                                "go",
+                                "chart",
+                                "vm-image",
                                 "infrastructure",
                                 "configuration"
                               ]
