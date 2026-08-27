@@ -546,6 +546,7 @@ export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "gitea",
   "gitlab",
   "argocd",
+  "argo-workflows",
   "terraform",
   "pipeline-generic",
   "managed-iac",

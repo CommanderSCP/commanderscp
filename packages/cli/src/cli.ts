@@ -6211,7 +6211,7 @@ export function buildProgram(): Command {
     )
     .option(
       "--module <module>",
-      "plugin module: github|gitea|gitlab|argocd|terraform|managed-iac (inline binding)"
+      "plugin module: github|gitea|gitlab|argocd|argo-workflows|terraform|managed-iac (inline binding)"
     )
     .option("--instance-id <id>", "stable id for this plugin instance (inline binding)")
     .option(
