@@ -344,6 +344,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@scp/iac':
+        specifier: workspace:*
+        version: link:../iac
       '@scp/schemas':
         specifier: workspace:*
         version: link:../schemas

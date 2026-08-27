@@ -98,10 +98,34 @@ export type {
 export { linear, widening, byDomain, waves, normalizeWaveItems } from "./waves.js";
 export type { WaveTarget, WaveItem, WideningOptions } from "./waves.js";
 
+// D20: the products module a consuming repo imports for a compile-time-checked `placeAt(...)`.
+export {
+  camelIdentifier,
+  collectProducts,
+  productsModuleSource,
+  renderProductsModule
+} from "./products.js";
+export type { ProductEntry } from "./products.js";
+
+// D21(d): `scp iac render` — turns a synthesized manifest back into the human-readable pipeline
+// picture, honestly labeled where it cannot see an estate-imposed gate.
+export {
+  MANIFEST_ONLY_DISCLAIMER,
+  RENDER_BEGIN_MARKER,
+  RENDER_END_MARKER,
+  formatPipelineBlock,
+  renderManifestPipelines,
+  renderManifestSection,
+  updateGeneratedSection
+} from "./render.js";
+export type { RenderedPipeline } from "./render.js";
+
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Stack } from "./construct.js";
 import { canonicalJson } from "./canonical.js";
+import { productsModuleSource } from "./products.js";
+import type { InfraProductScope } from "./infra.js";
 
 /**
  * Writes the canonical JSON manifest to disk — the interchange point between IaC authoring
@@ -115,4 +139,22 @@ export async function synthToFile(target: Stack, filePath: string): Promise<void
   const manifest = target.synth();
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, canonicalJson(manifest) + "\n", "utf8");
+}
+
+/**
+ * Writes an infra/configuration pipeline's D20 products module to disk — the same impure-I/O layer
+ * `synthToFile` is for the manifest, and for the same reason: `productsModuleSource` itself (like
+ * `Stack.synth()`) does no I/O, so a caller who only wants the text (a test, a different write
+ * target) calls that directly. `synthToFile` and this are typically called side by side against one
+ * pipeline's `Stack`/scope — "alongside its manifest" (D20) — but neither calls the other; a repo's
+ * CI publishes the written module as its own package (D10), independent of the manifest's own
+ * `scp plan`/`scp apply` path.
+ */
+export async function synthProductsModuleToFile(
+  scope: InfraProductScope,
+  filePath: string
+): Promise<void> {
+  const source = productsModuleSource(scope);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, source, "utf8");
 }

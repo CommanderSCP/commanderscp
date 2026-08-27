@@ -181,6 +181,25 @@ export interface IInfraProductRef<Kind extends InfraKind = InfraKind> extends ID
   readonly kind: Kind;
 }
 
+/**
+ * Type guard: true for an OWNED resource construct that is one of THIS module's infra products
+ * (`Cluster`/`InstanceGroup`/`Database`/`Bucket`/`Queue`) — as opposed to a plain `DeploymentTarget`
+ * or any other `"deployment-target"`-typed resource a program might declare. `defineInfraProduct
+ * Construct`'s generated classes are the only place a `kind` field is ever set on an instance, so
+ * checking for it is sufficient without importing this module's private class list. Used by
+ * `products.ts` (D20) to walk a pipeline's owned resources (`Stack._resourcesWithin`, construct.ts)
+ * and pick out only its own declared products, never a bare stage a program also happens to declare
+ * in the same subtree.
+ */
+export function isInfraProductConstruct(
+  resource: ResourceConstruct
+): resource is ResourceConstruct<"deployment-target"> & IInfraProductRef {
+  return (
+    resource.typeId === "deployment-target" &&
+    typeof (resource as { kind?: unknown }).kind === "string"
+  );
+}
+
 export interface InfraProductStatics<Kind extends InfraKind> {
   /** A reference to an EXISTING infra product of this kind, by its display NAME — resolved
    *  server-side at plan time (D14/D20), same rule as every other `fromName()` in this package. */

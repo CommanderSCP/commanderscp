@@ -300,6 +300,26 @@ export class Stack extends Construct {
     this.resources.push(resource);
   }
 
+  /**
+   * @internal Every registered resource whose construct-tree ancestor chain (walked via `.scope`,
+   * `Construct.path`'s own traversal) includes `scope` — direct child or nested arbitrarily deep,
+   * in REGISTRATION order (callers that need a deterministic order, e.g. `products.ts`, sort the
+   * result themselves). Used by `products.ts` to find the infra products (`Cluster`/`InstanceGroup`/
+   * …, D19/D20) an owned Infrastructure/Configuration `Pipeline` declared as ITS OWN, without
+   * `construct.ts` needing to know anything about `pipeline.ts`'s types (`InfraProductScope`,
+   * `infra.ts`, is the same plain `Construct & { stack }` shape this walk works against).
+   */
+  _resourcesWithin(scope: Construct): ResourceConstruct[] {
+    return this.resources.filter((r) => {
+      let node: Construct | undefined = r.scope;
+      while (node) {
+        if (node === scope) return true;
+        node = node.scope;
+      }
+      return false;
+    });
+  }
+
   /** @internal called by `ResourceConstruct`'s relationship fluent methods. */
   _registerRelationship(decl: RelationshipDecl): void {
     this.relationshipDecls.push(decl);
