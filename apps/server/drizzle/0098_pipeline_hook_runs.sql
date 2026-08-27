@@ -6,6 +6,34 @@
 --                   `recordTestRunEvidence` on every terminal phase.
 --
 -- ===========================================================================================
+-- SERVER-VERSION PREFLIGHT — THE FIRST MIGRATION IN THIS TREE THAT HARD-REQUIRES POSTGRES 15+
+-- ===========================================================================================
+-- `UNIQUE NULLS NOT DISTINCT` (see the guard's own comment below) is PostgreSQL 15+ syntax. Every
+-- migration before this one runs unchanged on older servers, so 0097 is the first place the
+-- documented floor (DESIGN.md: "PostgreSQL 16+", and every Testcontainers/CI/Dockerfile pin is
+-- `postgres:16`) becomes load-bearing rather than aspirational.
+--
+-- Nothing in the tree checks the server version — not `doctor`, not startup, not the migrate
+-- runner (verified by a filterless census, 2026-08-27). So on an operator's own older cluster this
+-- file would fail with `syntax error at or near "NOT"`, pointing at a keyword rather than at the
+-- requirement, part-way through a migration run. Charter principle 5 makes self-hosting
+-- first-class, which makes a legible refusal the operator's due — an off-spec deployment is not an
+-- excuse for an unreadable error.
+--
+-- This block turns that syntax error into a sentence, and it lives HERE rather than in `doctor`
+-- because it must run at the exact moment before the DDL that needs it, and cannot be skipped.
+DO $$
+BEGIN
+  IF current_setting('server_version_num')::int < 150000 THEN
+    RAISE EXCEPTION
+      'CommanderSCP migration 0097 requires PostgreSQL 15 or newer (this server is %). It uses UNIQUE NULLS NOT DISTINCT, which older servers cannot parse. DESIGN.md names PostgreSQL 16+ as the supported floor; please upgrade the database before continuing.',
+      current_setting('server_version');
+  END IF;
+END
+$$;
+--> statement-breakpoint
+
+-- ===========================================================================================
 -- WHY THIS TABLE EXISTS AT ALL — THE GAP 0096 DELIBERATELY LEFT
 -- ===========================================================================================
 -- `pipeline_evidence.payload`'s `outcome` is `passed|failed` and NOTHING ELSE, and that is a
