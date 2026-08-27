@@ -853,15 +853,22 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
         // disjoint BY CONSTRUCTION (reconcile.ts's invariant 4 on the freeze-hold `continue`). A
         // target that is simultaneously frozen and dependency-held would otherwise be counted in
         // BOTH halves — a one-target wave reporting `heldTargetCount: 2`. Exclude any target this
-        // wave's freeze half already counted (`activeWave.targets[i].hold` is set for exactly
-        // those) before adding the stage-dependency half.
+        // wave's freeze half already counted before adding the stage-dependency half.
+        //
+        // `hold.freezes.length > 0`, NOT the mere PRESENCE of `hold`. Those were the same test
+        // until increment 8 gave `hold` a second half (`continuousTests`): a target held only by a
+        // continuous probe now carries a `hold` with an EMPTY `freezes`, and reading presence would
+        // silently start treating it as freeze-held and drop it from the stage-dependency count —
+        // an undercount produced by a field that has nothing to do with either half being added.
         if (plan && stageDependencyStatus) {
           const activeWave = plan.waves.find(
             (w) => w.waveIndex === stageDependencyStatus.waveIndex
           );
           if (activeWave) {
             const freezeHeldTargetIds = new Set(
-              activeWave.targets.filter((t) => t.hold).map((t) => t.targetObjectId)
+              activeWave.targets
+                .filter((t) => t.hold !== undefined && t.hold.freezes.length > 0)
+                .map((t) => t.targetObjectId)
             );
             const stageHeldCount = stageDependencyStatus.targets.filter(
               (t) => t.held && !freezeHeldTargetIds.has(t.targetObjectId)

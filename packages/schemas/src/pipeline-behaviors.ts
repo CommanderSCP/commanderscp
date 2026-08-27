@@ -645,6 +645,35 @@ export const SubmitPipelineEvidenceRequestSchema = z.strictObject({
 });
 export type SubmitPipelineEvidenceRequest = z.infer<typeof SubmitPipelineEvidenceRequestSchema>;
 
+/**
+ * The push door's receipt.
+ *
+ * IT ECHOES THE STAMPED PROVENANCE BACK, and that is the point of it rather than a courtesy: the
+ * request deliberately cannot say who produced the row (see above), so the only way a reporter can
+ * confirm what was actually recorded about it is to be TOLD. `producerSubjectId` is the
+ * authenticated subject the server stamped and `source` is the constant `pushed` — neither is
+ * echoed from anything the caller sent, because neither was sendable.
+ *
+ * `evidenceId` is the row's own id, so an operator chasing a gate verdict can join a
+ * `HookFreshnessContext.latestEvidence.evidenceId` in a Decision back to the submission that
+ * produced it.
+ */
+export const SubmitPipelineEvidenceResponseSchema = z.object({
+  evidenceId: z.string().uuid(),
+  kind: z.enum(["testRun", "alarmState"]),
+  /** ALWAYS `pushed` on this route — a constant, not a field the request could steer. */
+  source: z.literal("pushed"),
+  /** The authenticated subject, stamped server-side at insert. */
+  producerSubjectId: z.string().uuid(),
+  /** The resolved subject coordinates the row was keyed by, so a reporter can see that its URNs
+   *  landed where it meant them to rather than discovering weeks later that its evidence was filed
+   *  against a different placement. */
+  componentObjectId: z.string().uuid(),
+  targetObjectId: z.string().uuid(),
+  recordedAt: z.string().datetime()
+});
+export type SubmitPipelineEvidenceResponse = z.infer<typeof SubmitPipelineEvidenceResponseSchema>;
+
 // ---------------------------------------------------------------------------------------------
 // Freshness — the Decision `inputContext` shape (§14 build verification 2)
 // ---------------------------------------------------------------------------------------------

@@ -266,20 +266,23 @@ export function describeContinuousHeldTargets(
  * One line an operator can read, per held target — the reason-tree half of the Decision.
  *
  * ============================================================================================
- * WHERE THE USER-VISIBLE EXPLANATION LIVES TODAY, AND WHY IT IS NOT ON THE API YET
+ * WHERE THE USER-VISIBLE EXPLANATION LIVES — BOTH PLACES, AND WHY BOTH
  * ============================================================================================
- * NOT FORGOTTEN — deferred, deliberately, and this comment is here because a reader would
- * otherwise reasonably assume it was an oversight. `ContinuousTestHoldSchema` exists in
- * `@scp/schemas` and is wired to NO wire field: the only wave-target hold projection on the API is
- * `ChangeWaveTargetSchema.hold`, which today carries the freeze and stage-dependency halves only.
- * Widening it is an API-surface change (`tools/openapi/openapi.v1.json` + the generated SDK), which
- * this increment deliberately does not touch.
+ * This sentence is the REASON-TREE half of the `continuous_test` Decision, resolvable by
+ * `scp change explain` / `scp decision get`: charter principle 6, every held outcome carrying a
+ * resolvable `decision_id` naming its inputs.
  *
- * So the explanation lands in the DECISION RECORD — `scp change explain` / `scp decision get`
- * resolve it, and charter principle 6 is satisfied (every blocked/held outcome carries a resolvable
- * `decision_id` naming its inputs). Projecting it onto `ChangeWaveTargetSchema.hold` is the
- * follow-up; `ContinuousTestHoldSchema` is already the shape it will take, and `ContinuousHookHold`
- * above is structurally that shape, so the projection is a mapping and not a redesign.
+ * The WIRE half is now built too (the follow-up this comment used to carry as deferred):
+ * `ChangeWaveTargetSchema.hold.continuousTests` on `GET /changes/{id}/explain`, projected by
+ * `plan-service.ts`'s `resolveWaveTargetContinuousHolds` from `ContinuousHookHold` above — which is
+ * structurally `ContinuousTestHoldSchema` already, so it is a mapping and not a redesign.
+ *
+ * THE TWO ARE NOT REDUNDANT AND MUST NOT BE COLLAPSED. The Decision is a HISTORICAL record of what
+ * a tick decided, and it keeps saying `hold` until a later tick writes its `allow` counterpart. The
+ * wire field is RE-DERIVED on the read, so it disappears the instant fresh green lands, with no
+ * tick in between. Feeding the wire field from the Decision row is precisely the permanent-marker
+ * trap `ChangeWaveTargetSchema.hold`'s own doc names; feeding the Decision from the read would lose
+ * the audit trail. Same facts, two different questions.
  */
 export function describeContinuousHold(verdict: ContinuousHoldTargetVerdict): string {
   return verdict.holds
