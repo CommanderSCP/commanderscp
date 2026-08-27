@@ -252,7 +252,9 @@ export interface AbortResult {
 export type RolloutAuthority = "authoritative" | "triggerParams" | "verified";
 
 /**
- * MUST stay identical to `RolloutTargetClassSchema` in `@scp/schemas/pipeline-behaviors`.
+ * MUST stay identical to `RolloutTargetClassSchema` in `@scp/schemas/pipeline-behaviors` — which is
+ * itself now a DERIVED NARROWING of `InfraKindSchema` (D24), not a hand-written list; this copy
+ * stays hand-written string literals regardless, for the reason below.
  *
  * Kept as a self-contained string union here for the same reason `DependencyIndexEcosystem` and
  * `DiscoveryProposal.sourceMappings[].type` are: `@scp/plugin-api` stays free of a `@scp/schemas`
@@ -262,8 +264,14 @@ export type RolloutAuthority = "authoritative" | "triggerParams" | "verified";
  * boundary. So this copy is pinned against the Zod enum at runtime by a total-`Record` test whose
  * keys this union generates, exactly as that one is: a value added on one side and not the other is
  * then a compile error rather than a silently misrouted rollout.
+ *
+ * RENAMED `"kubernetes"` → `"cluster"` (team-pipeline-IaC D24, this session): the canonical
+ * `InfraKindSchema` names this member after the product KIND (matching `instanceGroup`/`database`/
+ * `bucket`/`queue`), not the technology backing it. See `InfraKindSchema`'s doc comment in
+ * `@scp/schemas/pipeline-behaviors` for the full reconciliation between D24's `Cluster` prose name
+ * and this repo's `kubernetes` precedent.
  */
-export type RolloutTargetClass = "kubernetes" | "instanceGroup";
+export type RolloutTargetClass = "cluster" | "instanceGroup";
 
 export interface RolloutCapability {
   authority: RolloutAuthority;
@@ -458,10 +466,24 @@ export interface DiscoveryProposal {
     sourceKind: string;
     repoPattern?: string;
     pathPattern?: string;
-    /** The routing Type (ADR-0007). Closed set: image|rpm|deb|npm|infrastructure|configuration.
-     *  Omitted ⇒ the server default ('configuration'). Kept as a self-contained string-union here so
-     *  `@scp/plugin-api` stays free of a `@scp/schemas` dependency. */
-    type?: "image" | "rpm" | "deb" | "npm" | "infrastructure" | "configuration";
+    /** The routing Type (ADR-0007). Closed set: image|rpm|deb|npm|maven|python|go|chart|vm-image|
+     *  infrastructure|configuration (the build family grew by 5 members — D13/D24, team-pipeline-IaC
+     *  rework). Omitted ⇒ the server default ('configuration'). Kept as a self-contained string-union
+     *  here so `@scp/plugin-api` stays free of a `@scp/schemas` dependency — MUST stay identical to
+     *  `ExecutorTypeSchema` in `@scp/schemas/executors`, same discipline as `RolloutTargetClass`
+     *  above, though (unlike that one) this copy has no cross-package pinning test today. */
+    type?:
+      | "image"
+      | "rpm"
+      | "deb"
+      | "npm"
+      | "maven"
+      | "python"
+      | "go"
+      | "chart"
+      | "vm-image"
+      | "infrastructure"
+      | "configuration";
   }>;
 }
 

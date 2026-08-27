@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { UrnSchema } from "./graph.js";
+import { ExecutorTypeSchema, type ExecutorType } from "./executors.js";
 
 /**
  * `@scp/schemas` — pipeline BEHAVIOUR contract: test hooks, rollout declarations, convergence, and
- * the evidence those produce (docs/proposals/team-pipeline-iac.md D11/D12/D13/D21/D23/D25).
+ * the evidence those produce (docs/proposals/team-pipeline-iac.md D11/D12/D13/D21/D23/D24/D25).
  *
  * ============================================================================================
  * WHY THIS FILE EXISTS, AND WHY IT IS IN `@scp/schemas` RATHER THAN `@scp/iac`
@@ -65,38 +66,137 @@ import { UrnSchema } from "./graph.js";
  */
 
 // ---------------------------------------------------------------------------------------------
-// Provisional vocabularies — OWNED ELSEWHERE, defined here only until that owner lands.
+// Canonical D24 vocabularies — artifact class, infra kind, the deploy-target narrowing, and the
+// compatibility matrix that ties them together. Lives ONCE here per D24 ("the compatibility matrix
+// ... lives once in @scp/schemas, shared by the construct types and the server"); `@scp/iac`'s
+// construct types and the server's plan-time validation both consume these, never a hand-rolled copy.
+//
+// These replaced two PROVISIONAL declarations (`ArtifactClassSchema` as a bare `z.enum([...])`,
+// `RolloutTargetClassSchema` likewise) that a sibling session shipped so the pipeline-behaviour
+// contract could merge before this vocabulary existed. Every reference to either symbol below is
+// unchanged by the replacement — same name, same shape — only the DEFINITION moved from a hand-
+// written list to a derivation of `ExecutorTypeSchema` / `InfraKindSchema`.
 // ---------------------------------------------------------------------------------------------
 
 /**
- * D24's artifact-class taxonomy. **PROVISIONAL**: the canonical, matrix-carrying definition is
- * owned by the core team-pipeline-IaC increment (`ArtifactClass` + the artifact-class x infra-kind
- * compatibility matrix, which lives ONCE in this package per D24). This local copy exists so this
- * contract could merge first; when the canonical one lands, THIS DECLARATION IS DELETED and every
- * reference below re-points at it. Do not add a second consumer of this symbol in the meantime.
+ * D24's infra-kind taxonomy — the closed set of infrastructure PRODUCT kinds (§14 resolution 10:
+ * "a new kind arrives as a release carrying the enum value, the typed construct + interface, and
+ * its matrix rows"; org-defined custom kinds wait for a real tenant ask). `@scp/iac`'s matching
+ * interface types (`ICluster`, `IInstanceGroup`, `IDatabase`, `IBucket`, `IQueue`) are built against
+ * this enum by the core IaC increment, not defined here.
+ *
+ * SPELLING, RECONCILED DELIBERATELY: D24's prose names the kubernetes kind `Cluster` (as in
+ * `ICluster`), but the vocabulary that shipped first — the provisional `RolloutTargetClassSchema`
+ * this file already carried (`"kubernetes" | "instanceGroup"`) — spelled it `kubernetes`. This enum
+ * picks **`cluster`**, matching D24's own construct-name vocabulary and the sibling members' shape
+ * (`instanceGroup`, `database`, `bucket`, `queue` are all named after the KIND OF THING, not the
+ * technology backing it — `database` isn't spelled `postgres`). `kubernetes` was the odd one out:
+ * it named the implementation, not the product kind, and every other member already named the kind.
+ * `RolloutTargetClassSchema` below is now DERIVED from this enum, so its `kubernetes` member is
+ * renamed to `cluster` as part of the same change — `@scp/plugin-api`'s sanctioned third copy
+ * (`packages/plugin-api/src/index.ts`) is renamed identically, and its pinning test
+ * (`rollout-capability-vocabulary.test.ts`) is updated in lockstep so no side is left holding the
+ * old spelling.
  */
-export const ArtifactClassSchema = z.enum([
-  "image",
-  "rpm",
-  "deb",
-  "npm",
-  "maven",
-  "python",
-  "go",
-  "chart",
-  "vm-image"
-]);
+export const InfraKindSchema = z.enum(["cluster", "instanceGroup", "database", "bucket", "queue"]);
+export type InfraKind = z.infer<typeof InfraKindSchema>;
+
+/**
+ * D13/D24's artifact-class taxonomy, DERIVED as the "build family" subset of `ExecutorTypeSchema`
+ * (`@scp/schemas/executors`) — never a second hand-written list. D13's ruling this session: "Type
+ * stays the closed three-value enum" describes this package's **Category**, not `ExecutorType`; the
+ * resolution was to extend `ExecutorTypeSchema` itself with the missing artifact classes so one
+ * vocabulary covers everything, and make this a genuine subset of it.
+ *
+ * MECHANISM: `.exclude(["infrastructure", "configuration"])` rather than `.extract([...the nine
+ * build members...])`, on purpose. `ExecutorCategorySchema` is closed at exactly three values
+ * forever (build/infrastructure/configuration — never stored, never accepted as input, see
+ * `executors.ts`), so "the build family" is structurally "every Type that is not infrastructure and
+ * not configuration" — a fact that holds by construction, not by enumeration. Excluding the two
+ * non-build members means a FUTURE build-family addition to `ExecutorTypeSchema` (another artifact
+ * class) is automatically part of `ArtifactClassSchema` with no second edit required and no chance
+ * to forget one; `.extract()` would have needed that second edit every time. Both `.exclude()` and
+ * `.extract()` are compile-checked against `ExecutorTypeSchema`'s own literal union (a member that
+ * does not exist on the base enum fails to type-check), so either direction satisfies "cannot
+ * drift" for members that DO exist — this choice is about which one also protects against a
+ * forgotten ADD.
+ */
+export const ArtifactClassSchema = ExecutorTypeSchema.exclude(["infrastructure", "configuration"]);
 export type ArtifactClass = z.infer<typeof ArtifactClassSchema>;
 
 /**
- * D12/D24's target class — "TargetClass is this same discriminant — one vocabulary, not two".
- * **PROVISIONAL for the same reason as `ArtifactClassSchema`**, and narrower on purpose: only the
- * infra kinds an artifact can actually be DEPLOYED ONTO appear here. D24 is explicit that
- * `Database`/`Bucket`/`Queue` are producible and referenceable but "are never deploy targets for
- * artifacts at all", so a rollout declaration keyed by one of them is not a thing that can exist.
+ * D12/D24's target class — "TargetClass is this same discriminant — one vocabulary, not two" — now
+ * a DERIVED NARROWING of `InfraKindSchema`: only the infra kinds an artifact can actually be
+ * DEPLOYED ONTO. D24 is explicit that `Database`/`Bucket`/`Queue` are producible and referenceable
+ * (`dependsOn`, `hosted_on`) but "are never deploy targets for artifacts at all" — a rollout
+ * declaration keyed by one of them is not a thing that can exist, so it must not be a value this
+ * type can hold.
+ *
+ * MECHANISM: `.extract(["cluster", "instanceGroup"])` — an explicit allow-list, DELIBERATELY THE
+ * OPPOSITE CHOICE from `ArtifactClassSchema` above, and for a reason that has to be stated or it
+ * looks like an inconsistency: here the narrow set (deploy targets) is the minority, and widening it
+ * must never happen by default. §14 resolution 10 already requires any new `InfraKind` to arrive
+ * "with its matrix rows" as a deliberate act; if this were instead `InfraKindSchema.exclude([
+ * "database", "bucket", "queue"])`, a future non-deploy-target kind (say, a `LoadBalancer` product
+ * that is likewise never an artifact's placement) would silently become a legal rollout target the
+ * moment it was added to `InfraKindSchema`, purely because nobody remembered to add it to an
+ * exclude list — exactly the "widen it later for consistency" failure this declaration exists to
+ * prevent. An allow-list forces every widening through an edit that names the new deploy target
+ * explicitly, here, next to this comment.
  */
-export const RolloutTargetClassSchema = z.enum(["kubernetes", "instanceGroup"]);
+export const RolloutTargetClassSchema = InfraKindSchema.extract(["cluster", "instanceGroup"]);
 export type RolloutTargetClass = z.infer<typeof RolloutTargetClassSchema>;
+
+/**
+ * D24's artifact-class × infra-kind compatibility matrix — the SINGLE definition shared by the
+ * construct types (`@scp/iac`, core IaC increment) and the server's plan-time validation
+ * (`evaluatePlacementCompatibility`-shaped checks). Keyed on the FULL `ExecutorType` (all eleven
+ * members, not just the nine-member `ArtifactClassSchema`) because D24's own initial-rows list
+ * includes `configuration` — a GitOps sync pipeline places at a cluster or instance group exactly
+ * like a build artifact does, so it needs a row too, and keying on `ExecutorType` gives it one for
+ * free instead of inventing a second, wider key type.
+ *
+ * TOTALITY IS THE POINT: `Record<ExecutorType, readonly InfraKind[]>` is a TOTAL mapping keyed by
+ * the enum itself, not a partial lookup table with a fallback default. Adding a member to
+ * `ExecutorTypeSchema` without adding its row HERE is a TypeScript compile error (a missing required
+ * key on the `Record`), not a silent gap that only shows up when someone tries to place that type
+ * and gets an unexplained refusal — or worse, an unchecked placement.
+ *
+ * ROWS: `image`/`chart` → cluster; `rpm`/`deb`/`vm-image` → instance group (`deb` is not named in
+ * D24's own initial-rows prose, which predates `deb` being folded into the artifact-class
+ * vocabulary this session — it is given the same row as `rpm`, the other OS-package artifact class,
+ * rather than left with no row, which the `Record` type does not allow); `configuration` → cluster
+ * OR instance group (ADR-0017 GitOps sync targets either); `npm`/`maven`/`python`/`go` → empty
+ * (library artifacts that publish to a registry and are never placed anywhere — D24: "publish and
+ * are never placed"); `infrastructure` → empty (an infrastructure pipeline PRODUCES the infra
+ * product, it is never itself placed at one — "placement" is not a concept that applies to it).
+ */
+export const ARTIFACT_INFRA_COMPATIBILITY: Record<ExecutorType, readonly InfraKind[]> = {
+  image: ["cluster"],
+  chart: ["cluster"],
+  rpm: ["instanceGroup"],
+  deb: ["instanceGroup"],
+  "vm-image": ["instanceGroup"],
+  configuration: ["cluster", "instanceGroup"],
+  npm: [],
+  maven: [],
+  python: [],
+  go: [],
+  infrastructure: []
+};
+
+/** The infra kinds `type` may legally be placed at, per `ARTIFACT_INFRA_COMPATIBILITY`. Total over
+ *  `ExecutorType` — never throws, never falls back to a default; an unplaceable type (`npm`,
+ *  `infrastructure`, …) returns an empty array rather than `undefined`. */
+export function compatibleInfraKinds(type: ExecutorType): readonly InfraKind[] {
+  return ARTIFACT_INFRA_COMPATIBILITY[type];
+}
+
+/** Whether `type` may be placed at an infra product of `kind` — the plan-time hard-check D24
+ *  requires ("an L1/hand-written manifest cannot bypass what the types prevent"). */
+export function isPlacementCompatible(type: ExecutorType, kind: InfraKind): boolean {
+  return ARTIFACT_INFRA_COMPATIBILITY[type].includes(kind);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Workflow identity (D11, D15b, D23)
