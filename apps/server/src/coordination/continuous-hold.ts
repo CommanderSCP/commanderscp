@@ -215,8 +215,11 @@ export async function evaluateContinuousHolds(
 
 /** The server-composed sentence. NAMES THE BOUNDARY, NEVER THE CLOCK: `staleAfter` is data the
  *  reader's own clock contextualizes, exactly as a freeze hold's `endsAt` is. A sentence containing
- *  "3 minutes ago" would be a new string every tick and a new Decision row with it. */
-function summarize(hookId: string, verdict: ContinuousHoldVerdict): string {
+ *  "3 minutes ago" would be a new string every tick and a new Decision row with it.
+ *
+ *  EXPORTED so the three reasons' wording can be tested directly: `evaluateContinuousHolds`, the
+ *  only production caller, needs a `TenantTx` to reach it. */
+export function summarize(hookId: string, verdict: ContinuousHoldVerdict): string {
   switch (verdict.reason) {
     case "failed":
       return `continuous probe '${hookId}' last reported FAILED at ${String(verdict.lastReportedAt)} — the target is sick; check the target`;
