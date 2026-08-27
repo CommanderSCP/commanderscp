@@ -9,7 +9,7 @@
 -- SERVER-VERSION PREFLIGHT — THE FIRST MIGRATION IN THIS TREE THAT HARD-REQUIRES POSTGRES 15+
 -- ===========================================================================================
 -- `UNIQUE NULLS NOT DISTINCT` (see the guard's own comment below) is PostgreSQL 15+ syntax. Every
--- migration before this one runs unchanged on older servers, so 0097 is the first place the
+-- migration before this one runs unchanged on older servers, so 0098 is the first place the
 -- documented floor (DESIGN.md: "PostgreSQL 16+", and every Testcontainers/CI/Dockerfile pin is
 -- `postgres:16`) becomes load-bearing rather than aspirational.
 --
@@ -26,7 +26,7 @@ DO $$
 BEGIN
   IF current_setting('server_version_num')::int < 150000 THEN
     RAISE EXCEPTION
-      'CommanderSCP migration 0097 requires PostgreSQL 15 or newer (this server is %). It uses UNIQUE NULLS NOT DISTINCT, which older servers cannot parse. DESIGN.md names PostgreSQL 16+ as the supported floor; please upgrade the database before continuing.',
+      'CommanderSCP migration 0098 requires PostgreSQL 15 or newer (this server is %). It uses UNIQUE NULLS NOT DISTINCT, which older servers cannot parse. DESIGN.md names PostgreSQL 16+ as the supported floor; please upgrade the database before continuing.',
       current_setting('server_version');
   END IF;
 END
