@@ -28,16 +28,36 @@ import {
  * over any `allow` (deny-override, DESIGN.md §7). No matching binding at all is a default deny.
  * Both expansions are depth-limited to 10 (DESIGN.md §5's traversal bound, reused here).
  */
-export type Permission =
-  | "object:read"
-  | "object:write"
-  | "relationship:read"
-  | "relationship:write"
-  | "type_registry:read"
-  | "type_registry:write"
-  | "role_binding:write"
-  | "graph:query"
-  | "audit:read"
+/**
+ * THE PERMISSION CATALOGUE — the single runtime source of truth, and the reason it is an
+ * ARRAY and not a union.
+ *
+ * This was a hand-written `type Permission = "a" | "b" | ...` union for its whole life, which
+ * a TypeScript build erases: there was NO value at runtime enumerating the permissions this
+ * system defines, so nothing could ever ask "is every permission I define actually granted to
+ * somebody, and demanded somewhere?". `org:admin` is what that costs — seeded to Owner by
+ * drizzle/0002, demanded at ZERO call sites for its entire life, and removed only when a human
+ * ran a census by hand in 2026-08 because `GET /roles` was about to publish it.
+ *
+ * `Permission` is now DERIVED from this array (below), so the type and the enumeration cannot
+ * disagree: adding a member to one adds it to the other, and there is no edit that changes the
+ * union without changing what the drift gate iterates. That is the property; the array is just
+ * how it is obtained.
+ *
+ * ORDER IS PRESENTATION ONLY. Grouped by the milestone that introduced each member, because
+ * the comments below carry the reasoning per member and reasoning reads chronologically.
+ * Nothing depends on the order — `role-model.md` §5 step 4's gate compares SETS.
+ */
+export const PERMISSIONS = [
+  "object:read",
+  "object:write",
+  "relationship:read",
+  "relationship:write",
+  "type_registry:read",
+  "type_registry:write",
+  "role_binding:write",
+  "graph:query",
+  "audit:read",
   // (`org:admin` was here. Seeded to Owner alone by drizzle/0002 and demanded at ZERO call sites
   // for its whole life, it was REMOVED by drizzle/0099 — the one deliberate subtraction in an
   // otherwise additive design, taken now because role-model.md §5 step 5's `GET /roles` is about
@@ -48,17 +68,17 @@ export type Permission =
   // org on every deployment at once with no per-org opt-out (role-model.md §2). It is safe for
   // exactly this one because no code path has ever asked for it, which is a property the
   // filterless census re-run for drizzle/0099 measured rather than assumed.)
-  | "approval:write"
+  "approval:write",
   // M4 governance (DESIGN.md §7's example role bindings name these exactly):
-  | "policy:write"
-  | "freeze:write"
-  | "freeze:override"
-  | "change:emergency"
+  "policy:write",
+  "freeze:write",
+  "freeze:override",
+  "change:emergency",
   // M6 federation (DESIGN.md §13) — OPERATING the link (export/import/hand-fill/outposts/resync/
   // poke) vs read-only status/self. Pairing still requires `federation:write` and ALSO requires
   // `federation:pair` below, so `federation:write` alone no longer admits a peer.
-  | "federation:read"
-  | "federation:write"
+  "federation:read",
+  "federation:write",
   // THE SECOND BAR ON PAIRING — adding a federation peer, or re-keying one (owner ruling D4,
   // 2026-08-25; docs/proposals/role-model.md §4.1). Demanded by `POST /api/v1/federation/peers`
   // (`routes/federation.ts`) ON TOP OF the `federation:write` that door already demanded — added,
@@ -92,7 +112,7 @@ export type Permission =
   // supersede or revoke a trust anchor — the capability is absent from the contract, not merely
   // unused. Editing a peer's endpoint stays `federation:write`; the moment that body could carry a
   // key, this permission belongs there too.
-  | "federation:pair"
+  "federation:pair",
   // The OPT-IN second bar on a containment MOVE (drizzle/0083,
   // docs/proposals/governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18). Demanded
   // at-or-above the moved object AND at-or-above the destination — and ONLY where a rung of the
@@ -102,7 +122,7 @@ export type Permission =
   // to Operator: Operator/Approver/Administrator/Owner all hold `object:write`, so an
   // Operator-and-above grant would make every principal who can move also able to move under
   // enforcement — the lattice would be inert until custom roles exist, and nothing authors one yet.
-  | "governance:move"
+  "governance:move",
   // M25.6b (campaigns-rework §4.5, ADR-0042 §9) — WAIVE A CAMPAIGN'S DEADLINE FOR ONE TARGET.
   // Granted by drizzle/0088 to Owner ALONE, the `freeze:override` grant's shape exactly.
   //
@@ -117,7 +137,7 @@ export type Permission =
   // would then carry two unrelated blast radii — a freeze-override holder could waive migration
   // deadlines and a deadline-waiver holder could bypass release freezes — and neither grant could
   // afterwards be narrowed without taking the other with it.
-  | "campaign:deadline-override"
+  "campaign:deadline-override",
   // ===========================================================================================
   // THE THREE PERMISSION SPLITS (role-model.md §5 step 3; drizzle/0099)
   // ===========================================================================================
@@ -154,7 +174,7 @@ export type Permission =
   // OPERATIONS act, not a compliance one — a security officer authors ceilings and decides
   // waivers, and giving them custody of the tokens that reach production would put the auditor
   // inside the thing being audited.
-  | "secret:write"
+  "secret:write",
   // ADDED TO — never substituted for — the `policy:write` already demanded on the scan-override
   // DECIDE door (approve | deny | revoke) in `routes/scan-override-grants.ts`. Both are demanded,
   // at the same derived tier object, in that order.
@@ -176,7 +196,7 @@ export type Permission =
   // and NOT this, so an org can seat an estate administrator who authors org policy and a security
   // officer who owns the waiver, and neither is the other. That was impossible while the two acts
   // shared one string, because the cumulative ladder welds a permission's blast radius to its rank.
-  | "scan:override"
+  "scan:override",
   // ADDED TO — never substituted for — the `object:write` already demanded at EVERY target of
   // `POST /api/v1/changes/{id}/accept` and `POST /api/v1/changes/{id}/rollback`
   // (`routes/changes.ts`). Same per-target loop, same EVERY-target quantifier, same org-root arm
@@ -199,7 +219,14 @@ export type Permission =
   // upgrade they stop being able to, which is the point: accepting a release into production is
   // not the same authority as editing the graph, and it was only ever the same string because the
   // ladder had no way to say otherwise. It must be announced, not discovered.
-  | "change:accept";
+  "change:accept"
+] as const;
+
+/**
+ * One permission string. DERIVED from {@link PERMISSIONS} rather than declared beside it —
+ * see that array's doc for why the runtime value has to exist at all.
+ */
+export type Permission = (typeof PERMISSIONS)[number];
 
 export interface PermissionCheck {
   orgId: string;
