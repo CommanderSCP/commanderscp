@@ -9,9 +9,22 @@ import {
   type ManifestObject,
   type ManifestRelationship,
   type ManifestPlacement,
+  type ManifestConvergence,
+  type ManifestPipelineHook,
+  type ManifestRollout,
   type ManifestSourceMapping,
+  type RolloutStrategy,
+  type RolloutTargetClass,
   type SourceMappingScope
 } from "@scp/schemas";
+
+/**
+ * `Omit` over a DISCRIMINATED UNION distributes across the members instead of collapsing them into
+ * one object type — without this, `Omit<ManifestPipelineHook, "componentUrn">` erases the union and
+ * `kind` stops narrowing `workflow`/`stage`/`maxAgeSeconds`, so a `bakeAlarms` hook carrying a
+ * `workflow` would typecheck at the L1 door and be refused only by Zod at synth.
+ */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 import { deriveConstructUrn, slugify } from "./urn.js";
 
 /**
@@ -279,6 +292,9 @@ export class Stack extends Construct {
   private readonly executorBindingDecls: LocatedDecl<ManifestExecutorBinding>[] = [];
   private readonly dependencyProducerDecls: LocatedDecl<ManifestDependencyProducer>[] = [];
   private readonly governanceMoveRungDecls: LocatedDecl<ManifestGovernanceMoveRung>[] = [];
+  private readonly pipelineHookDecls: LocatedDecl<ManifestPipelineHook>[] = [];
+  private readonly rolloutDecls: LocatedDecl<ManifestRollout>[] = [];
+  private readonly convergenceDecls: LocatedDecl<ManifestConvergence>[] = [];
   /** L1 raw objects (D16(1)) — entries added via `addManifestEntry`, never through a typed
    *  construct. Kept separate from `resources` (which holds typed CONSTRUCTS, not manifest
    *  objects) so `_toManifestObject()` is only ever called on something that actually has one. */
@@ -611,6 +627,88 @@ export class Stack extends Construct {
    * in code never changes the synthesized manifest, only their CONTENT does — the property
    * `construct.determinism.test.ts` exercises.
    */
+  /**
+   * L1 ESCAPE HATCH for a pipeline hook (D11, D21) — the `pipelineHooks` half of the increment-8
+   * contract (`@scp/schemas`'s `ManifestPipelineHookSchema`).
+   *
+   * D16(1)'s guarantee is that no L2 construct may block reaching L1. Until this existed, the
+   * guarantee was empty for this collection in the strongest possible sense: there were no L2
+   * constructs for hooks AND `synth()` did not assemble the collection at all, so a CDK program
+   * could not emit a hook by any route. The server half has been waiting since the contract merged
+   * — `plans-repo.ts` applies `pipelineHooks`, `render.ts` displays them — and the only way to get
+   * one into the database was a hand-authored manifest POSTed to `/plans`, which is precisely the
+   * authoring experience the construct library exists to replace.
+   *
+   * Takes the hook MINUS its `componentUrn`, which is resolved from `component` the way every other
+   * hatch here resolves its subject — so a caller cannot accidentally declare a hook against a URN
+   * that does not match the construct they passed.
+   *
+   * PREFER THE TYPED CONSTRUCTS once they exist (`PostMergeTest`, `PostDeployTest`, `ContinuousTest`,
+   * `BakeAlarms`); this door stays for a component referenced by URN from outside the program, and
+   * for a hook kind the library has not grown sugar for yet.
+   */
+  addPipelineHook(
+    component: IResourceRef | string,
+    hook: DistributiveOmit<ManifestPipelineHook, "componentUrn">
+  ): this {
+    this.pipelineHookDecls.push({
+      location: locationOf(component),
+      entry: { ...hook, componentUrn: resolveUrn(component) } as ManifestPipelineHook
+    });
+    return this;
+  }
+
+  /**
+   * L1 ESCAPE HATCH for a rollout declaration (D12), keyed by TARGET CLASS — one component
+   * legitimately declares a canary for its clusters and a rolling batch for its instance groups.
+   *
+   * The strategy is the contract's own discriminated union, so the wire carries a discriminant
+   * rather than a strategy string the server has to interpret (D15(c)), and percentages are plain
+   * numbers on self-describing props (D16(3)).
+   */
+  addRollout(
+    component: IResourceRef | string,
+    spec: { targetClass: RolloutTargetClass; rollout: RolloutStrategy }
+  ): this {
+    this.rolloutDecls.push({
+      location: locationOf(component),
+      entry: {
+        componentUrn: resolveUrn(component),
+        targetClass: spec.targetClass,
+        rollout: spec.rollout
+      }
+    });
+    return this;
+  }
+
+  /**
+   * L1 ESCAPE HATCH for a convergence declaration (D25(b)) — a configuration pipeline placed at an
+   * infrastructure PRODUCT re-applies its currently-released, already-gated state when that
+   * product's observed membership changes.
+   *
+   * BOTH FIELDS ARE REQUIRED HERE even though `converge` defaults on and `scope` defaults to the
+   * changed subset. That is D8's rule (inference at synth, explicitness at apply) applied to the
+   * door it was written for: the typed construct picks the defaults, the MANIFEST always says which,
+   * and "this fleet self-converges" stays a reviewable line rather than a server-side default nobody
+   * can see. An L1 caller is authoring the manifest directly, so it says both.
+   */
+  addConvergence(
+    component: IResourceRef | string,
+    target: IResourceRef | string,
+    spec: { converge: boolean; scope: ManifestConvergence["scope"] }
+  ): this {
+    this.convergenceDecls.push({
+      location: locationOf(component),
+      entry: {
+        componentUrn: resolveUrn(component),
+        targetUrn: resolveUrn(target),
+        converge: spec.converge,
+        scope: spec.scope
+      }
+    });
+    return this;
+  }
+
   synth(): DesiredStateManifest {
     // L1 raw entries (`addManifestEntry`) sort in seamlessly alongside typed constructs' own
     // objects — by URN, same as everything else — so which door an object came through leaves no
@@ -683,6 +781,32 @@ export class Stack extends Construct {
     );
     const governanceMoveRungLocations: string[] = sortedGovernanceMoveRungs.map((d) => d.location);
 
+    // PIPELINE HOOKS (D11/D21). Sorted on the full identity tuple `(componentUrn, kind, hookId)` —
+    // the same tuple the server keys on — so declaration order in code never changes the bytes.
+    const sortedPipelineHooks = [...this.pipelineHookDecls].sort((a, b) =>
+      pipelineHookSortKey(a.entry).localeCompare(pipelineHookSortKey(b.entry))
+    );
+    const pipelineHooks: ManifestPipelineHook[] = sortedPipelineHooks.map((d) => d.entry);
+    const pipelineHookLocations: string[] = sortedPipelineHooks.map((d) => d.location);
+
+    // ROLLOUTS (D12), sorted on `(componentUrn, targetClass)` — the declaration's identity.
+    const sortedRollouts = [...this.rolloutDecls].sort((a, b) =>
+      `${a.entry.componentUrn}\u0000${a.entry.targetClass}`.localeCompare(
+        `${b.entry.componentUrn}\u0000${b.entry.targetClass}`
+      )
+    );
+    const rollouts: ManifestRollout[] = sortedRollouts.map((d) => d.entry);
+    const rolloutLocations: string[] = sortedRollouts.map((d) => d.location);
+
+    // CONVERGENCE (D25), sorted on `(componentUrn, targetUrn)` — the pair is the identity.
+    const sortedConvergence = [...this.convergenceDecls].sort((a, b) =>
+      `${a.entry.componentUrn}\u0000${a.entry.targetUrn}`.localeCompare(
+        `${b.entry.componentUrn}\u0000${b.entry.targetUrn}`
+      )
+    );
+    const convergence: ManifestConvergence[] = sortedConvergence.map((d) => d.entry);
+    const convergenceLocations: string[] = sortedConvergence.map((d) => d.location);
+
     const candidate = {
       stackName: this.stackName,
       objects,
@@ -701,7 +825,18 @@ export class Stack extends Construct {
       // call disables nothing. See that method for the whole rule and for how to disable a final
       // rung. This is the more dangerous of the two omissions to get wrong: pruning here would turn
       // OFF a governance bar, and the symptom would be an absence of refusals.
-      ...(governanceMoveRungs.length > 0 ? { governanceMoveRungs } : {})
+      ...(governanceMoveRungs.length > 0 ? { governanceMoveRungs } : {}),
+      // OMITTED WHEN EMPTY, and `pipelineHooks` is the THIRD collection whose omission means
+      // UNMANAGED rather than "manages none" — the contract says so explicitly and for the same
+      // reason `producers` does: dropping the last declaration would silently DISARM a gate, and
+      // the symptom of a disarmed gate is an absence of refusals. Retracting a final hook needs a
+      // hand-authored `"pipelineHooks": []`, exactly as retracting a final producer does.
+      //
+      // `rollouts` and `convergence` follow the ORDINARY rule (absent = empty = prune): neither
+      // gates anything, so a forgotten key costs a declared strategy, not a removed bar.
+      ...(pipelineHooks.length > 0 ? { pipelineHooks } : {}),
+      ...(rollouts.length > 0 ? { rollouts } : {}),
+      ...(convergence.length > 0 ? { convergence } : {})
     };
 
     // TWO OBJECTS, ONE URN — REFUSED HERE, BEFORE THE MANIFEST CAN CARRY BOTH.
@@ -759,7 +894,10 @@ export class Stack extends Construct {
       executorBindings: executorBindingLocations,
       placements: placementLocations,
       producers: producerLocations,
-      governanceMoveRungs: governanceMoveRungLocations
+      governanceMoveRungs: governanceMoveRungLocations,
+      pipelineHooks: pipelineHookLocations,
+      rollouts: rolloutLocations,
+      convergence: convergenceLocations
     };
     const lines = parsed.error.issues.map((issue) => {
       const [collection, index] = issue.path;
@@ -783,6 +921,12 @@ function sourceMappingSortKey(m: ManifestSourceMapping): string {
     m.pathPattern ?? "",
     m.type ?? ""
   ].join(" ");
+}
+
+/** Sorts on `(componentUrn, kind, hookId)` — the hook's full identity, which is also what the
+ *  server keys on and what it refuses a duplicate of. */
+function pipelineHookSortKey(h: ManifestPipelineHook): string {
+  return [h.componentUrn, h.kind, h.hookId].join("\u0000");
 }
 
 /** Sorts on `(targetUrn, type)` — the binding's identity, matching `UNIQUE (org, target, type)`. */
