@@ -780,12 +780,13 @@ affected suites. Steps 1–10 below are the role work proper and are **not** sta
 | 4 | **Permission drift test in CI** — exported `PERMISSIONS` array vs seeded role arrays vs a filterless call-site census, failing in **both** directions. **Plus the post-grant widening assertion (§4.4):** a migration that `array_append`s to a built-in must state which existing bindings of that role it widens. | No such array exists today |
 | 5 | **Role + role-binding API** — `GET /roles`, `GET/POST/DELETE /role-bindings`, gated on `role_binding:write` at-or-above the binding's scope, **plus** the no-escalation subset rule, **plus** `bindable_at` validation, **plus** an audit event per grant/revoke. | Voids the three in-tree safety arguments (§1.2) |
 | 6 | **Effective-permissions read surface** — roles+permissions on `GET /auth/me`, plus `GET /authz/effective?scopeObjectId=`. Plus `fromRole` authoring-time validation. | With five purpose roles the UI is unusable without it |
-| 7 | **SSE per-event `object:read` at fan-out** (§1.3a) | Must land before any scoped binding exists in the field |
-| 8 | The two inversions | **Blocked on owner decision #1** |
-| 9 | *Separate milestone* — instance-tier credential redesign. Plus fixing `governance-move.ts:371` and `dependency-subscriptions.ts:287`, which still `createPool` inline instead of `withOperatorDb`. | Archetype A stays half-delegable until this lands |
-| 10 | *Later* — custom roles, gated behind closing the `hasRoleAtScope` name-collision quorum bypass. | Charter commitment, unsatisfied by this design |
+| ~~7~~ ✅ | ~~**SSE per-event `object:read` at fan-out** (§1.3a)~~ | **SUPERSEDED BY 0a — the same item.** The owner ruling that live defects be fixed first moved it into step 0, where it shipped; this row was never struck. Implemented in `routes/events.ts`, pinned by `routes/events-authz.integration.test.ts`. |
+| ~~8~~ ✅ | ~~The two inversions~~ | **SUPERSEDED BY 0b + 0c**, and no longer blocked: decision #1 was ruled as D1(b-i) and D1(a-ii). Also never struck. |
+| 9 ✅ | **Instance-tier credential redesign** — done, not deferred. `SCP_OPERATOR_TOKEN` replaced by named, argon2-hashed, individually revocable, optionally expiring credentials (migration **0103**, `auth/operator-auth.ts`); the env token is kept as the BOOTSTRAP credential so upgrades do not lock out and the first credential can be minted. The eight hand-written `requireOperator` copies collapse into one definition. Plus the two `createPool` residuals and the grants they needed (migration **0101**). | Owner ruled 2026-08-27 to implement rather than defer |
+| 10 ✅ | **Custom roles** — `POST`/`PATCH`/`DELETE /roles` (migration **0102**). The `hasRoleAtScope` quorum bypass is CLOSED first, in its own commit: a role NAME now resolves against built-ins only, so a custom role can carry permissions and be bound but can never satisfy an approval quorum. `fromRole` is validated at policy-authoring time so a policy naming a non-built-in is refused where it is fixable rather than blocking forever. | Charter commitment, now satisfied |
 
-**Do not ship custom roles in the same increment as the binding door.** `hasRoleAtScope` joins `roles`
+**Do not ship custom roles in the same increment as the binding door.** (Honoured: the door shipped in
+#307, and custom roles only after the bypass below was closed in its own commit.) `hasRoleAtScope` joins `roles`
 with **no `org_id` predicate on the roles row** (`resolve.ts:299-303`) while the binding is
 org-filtered — so an org creating a zero-permission role named `'Approver'` instantly makes its holders
 eligible quorum voters everywhere a policy names Approver. A self-service quorum bypass.
