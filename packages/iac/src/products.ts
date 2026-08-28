@@ -87,7 +87,18 @@ export function collectProducts(scope: InfraProductScope): ProductEntry[] {
       throw new Error(
         `Products module for "${scope.path}": both "${existing.urn}" and "${resource.urn}" map to ` +
           `the identifier "${identifier}" — rename one of the two construct ids so the generated ` +
-          `module does not silently drop one of them.`
+          `module does not silently drop one of them.` +
+          // WHEN THE TWO URNs PRINT THE SAME, the collision is upstream of this module and the
+          // sentence above is unactionable on its own: a URN is slugified (lowercased), so ids
+          // differing only in case derive ONE URN and the tree carries two objects claiming it.
+          // `Stack.synth()` refuses that outright; this line is for the paths that reach here
+          // WITHOUT going through synth (`productsModuleSource` is callable on its own), so the
+          // author is told which defect they actually have.
+          (existing.urn === resource.urn
+            ? ` Both URNs are identical, which means the construct ids differ only in case or ` +
+              `punctuation — they are two constructs sharing one object identity, and Stack.synth() ` +
+              `refuses that manifest for the same reason.`
+            : "")
       );
     }
     const entry: ProductEntry = {

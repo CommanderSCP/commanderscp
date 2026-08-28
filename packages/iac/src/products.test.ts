@@ -227,12 +227,35 @@ describe("@scp/iac: products module determinism (fast-check) — the construct.d
     return infra;
   }
 
-  it("re-rendering the same tree twice is byte-identical", () => {
+  /**
+   * Runs `productsModuleSource` and returns EITHER its output or its refusal message.
+   *
+   * A REFUSAL IS PART OF THE PROPERTY, not an escape from it. The generator can produce ids that
+   * differ only in case (`"F"` and `"f"`), which is a legitimate authoring mistake the library is
+   * REQUIRED to refuse — and it did, which is how the underlying `Stack.synth()` duplicate-URN
+   * defect was found (this property failed in CI on seed 1953244992 and passed locally, because
+   * fast-check reseeds every run). Filtering those inputs out of the generator would have hidden a
+   * real bug: two constructs whose ids differ only in case derive ONE URN, and the server diffs by
+   * URN, so one of the two declared objects silently never existed. See
+   * `construct.test.ts`'s "two objects may not claim one URN".
+   *
+   * So determinism is asserted over the whole behaviour: the same tree gives the same ANSWER twice,
+   * and a refusal is reproducible byte-for-byte exactly like an output.
+   */
+  function sourceOrRefusal(infra: ReturnType<typeof build>): string {
+    try {
+      return productsModuleSource(infra);
+    } catch (error) {
+      return `REFUSED: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  it("re-rendering the same tree twice is byte-identical — including when it refuses", () => {
     fc.assert(
       fc.property(productSpecArb, (specs) => {
         const order = specs.map((_, i) => i);
         const infra = build(specs, order);
-        expect(productsModuleSource(infra)).toBe(productsModuleSource(infra));
+        expect(sourceOrRefusal(infra)).toBe(sourceOrRefusal(infra));
       }),
       { numRuns: 30 }
     );
@@ -248,7 +271,9 @@ describe("@scp/iac: products module determinism (fast-check) — the construct.d
         // Both were seeded with the SAME set of (id, kind) pairs, just constructed in different
         // order — the stack NAME differs (random, for isolation), so compare the RENDERED MODULE,
         // which never mentions the stack name (D20: the module is keyed by construct id only).
-        expect(productsModuleSource(infraA)).toBe(productsModuleSource(infraB));
+        // …and the refusal is order-independent too, which is the sharper half: a collision must
+        // not depend on which of the two colliding constructs was declared first.
+        expect(sourceOrRefusal(infraA)).toBe(sourceOrRefusal(infraB));
       }),
       { numRuns: 30 }
     );

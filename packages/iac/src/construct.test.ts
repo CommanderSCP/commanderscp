@@ -1090,3 +1090,48 @@ describe("@scp/iac: construct-path in synth errors (D16(5))", () => {
     expect(() => stack.synth()).toThrow(/must match urn:scp/);
   });
 });
+
+/**
+ * TWO CONSTRUCTS, ONE URN — the case-folding collision `Stack.synth()` refuses.
+ *
+ * Found by `products.test.ts`'s fast-check generator (id pair `("F", "f")`, CI seed 1953244992):
+ * `urn.ts`'s `slugify` lowercases, so sibling ids differing only in case derive ONE URN while the
+ * tree treats them as two constructs. Nothing downstream could catch it — the manifest schema has
+ * no cross-entry constraint and the server diffs BY URN, so the second entry silently became an
+ * update of the first and one declared object never existed.
+ */
+describe("Stack.synth: two objects may not claim one URN", () => {
+  it("refuses ids differing only in CASE, naming both construct paths", () => {
+    const stack = new Stack("collide");
+    new Service(stack, "Api", { name: "A" });
+    new Service(stack, "api", { name: "B" });
+    let message = "";
+    try {
+      stack.synth();
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('two objects with the same URN "urn:scp:collide:service:api"');
+    // BOTH paths, because the URNs are identical: printing the URN twice tells the author nothing
+    // about which declaration to rename.
+    expect(message).toContain("collide/Api");
+    expect(message).toContain("collide/api");
+  });
+
+  it("refuses ids differing only in PUNCTUATION — the same fold, a different keystroke", () => {
+    const stack = new Stack("collide2");
+    new Service(stack, "pay-blue", { name: "A" });
+    new Service(stack, "pay_blue", { name: "B" });
+    expect(() => stack.synth()).toThrow(/same URN "urn:scp:collide2:service:pay-blue"/);
+  });
+
+  it("leaves every non-colliding stack alone — this adds a refusal, not a new bar", () => {
+    const stack = new Stack("fine");
+    new Service(stack, "api", { name: "A" });
+    new Service(stack, "web", { name: "B" });
+    expect(stack.synth().objects.map((o) => o.urn)).toEqual([
+      "urn:scp:fine:service:api",
+      "urn:scp:fine:service:web"
+    ]);
+  });
+});
