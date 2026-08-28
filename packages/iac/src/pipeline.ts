@@ -279,8 +279,32 @@ export abstract class PipelineBase<K extends ExecutorType> extends Construct {
   /** What the `releases_via` edge hangs off (D8: component by default, service at the shared-rung
    *  exception). */
   readonly attachedTo: Component | ResourceConstruct<"service">;
+  /**
+   * The pipeline's own source repo and branch, re-exposed because THE SCOPE CHAIN CARRIES CONTEXT
+   * (D15(b) as amended by D17): a `Workflow` declared under this pipeline inherits both rather than
+   * repeating them, which is also what stops a hook's workflow ref from drifting away from the
+   * source mapping this same pipeline declares — they are read from one place.
+   *
+   * `repo` is always present (D18 makes it a required prop and the constructor refuses without it).
+   */
+  readonly repo: string;
+  readonly branch?: string;
   private readonly isComponentScoped: boolean;
   private readonly topology: ReleaseTopology;
+
+  /**
+   * The component every behaviour declared under this pipeline is ABOUT, or `undefined` at D8's
+   * shared rung.
+   *
+   * `undefined` is not a gap to fill in later: the contract keys every hook and rollout on a
+   * `componentUrn`, and which components inherit a SERVICE-rung pipeline is resolved at read time
+   * (the nearest-rung ladder), not at this program's synth time — the identical reason source
+   * mappings and placements are skipped for a shared-rung pipeline a few lines below. The L2
+   * constructs refuse rather than guess, naming that reason.
+   */
+  get componentUrn(): string | undefined {
+    return this.isComponentScoped ? this.attachedTo.urn : undefined;
+  }
 
   protected constructor(resolved: ResolvedPipelineCtorArgs<K>, kind: K) {
     super(resolved.parent, resolved.id);
@@ -295,6 +319,8 @@ export abstract class PipelineBase<K extends ExecutorType> extends Construct {
     this.kind = kind;
     this.attachedTo = resolved.attachedTo;
     this.isComponentScoped = resolved.isComponentScoped;
+    this.repo = resolved.props.repo;
+    if (resolved.props.branch !== undefined) this.branch = resolved.props.branch;
 
     const normalizedWaves = normalizeWaveItems(resolved.props.waves);
     this.topology = new ReleaseTopology(this.stack, `${this.id}-topology`, {
