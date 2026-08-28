@@ -161,6 +161,16 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
 
   // ---- deliberate escalation bars: org-root so a NARROWER binding cannot satisfy them -----------
   {
+    site: "authz/role-binding-door.ts :: assertMayAuthorRole() :: role_binding:write",
+    cls: "escalation-bar",
+    why: "a role is an ORG-WIDE catalogue entry with no narrower object it belongs to, and one authored here can afterwards be bound anywhere in the org; a service-scoped role_binding:write holder must not be able to author it (role-model.md §5 step 10)"
+  },
+  {
+    site: "authz/role-binding-door.ts :: assertMayAuthorRole() :: -",
+    cls: "escalation-bar",
+    why: "the no-escalation subset rule for role AUTHORING, compared at the org root for the same reason: the permissions are judged against what the author holds org-wide because the role they end up in can be bound at any scope beneath it. Scoping this narrower would let a component-scoped admin author a role carrying permissions they hold only at that component, which GET /roles then advertises org-wide"
+  },
+  {
     site: "coordination/region-membership-guard.ts :: assertMayUndeclareRegionMembership() :: object:write",
     cls: "escalation-bar",
     why: "withdrawing a region declaration changes the set every regional deploy gate reads, so it is barred at the same org scope getRegionalExecutors reads that set at"
