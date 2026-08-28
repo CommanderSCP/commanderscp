@@ -756,6 +756,18 @@ authoring API is the known one) would escape it.
 ---
 
 ## 5. Build order
+**STATUS, verified against `main` rather than asserted (2026-08-28): every step 0-10 is merged.**
+Steps 1-6 carried no tick until now — a doc lag, not a gap; each was confirmed by the artifact it
+ships (0097, `rbac-across-assembly.integration.test.ts`, `org-root-arm.ts`, 0099,
+`permission-drift.integration.test.ts`, `routes/role-bindings.ts`, `routes/authz.ts`). Steps 7 and 8
+are struck because step 0 already delivered them.
+
+**What is NOT covered, and cannot be locally:** the SSO-groups path (an IdP claim granting a mapped
+group's role) is proven end to end against a Keycloak fixture standing in for Entra — same generic
+seam, same `roles` claim — but has never run against a real Entra tenant. Entra's groups-claim
+overage above ~200 groups is handled and unit-tested from a synthetic token and has never been seen
+from the real issuer. That is deployment-time verification.
+
 
 Preconditions first; roles are inert until step 5.
 
@@ -773,13 +785,13 @@ work, before any role increment.** They are exploitable now and independent of t
 All of step 0 is built, mutation-proven and pushed on branch
 `permission-review-security-fixes` — 9 commits, `pnpm check` green, 199 tests passing across the 11
 affected suites. Steps 1–10 below are the role work proper and are **not** started.
-| 1 | **DDL hardening** — partial unique index `roles(name) WHERE org_id IS NULL`; UNIQUE on `role_bindings`; `CHECK (effect IN ('allow','deny'))`; `GRANT DELETE ON role_bindings TO scp_app`; add `roles.bindable_at`. | Must handle pre-existing duplicates — see §4.4 |
-| 2 | **Mutation-proven RBAC-across-assembly test** — a SERVICE binding reaches a component under an assembly. Prove it by deleting route 2's `contains` join and watching it fail. | Passes today; pure addition |
-| 2.5 | **Re-scope the read surface** (§4.2) | **New — blocker fix** |
-| 3 | **Permission splits + role seed** — `change:accept` / `secret:write` / `scan:override`; rewire six call sites; re-scope accept/cancel/rollback; `GET /decisions` → `audit:read`; close the campaign-deadline inversion; delete `org:admin`; seed the five roles. | **Breaking:** 403s live Operator accept/rollback. Announce. |
-| 4 | **Permission drift test in CI** — exported `PERMISSIONS` array vs seeded role arrays vs a filterless call-site census, failing in **both** directions. **Plus the post-grant widening assertion (§4.4):** a migration that `array_append`s to a built-in must state which existing bindings of that role it widens. | No such array exists today |
-| 5 | **Role + role-binding API** — `GET /roles`, `GET/POST/DELETE /role-bindings`, gated on `role_binding:write` at-or-above the binding's scope, **plus** the no-escalation subset rule, **plus** `bindable_at` validation, **plus** an audit event per grant/revoke. | Voids the three in-tree safety arguments (§1.2) |
-| 6 | **Effective-permissions read surface** — roles+permissions on `GET /auth/me`, plus `GET /authz/effective?scopeObjectId=`. Plus `fromRole` authoring-time validation. | With five purpose roles the UI is unusable without it |
+| 1 ✅ | **DDL hardening** — partial unique index `roles(name) WHERE org_id IS NULL`; UNIQUE on `role_bindings`; `CHECK (effect IN ('allow','deny'))`; `GRANT DELETE ON role_bindings TO scp_app`; add `roles.bindable_at`. | Must handle pre-existing duplicates — see §4.4 |
+| 2 ✅ | **Mutation-proven RBAC-across-assembly test** — a SERVICE binding reaches a component under an assembly. Prove it by deleting route 2's `contains` join and watching it fail. | Passes today; pure addition |
+| 2.5 ✅ | **Re-scope the read surface** (§4.2) | **New — blocker fix** |
+| 3 ✅ | **Permission splits + role seed** — `change:accept` / `secret:write` / `scan:override`; rewire six call sites; re-scope accept/cancel/rollback; `GET /decisions` → `audit:read`; close the campaign-deadline inversion; delete `org:admin`; seed the five roles. | **Breaking:** 403s live Operator accept/rollback. Announce. |
+| 4 ✅ | **Permission drift test in CI** — exported `PERMISSIONS` array vs seeded role arrays vs a filterless call-site census, failing in **both** directions. **Plus the post-grant widening assertion (§4.4):** a migration that `array_append`s to a built-in must state which existing bindings of that role it widens. | No such array exists today |
+| 5 ✅ | **Role + role-binding API** — `GET /roles`, `GET/POST/DELETE /role-bindings`, gated on `role_binding:write` at-or-above the binding's scope, **plus** the no-escalation subset rule, **plus** `bindable_at` validation, **plus** an audit event per grant/revoke. | Voids the three in-tree safety arguments (§1.2) |
+| 6 ✅ | **Effective-permissions read surface** — roles+permissions on `GET /auth/me`, plus `GET /authz/effective?scopeObjectId=`. Plus `fromRole` authoring-time validation. | With five purpose roles the UI is unusable without it |
 | ~~7~~ ✅ | ~~**SSE per-event `object:read` at fan-out** (§1.3a)~~ | **SUPERSEDED BY 0a — the same item.** The owner ruling that live defects be fixed first moved it into step 0, where it shipped; this row was never struck. Implemented in `routes/events.ts`, pinned by `routes/events-authz.integration.test.ts`. |
 | ~~8~~ ✅ | ~~The two inversions~~ | **SUPERSEDED BY 0b + 0c**, and no longer blocked: decision #1 was ruled as D1(b-i) and D1(a-ii). Also never struck. |
 | 9 ✅ | **Instance-tier credential redesign** — done, not deferred. `SCP_OPERATOR_TOKEN` replaced by named, argon2-hashed, individually revocable, optionally expiring credentials (migration **0104**, `auth/operator-auth.ts`); the env token is kept as the BOOTSTRAP credential so upgrades do not lock out and the first credential can be minted. The eight hand-written `requireOperator` copies collapse into one definition. Plus the two `createPool` residuals and the grants they needed (migration **0102**). | Owner ruled 2026-08-27 to implement rather than defer |
