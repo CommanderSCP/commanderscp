@@ -277,6 +277,131 @@ const STAGE_DEP_HELD: ChangeStageDependencyTarget = {
   ]
 };
 
+const PROBE_ENTRY = {
+  hookId: "canary",
+  reason: "stale" as const,
+  summary: "canary last reported 2026-08-27T23:40:00.000Z, stale after 2026-08-27T23:55:00.000Z",
+  staleAfter: "2026-08-27T23:55:00.000Z",
+  lastReportedAt: "2026-08-27T23:40:00.000Z"
+};
+
+/**
+ * THE CONTINUOUS-PROBE HALF OF A TARGET'S HOLD (team-pipeline-iac D21/D11, increment 8).
+ *
+ * WHAT WAS BROKEN: `ChangeWaveTargetSchema.hold.continuousTests` has been on the wire since
+ * increment 8 and this component read only `hold.freezes`. A target held SOLELY by a stale or
+ * failed probe therefore rendered a `held` badge with NOTHING beneath it — the operator could see
+ * that the wave was stuck and not why, for a reason the server had already composed and sent. It is
+ * the same shape as the truncated-as-absent lie this card had to fix once before: the data arrived
+ * and the UI dropped it.
+ *
+ * Case 1 is the load-bearing one. It asserts the LINE, not merely the badge — a test that only
+ * checked for `held` would have passed against the broken build, since the badge came from the
+ * freeze half and the stage-dependency half all along.
+ */
+describe("PipelineWaveCard: the continuous-probe hold half (increment 8, D21)", () => {
+  it("a probe-ONLY held target renders the reason, not a badge with nothing under it", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      status: "pending",
+      hold: { freezes: [], continuousTests: [PROBE_ENTRY] }
+    });
+
+    expect(html).toContain('data-testid="pipeline-wave-target-held-badge"');
+    expect(html).toContain('data-testid="pipeline-wave-target-continuous-hold"');
+    expect(html).toContain('data-testid="pipeline-wave-target-continuous-hold-line"');
+    // The hook's own id — an estate runs several probes and "a probe is stale" does not say which.
+    expect(html).toContain("canary");
+    // The server's sentence, VERBATIM. This module composes no copy from raw fields.
+    expect(html).toContain(PROBE_ENTRY.summary);
+  });
+
+  it("a probe-only hold takes AMBER, not the self-clearing blue", () => {
+    // The variant encodes "does this clear itself", not "who holds it". A stage dependency clears
+    // when the dependency lands; a probe hold does NOT — a human fixes the prober or the target, so
+    // rendering it blue would promise self-clearing to the one kind that can sit there forever.
+    const html = renderCard({
+      ...BASE_TARGET,
+      status: "pending",
+      hold: { freezes: [], continuousTests: [PROBE_ENTRY] }
+    });
+    const badge = html.match(/<div[^>]*pipeline-wave-target-held-badge[^>]*>/)?.[0];
+    expect(badge).toContain("bg-amber-50");
+    expect(badge).not.toContain("bg-blue-50");
+  });
+
+  it("renders the routing reason for each of the three states, from a fixed lookup", () => {
+    // The three hold identically and mean different things: no_evidence/stale send an operator to
+    // the PROBER, failed sends them to the TARGET. Collapsing them to "held" makes the badge honest
+    // and the page useless.
+    for (const [reason, label] of [
+      ["no_evidence", "never reported"],
+      ["stale", "stale"],
+      ["failed", "failing"]
+    ] as const) {
+      const html = renderCard({
+        ...BASE_TARGET,
+        status: "pending",
+        hold: { freezes: [], continuousTests: [{ ...PROBE_ENTRY, reason }] }
+      });
+      expect(html, reason).toContain(label);
+    }
+  });
+
+  it("a target held by BOTH a freeze and a probe renders BOTH lines — neither kind wins", () => {
+    // The union rule the freeze half already follows. One kind silently swallowing the other is how
+    // an operator fixes the freeze, sees the target still stuck, and has nothing to read.
+    const html = renderCard({
+      ...BASE_TARGET,
+      status: "pending",
+      hold: { freezes: [FREEZE_ENTRY], continuousTests: [PROBE_ENTRY] }
+    });
+
+    expect(html).toContain('data-testid="pipeline-wave-target-freeze-hold-line"');
+    expect(html).toContain('data-testid="pipeline-wave-target-continuous-hold-line"');
+    expect(html).toContain(FREEZE_ENTRY.summary);
+    expect(html).toContain(PROBE_ENTRY.summary);
+  });
+
+  it("carries the freshness boundary as a LOCAL-clock tooltip — `now` never crosses the seam", () => {
+    // `staleAfter`/`lastReportedAt` are on the wire precisely so the client's clock contextualizes
+    // them. Rendering a relative time in the line itself would put `now` on the server's side of a
+    // boundary the schema keeps it off.
+    const html = renderCard({
+      ...BASE_TARGET,
+      status: "pending",
+      hold: { freezes: [], continuousTests: [PROBE_ENTRY] }
+    });
+    expect(html).toMatch(/title="last reported [^"]+stale after [^"]+"/);
+  });
+
+  it("a probe that has NEVER reported says so, rather than formatting a null date", () => {
+    const html = renderCard({
+      ...BASE_TARGET,
+      status: "pending",
+      hold: {
+        freezes: [],
+        continuousTests: [
+          { ...PROBE_ENTRY, reason: "no_evidence", lastReportedAt: null, staleAfter: null }
+        ]
+      }
+    });
+    expect(html).toContain("no result has ever been reported");
+    expect(html).not.toContain("Invalid Date");
+  });
+
+  it("ABSENT continuousTests renders no probe line at all — absence is not an empty hold", () => {
+    // The field is optional and never sent as `[]`, so undefined means "no probe holds this",
+    // not "we did not look". A fabricated empty line would be the inverse of the bug being fixed.
+    const html = renderCard({
+      ...BASE_TARGET,
+      status: "pending",
+      hold: { freezes: [FREEZE_ENTRY] }
+    });
+    expect(html).not.toContain('data-testid="pipeline-wave-target-continuous-hold"');
+  });
+});
+
 describe("PipelineWaveCard: the freeze-hold field (ChangeWaveTargetSchema.hold, M25.UI)", () => {
   it("a stage-dependency-ONLY held target keeps the informational blue badge — it clears itself; amber is the freeze's", () => {
     const html = renderToStaticMarkup(

@@ -58,6 +58,23 @@ export interface WaveTargetFreezeEntry {
   endsAt: string;
 }
 
+/** One holding `continuous` probe on a wave target's `hold.continuousTests`
+ *  (`ContinuousTestHoldSchema`, team-pipeline-iac D21/D11). Composed at read time exactly like the
+ *  freeze half — a probe that goes green is simply ABSENT on the next read, never a stale "held".
+ *
+ *  `reason` is carried and rendered because the three states hold identically and mean different
+ *  things, and an operator's next action differs for each: `no_evidence` and `stale` say go look at
+ *  the PROBER, `failed` says go look at the TARGET. Collapsing them to "held" would make the badge
+ *  honest and the page useless. `summary` is server-composed and rendered VERBATIM, per the same
+ *  rule the freeze line follows. */
+export interface WaveTargetContinuousTestEntry {
+  hookId: string;
+  reason: "no_evidence" | "stale" | "failed";
+  summary: string;
+  staleAfter: string | null;
+  lastReportedAt: string | null;
+}
+
 /** A wave target, structurally — the intersection-with-options of ChangeWaveTarget and
  *  CampaignWaveTarget. */
 export interface PipelineWaveTargetLike {
@@ -71,7 +88,17 @@ export interface PipelineWaveTargetLike {
    *  campaign wave simply renders no freeze line — never a fabricated one. The STAGE-DEPENDENCY
    *  half of a hold rides a SEPARATE channel (`holdFor` below) for the reason that field's own
    *  doc states: it is not part of this schema. */
-  hold?: { freezes: WaveTargetFreezeEntry[] } | undefined;
+  hold?:
+    | {
+        freezes: WaveTargetFreezeEntry[];
+        /** The CONTINUOUS-PROBE half of the hold. Optional on the wire and never sent as an empty
+         *  array (`ChangeWaveTargetSchema.hold`), so `undefined` here means "no probe holds this
+         *  target" and NOT "we did not look" — the same absence rule the freeze array follows.
+         *  Rendering it is what stops a target held solely by a stale probe from showing a `held`
+         *  badge with nothing under it: the reason was on the wire and this component dropped it. */
+        continuousTests?: WaveTargetContinuousTestEntry[] | undefined;
+      }
+    | undefined;
   status: string;
   /** Change targets (ADR-0007): WHICH pipeline this target rolls, and its derived Category. */
   type?: string;
@@ -432,6 +459,69 @@ function FreezeHoldLines({ freezes }: { freezes: WaveTargetFreezeEntry[] }): Rea
   );
 }
 
+/**
+ * THE CONTINUOUS-PROBE HALF OF A TARGET'S HOLD (`ChangeWaveTargetSchema.hold.continuousTests`) —
+ * one line per holding probe, mirroring `FreezeHoldLines` above so a target held by a freeze AND a
+ * probe renders both under the one `held` badge rather than one kind winning.
+ *
+ * WHAT THIS FIXES: the field has been on the wire since increment 8 and this component read only
+ * `hold.freezes`, so a target held SOLELY by a stale or failed probe rendered a `held` badge with
+ * nothing beneath it — the same shape as the truncated-as-absent lie this card already had to fix
+ * once. The reason was always there; the UI dropped it.
+ *
+ * AMBER, like the freeze line, not the stage-dependency line's blue: blue is for "this clears
+ * itself" (a dependency that will be satisfied by ordinary progress), and a probe hold does NOT
+ * clear itself — a human has to go and fix either the prober or the target. Same tone, same
+ * `warning` semantics (design spec §1.5).
+ *
+ * `reason` IS RENDERED AS ITS OWN LABEL rather than folded into the sentence, because it is the
+ * routing information: `no_evidence`/`stale` send an operator to the PROBER, `failed` sends them to
+ * the TARGET. The label is a fixed lookup over the closed enum, never composed from the value — a
+ * client that prettified an unrecognized reason would invent copy for a state it does not
+ * understand. `summary` is the server's sentence, rendered VERBATIM beside it.
+ */
+const CONTINUOUS_HOLD_LABEL: Record<WaveTargetContinuousTestEntry["reason"], string> = {
+  no_evidence: "never reported",
+  stale: "stale",
+  failed: "failing"
+};
+
+function ContinuousTestHoldLines({
+  continuousTests
+}: {
+  continuousTests: WaveTargetContinuousTestEntry[];
+}): React.JSX.Element {
+  return (
+    <div
+      className="mt-1 border-l-2 border-amber-300 pl-2 text-[11px] leading-snug text-amber-800"
+      data-testid="pipeline-wave-target-continuous-hold"
+    >
+      {continuousTests.map((probe) => (
+        // `staleAfter`/`lastReportedAt` are on the wire precisely so the CLIENT's clock
+        // contextualizes them (the schema's stated reason; `now` never crosses that seam). They go
+        // in the title for the same reason the freeze line puts `endsAt` there: no client-composed
+        // prose in the rendered line, local time on hover.
+        <div
+          key={probe.hookId}
+          data-testid="pipeline-wave-target-continuous-hold-line"
+          title={
+            probe.lastReportedAt
+              ? `last reported ${new Date(probe.lastReportedAt).toLocaleString()}` +
+                (probe.staleAfter
+                  ? ` · stale after ${new Date(probe.staleAfter).toLocaleString()}`
+                  : "")
+              : "no result has ever been reported for this probe"
+          }
+        >
+          <span className="font-medium">{probe.hookId}</span>{" "}
+          <span className="uppercase tracking-wide">({CONTINUOUS_HOLD_LABEL[probe.reason]})</span>{" "}
+          <span>— {probe.summary}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function PipelineWaveCard({
   wave,
   waveNumber,
@@ -518,7 +608,14 @@ export function PipelineWaveCard({
           // its own line below rather than one silently winning.
           const freezeHold =
             target.hold && target.hold.freezes.length > 0 ? target.hold.freezes : null;
-          const anyHeld = held !== null || freezeHold !== null;
+          // The PROBE half, read off the same object. `continuousTests` is optional on the wire and
+          // never sent as an empty array, so the length check is belt-and-braces rather than the
+          // real discriminator — absent means no probe holds this target.
+          const continuousHold =
+            target.hold?.continuousTests && target.hold.continuousTests.length > 0
+              ? target.hold.continuousTests
+              : null;
+          const anyHeld = held !== null || freezeHold !== null || continuousHold !== null;
           // Computed ONCE per target and shared by both observed slots below, so "did the executor
           // report a rollout" and "did the whole state get elided" can never disagree between the
           // version slot and the rollout slot (proposal §3 rule 5: one pill covers both when the
@@ -554,10 +651,16 @@ export function PipelineWaveCard({
                     below already draw): a FREEZE hold is `warning` (amber — an operator declared
                     it and should notice it), a stage-dependency-only hold is `info` (blue —
                     informational, it clears itself when the dependency lands). One fixed variant
-                    lied about one of the two: a freeze-held target read as self-clearing. */}
+                    lied about one of the two: a freeze-held target read as self-clearing.
+
+                    A CONTINUOUS-PROBE hold takes `warning` for the same reason a freeze does, and
+                    the reason is the distinction this variant encodes rather than the authority
+                    behind it: a probe hold does NOT clear itself either — a human has to fix the
+                    prober or the target. Rendering it `info` would have promised self-clearing to
+                    the one hold kind that can sit there indefinitely. */}
                 {anyHeld && (
                   <Badge
-                    variant={freezeHold ? "warning" : "info"}
+                    variant={freezeHold || continuousHold ? "warning" : "info"}
                     data-testid="pipeline-wave-target-held-badge"
                   >
                     held
@@ -567,6 +670,7 @@ export function PipelineWaveCard({
               </div>
               {held && <HeldTargetLine held={held} />}
               {freezeHold && <FreezeHoldLines freezes={freezeHold} />}
+              {continuousHold && <ContinuousTestHoldLines continuousTests={continuousHold} />}
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500">
                 {target.category && target.type && (
                   <span>
