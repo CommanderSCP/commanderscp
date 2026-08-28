@@ -383,3 +383,61 @@ export type DeleteRoleBindingRequest = z.infer<typeof DeleteRoleBindingRequestSc
 
 export const RoleBindingIdParamSchema = z.object({ id: z.string().uuid() });
 export type RoleBindingIdParam = z.infer<typeof RoleBindingIdParamSchema>;
+
+/**
+ * ================================================================================================
+ * EFFECTIVE PERMISSIONS — role-model.md §5 step 6
+ * ================================================================================================
+ *
+ * `GET /api/v1/authz/effective?scopeObjectId=…` — "what may I do at THIS object".
+ *
+ * WHY THIS OPERATION HAS TO EXIST. With five purpose-shaped roles the cumulative ladder is gone: a
+ * principal is no longer "Operator and therefore everything below Operator", and there is no
+ * ordering a UI can use to guess. A SecurityOfficer holds `scan:override` and NO `object:write`;
+ * an OrgAdmin holds `policy:write` and NOT `scan:override`. Nothing about either is derivable from
+ * a rank, so a client that wants to know whether to render a control has exactly two options: ask,
+ * or POST and find out from the 403. role-model.md §5 step 6 records that the second is not a
+ * usable UI.
+ *
+ * THE ANSWER IS ABOUT ONE OBJECT, DELIBERATELY. `authz/resolve.ts`'s scope walk expands UPWARD, so
+ * authority at an object comes from bindings at it or ABOVE it, and "what may I do" has no
+ * org-wide answer — only a per-object one. This is the question
+ * `GET /role-bindings?scopeObjectId=` explicitly REFUSES to answer (that filter is an exact match
+ * on where a binding is written, and answering the containment question under its name would be
+ * the more dangerous of the two to get wrong).
+ */
+export const EffectivePermissionsQuerySchema = z.object({
+  /** The object to evaluate at. Any graph object; the walk upward from it is what decides. */
+  scopeObjectId: z.string().uuid()
+});
+export type EffectivePermissionsQuery = z.infer<typeof EffectivePermissionsQuerySchema>;
+
+/** One binding that contributes authority at the evaluated scope — including bindings reached
+ *  through group or team membership, which is why this is not simply the caller's own rows. */
+export const ContributingBindingSchema = z.object({
+  roleId: z.string().uuid(),
+  roleName: z.string(),
+  /** The object the binding is written AT — at or above the evaluated scope. */
+  scopeObjectId: z.string().uuid(),
+  /** The subject the binding names: the caller, or a group/team the caller belongs to. Naming it
+   *  is how an operator answers "why do I have this?" without a second call. */
+  viaSubjectId: z.string().uuid(),
+  effect: z.enum(["allow", "deny"])
+});
+export type ContributingBinding = z.infer<typeof ContributingBindingSchema>;
+
+export const EffectivePermissionsResponseSchema = z.object({
+  scopeObjectId: z.string().uuid(),
+  /**
+   * The permissions held at this scope, sorted, deny-override already applied.
+   *
+   * `string[]` and not an enum, for {@link RoleSchema}'s reason: `roles.permissions` is an
+   * unconstrained `text[]`, and a response enum cannot gain a member without breaking this repo's
+   * oasdiff gate — which would make every future permission split a `/v1` break.
+   */
+  permissions: z.array(z.string()),
+  /** Every binding that contributed, so a refusal is explainable rather than mysterious. Empty
+   *  when the caller holds nothing here, which is a legitimate and common answer. */
+  contributingBindings: z.array(ContributingBindingSchema)
+});
+export type EffectivePermissionsResponse = z.infer<typeof EffectivePermissionsResponseSchema>;

@@ -77,6 +77,13 @@ export type GetCurrentUserResponses = {
         username: string;
         subjectObjectId: string;
         instanceRole: 'commander' | 'outpost' | 'retrans';
+        roleBindings: Array<{
+            roleId: string;
+            roleName: string;
+            scopeObjectId: string;
+            effect: 'allow' | 'deny';
+        }>;
+        permissionsAnywhere: Array<string>;
     };
 };
 
@@ -746,6 +753,61 @@ export type DeleteRoleBindingResponses = {
 };
 
 export type DeleteRoleBindingResponse = DeleteRoleBindingResponses[keyof DeleteRoleBindingResponses];
+
+export type GetEffectivePermissionsData = {
+    body?: never;
+    path?: never;
+    query: {
+        scopeObjectId: string;
+    };
+    url: '/authz/effective';
+};
+
+export type GetEffectivePermissionsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetEffectivePermissionsError = GetEffectivePermissionsErrors[keyof GetEffectivePermissionsErrors];
+
+export type GetEffectivePermissionsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        scopeObjectId: string;
+        permissions: Array<string>;
+        contributingBindings: Array<{
+            roleId: string;
+            roleName: string;
+            scopeObjectId: string;
+            viaSubjectId: string;
+            effect: 'allow' | 'deny';
+        }>;
+    };
+};
+
+export type GetEffectivePermissionsResponse = GetEffectivePermissionsResponses[keyof GetEffectivePermissionsResponses];
 
 export type ListServiceObjectsData = {
     body?: never;

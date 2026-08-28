@@ -28,16 +28,36 @@ import {
  * over any `allow` (deny-override, DESIGN.md §7). No matching binding at all is a default deny.
  * Both expansions are depth-limited to 10 (DESIGN.md §5's traversal bound, reused here).
  */
-export type Permission =
-  | "object:read"
-  | "object:write"
-  | "relationship:read"
-  | "relationship:write"
-  | "type_registry:read"
-  | "type_registry:write"
-  | "role_binding:write"
-  | "graph:query"
-  | "audit:read"
+/**
+ * THE PERMISSION CATALOGUE — the single runtime source of truth, and the reason it is an
+ * ARRAY and not a union.
+ *
+ * This was a hand-written `type Permission = "a" | "b" | ...` union for its whole life, which
+ * a TypeScript build erases: there was NO value at runtime enumerating the permissions this
+ * system defines, so nothing could ever ask "is every permission I define actually granted to
+ * somebody, and demanded somewhere?". `org:admin` is what that costs — seeded to Owner by
+ * drizzle/0002, demanded at ZERO call sites for its entire life, and removed only when a human
+ * ran a census by hand in 2026-08 because `GET /roles` was about to publish it.
+ *
+ * `Permission` is now DERIVED from this array (below), so the type and the enumeration cannot
+ * disagree: adding a member to one adds it to the other, and there is no edit that changes the
+ * union without changing what the drift gate iterates. That is the property; the array is just
+ * how it is obtained.
+ *
+ * ORDER IS PRESENTATION ONLY. Grouped by the milestone that introduced each member, because
+ * the comments below carry the reasoning per member and reasoning reads chronologically.
+ * Nothing depends on the order — `role-model.md` §5 step 4's gate compares SETS.
+ */
+export const PERMISSIONS = [
+  "object:read",
+  "object:write",
+  "relationship:read",
+  "relationship:write",
+  "type_registry:read",
+  "type_registry:write",
+  "role_binding:write",
+  "graph:query",
+  "audit:read",
   // (`org:admin` was here. Seeded to Owner alone by drizzle/0002 and demanded at ZERO call sites
   // for its whole life, it was REMOVED by drizzle/0099 — the one deliberate subtraction in an
   // otherwise additive design, taken now because role-model.md §5 step 5's `GET /roles` is about
@@ -48,17 +68,17 @@ export type Permission =
   // org on every deployment at once with no per-org opt-out (role-model.md §2). It is safe for
   // exactly this one because no code path has ever asked for it, which is a property the
   // filterless census re-run for drizzle/0099 measured rather than assumed.)
-  | "approval:write"
+  "approval:write",
   // M4 governance (DESIGN.md §7's example role bindings name these exactly):
-  | "policy:write"
-  | "freeze:write"
-  | "freeze:override"
-  | "change:emergency"
+  "policy:write",
+  "freeze:write",
+  "freeze:override",
+  "change:emergency",
   // M6 federation (DESIGN.md §13) — OPERATING the link (export/import/hand-fill/outposts/resync/
   // poke) vs read-only status/self. Pairing still requires `federation:write` and ALSO requires
   // `federation:pair` below, so `federation:write` alone no longer admits a peer.
-  | "federation:read"
-  | "federation:write"
+  "federation:read",
+  "federation:write",
   // THE SECOND BAR ON PAIRING — adding a federation peer, or re-keying one (owner ruling D4,
   // 2026-08-25; docs/proposals/role-model.md §4.1). Demanded by `POST /api/v1/federation/peers`
   // (`routes/federation.ts`) ON TOP OF the `federation:write` that door already demanded — added,
@@ -92,7 +112,7 @@ export type Permission =
   // supersede or revoke a trust anchor — the capability is absent from the contract, not merely
   // unused. Editing a peer's endpoint stays `federation:write`; the moment that body could carry a
   // key, this permission belongs there too.
-  | "federation:pair"
+  "federation:pair",
   // The OPT-IN second bar on a containment MOVE (drizzle/0083,
   // docs/proposals/governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18). Demanded
   // at-or-above the moved object AND at-or-above the destination — and ONLY where a rung of the
@@ -102,7 +122,7 @@ export type Permission =
   // to Operator: Operator/Approver/Administrator/Owner all hold `object:write`, so an
   // Operator-and-above grant would make every principal who can move also able to move under
   // enforcement — the lattice would be inert until custom roles exist, and nothing authors one yet.
-  | "governance:move"
+  "governance:move",
   // M25.6b (campaigns-rework §4.5, ADR-0042 §9) — WAIVE A CAMPAIGN'S DEADLINE FOR ONE TARGET.
   // Granted by drizzle/0088 to Owner ALONE, the `freeze:override` grant's shape exactly.
   //
@@ -117,7 +137,7 @@ export type Permission =
   // would then carry two unrelated blast radii — a freeze-override holder could waive migration
   // deadlines and a deadline-waiver holder could bypass release freezes — and neither grant could
   // afterwards be narrowed without taking the other with it.
-  | "campaign:deadline-override"
+  "campaign:deadline-override",
   // ===========================================================================================
   // THE THREE PERMISSION SPLITS (role-model.md §5 step 3; drizzle/0099)
   // ===========================================================================================
@@ -154,7 +174,7 @@ export type Permission =
   // OPERATIONS act, not a compliance one — a security officer authors ceilings and decides
   // waivers, and giving them custody of the tokens that reach production would put the auditor
   // inside the thing being audited.
-  | "secret:write"
+  "secret:write",
   // ADDED TO — never substituted for — the `policy:write` already demanded on the scan-override
   // DECIDE door (approve | deny | revoke) in `routes/scan-override-grants.ts`. Both are demanded,
   // at the same derived tier object, in that order.
@@ -176,7 +196,7 @@ export type Permission =
   // and NOT this, so an org can seat an estate administrator who authors org policy and a security
   // officer who owns the waiver, and neither is the other. That was impossible while the two acts
   // shared one string, because the cumulative ladder welds a permission's blast radius to its rank.
-  | "scan:override"
+  "scan:override",
   // ADDED TO — never substituted for — the `object:write` already demanded at EVERY target of
   // `POST /api/v1/changes/{id}/accept` and `POST /api/v1/changes/{id}/rollback`
   // (`routes/changes.ts`). Same per-target loop, same EVERY-target quantifier, same org-root arm
@@ -199,7 +219,14 @@ export type Permission =
   // upgrade they stop being able to, which is the point: accepting a release into production is
   // not the same authority as editing the graph, and it was only ever the same string because the
   // ladder had no way to say otherwise. It must be announced, not discovered.
-  | "change:accept";
+  "change:accept"
+] as const;
+
+/**
+ * One permission string. DERIVED from {@link PERMISSIONS} rather than declared beside it —
+ * see that array's doc for why the runtime value has to exist at all.
+ */
+export type Permission = (typeof PERMISSIONS)[number];
 
 export interface PermissionCheck {
   orgId: string;
@@ -542,4 +569,176 @@ export async function hasRoleAtScope(tx: TenantTx, check: RoleCheck): Promise<bo
     `role '${check.roleName}' at scope`
   );
   return false;
+}
+
+/**
+ * ================================================================================================
+ * EFFECTIVE PERMISSIONS — role-model.md §5 step 6
+ * ================================================================================================
+ *
+ * Answers "what may THIS subject do AT THIS object", in ONE round trip rather than one per
+ * permission.
+ *
+ * WHY NOT A LOOP OVER {@link PERMISSIONS}. The obvious implementation calls {@link hasPermission}
+ * 22 times. Each call runs TWO recursive CTEs — the `member_of` subject walk and the containment
+ * scope walk — so the loop re-derives both expansions 22 times to vary one scalar in the WHERE
+ * clause, and the walks are the expensive half. Worse, it is not merely slow but RACY: 22
+ * statements see 22 snapshots unless the caller wraps them, so a binding revoked mid-loop yields a
+ * permission set that never existed at any instant. One statement is one snapshot.
+ *
+ * DENY-OVERRIDE IS PRESERVED EXACTLY, and it is per-permission rather than per-binding: a `deny`
+ * binding suppresses only the permissions ITS OWN ROLE carries. That is what {@link hasPermission}
+ * does — it filters to bindings whose role holds the requested permission and only then looks for a
+ * deny — and the `bool_or` pair below is the same rule evaluated for every permission at once. A
+ * whole-binding deny would be a different and much blunter semantics; getting this backwards would
+ * make one narrow deny silently revoke everything.
+ *
+ * THE RETURNED STRINGS ARE NOT FILTERED THROUGH {@link PERMISSIONS}. `roles.permissions` is a plain
+ * `text[]` with no CHECK (drizzle/0002 §7), so a restored dump or a hand-written org role can hold
+ * a string the code does not define. This reports what the subject ACTUALLY holds, including such a
+ * string, because the question is "what does this binding confer" and quietly dropping it would
+ * make the answer disagree with `hasPermission` — which does a plain `= ANY(rl.permissions)` and
+ * would happily match it. The drift gate (`permission-drift.integration.test.ts`) is what keeps the
+ * BUILT-IN catalogue clean; this function does not re-litigate it.
+ */
+export async function effectivePermissions(
+  tx: TenantTx,
+  check: { orgId: string; subjectObjectId: string; scopeObjectId: string }
+): Promise<string[]> {
+  const result = await tx.execute<{ permission: string; denied: boolean; allowed: boolean }>(sql`
+    WITH RECURSIVE ${subjectExpandCte(check.orgId, check.subjectObjectId)},
+    ${scopeExpandCte(check.orgId, check.scopeObjectId)}
+    SELECT p AS permission,
+           bool_or(rb.effect = 'deny') AS denied,
+           bool_or(rb.effect = 'allow') AS allowed
+    FROM role_bindings rb
+    JOIN roles rl ON rl.id = rb.role_id
+    CROSS JOIN LATERAL unnest(rl.permissions) AS p
+    WHERE rb.org_id = ${check.orgId}
+      AND rb.subject_id IN (SELECT subject_id FROM subject_expand)
+      AND rb.scope_object_id IN (SELECT scope_id FROM scope_expand)
+    GROUP BY p
+  `);
+
+  const held = result.rows
+    .filter((r) => r.allowed && !r.denied)
+    .map((r) => r.permission)
+    .sort();
+
+  // ADR-0037, INHERITED DELIBERATELY. Every permission ABSENT from `held` is a refusal, and a
+  // refusal produced by a walk that hit the depth bound is a lie: a grant may exist beyond it. The
+  // probe runs at most once here — `hasPermission` pays it per refusal, and this function would
+  // otherwise pay it up to 22 times to say the same thing about the same two walks.
+  //
+  // The condition is "some permission was refused", not "nothing was found": a subject holding 3 of
+  // 22 permissions has been refused 19 times, and those 19 refusals are exactly as untrustworthy
+  // under truncation as a total blank would be.
+  if (held.length < PERMISSIONS.length) {
+    await assertDenyNotTruncated(
+      tx,
+      check.orgId,
+      check.subjectObjectId,
+      check.scopeObjectId,
+      "the effective-permission set"
+    );
+  }
+
+  return held;
+}
+
+/** One binding that reached the evaluated scope, with the subject it was written on. */
+export interface ContributingBindingRow {
+  roleId: string;
+  roleName: string;
+  scopeObjectId: string;
+  viaSubjectId: string;
+  effect: "allow" | "deny";
+}
+
+/**
+ * The EXPLANATION half of {@link effectivePermissions} — every binding that reached the scope, and
+ * through which subject.
+ *
+ * IT LIVES HERE, BESIDE THE WALKS, ON PURPOSE. The obvious home is `authz/roles-repo.ts` with the
+ * other binding reads, and putting it there would mean a SECOND transcription of the `member_of`
+ * and containment expansions. This repo has already paid for a duplicated walk definition
+ * (`role-binding-door.ts` §2b emits its downward walk from the same `memberOfClosureCte` as the
+ * upward one for exactly this reason), and two copies of a traversal that disagree about the depth
+ * bound or a live edge is a defect that presents as an explanation which does not match the
+ * decision it explains.
+ *
+ * DELIBERATELY UNFILTERED BY EFFECT. `deny` rows are returned alongside `allow` rows, because a
+ * caller asking "why can I not do X here" is usually looking at a deny, and omitting it would make
+ * the explanation actively misleading — a permission absent from the set with no visible reason.
+ */
+export async function contributingBindingsAt(
+  tx: TenantTx,
+  check: { orgId: string; subjectObjectId: string; scopeObjectId: string }
+): Promise<ContributingBindingRow[]> {
+  const result = await tx.execute<{
+    role_id: string;
+    role_name: string;
+    scope_object_id: string;
+    via_subject_id: string;
+    effect: string;
+  }>(sql`
+    WITH RECURSIVE ${subjectExpandCte(check.orgId, check.subjectObjectId)},
+    ${scopeExpandCte(check.orgId, check.scopeObjectId)}
+    SELECT DISTINCT rb.role_id, rl.name AS role_name, rb.scope_object_id,
+           rb.subject_id AS via_subject_id, rb.effect
+    FROM role_bindings rb
+    JOIN roles rl ON rl.id = rb.role_id
+    WHERE rb.org_id = ${check.orgId}
+      AND rb.subject_id IN (SELECT subject_id FROM subject_expand)
+      AND rb.scope_object_id IN (SELECT scope_id FROM scope_expand)
+    ORDER BY rl.name, rb.scope_object_id
+  `);
+
+  return result.rows.map((r) => ({
+    roleId: r.role_id,
+    roleName: r.role_name,
+    scopeObjectId: r.scope_object_id,
+    viaSubjectId: r.via_subject_id,
+    effect: r.effect === "deny" ? "deny" : "allow"
+  }));
+}
+
+/**
+ * Every binding the subject holds ANYWHERE in the org — direct, or through a group/team.
+ *
+ * The subject expansion only; NO scope walk. That is the difference between this and
+ * {@link contributingBindingsAt}, and it is why the result must never be described as authority:
+ * these bindings are scattered across the estate and each one reaches only what sits beneath it.
+ * `packages/schemas/src/auth.ts`'s `permissionsAnywhere` carries the full warning.
+ */
+export async function bindingsAnywhereFor(
+  tx: TenantTx,
+  check: { orgId: string; subjectObjectId: string }
+): Promise<Array<ContributingBindingRow & { permissions: string[] }>> {
+  const result = await tx.execute<{
+    role_id: string;
+    role_name: string;
+    scope_object_id: string;
+    via_subject_id: string;
+    effect: string;
+    permissions: string[];
+  }>(sql`
+    WITH RECURSIVE ${subjectExpandCte(check.orgId, check.subjectObjectId)}
+    SELECT DISTINCT rb.role_id, rl.name AS role_name, rb.scope_object_id,
+           rb.subject_id AS via_subject_id, rb.effect, rl.permissions
+    FROM role_bindings rb
+    JOIN roles rl ON rl.id = rb.role_id
+    WHERE rb.org_id = ${check.orgId}
+      AND rb.subject_id IN (SELECT subject_id FROM subject_expand)
+    ORDER BY rl.name, rb.scope_object_id
+  `);
+
+  return result.rows.map((r) => ({
+    roleId: r.role_id,
+    roleName: r.role_name,
+    scopeObjectId: r.scope_object_id,
+    viaSubjectId: r.via_subject_id,
+    effect: r.effect === "deny" ? "deny" : "allow",
+    permissions: r.permissions ?? []
+  }));
 }

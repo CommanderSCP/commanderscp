@@ -21,6 +21,7 @@ import { registerPatRoutes } from "./routes/pats.js";
 import { registerOidcRoutes } from "./routes/oidc.js";
 import { registerDeviceFlowRoutes } from "./routes/device-flow.js";
 import { registerRoleBindingRoutes } from "./routes/role-bindings.js";
+import { registerAuthzRoutes } from "./routes/authz.js";
 import { registerObjectRoutes } from "./routes/objects.js";
 import { registerTypeRegistryRoutes } from "./routes/type-registry.js";
 import { registerObjectRoutes as registerGenericObjectRoutes } from "./routes/objects-generic.js";
@@ -274,6 +275,7 @@ export async function buildApp(
   // `routes/rbac-role-binding-door.integration.test.ts`'s WIRING case: delete this line and the
   // roles read 404s, which is what "built, never installed" looks like from the outside.
   registerRoleBindingRoutes(app, deps);
+  registerAuthzRoutes(app, deps);
   registerObjectRoutes(app, deps); // M0 legacy /objects/service contract (unchanged)
   registerTypeRegistryRoutes(app, deps);
   registerGenericObjectRoutes(app, deps); // M1 generic /objects/{type}
