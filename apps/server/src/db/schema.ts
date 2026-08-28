@@ -3045,12 +3045,14 @@ export const pipelineHookRuns = pgTable(
      *  PLUS the digest-pinned `bundle`. Per-BUILD, so it belongs on the run rather than on the hook
      *  declaration (which is only "a pointer into whatever the cluster happens to hold right now").
      *
-     *  NULL FOR EVERY RUN TODAY, because D23's build-time capture step does not exist in this tree —
-     *  nothing produces a bundle repository or digest. The driver's response to NULL is to record the
-     *  terminal status and write NO evidence, loudly; NOT to synthesise a digest so the shape
-     *  type-checks. Fabricated, it would satisfy `evaluatePostDeployGate` while bound to bytes nobody
-     *  verified — the failure `evaluateScanCoverage`'s `not_digest_bound` refusal prevents one layer
-     *  down. */
+     *  POPULATED BY `deriveCapturedWorkflow` at claim time, from three facts that must ALL be
+     *  present: the hook's declared `WorkflowRef`, the change's built commit, and the test bundle the
+     *  build REPORTED on `sourceRef.testBundle` (`ChangeReportRequestSchema.testBundle`). NULL when
+     *  any one of them is absent — a build that reports no bundle, most commonly. The driver's
+     *  response to NULL is to record the terminal status and write NO evidence, loudly; NOT to
+     *  synthesise a digest so the shape type-checks. Fabricated, it would satisfy
+     *  `evaluatePostDeployGate` while bound to bytes nobody verified — the failure
+     *  `evaluateScanCoverage`'s `not_digest_bound` refusal prevents one layer down. */
     capturedWorkflow: jsonb("captured_workflow"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()

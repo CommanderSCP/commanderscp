@@ -55620,6 +55620,9 @@
                   "artifactDigest": {
                     "type": "string"
                   },
+                  "commitSha": {
+                    "type": "string"
+                  },
                   "status": {
                     "type": "string",
                     "enum": [
@@ -55726,6 +55729,24 @@
                       "format",
                       "digest",
                       "location"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "testBundle": {
+                    "type": "object",
+                    "properties": {
+                      "repository": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "repository",
+                      "digest"
                     ],
                     "additionalProperties": false
                   }

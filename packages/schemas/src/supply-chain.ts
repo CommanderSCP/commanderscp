@@ -1942,6 +1942,47 @@ export function normalizeSbomDigest(ref: string): string | undefined {
   return hex ? `sha256:${hex}` : undefined;
 }
 
+/** `sha256:<lowercase-hex>`. Deliberately the same canonical form `normalizeSbomDigest` produces,
+ *  so a test-bundle digest and an artifact digest compare byte-for-byte against each other and
+ *  against scan evidence.
+ *
+ *  DEFINED HERE, NOT IN `pipeline-behaviors.ts` WHERE D23 IS SPECIFIED, for one mechanical reason:
+ *  `pipeline-behaviors.ts` imports `ExecutorTypeSchema` from `executors.ts`, and `executors.ts`
+ *  needs `TestBundleRefSchema` below for `ChangeReportRequestSchema.testBundle`. Defining these two
+ *  in `pipeline-behaviors.ts` would close that loop into an import cycle whose failure mode is a
+ *  `ReferenceError` at module-evaluation time, not a compile error. This file imports neither, and
+ *  it is where the digest normalisation these forms agree with already lives. */
+export const Sha256DigestSchema = z
+  .string()
+  .regex(/^sha256:[a-f0-9]{64}$/, "digest must be canonical sha256:<64-lowercase-hex>");
+
+/**
+ * The test bundle (D23, §14 resolution 9) — an OCI artifact beside the image.
+ *
+ * WHY TESTS CROSS AS ARTIFACTS AND NOT AS REFERENCES: a govcloud or air-gapped domain provably
+ * cannot reach back to the commercial source repo, so a `path:` alone cannot be what runs there.
+ * The workflows a pipeline's tests name are captured AT THE BUILT COMMIT into this bundle, which is
+ * origin-signed, enumerated in the promotion manifest, signature-verified per hop, and distributed
+ * lazily on the image's OWN admitted crossing. It is NOT scanned — scan stays image-only per M13.
+ *
+ * The consequence worth stating: EVERY domain, commercial included, runs the local digest-pinned
+ * copy. One behaviour, not two. A design where commercial resolved from git and the air gap
+ * resolved from a bundle would be two mechanisms wearing one contract's name.
+ *
+ * WHERE IT IS PERSISTED, and the exact parallel to `SbomRefSchema` below: a build REPORTS this
+ * reference on `ChangeReportRequestSchema.testBundle` and SCP stores it on the change's
+ * `sourceRef.testBundle`. SCP does not build the bundle, does not sign it, and does not mint an
+ * `artifact` object from the report — a reported reference is the executor's claim, and ADR-0045 D2
+ * keeps minting at promotion export/import, where the commander's own attestation is real.
+ */
+export const TestBundleRefSchema = z.object({
+  /** OCI repository path within the domain's own registry (ADR-0012). The DOMAIN-LOCAL copy is
+   *  what runs; replication is the byte channel's job, not this reference's. */
+  repository: z.string().min(1),
+  digest: Sha256DigestSchema
+});
+export type TestBundleRef = z.infer<typeof TestBundleRefSchema>;
+
 /**
  * A REFERENCE to a build-time SBOM. Never the document itself.
  *

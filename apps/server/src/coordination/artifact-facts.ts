@@ -1,10 +1,16 @@
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { PromotionManifestSchema, ScanEvidenceSchema, SbomRefSchema } from "@scp/schemas";
+import {
+  PromotionManifestSchema,
+  ScanEvidenceSchema,
+  SbomRefSchema,
+  TestBundleRefSchema
+} from "@scp/schemas";
 import type {
   ArtifactRef,
   ComponentPipelineArtifact,
   ComponentPipelineScanRunSummary,
-  ControlOutcomeStatus
+  ControlOutcomeStatus,
+  TestBundleRef
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changes, controlRuns, objects } from "../db/schema.js";
@@ -105,10 +111,97 @@ export function ociDigestsOfSourceRef(sourceRef: unknown): string[] {
 }
 
 /**
+ * The D23 TEST BUNDLE this change's build reported, or `null`.
+ *
+ * READ, NEVER INFERRED. The only source is `sourceRef.testBundle` — the reference a build put on its
+ * report (`ChangeReportRequestSchema.testBundle`), lifted by `webhook-processor.ts` and validated
+ * there. Parsed again here rather than trusted, for the reason `capturedWorkflowRefOf` parses: a
+ * value that merely has the right keys is not a `TestBundleRef`, and the digest regex is what makes
+ * this comparable byte-for-byte against the promotion manifest's artifact set. A change with no
+ * reported bundle has none — there is no convention that turns an image repository into a bundle
+ * repository, and inventing one would put a guessed location under a signed manifest.
+ */
+export function testBundleRefOf(sourceRef: unknown): TestBundleRef | null {
+  if (!isRecord(sourceRef)) return null;
+  const parsed = TestBundleRefSchema.safeParse(sourceRef.testBundle);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * THE SCAN-GATE SUBSTANTIVE SET — ONE definition, because there are two consumers of it and they
+ * must never disagree: `promotion-repo.ts`'s E6 EXPORT GATE (which refuses a crossing) and this
+ * module's own `artifact.exportGate` projection (which tells an operator what that gate would say).
+ * Two copies of this filter is two answers to "may these bytes cross".
+ *
+ * ============================================================================================
+ * WHY THE TEST BUNDLE IS OUT OF THIS SET, STATED RATHER THAN SLIPPED IN
+ * ============================================================================================
+ * The E6 gate demands a current, digest-bound, floor-satisfying scan outcome for every SUBSTANTIVE
+ * artifact. D23 rules the test bundle is "signature-verified per hop but NOT scanned — scan stays
+ * image-only per the M13 ruling". Those two sentences collide the moment the bundle rides
+ * `artifacts[]` as an `oci` entry, which is what it IS (an OCI artifact beside the image): the gate
+ * would demand a scan D23 says will never exist, and every promotion of a component that reports a
+ * test bundle would refuse, fail-closed, forever. That collision is REAL and is named here rather
+ * than absorbed silently.
+ *
+ * The exclusion is keyed on the digest the change ITSELF DECLARED (`sourceRef.testBundle.digest`),
+ * not on a shape, a name, or a type flag. That matters three ways:
+ *   - It cannot be claimed by an artifact the change did not declare as its bundle, so it widens
+ *     nothing: an image digest can never fall through it.
+ *   - It survives every hop, because the exporter's `sourceRef` is spread onto the imported change,
+ *     so the receiver applies the identical exclusion to the identical digest rather than
+ *     re-deriving it.
+ *   - It is a READ, which is what keeps it honest: a filter that inferred "this looks like a test
+ *     bundle" would be the provenance-by-inference defect this repo has already paid for.
+ *
+ * The SBOM (`type: "blob"`) stays excluded for its own, different reason — it is the scan's OUTPUT,
+ * not a scanned input. Two exemptions, two reasons, neither borrowed from the other.
+ *
+ * ============================================================================================
+ * THE SELF-EXEMPTION HOLE, AND WHY THE COLLISION CHECK BELOW IS LOAD-BEARING
+ * ============================================================================================
+ * An earlier form of this function filtered on `a.digest !== bundleDigest` alone, and its comment
+ * claimed "an image digest can never fall through it". THAT CLAIM WAS FALSE, and the probe that
+ * disproved it is now a permanent test (`artifact-facts-self-exemption.test.ts`): the reporter
+ * supplies BOTH `artifactDigest` and `testBundle.digest` on the SAME report, so a reporter naming
+ * its own image as its test bundle collapsed the substantive set to EMPTY — the image crossed with
+ * no scan demanded at all. Measured, not theorised: `[{oci, D}, {oci, D}]` filtered to `[]`.
+ *
+ * So the exemption is REFUSED whenever the declared bundle digest is ALSO a declared image digest.
+ * The failure direction is deliberate: with no exemption the E6 gate demands a scan the bundle will
+ * never have, so such a promotion REFUSES loudly rather than crossing unscanned. A self-referential
+ * declaration is a misconfiguration or an attack; either way the safe answer is to gate it.
+ *
+ * The general shape, worth carrying: AN EXEMPTION KEYED ON A VALUE THE SUBJECT SUPPLIES IS ONLY AS
+ * NARROW AS THE SUBJECT CHOOSES TO MAKE IT. Reading the value rather than inferring it (which this
+ * does, correctly) prevents provenance-by-inference; it does NOT prevent self-claiming. Two
+ * different defects — closing one leaves the other open.
+ */
+export function substantiveArtifactsOf(
+  artifactSet: readonly ArtifactRef[],
+  sourceRef: unknown
+): ArtifactRef[] {
+  const bundleDigest = testBundleRefOf(sourceRef)?.digest;
+  // A digest the change ALSO declares as one of its images is never exempt (see the doc above).
+  const imageDigests = new Set(ociDigestsOfSourceRef(sourceRef));
+  const exemptDigest =
+    bundleDigest !== undefined && !imageDigests.has(bundleDigest) ? bundleDigest : undefined;
+  return artifactSet.filter((a) => a.type !== "blob" && a.digest !== exemptDigest);
+}
+
+/**
  * M17.3 (E3): the TYPED artifact set a change's tracked refs describe — the OCI digest(s) VERBATIM,
  * plus the SBOM as a `blob` entry when `sourceRef.sbom` carries a string `digest` (its
- * `location`/`format`/`signatureRef` ride along when they are strings). This is what the promotion
- * bundle carries as `artifacts[]` and what the E6 gate filters to its substantive set.
+ * `location`/`format`/`signatureRef` ride along when they are strings), plus (D23) the reported TEST
+ * BUNDLE as an `oci` entry. This is what the promotion bundle carries as `artifacts[]`, what the
+ * signed promotion manifest binds itself to, and what the E6 gate filters to its substantive set
+ * (`substantiveArtifactsOf` — which excludes the bundle; see its doc).
+ *
+ * THE TEST BUNDLE IS ADDED HERE AND NOT TO `ociDigestsOfSourceRef` ABOVE, deliberately. That reader
+ * answers "which IMAGE(s) is this change about" for the managed scan step, the control context's
+ * single-digest binding, and the component pipeline tile's `digests` — a bundle appearing there
+ * would be scanned as an image, gated as an image, and shown to an operator as one. It belongs to
+ * the artifact SET that crosses a boundary, which is a strictly larger question.
  */
 export function artifactSetOfSourceRef(sourceRef: unknown): ArtifactRef[] {
   const artifactSet: ArtifactRef[] = ociDigestsOfSourceRef(sourceRef).map((digest) => ({
@@ -127,6 +220,16 @@ export function artifactSetOfSourceRef(sourceRef: unknown): ArtifactRef[] {
       artifactSet.push(blob);
     }
   }
+  // D23 — the test bundle crosses AS AN ARTIFACT, which is the whole decision: a `path:` reference
+  // is unresolvable in a domain that cannot reach the source repo, so the bundle is enumerated in
+  // the promotion manifest, signature-verified per hop, and distributed on the image's own admitted
+  // crossing. Its `repository` is NOT carried on the entry: `location` is documented as unset for
+  // OCI (a digest already locates it within its repository), and the repository the DOMAIN-LOCAL
+  // copy lives in rides on `sourceRef.testBundle`, which the import spreads onto the receiving
+  // change. Appended last so an existing change's entry ORDER — and therefore its projected
+  // `artifactDigests` and the manifest bytes a peer verifies — is unchanged when no bundle exists.
+  const testBundle = testBundleRefOf(sourceRef);
+  if (testBundle) artifactSet.push({ type: "oci", digest: testBundle.digest });
   return artifactSet;
 }
 
@@ -322,7 +425,7 @@ export async function artifactFactsForComponent(
   // same instance floor `promotion-repo.ts` reads), not a copy: a row an unadmitted producer wrote
   // (e.g. `webhook-control` echoing a scan-shaped payload) may show in `scans[]` and still reads
   // `fail` here, exactly as the export would refuse it.
-  const substantive = artifactSet.filter((a) => a.type !== "blob");
+  const substantive = substantiveArtifactsOf(artifactSet, pick.sourceRef);
   let exportGate: ComponentPipelineArtifact["exportGate"];
   if (scans.length === 0 && !runs.some(isScanEvidenceProducer)) {
     exportGate = "not_run";

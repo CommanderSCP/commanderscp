@@ -3,11 +3,13 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { ExecutionPhase, ExecutorPlugin } from "@scp/plugin-api";
 import type { CapturedWorkflowRef, PipelineHookKind, TestRunEvidence } from "@scp/schemas";
-import { CapturedWorkflowRefSchema } from "@scp/schemas";
+import { CapturedWorkflowRefSchema, TestBundleRefSchema, WorkflowRefSchema } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { pipelineHookRuns } from "../db/schema.js";
+import { commitShaOfSourceRef } from "../governance/gate-orchestrator.js";
+import { getChangeRow } from "./changes-repo.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import {
   DEFAULT_BINDING_TYPE,
@@ -233,6 +235,74 @@ export function hookRunBindingCarrier(
 }
 
 // ---------------------------------------------------------------------------------------------
+// 0b. The D23 capture — three facts that must ALL be present, or nothing
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * THE PIN A RUN IS CAPTURED AT, or `null`.
+ *
+ * ============================================================================================
+ * THREE FACTS, ALL REQUIRED, NONE OF THEM INVENTED
+ * ============================================================================================
+ *   1. The DECLARED `WorkflowRef` (repo, branch, path) off the `pipeline_hooks` row — what the team
+ *      wrote in IaC. On its own it is "a pointer into whatever the cluster happens to hold right
+ *      now", which is exactly what D23 refuses to gate on.
+ *   2. The BUILT COMMIT off the change's `source_ref` — read with `commitShaOfSourceRef`, the ONE
+ *      definition of "which commit is this change about" that `gate-orchestrator.ts` already uses to
+ *      bind a `postMerge` evidence lookup and a `github-check` control. A second reader here would
+ *      be a run pinned to a different commit than the gate beside it asks about.
+ *   3. The TEST BUNDLE `{repository, digest}` off `source_ref.testBundle` — the reference the build
+ *      REPORTED (`ChangeReportRequestSchema.testBundle`). This is the fact that did not exist in the
+ *      tree until now, and its absence is why every run's `captured_workflow` was NULL.
+ *
+ * ============================================================================================
+ * WHAT THIS FUNCTION REFUSES TO DO, AND WHY EACH REFUSAL IS LOAD-BEARING
+ * ============================================================================================
+ * ANY of the three missing yields `null`, which the caller stores as NULL and the poll driver turns
+ * into `no_captured_workflow`: terminal status recorded, NO evidence written, named reason logged.
+ * That is today's behaviour preserved exactly, and it is preserved rather than patched because each
+ * available shortcut is a lie of a different shape:
+ *
+ *   - Fabricating a digest (`sha256:` + zeros, or the image's own digest) would satisfy
+ *     `CapturedWorkflowRefSchema`'s regex and produce evidence pinned to bytes nobody verified —
+ *     the failure `evaluateScanCoverage`'s `not_digest_bound` refusal prevents one layer down.
+ *   - Falling back to "the branch tip" for the commit would make "which tests gate this wave" a
+ *     statement about whatever main holds today, which is the unreproducible thing D23 exists to
+ *     replace.
+ *   - Inferring the bundle repository by convention from the image repository (`acme/api` ->
+ *     `acme/api-tests`) would bind a gate verdict to a location SCP GUESSED. D18's rule is that the
+ *     source is always explicit, and this repo has already measured what a provenance label computed
+ *     from "which branch matched" rather than read off the resolved object costs.
+ *
+ * PARSED, NOT ASSEMBLED: the result goes through `CapturedWorkflowRefSchema`, so a 7-character short
+ * sha or a non-canonical digest yields `null` rather than a row that merely has the right keys.
+ */
+export function deriveCapturedWorkflow(
+  declaredWorkflow: unknown,
+  sourceRef: unknown
+): CapturedWorkflowRef | null {
+  const workflow = WorkflowRefSchema.safeParse(declaredWorkflow);
+  if (!workflow.success) return null;
+
+  const commitSha = commitShaOfSourceRef(sourceRef);
+  if (commitSha === undefined) return null;
+
+  const ref =
+    sourceRef !== null && typeof sourceRef === "object" && !Array.isArray(sourceRef)
+      ? (sourceRef as Record<string, unknown>)
+      : {};
+  const bundle = TestBundleRefSchema.safeParse(ref.testBundle);
+  if (!bundle.success) return null;
+
+  const captured = CapturedWorkflowRefSchema.safeParse({
+    ...workflow.data,
+    commitSha,
+    bundle: bundle.data
+  });
+  return captured.success ? captured.data : null;
+}
+
+// ---------------------------------------------------------------------------------------------
 // 1. Claim — the database half of the trigger guard
 // ---------------------------------------------------------------------------------------------
 
@@ -392,8 +462,9 @@ export interface EnsureHookRunTriggeredInput {
     componentObjectId: string;
     kind: PipelineHookKind;
     hookId: string;
-    /** `WorkflowRefSchema` as stored — the DECLARED half. Used only for the operator-facing trigger
-     *  parameters; the evidence's pin comes from `capturedWorkflow`, which is per-BUILD. */
+    /** `WorkflowRefSchema` as stored — the DECLARED half. It reaches the executor as a trigger
+     *  parameter, and it is ALSO one of the three inputs `deriveCapturedWorkflow` needs: the
+     *  evidence's pin is this ref PLUS the built commit PLUS the reported bundle. */
     workflow?: unknown;
   };
   /** The Change this run gates. */
@@ -410,7 +481,15 @@ export interface EnsureHookRunTriggeredInput {
    *  `postMerge`. Absent is permitted here and refused at the evidence write. */
   artifactDigest?: string | null;
   commitSha?: string | null;
-  /** The D23 pin, when a build capture step has produced one. NULL today — see the column doc. */
+  /**
+   * An EXPLICIT D23 pin, overriding the one this function derives.
+   *
+   * NORMALLY OMITTED. The derivation below reads the change's own `source_ref` inside the claim
+   * transaction, so a caller cannot forget to supply the pin and silently get a run that writes no
+   * evidence — the failure this repo names "component built, never installed", in the one shape
+   * that produces no error anywhere. `null` and `undefined` both mean "derive it"; only a real
+   * object overrides.
+   */
   capturedWorkflow?: CapturedWorkflowRef | null;
 }
 
@@ -474,6 +553,15 @@ export async function ensureHookRunTriggered(
       );
     }
     const binding = await getExecutorBinding(tx, ctx.orgId, carrier, type);
+    // THE D23 CAPTURE, resolved HERE rather than asked of the caller (see `capturedWorkflow`'s doc).
+    // Read from the change row inside this transaction, so the pin is a fact about the change as it
+    // stands at the moment the dispatch becomes durable. A missing change row is a missing fact like
+    // any other — `null`, no pin, no evidence, named reason — never a throw that would wedge the
+    // dispatch of a run whose gate is perfectly able to say "awaiting".
+    const changeRow = await getChangeRow(tx, ctx.orgId, input.change.objectId).catch(() => null);
+    const capturedWorkflow =
+      input.capturedWorkflow ??
+      deriveCapturedWorkflow(input.hook.workflow, changeRow?.sourceRef ?? null);
     const claimResult = await claimHookRun(tx, {
       ...identity,
       componentObjectId: input.hook.componentObjectId,
@@ -482,7 +570,7 @@ export async function ensureHookRunTriggered(
       artifactDigest: input.artifactDigest ?? null,
       commitSha: input.commitSha ?? null,
       pluginInstanceId: resolved.instanceConfig.id,
-      capturedWorkflow: input.capturedWorkflow ?? null
+      capturedWorkflow
     });
     await ctx.host.start([resolved.instanceConfig]);
     return {
@@ -579,10 +667,11 @@ export function capturedWorkflowRefOf(run: PipelineHookRunRow): CapturedWorkflow
  * NOTHING.
  */
 export type EvidenceSkipReason =
-  /** `capturedWorkflow` is absent or does not parse. D23's build-time capture step DOES NOT EXIST in
-   *  this tree yet — nothing produces a test-bundle repository or digest — so this is the reason
-   *  every run today skips. Synthesising a bundle digest to satisfy the type would manufacture a
-   *  pin to bytes nobody verified. */
+  /** `capturedWorkflow` is absent or does not parse — i.e. `deriveCapturedWorkflow` could not
+   *  assemble all THREE of the declared `WorkflowRef`, the built commit, and the reported
+   *  `sourceRef.testBundle`. A build that reports no bundle lands here, which is the honest reading:
+   *  synthesising a bundle digest to satisfy the type would manufacture a pin to bytes nobody
+   *  verified. */
   | "no_captured_workflow"
   /** `pipeline_evidence.target_object_id` is NOT NULL, because "an evidence row nobody can attribute
    *  is an evidence row nobody can revoke" — the authorization for evidence is scoped at the target.

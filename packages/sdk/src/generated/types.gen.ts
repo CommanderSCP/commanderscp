@@ -13533,6 +13533,7 @@ export type ReportChangeSourceData = {
         correlationKey?: string;
         workspace?: string;
         artifactDigest?: string;
+        commitSha?: string;
         status: 'planned' | 'applied' | 'errored' | 'discarded';
         planJson?: unknown;
         provides?: Array<string>;
@@ -13555,6 +13556,10 @@ export type ReportChangeSourceData = {
             scanner?: string;
             scannerVersion?: string;
             generatedAt?: string;
+        };
+        testBundle?: {
+            repository: string;
+            digest: string;
         };
     };
     path: {

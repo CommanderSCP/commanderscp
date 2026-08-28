@@ -43,7 +43,7 @@ import {
   withoutBoundaryBundleChecksums,
   withoutPromotionExports
 } from "./boundary-bundle-ref.js";
-import { artifactSetOfSourceRef } from "../coordination/artifact-facts.js";
+import { artifactSetOfSourceRef, substantiveArtifactsOf } from "../coordination/artifact-facts.js";
 import { listControlRunsForChange } from "../governance/controls-repo.js";
 import { readInstanceScanFloors } from "../governance/scan-requirements.js";
 import {
@@ -359,7 +359,12 @@ export async function exportPromotionBundle(
     // to scan, so the gate passes VACUOUSLY — a metadata-only promotion (config/policy-only, no
     // oci/rpm/deb/npm/config/infra content) still exports (and still carries a signed manifest over
     // an empty artifact set). "Every substantive artifact is scanned" is trivially true of zero.
-    const substantiveArtifacts = artifactSet.filter((a) => a.type !== "blob");
+    // THE SUBSTANTIVE SET IS NOT FILTERED HERE — `substantiveArtifactsOf` is the ONE definition,
+    // shared with the component pipeline tile's read-only re-run of this same gate. It excludes the
+    // SBOM blob (the scan's output) and the change's DECLARED test bundle (D23: signature-verified
+    // per hop, never scanned — scan stays image-only per M13). See that function's doc for why the
+    // bundle exclusion is keyed on the digest the change declared rather than on a type or a name.
+    const substantiveArtifacts = substantiveArtifactsOf(artifactSet, change.sourceRef ?? {});
     // The operator's above-org floors (ADR-0016 §3) — read once per export, applied to whichever
     // outcome ends up satisfying each artifact. Empty (the default: no floor authored) constrains
     // nothing, which is what makes this addition a no-op on an untouched deployment.

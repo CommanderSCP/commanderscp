@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { UrnSchema } from "./graph.js";
 import { ExecutorTypeSchema, type ExecutorType } from "./executors.js";
+import { Sha256DigestSchema, TestBundleRefSchema } from "./supply-chain.js";
 
 /**
  * `@scp/schemas` — pipeline BEHAVIOUR contract: test hooks, rollout declarations, convergence, and
@@ -229,33 +230,19 @@ export const WorkflowRefSchema = z.object({
 });
 export type WorkflowRef = z.infer<typeof WorkflowRefSchema>;
 
-/** `sha256:<lowercase-hex>`. Deliberately the same canonical form `normalizeSbomDigest` produces,
- *  so a test-bundle digest and an artifact digest compare byte-for-byte against each other and
- *  against scan evidence. */
-export const Sha256DigestSchema = z
-  .string()
-  .regex(/^sha256:[a-f0-9]{64}$/, "digest must be canonical sha256:<64-lowercase-hex>");
-
 /**
- * The test bundle (D23, §14 resolution 9) — an OCI artifact beside the image.
+ * `Sha256DigestSchema` and `TestBundleRefSchema` LIVE IN `./supply-chain.ts`, and the reason is a
+ * MODULE CYCLE rather than a taxonomy preference.
  *
- * WHY TESTS CROSS AS ARTIFACTS AND NOT AS REFERENCES: a govcloud or air-gapped domain provably
- * cannot reach back to the commercial source repo, so a `path:` alone cannot be what runs there.
- * The workflows a pipeline's tests name are captured AT THE BUILT COMMIT into this bundle, which is
- * origin-signed, enumerated in the promotion manifest, signature-verified per hop, and distributed
- * lazily on the image's OWN admitted crossing. It is NOT scanned — scan stays image-only per M13.
- *
- * The consequence worth stating: EVERY domain, commercial included, runs the local digest-pinned
- * copy. One behaviour, not two. A design where commercial resolved from git and the air gap
- * resolved from a bundle would be two mechanisms wearing one contract's name.
+ * `ChangeReportRequestSchema` (`./executors.ts`) is the typed door a build reports its test bundle
+ * through, so it must reference `TestBundleRefSchema`. This file already imports
+ * `ExecutorTypeSchema` FROM `./executors.ts`, so a matching import back the other way is a cycle:
+ * `index.ts` loads this module first, which loads `executors.ts`, which would then evaluate
+ * `TestBundleRefSchema.optional()` against an uninitialised binding — a `ReferenceError` at import
+ * time, not a type error. `supply-chain.ts` imports neither module and is where digest
+ * normalisation (`normalizeSbomDigest`, whose canonical form `Sha256DigestSchema` deliberately
+ * matches) already lives, so ONE definition sits there and both sides import it.
  */
-export const TestBundleRefSchema = z.object({
-  /** OCI repository path within the domain's own registry (ADR-0012). The DOMAIN-LOCAL copy is
-   *  what runs; replication is the byte channel's job, not this reference's. */
-  repository: z.string().min(1),
-  digest: Sha256DigestSchema
-});
-export type TestBundleRef = z.infer<typeof TestBundleRefSchema>;
 
 /**
  * What a hook's run is ACTUALLY pinned to, once the build has captured it.
