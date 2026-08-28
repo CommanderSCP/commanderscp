@@ -29,6 +29,7 @@ import { eventBus } from "../events/event-bus.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { assertOutpostPeerBinding, isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
+import { assertConfigSourceAuthoring } from "../config-source/authoring-guard.js";
 import {
   assertEnforceableDependencySubscriptionScope,
   assertNoDelegatedDependencyUpdates
@@ -524,6 +525,22 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
       typeId: input.typeId,
       properties,
       isDecisionWrite: input.scanOverrideGrantDecision
+    });
+    // ADR-0046 §1 — the SIXTH authoring refusal at this choke point, and the first one whose
+    // subject is an identity rather than a document. A `config-source` row says "manifests from
+    // this repo apply AS THIS TEAM", and the sync loop hands that team's object id straight to
+    // `executePlanDiff` as `actorObjectId` — so minting one is a grant of the team's whole write
+    // reach, with the same shape a `member_of` edge has. Installed here rather than at a route for
+    // the reason every guard above it is: four doors reach this function with a free-form `typeId`
+    // and free-form `properties`. Ordered LAST because it is the most expensive — it resolves each
+    // named team and then a permission at that team's scope — so every cheaper refusal rejects a
+    // bad write first. See `config-source/authoring-guard.ts`.
+    await assertConfigSourceAuthoring(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      typeId: input.typeId,
+      properties,
+      subject: `${input.typeId} '${input.name}'`
     });
   }
 
@@ -1052,6 +1069,19 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       objectId: existing.id,
       before: existing.properties as Record<string, unknown>,
       after: nextProperties
+    });
+    // ADR-0046 §1 — THE UPDATE HALF of the config-source delegation refusal, and the half that
+    // matters most: the escalation is an EDIT. A registration authored against a team the author
+    // administers clears the create guard; a later PATCH that merely rewrites `team` — or adds one
+    // `stackTeams` entry — repoints the same repo at ANOTHER team's authority. `updateObject`
+    // replaces `properties` wholesale, so the check runs against `nextProperties`, the value about
+    // to be stored, exactly as its neighbours do.
+    await assertConfigSourceAuthoring(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      typeId: input.typeId,
+      properties: nextProperties,
+      subject: `${input.typeId} '${existing.urn}'`
     });
     // OWNER RULING 2026-08-25 (D1 b-i) — WIDENING A CAMPAIGN'S DEADLINE. The UPDATE half and the
     // ONLY half: a create is always a first set, which the ruling leaves at `object:write`.

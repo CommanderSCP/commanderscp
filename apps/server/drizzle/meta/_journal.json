@@ -701,6 +701,13 @@
       "when": 1788158001000,
       "tag": "0099_rbac_permission_splits_and_purpose_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1788158002000,
+      "tag": "0100_config_source_object_type",
+      "breakpoints": true
     }
   ]
 }

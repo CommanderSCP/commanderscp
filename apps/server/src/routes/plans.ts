@@ -14,6 +14,8 @@ import { authorize } from "../authz/resolve.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { conflict } from "../errors.js";
 import { commanderOnlyFederationVerdict } from "../dependencies/commander-only.js";
+import { evaluateCliApplyOwnership } from "../config-source/cli-apply-guard.js";
+import { findStackConfigSourceBinding } from "../config-source/config-sources-repo.js";
 import {
   computeDiffForManifest,
   executePlanDiff,
@@ -167,6 +169,25 @@ export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
         // background staleness sweep yet — 'stale'). Locks the row for the transaction's
         // duration so two concurrent applies of the same plan can't both succeed.
         const pending = await lockPendingPlan(tx, auth.orgId, request.params.id);
+
+        // D7 SINGLE OWNERSHIP PER STACK (ADR-0046 §3, team-pipeline-iac §4/§5). A stack bound to a
+        // config source is repo-owned: its state is delivered by that repo's sync, and a direct
+        // apply against it would be reverted by the very next sync — silently, and with the CLI
+        // caller having been told it succeeded. Refused with a 409 naming the owning config source,
+        // which is the thing the caller has to change to get their push back.
+        //
+        // AT APPLY, NOT AT `POST /plans`, for the reason the commander-only check below it is:
+        // computing a diff writes nothing, and seeing what a push WOULD do to a repo-owned stack is
+        // a legitimate — and, for a PR dry-run, the intended — thing to ask.
+        //
+        // The predicate is `config-source/cli-apply-guard.ts`, which is also what makes "not bound"
+        // mean exactly what it does today: every stack no config source claims returns
+        // `{ allowed: true }` unconditionally, so this is one new refusal and not a new gate on the
+        // existing path.
+        const ownership = evaluateCliApplyOwnership(
+          await findStackConfigSourceBinding(tx, auth.orgId, pending.stackName)
+        );
+        if (!ownership.allowed) throw conflict(ownership.message);
 
         // COMMANDER-ONLY, BUT ONLY FOR THE ONE COLLECTION THAT IS (ADR-0032 §7d, §7e). A plan that
         // touches no producer declarations applies anywhere, as it always has; a plan that writes
