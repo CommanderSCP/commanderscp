@@ -743,6 +743,13 @@
       "when": 1788158007000,
       "tag": "0105_executor_binding_policy_and_lanes",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1788158008000,
+      "tag": "0106_component_rollouts_and_convergence",
+      "breakpoints": true
     }
   ]
 }

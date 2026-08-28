@@ -32,7 +32,9 @@ function emptySnapshot(): PlanDiffSnapshot {
     managedDependencyProducers: [],
     existingDependencyProducers: [],
     managedGovernanceMoveRungs: [],
-    managedPipelineHooks: []
+    managedPipelineHooks: [],
+    managedRollouts: [],
+    managedConvergence: []
   };
 }
 
@@ -56,7 +58,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
 
     const diff = computePlanDiff(manifest, emptySnapshot());
@@ -101,7 +105,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -123,7 +129,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -154,7 +162,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -176,7 +186,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -205,7 +217,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -227,7 +241,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -245,7 +261,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -267,7 +285,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -295,7 +315,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -326,7 +348,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -346,7 +370,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
 
     const diff = computePlanDiff(manifest, emptySnapshot());
@@ -375,7 +401,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
     const existingObj = (urn: string) => ({
       urn,
@@ -396,7 +424,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -418,7 +448,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [],
@@ -430,7 +462,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -459,7 +493,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [],
@@ -471,7 +507,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -528,7 +566,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
 
     const snapshot: PlanDiffSnapshot = {
@@ -569,7 +609,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -607,7 +649,9 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
         placements: [],
         producers: null,
         governanceMoveRungs: null,
-        pipelineHooks: null
+        pipelineHooks: null,
+        rollouts: [],
+        convergence: []
       },
       snapshot
     );
@@ -654,7 +698,9 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
     const diff = diffOf([obj(COMP, "component"), obj(SVC, "service")], [], snapshot);
     expect(diff.relationships.some((r) => r.typeId === "contains" && r.action === "delete")).toBe(
@@ -686,7 +732,9 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
       managedDependencyProducers: [],
       existingDependencyProducers: [],
       managedGovernanceMoveRungs: [],
-      managedPipelineHooks: []
+      managedPipelineHooks: [],
+      managedRollouts: [],
+      managedConvergence: []
     };
     const diff = diffOf([{ ...obj(COMP, "component"), name: "renamed" }], [], snapshot);
     expect(diff.objects[0]?.action).toBe("update");
@@ -776,7 +824,9 @@ describe("iac/plan-diff: source mappings (C1)", () => {
       placements: [],
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
   }
 
@@ -945,7 +995,9 @@ describe("iac/plan-diff: executor bindings (C1)", () => {
       executorBindings,
       producers: null,
       governanceMoveRungs: null,
-      pipelineHooks: null
+      pipelineHooks: null,
+      rollouts: [],
+      convergence: []
     };
   }
 
@@ -1093,7 +1145,9 @@ describe("iac/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", ()
         placements: [],
         producers: null,
         governanceMoveRungs: null,
-        pipelineHooks: null
+        pipelineHooks: null,
+        rollouts: [],
+        convergence: []
       },
       snapshot
     );
@@ -1161,6 +1215,8 @@ describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
     producers: null,
     governanceMoveRungs: null,
     pipelineHooks: null,
+    rollouts: [],
+    convergence: [],
     ...over
   });
 
@@ -1244,6 +1300,8 @@ describe("iac/plan-diff: dependency producers", () => {
     producers: null,
     governanceMoveRungs: null,
     pipelineHooks: null,
+    rollouts: [],
+    convergence: [],
     ...over
   });
 

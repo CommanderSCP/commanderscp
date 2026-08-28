@@ -12315,6 +12315,23 @@ export type CreatePlanResponses = {
                 quietWindowSeconds: number | null;
                 reason: string;
             }>;
+            rollouts?: Array<{
+                kind: 'rollout';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                componentUrn: string;
+                targetClass: string;
+                rollout: unknown | null;
+                reason: string;
+            }>;
+            convergence?: Array<{
+                kind: 'convergence';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                componentUrn: string;
+                targetUrn: string;
+                converge: boolean | null;
+                scope: string | null;
+                reason: string;
+            }>;
             summary: {
                 creates: number;
                 updates: number;
@@ -12627,6 +12644,23 @@ export type GetPlanResponses = {
                 everySeconds: number | null;
                 maxAgeSeconds: number | null;
                 quietWindowSeconds: number | null;
+                reason: string;
+            }>;
+            rollouts?: Array<{
+                kind: 'rollout';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                componentUrn: string;
+                targetClass: string;
+                rollout: unknown | null;
+                reason: string;
+            }>;
+            convergence?: Array<{
+                kind: 'convergence';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                componentUrn: string;
+                targetUrn: string;
+                converge: boolean | null;
+                scope: string | null;
                 reason: string;
             }>;
             summary: {
@@ -12953,6 +12987,23 @@ export type ApplyPlanResponses = {
                     everySeconds: number | null;
                     maxAgeSeconds: number | null;
                     quietWindowSeconds: number | null;
+                    reason: string;
+                }>;
+                rollouts?: Array<{
+                    kind: 'rollout';
+                    action: 'create' | 'update' | 'delete' | 'noop';
+                    componentUrn: string;
+                    targetClass: string;
+                    rollout: unknown | null;
+                    reason: string;
+                }>;
+                convergence?: Array<{
+                    kind: 'convergence';
+                    action: 'create' | 'update' | 'delete' | 'noop';
+                    componentUrn: string;
+                    targetUrn: string;
+                    converge: boolean | null;
+                    scope: string | null;
                     reason: string;
                 }>;
                 summary: {

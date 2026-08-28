@@ -744,6 +744,39 @@ export const PlanPipelineHookDiffEntrySchema = z.object({
 });
 export type PlanPipelineHookDiffEntry = z.infer<typeof PlanPipelineHookDiffEntrySchema>;
 
+/**
+ * D12 — one rollout declaration's diff entry.
+ *
+ * ORDINARY PRUNE RULE, unlike the hook entry above it: an absent `rollouts` collection means the
+ * stack declares none and prunes the ones it owns. That asymmetry is the contract's and is
+ * deliberate — an omitted hook DISARMS A GATE (symptom: an absence of refusals), while an omitted
+ * rollout costs a declared strategy, which is visible the next time anything deploys.
+ */
+export const PlanRolloutDiffEntrySchema = z.object({
+  kind: z.literal("rollout"),
+  action: z.enum(["create", "update", "delete", "noop"]),
+  componentUrn: UrnSchema,
+  targetClass: z.string(),
+  /** `RolloutStrategySchema` as declared. `null` on a `delete`, where there is no desired state. */
+  rollout: z.unknown().nullable(),
+  reason: z.string()
+});
+export type PlanRolloutDiffEntry = z.infer<typeof PlanRolloutDiffEntrySchema>;
+
+/** D25(b) — one convergence declaration's diff entry. Same prune rule as `rollouts`. */
+export const PlanConvergenceDiffEntrySchema = z.object({
+  kind: z.literal("convergence"),
+  action: z.enum(["create", "update", "delete", "noop"]),
+  componentUrn: UrnSchema,
+  targetUrn: UrnSchema,
+  /** `null` on a `delete`. Note `false` is a REAL declared value, not an absence — D8 makes the
+   *  manifest say which, so a plan showing `converge: false` is showing an opt-out someone wrote. */
+  converge: z.boolean().nullable(),
+  scope: z.string().nullable(),
+  reason: z.string()
+});
+export type PlanConvergenceDiffEntry = z.infer<typeof PlanConvergenceDiffEntrySchema>;
+
 export const PlanDiffSummarySchema = z.object({
   creates: z.number().int(),
   updates: z.number().int(),
@@ -790,6 +823,11 @@ export const PlanDiffSchema = z.object({
    * projected here at all yet.
    */
   pipelineHooks: z.array(PlanPipelineHookDiffEntrySchema).optional(),
+  /** D12 / D25(b). OPTIONAL for the same wire-compatibility reason `pipelineHooks` is: a plan
+   *  computed by a build that predates them carries neither key, and an absent key here means the
+   *  stack declared none — which, under the ordinary prune rule these two follow, prunes. */
+  rollouts: z.array(PlanRolloutDiffEntrySchema).optional(),
+  convergence: z.array(PlanConvergenceDiffEntrySchema).optional(),
   summary: PlanDiffSummarySchema
 });
 export type PlanDiff = z.infer<typeof PlanDiffSchema>;
