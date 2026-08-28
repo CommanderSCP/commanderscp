@@ -52,6 +52,29 @@ export const ExecutorTypeSchema = z.enum([
 export type ExecutorType = z.infer<typeof ExecutorTypeSchema>;
 
 /**
+ * D13/D24's artifact-class taxonomy, DERIVED as the "build family" subset of `ExecutorTypeSchema`
+ * (`@scp/schemas/executors`) — never a second hand-written list. D13's ruling this session: "Type
+ * stays the closed three-value enum" describes this package's **Category**, not `ExecutorType`; the
+ * resolution was to extend `ExecutorTypeSchema` itself with the missing artifact classes so one
+ * vocabulary covers everything, and make this a genuine subset of it.
+ *
+ * MECHANISM: `.exclude(["infrastructure", "configuration"])` rather than `.extract([...the nine
+ * build members...])`, on purpose. `ExecutorCategorySchema` is closed at exactly three values
+ * forever (build/infrastructure/configuration — never stored, never accepted as input, see
+ * `executors.ts`), so "the build family" is structurally "every Type that is not infrastructure and
+ * not configuration" — a fact that holds by construction, not by enumeration. Excluding the two
+ * non-build members means a FUTURE build-family addition to `ExecutorTypeSchema` (another artifact
+ * class) is automatically part of `ArtifactClassSchema` with no second edit required and no chance
+ * to forget one; `.extract()` would have needed that second edit every time. Both `.exclude()` and
+ * `.extract()` are compile-checked against `ExecutorTypeSchema`'s own literal union (a member that
+ * does not exist on the base enum fails to type-check), so either direction satisfies "cannot
+ * drift" for members that DO exist — this choice is about which one also protects against a
+ * forgotten ADD.
+ */
+export const ArtifactClassSchema = ExecutorTypeSchema.exclude(["infrastructure", "configuration"]);
+export type ArtifactClass = z.infer<typeof ArtifactClassSchema>;
+
+/**
  * The executor **Category** — the coarse, closed, gate-groupable class of change (ADR-0007). It is
  * DERIVED from Type via the static `CATEGORY_OF_TYPE` map below, never stored as a column and never
  * accepted as input: routing and the `UNIQUE(org, target, type)` identity stay on Type; a gate that
@@ -598,6 +621,27 @@ export const ChangeReportRequestSchema = z.strictObject({
    *  this is a `strictObject`, so an undeclared `testBundle` on a report body is REFUSED outright
    *  (400 naming the key). A CI step reporting its captured bundle would have got a validation error
    *  rather than a route — the same trap `ref` above records. */
-  testBundle: TestBundleRefSchema.optional()
+  testBundle: TestBundleRefSchema.optional(),
+  /** D13 (team-pipeline-iac increment 8) — WHAT THE BUILD ACTUALLY PRODUCED, so the class the
+   *  pipeline DECLARED can be verified against it instead of assumed.
+   *
+   *  MODELLED ON `sbom` / `testBundle` above: OPTIONAL and purely ADDITIVE, so every existing
+   *  reporter keeps working unchanged and a report that omits it is byte-for-byte unaffected. Absent
+   *  yields the `unverified` verdict, which is deliberately spelled apart from `match` — "no
+   *  evidence yet" must be a visible state, never an assumed pass.
+   *
+   *  WHY VERIFY AT ALL, GIVEN THE ENUM IS CLOSED AND TYPE-CHECKED: the closed enum stops a typo, not
+   *  a lie. The declared class selects the journey template — an image builds/pushes/bumps/syncs, an
+   *  RPM builds/publishes/batch-installs — so a component that declares `image` and actually produces
+   *  an RPM gets an entire journey shaped for bytes it does not have, and every step "succeeds"
+   *  against nothing. That failure is silent precisely because each individual step is fine.
+   *
+   *  WHAT THIS IS NOT: a trust boundary. Both sides of the comparison are the team's own — the
+   *  `source_mappings.type` declaration and this report — so a reporter that lies in BOTH places is
+   *  consistent and passes. That is the honest scope: this catches the two declarations DISAGREEING,
+   *  which is the misconfiguration D13 names, and it is not a defence against a hostile reporter.
+   *  The E6 self-exemption fix on the D23 path is the standing reminder of the difference: a value
+   *  the subject supplies is only as narrow as the subject chooses to make it. */
+  artifactClass: ArtifactClassSchema.optional()
 });
 export type ChangeReportRequest = z.infer<typeof ChangeReportRequestSchema>;

@@ -55749,6 +55749,20 @@
                       "digest"
                     ],
                     "additionalProperties": false
+                  },
+                  "artifactClass": {
+                    "type": "string",
+                    "enum": [
+                      "image",
+                      "rpm",
+                      "deb",
+                      "npm",
+                      "maven",
+                      "python",
+                      "go",
+                      "chart",
+                      "vm-image"
+                    ]
                   }
                 },
                 "required": [
