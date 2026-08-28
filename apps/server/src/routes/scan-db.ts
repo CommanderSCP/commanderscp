@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
   LoadScanDbRequestSchema,
@@ -12,28 +12,16 @@ import {
 } from "@scp/schemas";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
-import { forbidden, badRequest } from "../errors.js";
-import { operatorTokenMatches, withOperatorDb } from "./operator-db.js";
+import { badRequest } from "../errors.js";
+import { withOperatorDb } from "./operator-db.js";
 import { managedScanServerSettings } from "../coordination/executor-bindings-repo.js";
+import { requireInstanceOperator } from "../auth/operator-auth.js";
 import {
   loadScanDbBlob,
   readScanDbStalenessPolicy,
   readScanDbStatus,
   refreshScanDbConnected
 } from "../governance/scan-db.js";
-
-function requireOperator(deps: AppDeps, request: FastifyRequest): void {
-  if (!deps.config.operatorToken) {
-    throw forbidden(
-      "scan-db administration is operator-only: SCP_OPERATOR_TOKEN is not configured on this deployment, so the write surface is closed"
-    );
-  }
-  if (!operatorTokenMatches(request.headers["x-scp-operator-token"], deps.config.operatorToken)) {
-    throw forbidden(
-      "scan-db administration requires the deployment operator token (x-scp-operator-token) — no tenant role can grant it, because the DB cache binds every org on the deployment"
-    );
-  }
-}
 
 function requireCacheDir(): string {
   const dir = managedScanServerSettings().dbCacheDir;
@@ -112,7 +100,7 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
     },
     handler: async (request, reply) => {
       await requireAuth(deps, request);
-      requireOperator(deps, request);
+      await requireInstanceOperator(deps, request, "scan-db administration");
       const body = request.body;
       const val = (v: number | null | undefined): number | null => (v === undefined ? null : v);
       await withOperatorDb(deps.config, "the scan-db staleness policy", async (client) => {
@@ -156,7 +144,7 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
     },
     handler: async (request, reply) => {
       await requireAuth(deps, request);
-      requireOperator(deps, request);
+      await requireInstanceOperator(deps, request, "scan-db administration");
       const cacheDir = requireCacheDir();
       try {
         const meta = await refreshScanDbConnected(cacheDir);
@@ -199,7 +187,7 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
     },
     handler: async (request, reply) => {
       await requireAuth(deps, request);
-      requireOperator(deps, request);
+      await requireInstanceOperator(deps, request, "scan-db administration");
       const cacheDir = requireCacheDir();
       const body = request.body;
       try {

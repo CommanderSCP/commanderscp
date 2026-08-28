@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { v7 as uuidv7 } from "uuid";
 import {
@@ -14,9 +14,10 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { conflict, forbidden, notFound } from "../errors.js";
+import { conflict, notFound } from "../errors.js";
 import { assertWindowOrdered } from "../governance/freezes-repo.js";
-import { operatorTokenMatches, withOperatorDb } from "./operator-db.js";
+import { withOperatorDb } from "./operator-db.js";
+import { requireInstanceOperator } from "../auth/operator-auth.js";
 
 /**
  * M25.3 — THE INSTANCE-SCOPED (PLATFORM) FREEZE TIER'S API SURFACE (drizzle/0086,
@@ -127,19 +128,6 @@ const SELECT_COLUMNS = `id, key, name, starts_at, ends_at, reason, match_all_env
          match_environment, match_region, atomic, overridable, note, lifted_at, lift_reason,
          updated_at`;
 
-function requireOperator(deps: AppDeps, request: FastifyRequest): void {
-  if (!deps.config.operatorToken) {
-    throw forbidden(
-      "instance freezes are operator-authored: SCP_OPERATOR_TOKEN is not configured on this deployment, so the write surface is closed"
-    );
-  }
-  if (!operatorTokenMatches(request.headers["x-scp-operator-token"], deps.config.operatorToken)) {
-    throw forbidden(
-      "instance freezes require the deployment operator token (x-scp-operator-token) — no tenant role can grant this, because a platform freeze stops releases for every org on the deployment"
-    );
-  }
-}
-
 export function registerInstanceFreezeRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
@@ -202,7 +190,7 @@ export function registerInstanceFreezeRoutes(app: FastifyInstance, deps: AppDeps
       // write is still attributable in the request log and unauthenticated callers never reach the
       // token comparison.
       await requireAuth(deps, request);
-      requireOperator(deps, request);
+      await requireInstanceOperator(deps, request, "instance freezes");
 
       const body = request.body;
       const startsAt = new Date(body.startsAt);
@@ -298,7 +286,7 @@ export function registerInstanceFreezeRoutes(app: FastifyInstance, deps: AppDeps
     },
     handler: async (request, reply) => {
       await requireAuth(deps, request);
-      requireOperator(deps, request);
+      await requireInstanceOperator(deps, request, "instance freezes");
 
       await withOperatorDb(deps.config, "instance freezes", async (client) => {
         // A SOFT retraction (drizzle/0086), 0085's ruling one tier up: the row stays and stays

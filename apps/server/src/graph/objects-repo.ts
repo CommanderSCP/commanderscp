@@ -20,6 +20,7 @@ import { computeObjectContentHash } from "./content-hash.js";
 import { deriveUrn } from "./urn.js";
 import { requireObjectType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
+import { assertPolicyApprovalRolesExist } from "../authz/roles-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import {
   assertOrgRetainsAdministrativeFloor,
@@ -289,6 +290,15 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   const properties = input.properties ?? {};
   const labels = input.labels ?? {};
   validateProperties(type.propertySchema, properties);
+
+  // `fromRole` AUTHORING-TIME VALIDATION (role-model.md §5 step 6). Here rather than at the route,
+  // for §2a's reason: a policy is an ordinary graph object, so POST /objects/policy, PUT, IaC apply
+  // and discovery accept all pass through this function, and a route-level check would leave IaC
+  // apply free to author a quorum no principal can ever satisfy. Import is exempt as every guard
+  // here is — a throw mid-bundle wedges a peer's entire signed journal.
+  if (!input.federationImport && input.typeId === "policy") {
+    await assertPolicyApprovalRolesExist(tx, properties);
+  }
 
   const containmentParent = await resolveContainmentParent(tx, input.orgId, input.domainId);
   const domainId = containmentParent.id;
@@ -974,6 +984,13 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   const nextProperties = (input.properties ?? existing.properties) as Record<string, unknown>;
   const nextLabels = (input.labels ?? existing.labels) as Record<string, unknown>;
   validateProperties(type.propertySchema, nextProperties);
+
+  // The UPDATE half of the same choke point. Without it a policy could be authored valid and then
+  // edited into an unsatisfiable one — which is the exact asymmetry `resolveContainmentParent`'s
+  // comment above records having already been paid for once on this file.
+  if (!input.federationImport && input.typeId === "policy") {
+    await assertPolicyApprovalRolesExist(tx, nextProperties);
+  }
 
   // M16.2 phase A (E1) — the UPDATE half of the same choke point (see `createObject` above). An
   // update that rewrites `properties` must not be able to re-point the binding at an unpaired peer,

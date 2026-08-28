@@ -156,7 +156,12 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
       // OPERATOR: the unlock binds every org on the deployment, so no tenant role can grant it.
       const refused = await putUnlock(org.adminToken, { unlocked: true });
       expect(refused.status).toBe(403);
-      expect(JSON.stringify(refused.json)).toMatch(/operator token/i);
+      // Matches the HEADER NAME, not the prose. The refusal used to say "operator token"; since
+      // role-model.md §5 step 9 replaced the shared env token with named revocable credentials it
+      // says "operator credential", and an assertion on the noun would have to be rewritten every
+      // time the wording improves. `x-scp-operator-token` is the actionable part and is stable —
+      // it stays the header name precisely so existing operators and scripts keep working.
+      expect(JSON.stringify(refused.json)).toMatch(/x-scp-operator-token/i);
 
       // …and a WRONG operator token is refused too, so the 403 above is not merely "header absent".
       const wrongToken = await putUnlock(org.adminToken, { unlocked: true }, "not-the-token");

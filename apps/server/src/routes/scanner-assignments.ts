@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
   ProblemSchema,
@@ -13,8 +13,8 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { forbidden } from "../errors.js";
-import { operatorTokenMatches, withOperatorDb } from "./operator-db.js";
+import { withOperatorDb } from "./operator-db.js";
+import { requireInstanceOperator } from "../auth/operator-auth.js";
 
 /**
  * M13.3a — the SCANNER-ASSIGNMENT REGISTRY's API surface (ADR-0020 §2, proposal §13.3), API-first
@@ -66,19 +66,6 @@ function toApi(row: AssignmentRow): ScannerAssignment {
     updatedAt:
       row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at)
   };
-}
-
-function requireOperator(deps: AppDeps, request: FastifyRequest): void {
-  if (!deps.config.operatorToken) {
-    throw forbidden(
-      "scanner assignments are operator-authored: SCP_OPERATOR_TOKEN is not configured on this deployment, so the write surface is closed"
-    );
-  }
-  if (!operatorTokenMatches(request.headers["x-scp-operator-token"], deps.config.operatorToken)) {
-    throw forbidden(
-      "scanner assignments require the deployment operator token (x-scp-operator-token) — no tenant role can grant this, because these assignments bind every org on the deployment"
-    );
-  }
 }
 
 export function registerScannerAssignmentRoutes(app: FastifyInstance, deps: AppDeps): void {
@@ -137,7 +124,7 @@ export function registerScannerAssignmentRoutes(app: FastifyInstance, deps: AppD
       // Operator, not tenant. Authenticate the caller as an ordinary principal too, so the write is
       // still attributable and unauthenticated callers never reach the token comparison.
       await requireAuth(deps, request);
-      requireOperator(deps, request);
+      await requireInstanceOperator(deps, request, "scanner assignments");
 
       const body = request.body;
       // De-duplicate while preserving that Zod already proved every element is a valid ScanMethod.

@@ -3114,3 +3114,26 @@ export const pipelineHookRuns = pgTable(
     )
   ]
 );
+
+/**
+ * drizzle/0104 — instance-tier operator credentials (role-model.md §5 step 9).
+ *
+ * INSTANCE TIER: no `org_id`. One row set binds the whole deployment, the same DESIGN §4.2
+ * exception `instance_freezes` takes. Modelled on {@link personalAccessTokens} rather than invented:
+ * same `<prefix><tokenId>.<secret>` shape, same argon2-at-rest, same cleartext indexed lookup id.
+ */
+export const instanceOperatorCredentials = pgTable("instance_operator_credentials", {
+  id: uuid("id").primaryKey(),
+  name: text("name").notNull(),
+  /** CLEARTEXT lookup key — argon2 output is salted and non-comparable, so a presented credential
+   *  cannot be found by hashing it and matching a row. */
+  tokenId: text("token_id").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  /** The minter's graph object. NULL = minted with the bootstrap env token. Deliberately not an FK:
+   *  an instance-tier row must not couple to an org-scoped one. */
+  createdByUserId: uuid("created_by_user_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true })
+});

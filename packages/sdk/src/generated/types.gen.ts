@@ -435,6 +435,244 @@ export type ListRolesResponses = {
 
 export type ListRolesResponse = ListRolesResponses[keyof ListRolesResponses];
 
+export type CreateRoleData = {
+    body: {
+        name: string;
+        permissions: Array<string>;
+        bindableAt?: Array<string> | null;
+        reason: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/roles';
+};
+
+export type CreateRoleErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    422: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateRoleError = CreateRoleErrors[keyof CreateRoleErrors];
+
+export type CreateRoleResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        orgId: string | null;
+        name: string;
+        permissions: Array<string>;
+        bindableAt: Array<string> | null;
+        deprecated: boolean;
+        deprecationReason: string | null;
+    };
+};
+
+export type CreateRoleResponse = CreateRoleResponses[keyof CreateRoleResponses];
+
+export type DeleteRoleData = {
+    body: {
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/roles/{id}';
+};
+
+export type DeleteRoleErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteRoleError = DeleteRoleErrors[keyof DeleteRoleErrors];
+
+export type DeleteRoleResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type DeleteRoleResponse = DeleteRoleResponses[keyof DeleteRoleResponses];
+
+export type UpdateRoleData = {
+    body: {
+        name?: string;
+        permissions?: Array<string>;
+        bindableAt?: Array<string> | null;
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/roles/{id}';
+};
+
+export type UpdateRoleErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    422: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type UpdateRoleError = UpdateRoleErrors[keyof UpdateRoleErrors];
+
+export type UpdateRoleResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string | null;
+        name: string;
+        permissions: Array<string>;
+        bindableAt: Array<string> | null;
+        deprecated: boolean;
+        deprecationReason: string | null;
+    };
+};
+
+export type UpdateRoleResponse = UpdateRoleResponses[keyof UpdateRoleResponses];
+
 export type ListRoleBindingsData = {
     body?: never;
     path?: never;
@@ -808,6 +1046,168 @@ export type GetEffectivePermissionsResponses = {
 };
 
 export type GetEffectivePermissionsResponse = GetEffectivePermissionsResponses[keyof GetEffectivePermissionsResponses];
+
+export type ListOperatorCredentialsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/operator-credentials';
+};
+
+export type ListOperatorCredentialsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListOperatorCredentialsError = ListOperatorCredentialsErrors[keyof ListOperatorCredentialsErrors];
+
+export type ListOperatorCredentialsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            name: string;
+            createdByUserId: string | null;
+            createdAt: string;
+            expiresAt: string | null;
+            revokedAt: string | null;
+            lastUsedAt: string | null;
+        }>;
+        callerMechanism: 'credential' | 'bootstrap-env-token';
+    };
+};
+
+export type ListOperatorCredentialsResponse = ListOperatorCredentialsResponses[keyof ListOperatorCredentialsResponses];
+
+export type CreateOperatorCredentialData = {
+    body: {
+        name: string;
+        expiresAt?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/operator-credentials';
+};
+
+export type CreateOperatorCredentialErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateOperatorCredentialError = CreateOperatorCredentialErrors[keyof CreateOperatorCredentialErrors];
+
+export type CreateOperatorCredentialResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        name: string;
+        token: string;
+        createdAt: string;
+        expiresAt: string | null;
+    };
+};
+
+export type CreateOperatorCredentialResponse = CreateOperatorCredentialResponses[keyof CreateOperatorCredentialResponses];
+
+export type RevokeOperatorCredentialData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/instance/operator-credentials/{id}';
+};
+
+export type RevokeOperatorCredentialErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RevokeOperatorCredentialError = RevokeOperatorCredentialErrors[keyof RevokeOperatorCredentialErrors];
+
+export type RevokeOperatorCredentialResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type RevokeOperatorCredentialResponse = RevokeOperatorCredentialResponses[keyof RevokeOperatorCredentialResponses];
 
 export type ListServiceObjectsData = {
     body?: never;

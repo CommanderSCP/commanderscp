@@ -3,7 +3,7 @@ import { v7 as uuidv7 } from "uuid";
 import type { RoleBinding } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { roleBindings, roles } from "../db/schema.js";
-import { conflict, notFound } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import type { BindableRole } from "./role-binding-door.js";
@@ -23,6 +23,25 @@ import type { BindableRole } from "./role-binding-door.js";
 
 /** Built-ins first (the catalogue an operator recognises), then org rows; alphabetical within each,
  *  so the listing is stable across calls without a cursor. */
+
+/** One row -> the shape every door and route consumes. Shared by the write functions below so a new
+ *  field cannot be mapped by one and forgotten by another. */
+function toBindableRole(r: {
+  id: string;
+  orgId: string | null;
+  name: string;
+  permissions: string[];
+  bindableAt: string[] | null;
+}): BindableRole {
+  return {
+    id: r.id,
+    orgId: r.orgId,
+    name: r.name,
+    permissions: r.permissions,
+    bindableAt: r.bindableAt
+  };
+}
+
 export async function listRoles(tx: TenantTx, orgId: string): Promise<BindableRole[]> {
   const rows = await tx
     .select()
@@ -215,4 +234,151 @@ export async function deleteRoleBindingById(
   id: string
 ): Promise<void> {
   await tx.delete(roleBindings).where(and(eq(roleBindings.orgId, orgId), eq(roleBindings.id, id)));
+}
+
+/**
+ * ================================================================================================
+ * `fromRole` AUTHORING-TIME VALIDATION — role-model.md §5 step 6, unblocked by step 10's gate
+ * ================================================================================================
+ *
+ * A policy's `requireApprovals.fromRole` is a free-text string that `authz/resolve.ts`'s
+ * `hasRoleAtScope` resolves at VOTE time, and — since the quorum-bypass fix (owner decision
+ * 2026-08-27) — resolves against BUILT-IN roles only.
+ *
+ * WHICH CREATES A NEW WAY TO FAIL SILENTLY, and closing it is the other half of that decision. A
+ * policy naming a role that is not a built-in is not merely wrong, it is UNSATISFIABLE: no
+ * principal can ever hold it as far as the quorum is concerned, so the gate blocks forever and the
+ * Decision record says "0 of 1 approvals" while an operator looks at a live binding of a role with
+ * exactly that name and concludes the approval engine is broken. A typo (`'Onwer'`) and a
+ * deliberate custom role produce the identical symptom.
+ *
+ * SO IT IS REFUSED WHERE IT IS WRITTEN. The refusal names the unknown role AND lists the catalogue,
+ * because the failure this replaces is one where nothing anywhere states what a legal value is.
+ *
+ * AT THE `objects-repo.ts` CHOKE POINT, not at the route — the same placement lesson §2a paid for:
+ * policies are ordinary graph objects, so `POST /objects/policy`, `PUT`, IaC apply and discovery
+ * accept all reach the same two functions, and a route-level check would leave IaC apply able to
+ * author an unsatisfiable policy. Federation import is exempt for the reason every guard there is:
+ * a throw mid-bundle wedges a peer's whole signed journal over a row this domain does not own.
+ */
+export async function assertPolicyApprovalRolesExist(
+  tx: TenantTx,
+  properties: Record<string, unknown>
+): Promise<void> {
+  const effects = properties.effects;
+  if (!Array.isArray(effects)) return;
+
+  const named: string[] = [];
+  for (const effect of effects) {
+    if (!effect || typeof effect !== "object") continue;
+    const req = (effect as { requireApprovals?: unknown }).requireApprovals;
+    if (!req || typeof req !== "object") continue;
+    const fromRole = (req as { fromRole?: unknown }).fromRole;
+    // A non-string `fromRole` is the property schema's business, not this function's; validating it
+    // twice would produce two different messages for one defect.
+    if (typeof fromRole === "string" && fromRole.length > 0) named.push(fromRole);
+  }
+  if (named.length === 0) return;
+
+  const builtIns = await builtInRoleNames(tx);
+  const unknown = [...new Set(named.filter((n) => !builtIns.has(n)))].sort();
+  if (unknown.length === 0) return;
+
+  throw unprocessable(
+    `policy names ${unknown.length === 1 ? "an approval role" : "approval roles"} that no built-in ` +
+      `role provides: ${unknown.map((u) => `'${u}'`).join(", ")}. Approval quorums resolve ` +
+      `BUILT-IN role names only (authz/resolve.ts's hasRoleAtScope), so such a requirement can ` +
+      `never be satisfied by any principal and the gate would block forever while appearing ` +
+      `correctly configured. Available: ${[...builtIns].sort().join(", ")}.`
+  );
+}
+
+/** Storage for the custom-role authoring API (role-model.md §5 step 10). Decides nothing: every
+ *  refusal lives in `authz/role-binding-door.ts` §9 and runs before any of these are called. */
+export async function insertRole(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    name: string;
+    permissions: string[];
+    bindableAt: string[] | null;
+  }
+): Promise<BindableRole> {
+  const id = uuidv7();
+  try {
+    const [row] = await tx
+      .insert(roles)
+      .values({
+        id,
+        orgId: input.orgId,
+        name: input.name,
+        permissions: input.permissions,
+        bindableAt: input.bindableAt
+      })
+      .returning();
+    return toBindableRole(row!);
+  } catch (err) {
+    // `roles_org_name_key` (drizzle/0103). Translated here rather than pre-checked with a SELECT,
+    // because a pre-check is a TOCTOU: two concurrent authors both see the name free.
+    if (isUniqueViolation(err)) {
+      throw conflict(`this organization already has a role named '${input.name}'`);
+    }
+    throw err;
+  }
+}
+
+export async function updateRole(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    id: string;
+    name?: string;
+    permissions?: string[];
+    bindableAt?: string[] | null;
+  }
+): Promise<BindableRole> {
+  const patch: Record<string, unknown> = {};
+  if (input.name !== undefined) patch.name = input.name;
+  if (input.permissions !== undefined) patch.permissions = input.permissions;
+  if (input.bindableAt !== undefined) patch.bindableAt = input.bindableAt;
+
+  try {
+    const [row] = await tx
+      .update(roles)
+      .set(patch)
+      // `org_id = :orgId` is NOT redundant with RLS here: `roles`' policy admits `org_id IS NULL`
+      // for READS (that is how every org sees the built-in singletons), so a filter of
+      // `id = :id` alone would match a BUILT-IN row and RLS's WITH CHECK is what would have to
+      // catch it. Naming the org makes a built-in unaddressable by this function at all.
+      .where(and(eq(roles.id, input.id), eq(roles.orgId, input.orgId)))
+      .returning();
+    if (!row) throw notFound(`role '${input.id}' not found in this organization`);
+    return toBindableRole(row);
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw conflict(`this organization already has a role named '${input.name}'`);
+    }
+    throw err;
+  }
+}
+
+/** How many bindings point at this role. The delete door refuses a non-zero count. */
+export async function countBindingsOfRole(
+  tx: TenantTx,
+  orgId: string,
+  roleId: string
+): Promise<number> {
+  const rows = await tx.execute<{ n: string }>(
+    sql`SELECT count(*)::text AS n FROM role_bindings WHERE org_id = ${orgId} AND role_id = ${roleId}`
+  );
+  return Number(rows.rows[0]?.n ?? "0");
+}
+
+export async function deleteRoleById(tx: TenantTx, orgId: string, id: string): Promise<void> {
+  const rows = await tx
+    .delete(roles)
+    // Same `org_id` reasoning as `updateRole`: a built-in must not be addressable here.
+    .where(and(eq(roles.id, id), eq(roles.orgId, orgId)))
+    .returning({ id: roles.id });
+  if (rows.length === 0) throw notFound(`role '${id}' not found in this organization`);
 }

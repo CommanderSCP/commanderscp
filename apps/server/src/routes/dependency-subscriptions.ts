@@ -1,5 +1,5 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
   BackfillDependencyInventoryRequestSchema,
@@ -20,11 +20,10 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { createPool } from "../db/client.js";
+import { withOperatorDb } from "./operator-db.js";
 import { objects } from "../db/schema.js";
 import { authorize } from "../authz/resolve.js";
-import { operatorTokenMatches } from "./operator-db.js";
-import { badRequest, conflict, forbidden } from "../errors.js";
+import { badRequest, conflict } from "../errors.js";
 import { getObjectByIdOrUrn } from "../graph/objects-repo.js";
 import { listSourceMappingsForComponents } from "../coordination/source-mappings-repo.js";
 import {
@@ -42,6 +41,7 @@ import {
   dependencyManagementOf
 } from "../dependencies/commander-only.js";
 import { findIngestionStampByComponent } from "../dependencies/ingestion-stamp-repo.js";
+import { requireInstanceOperator } from "../auth/operator-auth.js";
 
 /**
  * M21.3 — the DEPENDENCY-SUBSCRIPTION ENABLEMENT API (ADR-0032 §3a, §6), API-first per charter
@@ -178,19 +178,6 @@ import { findIngestionStampByComponent } from "../dependencies/ingestion-stamp-r
  * disagree.
  */
 
-function requireOperator(deps: AppDeps, request: FastifyRequest): void {
-  if (!deps.config.operatorToken) {
-    throw forbidden(
-      "the dependency-subscription unlock is operator-authored: SCP_OPERATOR_TOKEN is not configured on this deployment, so the write surface is closed"
-    );
-  }
-  if (!operatorTokenMatches(request.headers["x-scp-operator-token"], deps.config.operatorToken)) {
-    throw forbidden(
-      "unlocking dependency subscriptions requires the deployment operator token (x-scp-operator-token) — no tenant role can grant this, because the unlock binds every org on the deployment"
-    );
-  }
-}
-
 /**
  * The unlock as the API projects it.
  *
@@ -281,14 +268,18 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
       // Operator, not tenant. Authenticate the caller as an ordinary principal too, so the write is
       // still attributable and unauthenticated callers never reach the token comparison.
       const auth = await requireAuth(deps, request);
-      requireOperator(deps, request);
+      await requireInstanceOperator(deps, request, "the dependency-subscription unlock");
 
       const body = request.body;
-      const pool = createPool(deps.config.databaseUrl, { max: 1 });
-      try {
+      // `withOperatorDb` for the reason stated at the sibling door in `routes/governance-move.ts`:
+      // the inline `createPool(config.databaseUrl)` dialled an admin connection api/worker pods are
+      // never given, and `scp_app` holds SELECT only on this FORCE-RLS table. drizzle/0102 adds the
+      // grant + `operator_write` policy. These were the last two instance-scoped tables in the
+      // schema without a write principal.
+      await withOperatorDb(deps.config, "the dependency-subscription unlock", async (client) => {
         // Upsert on the pinned singleton key — the CHECK in 0062 makes `'default'` the only row this
         // table can ever hold, so there is no "which unlock" to get wrong.
-        await pool.query(
+        await client.query(
           `INSERT INTO dependency_subscription_unlock (id, unlocked, note, updated_at)
              VALUES ('default', $1, $2, now())
            ON CONFLICT (id) DO UPDATE SET
@@ -297,9 +288,7 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
              updated_at = now()`,
           [body.unlocked, body.note ?? null]
         );
-      } finally {
-        await pool.end();
-      }
+      });
       // Read back through the tenant path, so the response is the same projection the GET returns
       // and is produced by the same "no row means locked" reader.
       const unlock = await withTenantTx(deps.db, auth.orgId, readUnlockForApi);

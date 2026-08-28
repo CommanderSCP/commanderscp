@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import {
@@ -13,10 +13,9 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { createPool } from "../db/client.js";
+import { withOperatorDb } from "./operator-db.js";
 import { authorize } from "../authz/resolve.js";
-import { operatorTokenMatches } from "./operator-db.js";
-import { forbidden, notFound } from "../errors.js";
+import { notFound } from "../errors.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import {
   assertRungSubjectType,
@@ -24,6 +23,7 @@ import {
   readInstanceMoveRung,
   resolveGovernanceMoveEnforcement
 } from "../governance/move-enforcement.js";
+import { requireInstanceOperator } from "../auth/operator-auth.js";
 import {
   disableGovernanceMoveRungWithEffects,
   enableGovernanceMoveRungWithEffects,
@@ -74,19 +74,6 @@ const ObjectEnforcementParamSchema = z.object({
  *  here because this route was its first home and `GET /decisions?kind=…` consumers import it from
  *  the surface they read about. */
 export { GOVERNANCE_MOVE_DECISION_KIND } from "../governance/move-rung-write.js";
-
-function requireOperator(deps: AppDeps, request: FastifyRequest): void {
-  if (!deps.config.operatorToken) {
-    throw forbidden(
-      "the instance governance:move rung is operator-authored: SCP_OPERATOR_TOKEN is not configured on this deployment, so the write surface is closed"
-    );
-  }
-  if (!operatorTokenMatches(request.headers["x-scp-operator-token"], deps.config.operatorToken)) {
-    throw forbidden(
-      "setting the instance governance:move rung requires the deployment operator token (x-scp-operator-token) — no tenant role can grant this, because the instance rung activates enforcement for every org on the deployment"
-    );
-  }
-}
 
 /** The instance rung as the API projects it — read through the SAME "no row means disabled" reader
  *  the doors use, never a SELECT written here (see `readInstanceMoveRung`). */
@@ -366,11 +353,16 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
       // Operator, not tenant. The caller is still authenticated as an ordinary principal, so the
       // write is attributable and an unauthenticated caller never reaches the token comparison.
       const auth = await requireAuth(deps, request);
-      requireOperator(deps, request);
+      await requireInstanceOperator(deps, request, "the instance governance:move rung");
 
-      const pool = createPool(deps.config.databaseUrl, { max: 1 });
-      try {
-        await pool.query(
+      // `withOperatorDb`, NOT an inline `createPool(config.databaseUrl)` — role-model.md §5 step 9.
+      // The inline form was wrong twice: `databaseUrl` is the ADMIN connection, which the hardened
+      // Helm shape never gives api/worker pods (so `loadConfig` fell back to its localhost literal
+      // and this dialled 127.0.0.1 inside its own pod, returning a bare 500), and `scp_app` holds
+      // SELECT only on this FORCE-RLS table anyway. drizzle/0102 adds the grant + `operator_write`
+      // policy that make the `scp_operator` connection able to write it.
+      await withOperatorDb(deps.config, "the governance:move instance rung", async (client) => {
+        await client.query(
           `INSERT INTO governance_move_instance_rung (id, enabled, updated_at)
              VALUES ('default', $1, now())
            ON CONFLICT (id) DO UPDATE SET
@@ -378,9 +370,7 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
              updated_at = now()`,
           [request.body.enabled]
         );
-      } finally {
-        await pool.end();
-      }
+      });
       const instance = await withTenantTx(deps.db, auth.orgId, readInstanceForApi);
       reply.status(200).send(instance);
     }
