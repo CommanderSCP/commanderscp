@@ -515,3 +515,70 @@ export const DeleteRoleRequestSchema = z.object({
   reason: z.string().min(1).max(2000)
 });
 export type DeleteRoleRequest = z.infer<typeof DeleteRoleRequestSchema>;
+
+/**
+ * ================================================================================================
+ * INSTANCE OPERATOR CREDENTIALS — role-model.md §5 step 9 / §3B
+ * ================================================================================================
+ *
+ * Replaces the single shared `SCP_OPERATOR_TOKEN` with named, hashed, individually revocable,
+ * optionally expiring credentials. See `auth/operator-auth.ts` for what was wrong with the shared
+ * string; the short version is that it cannot be rotated, revoked for one person, or expired, and
+ * it makes "who was entitled to do this" have the same answer for everyone who has ever seen it.
+ *
+ * NOT ORG-SCOPED. These are instance tier — the authority they carry binds every organization on
+ * the deployment — so the operations are gated by an operator credential, never by an RBAC
+ * permission. A tenant, however privileged inside its own org, must never author config that binds
+ * its neighbours.
+ */
+export const CreateOperatorCredentialRequestSchema = z.object({
+  /** A label a human recognises at revoke time — "ci-runner", "alice-laptop". */
+  name: z.string().min(1).max(200),
+  /** ISO-8601. Absent means no expiry, which is what the env token it replaces always was; an
+   *  expiring credential is the improvement, not the default, because forcing one on an air-gapped
+   *  deployment with no rotation process would just cause an outage nobody could pre-empt. */
+  expiresAt: z.string().datetime().nullish()
+});
+export type CreateOperatorCredentialRequest = z.infer<typeof CreateOperatorCredentialRequestSchema>;
+
+/** The ONLY response that ever carries the secret, and only at creation. */
+export const CreatedOperatorCredentialSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  /** `scp_op_<tokenId>.<secret>` — shown ONCE. There is no endpoint that can return it again;
+   *  `token_hash` is argon2 output and is never serialized by any route. */
+  token: z.string(),
+  createdAt: z.string().datetime(),
+  expiresAt: z.string().datetime().nullable()
+});
+export type CreatedOperatorCredential = z.infer<typeof CreatedOperatorCredentialSchema>;
+
+export const OperatorCredentialSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  /** The minter's graph object, or `null` when it was minted with the BOOTSTRAP env token — a real
+   *  and reportable state, not missing data. */
+  createdByUserId: z.string().uuid().nullable(),
+  createdAt: z.string().datetime(),
+  expiresAt: z.string().datetime().nullable(),
+  /** Revocation stamps rather than deletes: a deleted row cannot answer "what was this, and when
+   *  did it stop working", which is most of the point of replacing a shared secret. */
+  revokedAt: z.string().datetime().nullable(),
+  lastUsedAt: z.string().datetime().nullable()
+});
+export type OperatorCredential = z.infer<typeof OperatorCredentialSchema>;
+
+export const OperatorCredentialListResponseSchema = z.object({
+  items: z.array(OperatorCredentialSchema),
+  /**
+   * How the CALLING request was admitted. `bootstrap-env-token` means this deployment is still
+   * relying on `SCP_OPERATOR_TOKEN` — surfaced because the migration from it is otherwise invisible:
+   * an operator would have no way to tell a deployment that has moved from one that has merely
+   * minted credentials and never stopped using the env var.
+   */
+  callerMechanism: z.enum(["credential", "bootstrap-env-token"])
+});
+export type OperatorCredentialListResponse = z.infer<typeof OperatorCredentialListResponseSchema>;
+
+export const OperatorCredentialIdParamSchema = z.object({ id: z.string().uuid() });
+export type OperatorCredentialIdParam = z.infer<typeof OperatorCredentialIdParamSchema>;

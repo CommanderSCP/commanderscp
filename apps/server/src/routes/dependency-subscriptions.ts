@@ -1,5 +1,5 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
   BackfillDependencyInventoryRequestSchema,
@@ -23,8 +23,7 @@ import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { withOperatorDb } from "./operator-db.js";
 import { objects } from "../db/schema.js";
 import { authorize } from "../authz/resolve.js";
-import { operatorTokenMatches } from "./operator-db.js";
-import { badRequest, conflict, forbidden } from "../errors.js";
+import { badRequest, conflict } from "../errors.js";
 import { getObjectByIdOrUrn } from "../graph/objects-repo.js";
 import { listSourceMappingsForComponents } from "../coordination/source-mappings-repo.js";
 import {
@@ -42,6 +41,7 @@ import {
   dependencyManagementOf
 } from "../dependencies/commander-only.js";
 import { findIngestionStampByComponent } from "../dependencies/ingestion-stamp-repo.js";
+import { requireInstanceOperator } from "../auth/operator-auth.js";
 
 /**
  * M21.3 — the DEPENDENCY-SUBSCRIPTION ENABLEMENT API (ADR-0032 §3a, §6), API-first per charter
@@ -178,19 +178,6 @@ import { findIngestionStampByComponent } from "../dependencies/ingestion-stamp-r
  * disagree.
  */
 
-function requireOperator(deps: AppDeps, request: FastifyRequest): void {
-  if (!deps.config.operatorToken) {
-    throw forbidden(
-      "the dependency-subscription unlock is operator-authored: SCP_OPERATOR_TOKEN is not configured on this deployment, so the write surface is closed"
-    );
-  }
-  if (!operatorTokenMatches(request.headers["x-scp-operator-token"], deps.config.operatorToken)) {
-    throw forbidden(
-      "unlocking dependency subscriptions requires the deployment operator token (x-scp-operator-token) — no tenant role can grant this, because the unlock binds every org on the deployment"
-    );
-  }
-}
-
 /**
  * The unlock as the API projects it.
  *
@@ -281,7 +268,7 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
       // Operator, not tenant. Authenticate the caller as an ordinary principal too, so the write is
       // still attributable and unauthenticated callers never reach the token comparison.
       const auth = await requireAuth(deps, request);
-      requireOperator(deps, request);
+      await requireInstanceOperator(deps, request, "the dependency-subscription unlock");
 
       const body = request.body;
       // `withOperatorDb` for the reason stated at the sibling door in `routes/governance-move.ts`:

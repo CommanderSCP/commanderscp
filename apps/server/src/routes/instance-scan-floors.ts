@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
   InstanceScanFloorListResponseSchema,
@@ -12,8 +12,8 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { forbidden } from "../errors.js";
-import { operatorTokenMatches, withOperatorDb } from "./operator-db.js";
+import { withOperatorDb } from "./operator-db.js";
+import { requireInstanceOperator } from "../auth/operator-auth.js";
 
 /**
  * M17.5 — the INSTANCE-SCOPED scan-requirement floors' API surface (ADR-0016 §3), API-first per
@@ -75,19 +75,6 @@ function toApi(row: FloorRow): InstanceScanFloor {
   };
 }
 
-function requireOperator(deps: AppDeps, request: FastifyRequest): void {
-  if (!deps.config.operatorToken) {
-    throw forbidden(
-      "instance scan floors are operator-authored: SCP_OPERATOR_TOKEN is not configured on this deployment, so the write surface is closed"
-    );
-  }
-  if (!operatorTokenMatches(request.headers["x-scp-operator-token"], deps.config.operatorToken)) {
-    throw forbidden(
-      "instance scan floors require the deployment operator token (x-scp-operator-token) — no tenant role can grant this, because these floors bind every org on the deployment"
-    );
-  }
-}
-
 export function registerInstanceScanFloorRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
@@ -141,7 +128,7 @@ export function registerInstanceScanFloorRoutes(app: FastifyInstance, deps: AppD
       // Operator, not tenant. Authenticate the caller as an ordinary principal too, so the write is
       // still attributable and unauthenticated callers never reach the token comparison.
       await requireAuth(deps, request);
-      requireOperator(deps, request);
+      await requireInstanceOperator(deps, request, "instance scan floors");
 
       const body = request.body;
       // `null` explicitly CLEARS a ceiling (that severity stops contributing to the MIN); `undefined`
