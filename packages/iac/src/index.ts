@@ -51,6 +51,27 @@ export type {
 export { deriveConstructUrn, slugify } from "./urn.js";
 export { canonicalJson } from "./canonical.js";
 export { Duration } from "./duration.js";
+// team-pipeline-iac D11/D12/D15/D16 — the typed pipeline behaviours (L2), thin sugar over the
+// increment-8 contract's own Zod types. The L1 doors they emit through (`Stack.addPipelineHook`,
+// `addRollout`, `addConvergence`) stay available for anything these do not cover.
+export {
+  Workflow,
+  PostMergeTest,
+  PostDeployTest,
+  ContinuousTest,
+  BakeAlarms,
+  CanaryRollout,
+  RollingRollout
+} from "./behaviors.js";
+export type {
+  WorkflowProps,
+  PostDeployTestProps,
+  ContinuousTestProps,
+  BakeAlarmsProps,
+  CanaryRolloutProps,
+  RollingRolloutProps,
+  BehaviorHost
+} from "./behaviors.js";
 
 // Round B (team-pipeline-iac.md): typed pipeline-kind constructs, infra products, and wave helpers.
 export {
