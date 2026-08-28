@@ -29,6 +29,7 @@
  */
 import { createInterface } from "node:readline";
 import { readFileSync } from "node:fs";
+import { rootCertificates } from "node:tls";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import type {
   BundleRef,
@@ -320,6 +321,49 @@ function loadFederationMtlsMaterial(): { cert: string; key: string; ca?: string 
 }
 
 /**
+ * The OPERATOR's additional CA bundle for executor TLS (`SCP_EXECUTOR_TLS_CA_FILE`).
+ *
+ * WHY THIS EXISTS. A bundled or on-prem execution system commonly serves HTTPS with a certificate
+ * signed by a private CA — the vendored Argo Workflows server is the case that forced this: it
+ * listens on 2746 with a SELF-SIGNED certificate (its own readiness probe uses `scheme: HTTPS`), so
+ * every plugin request to it failed verification and the coordinated-test path was unreachable on the
+ * bundled tier even with the NetworkPolicy open.
+ *
+ * WHAT IT IS NOT: a verification bypass. There is deliberately no "insecure"/"skipVerify" option
+ * anywhere on this path. This ADDS a trust anchor; it never disables the check, so a certificate
+ * that chains to neither the system roots nor this bundle is still refused. The failure mode of the
+ * alternative — a per-binding skip flag — is that TLS verification becomes TENANT-WRITABLE, and this
+ * codebase's standing rule is that transport security is never decided by data a tenant can author
+ * (the same provenance discipline `allowInternalPrivate` follows: module identity, never config).
+ *
+ * SERVER-PROVENANCE, LIKE THE MTLS MATERIAL. It arrives as an env var the HOST chooses to forward
+ * (`host.ts`'s `spawnInstance`), read from a file path only the operator controls — never from the
+ * executor binding, never from plugin config, never from a graph property. An executor binding is
+ * tenant-writable, so a CA reference living there would let a tenant nominate the authority that
+ * vouches for the endpoint it is also nominating.
+ *
+ * Unset (the default) returns `undefined` and every request keeps using Node's system trust store
+ * exactly as before — byte-for-byte the previous behaviour for every existing deployment.
+ *
+ * A configured-but-unreadable path THROWS rather than degrading to system-roots-only: a CA bundle
+ * that silently fails to load looks identical to one that loaded and did not match, and the operator
+ * would debug the endpoint instead of the path.
+ */
+function loadExecutorTlsCa(): string | undefined {
+  const caFile = process.env.SCP_EXECUTOR_TLS_CA_FILE;
+  if (!caFile) return undefined;
+  try {
+    return readFileSync(caFile, "utf8");
+  } catch (err) {
+    throw new Error(
+      `SCP_EXECUTOR_TLS_CA_FILE is set to '${caFile}' but the file could not be read ` +
+        `(${err instanceof Error ? err.message : String(err)}) — refusing to boot with a CA bundle ` +
+        `that would silently degrade to system roots only`
+    );
+  }
+}
+
+/**
  * Reads a fetch `Response` body as text, enforcing `maxResponseBytes` DURING accumulation rather
  * than after (M21.2 review MAJOR 5 — the gap this closes: `res.text()` used to buffer the WHOLE
  * body before anything downstream got a chance to refuse it, so a hostile or misconfigured host
@@ -368,7 +412,8 @@ async function readBoundedResponseText(
 function scopedFetchHttpClient(
   allowedHosts: string[],
   allowInternalPrivate: boolean,
-  mtls?: { cert: string; key: string; ca?: string }
+  mtls?: { cert: string; key: string; ca?: string },
+  executorTlsCa?: string
 ): ScopedHttpClient {
   // A dedicated undici Agent presenting the client certificate on every TLS handshake this
   // dispatcher makes — constructed once and reused (undici pools connections per-origin
@@ -381,9 +426,26 @@ function scopedFetchHttpClient(
   // undici install across that boundary throws (`UND_ERR_INVALID_ARG: invalid onError method`) at
   // request time, not at construction time. Confirmed empirically while building this fix — global
   // `fetch` + an externally-constructed `undici.Agent` are simply not interoperable.
-  const dispatcher = mtls
-    ? new UndiciAgent({ connect: { cert: mtls.cert, key: mtls.key, ca: mtls.ca } })
-    : undefined;
+  // A dispatcher is now needed for EITHER reason: a client certificate to present (mtls), or an extra
+  // trust anchor to verify the peer against (`executorTlsCa`). When both are set the CAs are passed
+  // together — undici accepts an array — so adding an executor CA never silently drops the
+  // federation CA that was already there.
+  //
+  // `ca` REPLACES the default trust store rather than extending it, which is a Node/undici behaviour
+  // worth stating: when only an executor CA is supplied we pass `[...rootCertificates, ca]` so a
+  // publicly-signed executor endpoint keeps verifying. Passing the bundle alone would "work" in the
+  // bundled-backend test and break every BYO executor behind a public CA — a regression that would
+  // look like an unrelated outage.
+  const cas = [mtls?.ca, executorTlsCa].filter((c): c is string => c !== undefined);
+  const dispatcher =
+    mtls || executorTlsCa
+      ? new UndiciAgent({
+          connect: {
+            ...(mtls ? { cert: mtls.cert, key: mtls.key } : {}),
+            ...(cas.length > 0 ? { ca: [...rootCertificates, ...cas] } : {})
+          }
+        })
+      : undefined;
   return {
     async request(req): Promise<ScopedHttpResponse> {
       // MAJOR #6 — allowlist AND internal-IP deny-list (post-DNS-resolution). See egress-guard.ts.
@@ -591,6 +653,11 @@ async function main(): Promise<void> {
   // the SCP_FEDERATION_MTLS_* env vars in the first place — host.ts's `spawnInstance` — but this
   // module-identity check is defence in depth against the vars ever leaking to another module).
   const mtls = moduleName === "federation-https" ? loadFederationMtlsMaterial() : undefined;
+  // NOT gated on module identity, unlike `mtls` above, and the difference is the point: a client
+  // CERTIFICATE is an identity only federation-https may present, whereas a trust anchor is about
+  // whom we are willing to VERIFY. Any executor plugin can face a privately-signed endpoint, so the
+  // host forwards this to every plugin subprocess. It grants no identity and weakens no check.
+  const executorTlsCa = loadExecutorTlsCa();
 
   const plugin = await loadPlugin(moduleName);
   const ctx: PluginContext = {
@@ -598,7 +665,7 @@ async function main(): Promise<void> {
     scopeKey,
     logger: stderrLogger(instanceId),
     secrets: envSecretsAccessor(),
-    http: scopedFetchHttpClient(allowedHosts, allowInternalPrivate, mtls),
+    http: scopedFetchHttpClient(allowedHosts, allowInternalPrivate, mtls, executorTlsCa),
     config
   };
 

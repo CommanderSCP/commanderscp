@@ -475,6 +475,16 @@ since those three differ between the migrations Job and the api/worker Deploymen
 - name: SCP_FEDERATION_MTLS_CA_FILE
   value: /etc/scp/federation-mtls/ca.crt
 {{- end }}
+{{/* Executor TLS trust — the ADDITIONAL CA bundle plugin subprocesses verify execution-system
+endpoints against (`plugin-host/subprocess-entry.ts`'s `loadExecutorTlsCa`, forwarded to every
+plugin child by `host.ts`). Extends the system trust store, never replaces it, and there is
+deliberately no skip-verify counterpart: this can only make MORE certificates verifiable, never
+fewer checks run. Operator-provenance — a mounted file named by the chart, never anything a tenant
+can author on an executor binding. */}}
+{{- if .Values.executorTls.enabled }}
+- name: SCP_EXECUTOR_TLS_CA_FILE
+  value: /etc/scp/executor-tls/ca.crt
+{{- end }}
 {{/*
 M9.3 (ADR-0001) — in-app federation mTLS (apps/server itself terminating TLS and verifying an
 incoming peer's client cert, `config.ts`'s `loadFederationServerMtls Config`). CA/cert/key come

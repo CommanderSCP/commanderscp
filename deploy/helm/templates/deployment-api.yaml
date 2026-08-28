@@ -109,6 +109,11 @@ spec:
               mountPath: /etc/scp/federation-mtls
               readOnly: true
             {{- end }}
+            {{- if .Values.executorTls.enabled }}
+            - name: executor-tls-ca
+              mountPath: /etc/scp/executor-tls
+              readOnly: true
+            {{- end }}
             {{- if .Values.federation.serverMtls.enabled }}
             - name: federation-server-mtls
               mountPath: /etc/scp/federation-server-mtls
@@ -146,6 +151,11 @@ spec:
         - name: federation-mtls
           secret:
             secretName: {{ .Values.federation.mtls.existingSecret }}
+        {{- end }}
+        {{- if .Values.executorTls.enabled }}
+        - name: executor-tls-ca
+          secret:
+            secretName: {{ required "executorTls.enabled=true requires executorTls.existingSecret — the Secret holding the CA bundle under key `ca.crt`. Fail-closed: an unset path would boot with system roots only and every private-CA executor would fail verification at request time instead of at install." .Values.executorTls.existingSecret }}
         {{- end }}
         {{- if .Values.federation.serverMtls.enabled }}
         - name: federation-server-mtls

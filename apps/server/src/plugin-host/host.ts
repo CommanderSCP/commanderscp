@@ -537,6 +537,23 @@ export class SubprocessPluginHost implements PluginHost {
         if (value) env[key] = value;
       }
     }
+    // The OPERATOR's extra CA bundle for executor TLS, forwarded to EVERY plugin subprocess rather
+    // than gated on module identity the way the mTLS material above is. The asymmetry is deliberate
+    // and worth stating: those three vars carry a client CERTIFICATE — an identity only
+    // `federation-https` may present, so leaking them to another module would let it speak as this
+    // instance. This one carries a trust ANCHOR: it decides whom a plugin is willing to verify, grants
+    // no identity, and weakens no check (there is deliberately no skip-verify option anywhere on this
+    // path). Any executor can face a privately-signed endpoint — the bundled Argo Workflows server is
+    // the case that forced it, serving HTTPS on 2746 with a self-signed certificate — so restricting
+    // it by module would just reintroduce the gap for the next backend.
+    //
+    // Still SERVER-PROVENANCE: it is an env var on the host process, read from a file path only the
+    // operator controls. It is never read from the executor binding or plugin config, which are
+    // tenant-writable — a tenant that could name the CA could vouch for the endpoint it also names.
+    {
+      const executorCaFile = process.env.SCP_EXECUTOR_TLS_CA_FILE;
+      if (executorCaFile) env.SCP_EXECUTOR_TLS_CA_FILE = executorCaFile;
+    }
     // A `.ts` entry path (dev/test — see the module-level comment on `RUNNING_FROM_SOURCE`, or an
     // explicit test override) needs the `tsx` loader registered; the compiled `.js` production
     // path needs nothing extra. `tsx` resolves from node_modules exactly like any other import, so
