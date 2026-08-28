@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import type { CapturedWorkflowRef, GraphObject } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changes, decisions } from "../db/schema.js";
+import { changes, decisions, pipelineHookRuns } from "../db/schema.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -14,6 +14,7 @@ import {
 } from "../test-support/harness.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import { getLatestPlanForChange } from "./plan-service.js";
+import { upsertExecutorBinding } from "./executor-bindings-repo.js";
 import { reconcileOrgTick } from "./reconcile.js";
 import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake-plugin-host.js";
 import {
@@ -539,6 +540,83 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     await tick(3);
     expect(await waveStatuses(change.id)).toEqual(["succeeded", "running"]);
     expect(firedFor(app.at(prod))).toBe(1);
+  });
+
+  it("property 5b: THE GATE'S AWAITING TUPLE IS ACTUALLY DISPATCHED — a hook run row exists", async () => {
+    // WHAT THIS CLOSES, and why it is the load-bearing case in this file. `ensureHookRunTriggered`
+    // was fully built, unit- and integration-tested, and had NO PRODUCTION CALLER: nothing wrote
+    // `pipeline_hook_runs`, so `pollNonTerminalHookRuns` polled an always-empty table and a declared
+    // `postDeploy` hook blocked its wave FOREVER with a correct-looking `awaiting`. Property 5 above
+    // passed throughout, because "blocks and is re-decided when evidence arrives" is true of a gate
+    // whose run was never triggered — the evidence simply had to come from somewhere else.
+    //
+    // So this asserts the ROW, not the verdict. The verdict was never the thing that was broken.
+    const topology = await sequentialTopology([gamma, prod]);
+    const app = await componentAt("postdeploy-dispatch", [gamma, prod]);
+    await declareHook({
+      componentObjectId: app.id,
+      kind: "postDeploy",
+      hookId: "integration",
+      workflow: { repo: "acme/pipelines", branch: "main", path: "w.yaml" }
+    });
+
+    // AN EXECUTOR BINDING ON THE CARRIER, which the other properties in this file do not need and
+    // this one does. A hook run resolves its executor from the wave target itself (the PLACEMENT,
+    // here) and `ensureHookRunTriggered` REFUSES to claim a run it could not dispatch (§14 res 2,
+    // loud-unbound) rather than recording one that fake-succeeds. Every other property asserts a
+    // gate VERDICT, which needs no executor at all — this is the first that asserts a dispatch, so
+    // it is the first that has to look like an estate where one can happen.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      upsertExecutorBinding(tx, {
+        orgId: org.orgId,
+        targetObjectId: app.at(gamma),
+        pluginModule: "fake-executor",
+        pluginInstanceId: `fake-hook-${randomUUID().slice(0, 8)}`,
+        // The PLACEMENT ID as the external ref, matching what this harness's fake host keys on
+        // (`firedFor` filters `call.targetRef`). A different ref here silently stops the DEPLOY
+        // being counted, which surfaces as "the first wave never deployed" — measured.
+        externalRef: app.at(gamma),
+        config: {},
+        actorObjectId: org.orgId,
+        requestId: "postdeploy-dispatch-binding"
+      })
+    );
+
+    const change = await release("postdeploy-dispatch", [app.id], topology);
+    await deployFirstWave(change.id, app.at(gamma));
+    await tick(4);
+
+    // Still blocked on the hook — unchanged from property 5, and stated so a reader can see the
+    // dispatch does not release the gate. Evidence releases it; dispatch only makes evidence
+    // POSSIBLE.
+    expect(await waveStatuses(change.id)).toEqual(["succeeded", "pending"]);
+    expect((await gateHookEntries(change.id))[0]!.outcome).toBe("awaiting");
+
+    const runs = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(pipelineHookRuns).where(eq(pipelineHookRuns.changeObjectId, change.id))
+    );
+    expect(runs, "the gate is awaiting a run nothing ever created").toHaveLength(1);
+    expect(runs[0]!.hookId).toBe("integration");
+    expect(runs[0]!.kind).toBe("postDeploy");
+    // The run is bound to the target that DEPLOYED, and to the wave whose exit it gates — the two
+    // fields the later poll and the gate both re-derive. A run keyed on the wrong wave would be
+    // invisible to the gate that is waiting for it.
+    expect(runs[0]!.targetObjectId).toBe(app.at(gamma));
+    expect(runs[0]!.waveIndex).toBe(0);
+    // Dispatched, not merely claimed: an external ref means the executor was actually called.
+    expect(runs[0]!.pluginInstanceId).toBeTruthy();
+
+    // IDEMPOTENT ACROSS TICKS. The gate re-emits this tuple every tick while it blocks, and
+    // `claimHookRun`'s `onConflictDoNothing` is what keeps that from dispatching a second run —
+    // asserted rather than assumed, because a duplicate here would be one run per tick forever.
+    await tick(3);
+    const after = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx.select().from(pipelineHookRuns).where(eq(pipelineHookRuns.changeObjectId, change.id))
+    );
+    expect(
+      after,
+      "re-emitting an awaiting tuple must be a no-op claim, not a second dispatch"
+    ).toHaveLength(1);
   });
 
   it("property 6: a bake gate with NO reporting source blocks with `no_source`, distinct from `window_not_covered`", async () => {

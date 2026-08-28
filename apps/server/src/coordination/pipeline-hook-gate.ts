@@ -163,6 +163,44 @@ export interface PipelineHookGateEntry {
   window?: { start: string; end: string };
 }
 
+/**
+ * ONE TUPLE THE GATE FOUND `awaiting` AND WHICH HAS NO RUN YET — everything
+ * `ensureHookRunTriggered` needs, assembled where the decision was made.
+ *
+ * WHY THE GATE EMITS THESE RATHER THAN A SWEEP DERIVING THEM. "Which hook needs a run" and "which
+ * hook is awaiting" are the same question, and answering it twice is how the two drift: a sweep
+ * with a subtly different notion of applicability would leave the gate blocking on a tuple it
+ * never triggers, and the wave would hold forever with a correct-looking reason. The gate already
+ * resolved the subjects, filtered by stage, read the hook rows and resolved the evidence bindings;
+ * this carries that work out rather than recomputing it.
+ *
+ * NOT DISPATCHED HERE. This function is pure and runs inside the caller's transaction — an
+ * external trigger call inside an open transaction is the thing the whole trigger path is built to
+ * avoid. The caller dispatches after its transaction commits.
+ *
+ * SAFE TO EMIT ON EVERY TICK. `awaiting` covers both "no run yet" and "a run is in flight", and
+ * this deliberately does not distinguish them: `claimHookRun` is `onConflictDoNothing` on
+ * `(orgId, changeObjectId, hookId, waveIndex)` and `ensureHookRunTriggered` early-returns when it
+ * does not win the claim, so re-emitting for an in-flight run is a no-op claim rather than a
+ * second dispatch. Adding an existence check here would be a second source of truth for a fact the
+ * unique constraint already holds.
+ */
+export interface HookTriggerRequest {
+  hook: {
+    componentObjectId: string;
+    kind: WaveGateHookKind;
+    hookId: string;
+    workflow: unknown;
+  };
+  change: { objectId: string };
+  /** `null` for `postMerge`, which is not target-specific. */
+  target: { objectId: string } | null;
+  /** `null` for `postMerge`, which belongs to no wave. */
+  waveIndex: number | null;
+  artifactDigest: string | null;
+  commitSha: string | null;
+}
+
 export interface PipelineHookGateContribution {
   /** True when every applicable declared hook is satisfied — including vacuously, when none
    *  applies. This ANDs with the other two contributors; it never overrides either. */
@@ -172,9 +210,17 @@ export interface PipelineHookGateContribution {
    *  ORDER is significant, and this array is read straight out of query results whose order is not
    *  guaranteed across ticks. */
   entries: PipelineHookGateEntry[];
+  /** Tuples this evaluation found `awaiting` — see `HookTriggerRequest`. Empty when nothing is
+   *  awaiting, and empty for `bakeAlarms`, which is an alarm-ABSENCE check over a window rather
+   *  than a run anything can trigger. */
+  pendingTriggers: HookTriggerRequest[];
 }
 
-const ALLOW_NOTHING_DECLARED: PipelineHookGateContribution = { allowed: true, entries: [] };
+const ALLOW_NOTHING_DECLARED: PipelineHookGateContribution = {
+  allowed: true,
+  entries: [],
+  pendingTriggers: []
+};
 
 /**
  * Resolves every declared wave-boundary hook that applies to this admission and returns its verdict.
@@ -295,6 +341,7 @@ async function evaluateForTargets(
   }
 
   const entries: PipelineHookGateEntry[] = [];
+  const pendingTriggers: HookTriggerRequest[] = [];
   for (const target of input.targets) {
     const subject = subjects.get(target.targetObjectId);
     // Absent means deleted, or a placement missing half its identity (`resolveHookSubjects`). A
@@ -314,7 +361,30 @@ async function evaluateForTargets(
         hook.kind === "bakeAlarms"
           ? await bakeEntry(tx, ctx, subject, hook, target, input.gatedWaveIndex, input.now)
           : await testRunEntry(tx, ctx, bindings, subject, hook, input.gatedWaveIndex, input.now);
-      if (entry) entries.push(entry);
+      if (entry) {
+        entries.push(entry);
+        // Only a TEST hook that is `awaiting` wants a run. `bakeAlarms` is excluded structurally
+        // rather than by a check on `outcome`: it is an alarm-ABSENCE assertion over a window, so
+        // there is nothing to dispatch and its four reasons are not `awaiting` at all.
+        if (entry.outcome === "awaiting" && hook.kind !== "bakeAlarms") {
+          pendingTriggers.push({
+            hook: {
+              componentObjectId: subject.componentObjectId,
+              kind: entry.kind,
+              hookId: hook.hookId,
+              workflow: hook.workflow
+            },
+            change: { objectId: ctx.changeObjectId },
+            // `postMerge` belongs to no wave and is not target-specific — the same two nulls
+            // `EnsureHookRunTriggeredInput` documents, kept aligned here so the run's identity
+            // matches what the poll and the gate will both later derive.
+            target: entry.kind === "postMerge" ? null : { objectId: subject.targetObjectId },
+            waveIndex: input.gatedWaveIndex,
+            artifactDigest: bindings.artifactDigest ?? null,
+            commitSha: bindings.commitSha ?? null
+          });
+        }
+      }
     }
   }
 
@@ -324,7 +394,7 @@ async function evaluateForTargets(
       a.hookId.localeCompare(b.hookId) ||
       a.targetObjectId.localeCompare(b.targetObjectId)
   );
-  return { allowed: entries.every((e) => e.satisfied), entries };
+  return { allowed: entries.every((e) => e.satisfied), entries, pendingTriggers };
 }
 
 /**

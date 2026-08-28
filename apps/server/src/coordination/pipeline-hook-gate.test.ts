@@ -39,13 +39,18 @@ const entry = (overrides: Partial<PipelineHookGateEntry>): PipelineHookGateEntry
 
 describe("describePipelineHookGate — the reason-tree half of the wave-gate Decision", () => {
   it("reports satisfaction, including vacuously for an empty entry set", () => {
-    const contribution: PipelineHookGateContribution = { allowed: true, entries: [] };
+    const contribution: PipelineHookGateContribution = {
+      allowed: true,
+      entries: [],
+      pendingTriggers: []
+    };
     expect(describePipelineHookGate(contribution)).toBe("0 declared pipeline hook(s) satisfied");
   });
 
   it("reports the count when every entry is satisfied", () => {
     const contribution: PipelineHookGateContribution = {
       allowed: true,
+      pendingTriggers: [],
       entries: [entry({ hookId: "a" }), entry({ hookId: "b" })]
     };
     expect(describePipelineHookGate(contribution)).toBe("2 declared pipeline hook(s) satisfied");
@@ -54,6 +59,7 @@ describe("describePipelineHookGate — the reason-tree half of the wave-gate Dec
   it("names only the unsatisfied entries, never the passing siblings beside them", () => {
     const contribution: PipelineHookGateContribution = {
       allowed: false,
+      pendingTriggers: [],
       entries: [
         entry({ hookId: "passing", satisfied: true, outcome: "pass" }),
         entry({
@@ -76,6 +82,7 @@ describe("describePipelineHookGate — the reason-tree half of the wave-gate Dec
   it("joins multiple unsatisfied entries with '; '", () => {
     const contribution: PipelineHookGateContribution = {
       allowed: false,
+      pendingTriggers: [],
       entries: [
         entry({ hookId: "h1", satisfied: false, outcome: "fail" }),
         entry({ hookId: "h2", satisfied: false, outcome: "awaiting" })

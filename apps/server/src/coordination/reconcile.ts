@@ -91,6 +91,7 @@ import {
 } from "./campaign-recipe.js";
 import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
 import { evaluateWaveGate } from "./gates.js";
+import type { HookTriggerRequest } from "./pipeline-hook-gate.js";
 import {
   insertDecision,
   insertDecisionIfChanged,
@@ -116,7 +117,7 @@ import { prewarmGovernanceForChange } from "../governance/gate-orchestrator.js";
 import { reconcileCampaignsOrgTick } from "./campaign-reconcile.js";
 import { runPreDeployArtifactGate } from "./pre-deploy-gate.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
-import { pollNonTerminalHookRuns } from "./pipeline-hook-runs.js";
+import { ensureHookRunTriggered, pollNonTerminalHookRuns } from "./pipeline-hook-runs.js";
 
 /**
  * The resumable reconciliation loop (DESIGN.md §9.3/§9.4, BUILD_AND_TEST.md §8 M3): "pg-boss
@@ -817,7 +818,15 @@ async function reconcileExecutingChange(
       // the log line below fire ONCE per distinct block instead of once per ~2 s tick — the same
       // persist-on-change discipline applied to the log stream, which would otherwise reproduce the
       // very flood this PR fixes, in a different sink.
-      | { kind: "blocked"; decisionId: string; firstBlock: boolean }
+      | {
+          kind: "blocked";
+          decisionId: string;
+          firstBlock: boolean;
+          /** Hook tuples the gate found `awaiting`, carried OUT of the transaction to be dispatched
+           *  after it commits — an executor call inside an open transaction is precisely what the
+           *  trigger path's three-step ordering exists to avoid. */
+          pendingHookTriggers?: HookTriggerRequest[] | undefined;
+        }
       | { kind: "running" }
       | { kind: "already-progressed" };
     try {
@@ -909,7 +918,8 @@ async function reconcileExecutingChange(
           return {
             kind: "blocked",
             decisionId: recorded.decision.id,
-            firstBlock: recorded.created
+            firstBlock: recorded.created,
+            ...(gate.pendingHookTriggers ? { pendingHookTriggers: gate.pendingHookTriggers } : {})
           } as const;
         }
         await markWaveRunning(tx, orgId, activeWave.id);
@@ -927,6 +937,41 @@ async function reconcileExecutingChange(
     // board's own latest-block read). Gated on `firstBlock` for the same reason the Decision itself
     // is: a change parked for a week is one line, not 302,400.
     // "already-progressed": a racing tick already handled this wave's gate; next tick sees its result.
+    // INCREMENT 8 — DISPATCH THE HOOK RUNS THIS GATE IS WAITING ON.
+    //
+    // WHAT THIS CLOSES: `ensureHookRunTriggered` was fully built, tested and had NO PRODUCTION
+    // CALLER. Nothing wrote `pipeline_hook_runs`, so `pollNonTerminalHookRuns` polled an
+    // always-empty table and a declared `postDeploy`/`postMerge` hook blocked its wave forever with
+    // a correct-looking `awaiting` — the "built, tested, installed nowhere" shape, at the top of the
+    // increment-8 stack rather than inside it.
+    //
+    // AFTER THE TRANSACTION AND AFTER THE LOCK, deliberately. The trigger does external executor
+    // I/O, and its own three-step ordering (claim in tx A, dispatch outside, record in tx B) is
+    // built on not being inside someone else's open transaction. Holding the gate lock across an
+    // executor call would also make one unreachable executor stall every other change's gate.
+    //
+    // ONLY ON `blocked`, because that is the only outcome that can carry an awaiting hook: a wave
+    // that ran had nothing to wait for. Re-dispatching on every blocked tick is safe and intended —
+    // `claimHookRun` is `onConflictDoNothing` on the run's identity and `ensureHookRunTriggered`
+    // early-returns when it does not win the claim, so a run already in flight costs one no-op
+    // claim per tick rather than a second dispatch.
+    //
+    // try/catch PER TRIGGER, matching the poll below: one unreachable executor must not take down
+    // the rest of the org's tick, and must not stop the OTHER hooks of the same wave from being
+    // dispatched. A failure here leaves the wave blocked and is retried next tick, which is the
+    // same convergence every other part of this loop relies on.
+    if (gateOutcome.kind === "blocked" && gateOutcome.pendingHookTriggers) {
+      for (const request of gateOutcome.pendingHookTriggers) {
+        try {
+          await ensureHookRunTriggered(db, { orgId, host, masterKey }, request);
+        } catch (err) {
+          console.error(
+            `[reconcile] org ${orgId} change ${change.objectId} hook ${request.hook.hookId}: trigger failed:`,
+            err
+          );
+        }
+      }
+    }
     if (gateOutcome.kind === "blocked" && gateOutcome.firstBlock) {
       console.info(
         `[reconcile] org ${orgId} change ${change.objectId} wave ${activeWave.waveIndex} blocked by governance — decision ${gateOutcome.decisionId} (scp decision get ${gateOutcome.decisionId}); re-evaluated every tick until it clears`
