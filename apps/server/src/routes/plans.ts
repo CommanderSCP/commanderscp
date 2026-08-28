@@ -215,7 +215,8 @@ export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
           tx,
           auth.orgId,
           auth.subjectObjectId,
-          pending.diff
+          pending.diff,
+          pending.stackName
         );
         // EVERY affected object/relationship's scope, checked to completion before any mutation
         // (module doc). A denial throws 403 here, which rolls back the whole transaction.

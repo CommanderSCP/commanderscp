@@ -561,7 +561,21 @@ export const PlanObjectDiffEntrySchema = z.object({
   typeId: z.string(),
   reason: z.string(),
   /** Present for `create`/`update` only. */
-  target: PlanObjectTargetSchema.optional()
+  target: PlanObjectTargetSchema.optional(),
+  /**
+   * ADOPTION (§9) — this entry claims an object that ALREADY EXISTS and was managed by NO stack.
+   *
+   * A QUALIFIER ON THE EXISTING ACTION, not a new `action` value, and the reason is measured rather
+   * than stylistic: adding a member to a response ENUM is a breaking change under the oasdiff gate
+   * (response enum-value additions are breaking; `oneOf` member additions are not), so an `"adopt"`
+   * action would have cost an `api-v2-exception` for a distinction that is genuinely a property OF
+   * a create/update rather than a third kind of thing. An optional boolean is additive.
+   *
+   * Absent or `false` means the object was already this stack's, or is being created fresh. `true`
+   * means a review is looking at a stack CLAIMING EXISTING ESTATE — which §9 requires be visible,
+   * because it is the one action whose blast radius is invisible from the manifest alone.
+   */
+  adopted: z.boolean().optional()
 });
 export type PlanObjectDiffEntry = z.infer<typeof PlanObjectDiffEntrySchema>;
 

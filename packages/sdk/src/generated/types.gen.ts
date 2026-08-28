@@ -12231,6 +12231,7 @@ export type CreatePlanResponses = {
                         [key: string]: unknown;
                     };
                 };
+                adopted?: boolean;
             }>;
             relationships: Array<{
                 kind: 'relationship';
@@ -12562,6 +12563,7 @@ export type GetPlanResponses = {
                         [key: string]: unknown;
                     };
                 };
+                adopted?: boolean;
             }>;
             relationships: Array<{
                 kind: 'relationship';
@@ -12905,6 +12907,7 @@ export type ApplyPlanResponses = {
                             [key: string]: unknown;
                         };
                     };
+                    adopted?: boolean;
                 }>;
                 relationships: Array<{
                     kind: 'relationship';

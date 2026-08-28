@@ -282,7 +282,13 @@ async function syncOneManifest(
   }
 
   const diff = await computeDiffForManifest(tx, orgId, manifest);
-  const { checks, objectResolutions } = await prepareApplyChecks(tx, orgId, team.id, diff);
+  const { checks, objectResolutions } = await prepareApplyChecks(
+    tx,
+    orgId,
+    team.id,
+    diff,
+    manifest.stackName
+  );
 
   // EVERY check evaluated, not the first denial (module doc).
   const refusals: SyncAuthzRefusal[] = [];

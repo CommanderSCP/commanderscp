@@ -48484,6 +48484,9 @@
                                   "labels"
                                 ],
                                 "additionalProperties": false
+                              },
+                              "adopted": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -50176,6 +50179,9 @@
                                   "labels"
                                 ],
                                 "additionalProperties": false
+                              },
+                              "adopted": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -51871,6 +51877,9 @@
                                       "labels"
                                     ],
                                     "additionalProperties": false
+                                  },
+                                  "adopted": {
+                                    "type": "boolean"
                                   }
                                 },
                                 "required": [

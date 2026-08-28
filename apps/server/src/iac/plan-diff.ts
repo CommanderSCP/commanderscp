@@ -72,6 +72,42 @@ export function managedLabels(stackName: string): Record<string, unknown> {
  * reason: a predicate that still ACCEPTED a labels map would let a caller re-introduce the evasion
  * by passing the wrong argument, and it would type-check. There is one input and it is server-written.
  */
+/**
+ * STACK THEFT — a manifest claiming an object another stack already manages (§9: "adopting an
+ * object already managed by a DIFFERENT stack is refused (409) — stack theft is not a merge").
+ *
+ * ================================================================================================
+ * WHAT THIS CLOSES, MEASURED ON THE TREE BEFORE IT EXISTED
+ * ================================================================================================
+ * `stampObjectStackOwnership`'s predicate is `managed_by_stack IS NULL OR <> $stack`, so an apply
+ * re-stamped ANY object in its diff — including one another stack owned. Its own header states the
+ * consequence plainly and treats it as the design ("the only other way out would be another stack
+ * declaring it — which is a `create`/`update`/`noop` in that stack's diff, i.e. a re-stamp by this
+ * same function"). The effect: a manifest that names a foreign URN takes the object over silently,
+ * and the LOSING stack's next apply then proposes deleting rows it no longer owns, or proposes
+ * nothing at all for an object it still believes it manages.
+ *
+ * ADOPTION OF AN *UNMANAGED* OBJECT REMAINS LEGAL AND IS THE POINT — it is how an existing estate
+ * comes under IaC (§9, and `scp iac export`'s whole purpose). Only the cross-stack case is refused.
+ * The two are distinguished by reading `managed_by_stack`, which is server-written and, unlike the
+ * labels it replaced, not writable by the subject of the decision.
+ */
+export class StackOwnershipConflictError extends Error {
+  constructor(
+    readonly conflicts: readonly { urn: string; ownedBy: string }[],
+    readonly stackName: string
+  ) {
+    super(
+      `stack '${stackName}' declares ${conflicts.length} object(s) already managed by another ` +
+        `stack: ` +
+        conflicts.map((c) => `'${c.urn}' (owned by '${c.ownedBy}')`).join(", ") +
+        ` — adopting an object another stack manages is refused; remove it from that stack's ` +
+        `manifest first, or declare it under the stack that owns it`
+    );
+    this.name = "StackOwnershipConflictError";
+  }
+}
+
 export function isStackManaged(
   managedByStack: string | null | undefined,
   stackName: string
@@ -663,6 +699,9 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
   let noops = 0;
 
   const objectEntries: PlanObjectDiffEntry[] = [];
+  /** Collected across the WHOLE loop rather than thrown at the first one, so an operator fixing a
+   *  bad manifest sees every conflicting URN at once instead of one per attempt. */
+  const ownershipConflicts: { urn: string; ownedBy: string }[] = [];
 
   for (const obj of manifest.objects) {
     const target: PlanObjectTarget = {
@@ -677,6 +716,16 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     };
 
     const existing = existingByUrn.get(obj.urn);
+    // ADOPTION AND THEFT ARE THE SAME READ, taken once and used twice: `managed_by_stack` is NULL
+    // for an unmanaged object (adoptable), this stack's name (ordinary), or another stack's (theft).
+    const adopted = existing !== undefined && existing.managedByStack === null;
+    if (
+      existing !== undefined &&
+      existing.managedByStack !== null &&
+      existing.managedByStack !== manifest.stackName
+    ) {
+      ownershipConflicts.push({ urn: obj.urn, ownedBy: existing.managedByStack });
+    }
     if (!existing) {
       objectEntries.push({
         kind: "object",
@@ -707,7 +756,13 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
         action: "noop",
         urn: obj.urn,
         typeId: obj.typeId,
-        reason: "matches current state"
+        // A `noop` CAN be an adoption: the declared state already matches, but ownership does not.
+        // Apply still stamps it, so calling this a plain no-op would hide the one thing that
+        // changes.
+        reason: adopted
+          ? "ADOPTING an unmanaged object; declared state already matches"
+          : "matches current state",
+        ...(adopted ? { adopted: true } : {})
       });
       noops++;
     } else {
@@ -716,7 +771,12 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
         action: "update",
         urn: obj.urn,
         typeId: obj.typeId,
-        reason: `${changedFields.join(", ")} changed`,
+        // The reason SAYS adoption when it is one — §9 requires a review to see a stack claiming
+        // existing estate, and "properties changed" would hide the part that matters.
+        reason: adopted
+          ? `ADOPTING an unmanaged object; ${changedFields.join(", ")} changed`
+          : `${changedFields.join(", ")} changed`,
+        ...(adopted ? { adopted: true } : {}),
         target
       });
       updates++;
@@ -1328,6 +1388,13 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
         "declared on a component this stack owns, no longer present in the desired manifest's convergence"
     });
     deletes++;
+  }
+
+  // REFUSED BEFORE ANYTHING IS RETURNED, so a stolen object cannot appear in a reviewable plan at
+  // all. `plans-repo.ts` maps this to a 409 at BOTH doors — plan computation and apply — because a
+  // plan is stored and applied later, and ownership can change in between.
+  if (ownershipConflicts.length > 0) {
+    throw new StackOwnershipConflictError(ownershipConflicts, manifest.stackName);
   }
 
   return {
