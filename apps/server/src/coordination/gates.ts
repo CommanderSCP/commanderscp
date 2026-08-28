@@ -11,6 +11,7 @@ import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import {
   describePipelineHookGate,
   evaluatePipelineHookGate,
+  type HookTriggerRequest,
   type PipelineHookGateContext,
   type PipelineHookGateEntry
 } from "./pipeline-hook-gate.js";
@@ -54,6 +55,14 @@ export interface GateVerdict {
   verdict: "allow" | "block";
   reasonTree: Record<string, unknown>;
   inputContext: Record<string, unknown>;
+  /** Hook tuples the pipeline-hook gate found `awaiting` — carried OUT of the caller's transaction
+   *  so they can be dispatched after it commits (`HookTriggerRequest`). Absent on the
+   *  `lifecycle_edge` path, which evaluates no pipeline hooks.
+   *
+   *  A VERDICT FIELD RATHER THAN A SIDE CHANNEL because the trigger set and the block reason are
+   *  the same evaluation's output: a caller that acts on one and drops the other is exactly the
+   *  drift this shape exists to prevent — the gate would block on a tuple nothing dispatches. */
+  pendingHookTriggers?: HookTriggerRequest[] | undefined;
   /** Every active freeze this transition overrode (CRITICAL #2 — possibly several) —
    *  transition.ts writes one high-severity `freeze.override` audit event per entry. */
   freezeOverrides?: { freezeId: string; reason: string; scopeObjectId: string }[] | undefined;
@@ -293,6 +302,9 @@ export async function evaluateWaveGate(
   const hookBlock = hookGate !== undefined && !hookGate.allowed ? hookGate : undefined;
 
   return {
+    ...(hookGate && hookGate.pendingTriggers.length > 0
+      ? { pendingHookTriggers: hookGate.pendingTriggers }
+      : {}),
     verdict: outcome.verdict === "block" || hookBlock !== undefined ? "block" : "allow",
     inputContext: {
       ...outcome.inputContext,
