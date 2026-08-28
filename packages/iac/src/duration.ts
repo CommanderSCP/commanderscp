@@ -26,6 +26,12 @@
  * `ContinuousTest`, `BakeAlarms`, the rollout classes — ship in a later increment against this
  * class); this doc note is here so that increment does not rediscover the hazard.
  *
+ * UPDATE: the L1 half of that increment has landed — `Stack.addPipelineHook`/`addRollout`/
+ * `addConvergence` and the three manifest collections `synth()` now assembles. Those doors take
+ * the contract's own plain-number seconds (`everySeconds`, `maxAgeSeconds`, `quietWindowSeconds`,
+ * `pauseSeconds`), so they still embed no `Duration`. The hazard above becomes live only when the
+ * typed L2 constructs accept a `Duration` prop and must resolve it before it reaches the entry.
+ *
  * ## Validation
  *
  * Every factory rejects a non-integer or negative amount at CONSTRUCTION time, loudly — never a
