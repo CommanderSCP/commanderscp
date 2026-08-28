@@ -38,7 +38,16 @@ export type Permission =
   | "role_binding:write"
   | "graph:query"
   | "audit:read"
-  | "org:admin"
+  // (`org:admin` was here. Seeded to Owner alone by drizzle/0002 and demanded at ZERO call sites
+  // for its whole life, it was REMOVED by drizzle/0099 — the one deliberate subtraction in an
+  // otherwise additive design, taken now because role-model.md §5 step 5's `GET /roles` is about
+  // to publish these strings, and a permission that gates nothing while advertising authority in
+  // a roles listing is worse than no permission at all. Subtraction from a built-in role is
+  // normally unsafe here — `org_id IS NULL` rows are SHARED SINGLETONS read by every org through
+  // the `roles` RLS `USING (... OR org_id IS NULL)` clause, so removing a permission narrows every
+  // org on every deployment at once with no per-org opt-out (role-model.md §2). It is safe for
+  // exactly this one because no code path has ever asked for it, which is a property the
+  // filterless census re-run for drizzle/0099 measured rather than assumed.)
   | "approval:write"
   // M4 governance (DESIGN.md §7's example role bindings name these exactly):
   | "policy:write"
@@ -108,7 +117,89 @@ export type Permission =
   // would then carry two unrelated blast radii — a freeze-override holder could waive migration
   // deadlines and a deadline-waiver holder could bypass release freezes — and neither grant could
   // afterwards be narrowed without taking the other with it.
-  | "campaign:deadline-override";
+  | "campaign:deadline-override"
+  // ===========================================================================================
+  // THE THREE PERMISSION SPLITS (role-model.md §5 step 3; drizzle/0099)
+  // ===========================================================================================
+  // The permission census behind them found `object:write` demanded at 62 call sites and
+  // `object:read` at 45 — 107 of 170 — while every purpose-built high-consequence permission
+  // (`freeze:override`, `change:emergency`, `campaign:deadline-override`, `approval:write`,
+  // `audit:read`) is demanded exactly once. The care spent designing narrow permissions was not
+  // reflected in what actually gated the estate. These three take the highest-consequence acts
+  // back out of the two generic verbs.
+  //
+  // ONE OF THE THREE SUBSTITUTES, TWO ARE ADDED. Which is which is the load-bearing detail and is
+  // stated on each member below; getting it backwards either silently deletes a bar or breaks a
+  // door nobody meant to break.
+
+  // SUBSTITUTES `object:write` at the three CREDENTIAL doors (role-model.md §1.3d): `PUT` and
+  // `DELETE /api/v1/secrets/{key}` (`routes/executors.ts`) and `PUT
+  // /api/v1/change-sources/{sourceKind}/webhook-secret` (`routes/change-sources.ts`). Scope is
+  // unchanged — still the org root, still one of §8.6's deliberate escalation bars — and ONLY the
+  // permission moves.
+  //
+  // THREE UNRELATED BLAST RADII SHARED ONE GRANT. Writing the tokens SCP uses to reach
+  // GitHub/ArgoCD/Terraform; DELETING them, which is an availability kill switch for all
+  // coordination on the deployment; and rotating the HMAC secret that authenticates inbound
+  // webhooks — where whoever sets the secret can thereafter forge signed source events into the
+  // estate. There was no way to give anyone ordinary org-root `object:write` without also handing
+  // them every execution-system credential the org holds.
+  //
+  // THIS IS A BREAKING CHANGE, DELIBERATELY, AND THE ONLY SUBSTITUTION OF THE THREE. A principal
+  // holding org-root `object:write` and nothing else is now 403 at all three doors. drizzle/0099
+  // grants it to Owner, Administrator and the new OrgAdmin, so the built-in ladder is unaffected;
+  // what loses the capability is a custom or purpose role that holds `object:write` alone.
+  //
+  // WITHHELD FROM SecurityOfficer ON PURPOSE. Holding the org's outbound credentials is an
+  // OPERATIONS act, not a compliance one — a security officer authors ceilings and decides
+  // waivers, and giving them custody of the tokens that reach production would put the auditor
+  // inside the thing being audited.
+  | "secret:write"
+  // ADDED TO — never substituted for — the `policy:write` already demanded on the scan-override
+  // DECIDE door (approve | deny | revoke) in `routes/scan-override-grants.ts`. Both are demanded,
+  // at the same derived tier object, in that order.
+  //
+  // AUTHORING A SCAN CEILING AND WAIVING IT WERE THE SAME PERMISSION STRING AT THE SAME SCOPE
+  // (role-model.md §1.3e): rule authoring is `policy:write` at the tier
+  // (`routes/typed-registries.ts`), and deciding a waiver against that rule was `policy:write` at
+  // the tier too. A textbook separation-of-duty violation, which the route file itself concedes —
+  // its raiser≠approver check "survives intact the moment any SECOND principal holds the same
+  // scoped `policy:write`", which is to say it closes the one-actor shape and nothing else.
+  //
+  // GRANTED TO Owner, Administrator AND the new SecurityOfficer (owner ruling D3 — no sixth
+  // `ScanWaiverApprover` role). Granting it to Administrator is what makes this a NO-OP on every
+  // live deployment: `policy:write` is held today by Administrator and Owner alone (drizzle/0010),
+  // so every principal who can decide a waiver today still can, and no in-flight waiver starts
+  // 403ing on upgrade.
+  //
+  // THE SEPARATION OF DUTY IS THAT IT IS SEPARATELY WITHHOLDABLE. OrgAdmin holds `policy:write`
+  // and NOT this, so an org can seat an estate administrator who authors org policy and a security
+  // officer who owns the waiver, and neither is the other. That was impossible while the two acts
+  // shared one string, because the cumulative ladder welds a permission's blast radius to its rank.
+  | "scan:override"
+  // ADDED TO — never substituted for — the `object:write` already demanded at EVERY target of
+  // `POST /api/v1/changes/{id}/accept` and `POST /api/v1/changes/{id}/rollback`
+  // (`routes/changes.ts`). Same per-target loop, same EVERY-target quantifier, same org-root arm
+  // evaluated first; see `assertAcceptableAtEveryChangeTarget`.
+  //
+  // WHY PER TARGET AND NOT AT THE CHANGE (role-model.md §4.3/§8.4, MEASURED). A change has no
+  // scope of its own: `objects.domain_id` for a change is the org root for every one of the five
+  // internal `proposeChange` callers, and `scp change propose` has no `--domain` flag, so both
+  // `scopeObjectId: change.domainId` and `scopeObjectId: change.id` are inert — they READ as a
+  // narrowing and ARE the org-root pin they replaced.
+  //
+  // `cancel` DELIBERATELY DOES NOT DEMAND IT. Cancelling STOPS a release rather than authorizing
+  // one; folding it in would make a cancel-only incident-responder role — hold `object:write`,
+  // stop a bad release, authorize nothing — inexpressible, and that role is the obvious one an org
+  // wants to seat on-call.
+  //
+  // THIS IS THE ONE INTENTIONALLY BREAKING GRANT IN THE DESIGN. drizzle/0099 grants it to Owner,
+  // Administrator, OrgAdmin, ServiceAdmin and ComponentAdmin, and DELIBERATELY NOT to Operator or
+  // Approver — both of which hold `object:write` and can accept and roll back releases today. On
+  // upgrade they stop being able to, which is the point: accepting a release into production is
+  // not the same authority as editing the graph, and it was only ever the same string because the
+  // ladder had no way to say otherwise. It must be announced, not discovered.
+  | "change:accept";
 
 export interface PermissionCheck {
   orgId: string;
@@ -116,6 +207,118 @@ export interface PermissionCheck {
   permission: Permission;
   /** The object whose containment chain is checked — usually the object being read/written. */
   scopeObjectId: string;
+}
+
+/**
+ * THE `member_of` CLOSURE — **ONE definition of the walk, emitted in either direction.**
+ *
+ * `member_of` is registered `from_id = the member`, `to_id = the group`. Reading it forwards answers
+ * "which groups does this principal count as" (`subjectExpandCte`); reading the SAME edges backwards
+ * answers "which principals does this group reach" (`memberExpandCte`). Everything else about the
+ * two is identical — the org predicate, the live-edge filter, the depth bound, and `UNION` rather
+ * than `UNION ALL` so a `member_of` cycle terminates instead of spinning — so the direction is a
+ * parameter here rather than a second body.
+ *
+ * That is not tidiness. The two directions are used to answer the two halves of ONE rule
+ * (`authz/role-binding-door.ts` §2a and §2b): the join door asks "what will this joiner inherit"
+ * and the grant door asks "who does this binding reach". If the walks disagreed about a live edge,
+ * about the bound, or about cycle termination, one ordering of the same two requests would be
+ * guarded and the other would not — which is the defect §2b exists to close, re-introduced one level
+ * down.
+ *
+ * `sql.raw` is used for the CTE and column NAMES only. Both are module-local string literals chosen
+ * by the two wrappers below; no caller supplies either.
+ */
+type MemberOfWalkDirection = "member-to-groups" | "group-to-members";
+
+function memberOfClosureCte(opts: {
+  orgId: string;
+  seedObjectId: string;
+  cteName: string;
+  columnName: string;
+  direction: MemberOfWalkDirection;
+  maxDepth: number;
+}) {
+  const cte = sql.raw(opts.cteName);
+  const column = sql.raw(opts.columnName);
+  const step =
+    opts.direction === "member-to-groups"
+      ? sql`SELECT r.to_id, w.depth + 1 FROM relationships r JOIN ${cte} w ON r.from_id = w.${column}`
+      : sql`SELECT r.from_id, w.depth + 1 FROM relationships r JOIN ${cte} w ON r.to_id = w.${column}`;
+  return sql`
+    ${cte} AS (
+      SELECT ${opts.seedObjectId}::uuid AS ${column}, 0 AS depth
+      UNION
+      ${step}
+      WHERE r.org_id = ${opts.orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
+        AND w.depth < ${opts.maxDepth}
+    )
+  `;
+}
+
+/**
+ * THE `member_of` SUBJECT EXPANSION — emitted as the `subject_expand` CTE term.
+ *
+ * "Who does this subject count as" — itself, plus every group/team it transitively belongs to,
+ * walked `from_id -> to_id` over live `member_of` edges. It is the reason a role binding held by a
+ * GROUP grants authority to that group's members, and therefore the reason `graph/relationships-repo.ts`
+ * has to apply the role-binding door's subset rule when a `member_of` edge is CREATED
+ * (`authz/role-binding-door.ts` §2a): writing this edge is what makes the binding reach a new
+ * principal.
+ *
+ * EXTRACTED 2026-08-27 BECAUSE IT WAS ABOUT TO BE HAND-TYPED FOR THE FIFTH TIME. The three copies in
+ * this file — `hasPermission`, `hasRoleAtScope` and `assertDenyNotTruncated` — were byte-identical
+ * apart from the depth bound, and they now compose this. Copies that are NOT converted here, named
+ * rather than left for the next census to rediscover: `authz/readable-scope.ts` (the LIST-door
+ * closure) and `governance/policy-resolve.ts` (`isMemberOf`, and `ownedByGroupOrItsMembers`'s
+ * downward group→members walk, which is `memberExpandCte`'s question with a different SELECT list
+ * and deliberately no depth bound). Those are out of this change's scope; this docblock is the
+ * record that they exist.
+ */
+export function subjectExpandCte(
+  orgId: string,
+  subjectObjectId: string,
+  // ADR-0037: the shared bound by default; the truncation PROBE passes one-past-the-bound so a deny
+  // can be told apart from a walk that was cut. Callers other than the probe never override.
+  maxDepth: number = CONTAINMENT_WALK_MAX_DEPTH
+) {
+  return memberOfClosureCte({
+    orgId,
+    seedObjectId: subjectObjectId,
+    cteName: "subject_expand",
+    columnName: "subject_id",
+    direction: "member-to-groups",
+    maxDepth
+  });
+}
+
+/**
+ * THE INVERSE WALK — emitted as the `member_expand` CTE term. Same edges, same bound, read the other
+ * way: the seed group/team, plus every principal (and nested group) that transitively reaches it.
+ *
+ * WHY A SECOND DIRECTION EXISTS AT ALL. `subjectExpandCte` is seeded at a KNOWN principal and finds
+ * the groups above it, which is what a permission check needs. `authz/role-binding-door.ts` §2b asks
+ * the opposite question — a binding is about to be written ON a group, and the door needs the
+ * principals BELOW it — and the group is the known end there. Seeding `subjectExpandCte` at the
+ * group would walk further UP into the groups the group belongs to, which is a different set and
+ * answers nothing about who the binding empowers.
+ *
+ * The seed row is included at depth 0, so a caller that also wants "the subject itself" gets it
+ * without a special case; a caller that wants members ONLY filters `depth > 0`.
+ */
+export function memberExpandCte(
+  orgId: string,
+  groupObjectId: string,
+  maxDepth: number = CONTAINMENT_WALK_MAX_DEPTH
+) {
+  return memberOfClosureCte({
+    orgId,
+    seedObjectId: groupObjectId,
+    cteName: "member_expand",
+    columnName: "member_id",
+    direction: "group-to-members",
+    maxDepth
+  });
 }
 
 /**
@@ -234,15 +437,7 @@ async function assertDenyNotTruncated(
   denialOf: string
 ): Promise<void> {
   const result = await tx.execute<{ kind: string }>(sql`
-    WITH RECURSIVE subject_expand AS (
-      SELECT ${subjectObjectId}::uuid AS subject_id, 0 AS depth
-      UNION
-      SELECT r.to_id, se.depth + 1
-      FROM relationships r
-      JOIN subject_expand se ON r.from_id = se.subject_id
-      WHERE r.org_id = ${orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
-        AND se.depth < ${WALK_TRUNCATION_PROBE_DEPTH}
-    ),
+    WITH RECURSIVE ${subjectExpandCte(orgId, subjectObjectId, WALK_TRUNCATION_PROBE_DEPTH)},
     ${scopeExpandCte(orgId, scopeObjectId, WALK_TRUNCATION_PROBE_DEPTH)}
     (SELECT 'subject' AS kind FROM subject_expand WHERE depth >= ${WALK_TRUNCATION_PROBE_DEPTH} LIMIT 1)
     UNION ALL
@@ -262,15 +457,7 @@ async function assertDenyNotTruncated(
 
 export async function hasPermission(tx: TenantTx, check: PermissionCheck): Promise<boolean> {
   const result = await tx.execute<{ effect: string }>(sql`
-    WITH RECURSIVE subject_expand AS (
-      SELECT ${check.subjectObjectId}::uuid AS subject_id, 0 AS depth
-      UNION
-      SELECT r.to_id, se.depth + 1
-      FROM relationships r
-      JOIN subject_expand se ON r.from_id = se.subject_id
-      WHERE r.org_id = ${check.orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
-        AND se.depth < ${CONTAINMENT_WALK_MAX_DEPTH}
-    ),
+    WITH RECURSIVE ${subjectExpandCte(check.orgId, check.subjectObjectId)},
     ${scopeExpandCte(check.orgId, check.scopeObjectId)}
     SELECT DISTINCT rb.effect
     FROM role_bindings rb
@@ -330,15 +517,7 @@ export interface RoleCheck {
  */
 export async function hasRoleAtScope(tx: TenantTx, check: RoleCheck): Promise<boolean> {
   const result = await tx.execute<{ effect: string }>(sql`
-    WITH RECURSIVE subject_expand AS (
-      SELECT ${check.subjectObjectId}::uuid AS subject_id, 0 AS depth
-      UNION
-      SELECT r.to_id, se.depth + 1
-      FROM relationships r
-      JOIN subject_expand se ON r.from_id = se.subject_id
-      WHERE r.org_id = ${check.orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
-        AND se.depth < ${CONTAINMENT_WALK_MAX_DEPTH}
-    ),
+    WITH RECURSIVE ${subjectExpandCte(check.orgId, check.subjectObjectId)},
     ${scopeExpandCte(check.orgId, check.scopeObjectId)}
     SELECT DISTINCT rb.effect
     FROM role_bindings rb

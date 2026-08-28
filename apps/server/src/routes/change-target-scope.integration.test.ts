@@ -97,6 +97,8 @@ describe("change doors are scoped to the change's targets, not to the org root",
   let componentB: string;
   let adminA: TestUser;
   let adminB: TestUser;
+  /** Component-scoped like `adminA`, but on `ComponentAdmin` — which holds `change:accept`. */
+  let acceptorA: TestUser;
 
   const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
@@ -150,6 +152,12 @@ describe("change doors are scoped to the change's targets, not to the org root",
 
     adminA = await createTestUser(server, org, [{ role: "Operator", scope: componentA }]);
     adminB = await createTestUser(server, org, [{ role: "Operator", scope: componentB }]);
+    // A SECOND component-scoped principal, on a role that also holds `change:accept`
+    // (drizzle/0099). `Operator` deliberately does NOT, so from step 3 onward `adminA` can cancel
+    // but not accept — see the two `accept`/`rollback` cases below, which use this user for the
+    // "the SCOPE door opens" half and keep `adminA` for the refusals. Without the split, those two
+    // cases would have gone red on a PERMISSION change while claiming to be about SCOPE.
+    acceptorA = await createTestUser(server, org, [{ role: "ComponentAdmin", scope: componentA }]);
   });
 
   afterAll(async () => {
@@ -263,11 +271,17 @@ describe("change doors are scoped to the change's targets, not to the org root",
     // The change is `proposed`, and `proposed -> accepted` is not a legal edge, so the honest
     // outcome once authority is granted is the state conflict. Asserting "409, not 403" is what
     // makes this test fail loudly if the door goes back to demanding an org-root binding.
+    //
+    // THE PRINCIPAL IS `ComponentAdmin`, NOT `Operator`, SINCE drizzle/0099. The door now demands
+    // `object:write` AND `change:accept` at every target; Operator holds only the first, by design
+    // (role-model.md §5 step 3 — the one intentional breakage). Using a role that holds both keeps
+    // this case about the SCOPE walk, which is what it was written to measure. The permission half
+    // is measured next door, in both directions.
     const changeId = await propose("accept-mine", [componentA]);
     const res = await server.app.inject({
       method: "POST",
       url: `/api/v1/changes/${changeId}/accept`,
-      headers: bearer(adminA.token),
+      headers: bearer(acceptorA.token),
       payload: {}
     });
     expect(res.statusCode).not.toBe(403);
@@ -286,11 +300,13 @@ describe("change doors are scoped to the change's targets, not to the org root",
   });
 
   it("POST /changes/:id/rollback — the authority door OPENS for a single-target change of theirs", async () => {
+    // `ComponentAdmin` for the same reason `accept` above uses it: a rollback proposes a NEW change
+    // carrying the original's target set, so drizzle/0099 puts it behind `change:accept` too.
     const changeId = await propose("rollback-mine", [componentA]);
     const res = await server.app.inject({
       method: "POST",
       url: `/api/v1/changes/${changeId}/rollback`,
-      headers: bearer(adminA.token),
+      headers: bearer(acceptorA.token),
       payload: { reason: "revert" }
     });
     expect(res.statusCode).not.toBe(403);

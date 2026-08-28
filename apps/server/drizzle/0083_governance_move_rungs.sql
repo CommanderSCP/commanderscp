@@ -137,6 +137,73 @@ COMMENT ON TABLE governance_move_instance_rung IS
 -- `policy:write` makes "moving a governed object" an Administrator act under an enabled rung, while
 -- the daily Operator reorganisation continues everywhere no rung is set.
 --
+-- ------------------------------------------------------------------------------------------------
+-- CORRECTION 2026-08-27 — the parenthetical above expired; the grant did not.
+-- ------------------------------------------------------------------------------------------------
+-- COMMENT ONLY. Nothing below this line changes, and no statement in this file is edited: drizzle
+-- gates each migration on its journal `when` (`db/journal-ordering.test.ts` quotes the loop), never
+-- on the file's hash, so a comment cannot cause a re-run — and the SQL a shipped migration executed
+-- must stay a historical record either way.
+--
+-- "(and no route authors a role yet)" was the load-bearing half of the argument that WITHHOLDING
+-- `governance:move` from Operator was worth doing at all: with no way to seat a principal holding
+-- `object:write` and NOT `governance:move`, the withholding described a role nobody could ever have.
+-- That is no longer true, in two steps that landed together:
+--
+--   * `drizzle/0099` seeds `ComponentAdmin`, which holds `object:write` and DELIBERATELY NOT
+--     `governance:move` — a component administrator operates their component and does not move it
+--     out from under the governance reach it sits in — and `ServiceAdmin`, which holds both;
+--   * `routes/role-bindings.ts` (role-model.md §5 step 5) makes those roles BINDABLE through the
+--     API, where before this the only writers of `role_bindings` were the bootstrap-admin and
+--     JIT-OIDC paths.
+--
+-- So the lattice is now live rather than pending: the ComponentAdmin/ServiceAdmin split IS the
+-- distinction this grant was reserving, and it exists on any deployment that runs 0099. Still no
+-- route AUTHORS a role (custom roles are role-model.md §5 step 10, gated behind the
+-- `hasRoleAtScope` name-collision quorum bypass), so the clause is only half stale — but the half
+-- it rested on is gone, and the grant below stands on its own merits now rather than on an absence.
+--
+-- ------------------------------------------------------------------------------------------------
+-- SECOND CORRECTION, SAME DAY — the paragraph above closed on an exhaustiveness claim that was
+-- FALSE, and the thing it was false about is this grant's entire point.
+-- ------------------------------------------------------------------------------------------------
+-- "The grant below stands on its own merits" says that WITHHOLDING `governance:move` from Operator
+-- means something: that an Operator cannot move a governed object under an enabled rung. That was not
+-- true when it was written. A role binding held by a GROUP resolves for every member
+-- (`authz/resolve.ts`'s `subject_expand` walks `member_of` from_id -> to_id), so any Operator could
+-- write `member_of` into a group bound to `ServiceAdmin` — or `Administrator`, or `Owner` — and hold
+-- `governance:move` at that binding's scope immediately, with NO migration, NO grant, and NO
+-- `role_bindings` row naming them. Writing that edge takes `relationship:write` at both endpoints,
+-- which is precisely what "Operator and above hold `object:write` everywhere in the org" also means
+-- for edges: an org-root Operator's `relationship:write` is not narrow.
+--
+-- CLOSED 2026-08-27 by `authz/role-binding-door.ts` §2a, which applies the no-escalation subset rule
+-- to CREATING a `member_of` edge whose target holds bindings, at `graph/relationships-repo.ts`'s
+-- `createRelationship` — the choke point every local edge writer funnels through, IaC apply included,
+-- with the federation-import carve-out that file already takes. An Operator joining a
+-- `governance:move`-bearing group is now refused, naming the permissions it does not hold.
+--
+-- THIRD CORRECTION, SAME DAY — the paragraph above was rewritten to close on ANOTHER exhaustiveness
+-- claim ("the subset rule bounds BOTH doors"), and the reversed ordering of the same two requests
+-- disproved it: an Operator joins an EMPTY team, an Owner then binds a `governance:move`-bearing role
+-- to that team, and the Operator holds the permission. `authz/role-binding-door.ts` §2b now applies
+-- the grant door's subject refusals to a group's members, so the third door exists too — but this
+-- comment is not going to make a fourth claim about the whole system. WHAT IS TRUE AND CHECKED:
+--
+--   * granting a role requires holding its permissions at that scope (§2);
+--   * joining a role-bearing group requires the same of the actor writing the edge (§2a);
+--   * a grant whose subject is a group/team is refused when it would reach a principal this door
+--     will not bind directly (§2b).
+--
+-- KNOWN OPEN, and the full list with its reasoning is in `authz/role-binding-door.ts` §8: §2a does
+-- not apply the `role_binding:write` bar, so `relationship:write` alone chooses who is in a group;
+-- a grant to a group is BLIND to the members' standing, and §2b measured why a standing-based
+-- refusal there can never fire; and the federation-import path is exempt from §2a by design. So the
+-- honest statement about THIS grant is the narrow one: withholding `governance:move` from Operator
+-- means an Operator cannot obtain it through a door that reads their own standing. It does not mean
+-- no sequence of other principals' authorised acts can end with an Operator holding it.
+-- COMMENT ONLY, on the same grounds as the corrections above: no statement in this file changes.
+--
 -- Guarded against double-append exactly as 0010 guards its four grants.
 -- ===========================================================================================
 

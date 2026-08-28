@@ -234,8 +234,11 @@ describe("RBAC evaluator: inheritance + deny-override matrix", () => {
     const user = await makeSubject("user", "matrix-viewer-only");
     await bind(user.id, "Viewer", orgRootId);
 
-    // Held by no role the subject has:
-    expect(await can(user.id, "org:admin", serviceId)).toBe(false);
+    // Held by no role the subject has. (`secret:write` here because `org:admin` — which this case
+    // used to name — was deleted by drizzle/0099: it gated nothing at any call site, and a
+    // permission that gates nothing cannot demonstrate fail-closed on an UNHELD one. `secret:write`
+    // is a real permission, demanded at three live doors, that a Viewer does not hold.)
+    expect(await can(user.id, "secret:write", serviceId)).toBe(false);
     expect(await can(user.id, "role_binding:write", serviceId)).toBe(false);
     // Not a permission any role grants at all — fails closed rather than erroring open:
     expect(await can(user.id, "made:up-permission" as Permission, serviceId)).toBe(false);

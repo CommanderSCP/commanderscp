@@ -20,6 +20,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerPatRoutes } from "./routes/pats.js";
 import { registerOidcRoutes } from "./routes/oidc.js";
 import { registerDeviceFlowRoutes } from "./routes/device-flow.js";
+import { registerRoleBindingRoutes } from "./routes/role-bindings.js";
 import { registerObjectRoutes } from "./routes/objects.js";
 import { registerTypeRegistryRoutes } from "./routes/type-registry.js";
 import { registerObjectRoutes as registerGenericObjectRoutes } from "./routes/objects-generic.js";
@@ -268,6 +269,11 @@ export async function buildApp(
   registerPatRoutes(app, deps);
   registerOidcRoutes(app, deps);
   registerDeviceFlowRoutes(app, deps);
+  // role-model.md §5 step 5 — `GET /roles` + `GET/POST/DELETE /role-bindings`, the door that makes
+  // `role_binding:write` mean something after gating ZERO call sites since drizzle/0002. Pinned by
+  // `routes/rbac-role-binding-door.integration.test.ts`'s WIRING case: delete this line and the
+  // roles read 404s, which is what "built, never installed" looks like from the outside.
+  registerRoleBindingRoutes(app, deps);
   registerObjectRoutes(app, deps); // M0 legacy /objects/service contract (unchanged)
   registerTypeRegistryRoutes(app, deps);
   registerGenericObjectRoutes(app, deps); // M1 generic /objects/{type}

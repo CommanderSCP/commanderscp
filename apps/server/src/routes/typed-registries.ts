@@ -410,7 +410,21 @@ export function registerTypedRegistryRoutes(
         200: GraphObjectSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7), inherited from
+        // `graph/objects-repo.ts`'s `deleteObject`. DECLARED ON THE TEMPLATE, therefore on all ten
+        // typed registries, and NOT on a hand-picked four — even though only `user`,
+        // `service-account`, `group` and `team` can hold a role binding through the write door.
+        // `role_bindings.subject_id` is a bare uuid with no foreign key and no type constraint (the
+        // property `ROLE_BINDING_SUBJECT_TYPES` names), so a hand-written or restored row can make
+        // ANY object a binding's subject, and `objectTouchesRoleAuthority` — which is what decides
+        // whether the floor runs — reads that column and not a type. Narrowing the declaration to
+        // the four would be a filter over the symptom rather than the property, and over-declaring
+        // a response code costs a client nothing. Additive under the oasdiff gate: `deleteDomain`,
+        // `deleteService`, `deleteAssembly`, `deleteDeploymentTarget`, `deleteTeam`, `deleteGroup`,
+        // `deleteUser`, `deleteServiceAccount`, `deletePolicy` and `deleteControl` each previously
+        // declared 200/401/403/404.
+        409: ProblemSchema
       }
     },
     config: {

@@ -47,12 +47,15 @@ import {
  * Its last three cases are about §1a, the REFUSAL, and they are the ones with authority riding on
  * them. Collapsing duplicate built-in roles keeps the lowest id, which is deterministic but carries
  * no claim to be right: a re-executed 0002 seed writes the M1-era 11-permission `Owner` beside
- * today's 20-permission one, `gen_random_uuid()` decides which holds the lower id, and half the
- * time lowest-id-wins would strip nine permissions — `freeze:override` and `change:emergency`
- * among them — from every Owner in the estate, during an upgrade that reported success. The other
- * half widens instead. So 0097 refuses to pick and aborts with the ids and the delta; the tests
- * below pin the refusal, pin that the abort leaves the database untouched, and pin that it does
- * NOT fire on duplicates that merely differ in array order.
+ * today's 22-permission one, `gen_random_uuid()` decides which holds the lower id, and half the
+ * time lowest-id-wins would strip twelve permissions — `freeze:override`, `change:emergency` and
+ * `change:accept` among them — from every Owner in the estate, during an upgrade that reported
+ * success. The other half widens instead, and since drizzle/0099 it also RESURRECTS `org:admin`,
+ * a permission that was deleted precisely because it gates nothing. So 0097 refuses to pick and
+ * aborts with the ids and the delta; the tests below pin the refusal, pin that the abort leaves
+ * the database untouched, and pin that it does NOT fire on duplicates that merely differ in array
+ * order. The exact counts are MEASURED from the live row inside each case rather than restated
+ * here, so a later grant migration moves them without touching this paragraph's argument.
  *
  * ------------------------------------------------------------------------------------------------
  * MUTATION LOG — each applied ALONE to `drizzle/0097`'s §1a, measured 2026-08-26, then reverted
@@ -334,12 +337,23 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
       udt_name: "_text"
     });
 
-    // NULL = "any scope". Backfilling any non-NULL value here would retroactively make live
-    // bindings of the five ladder roles illegal the day the write door starts enforcing it.
-    const filled = await admin.query<{ n: string }>(
-      `SELECT COUNT(*) AS n FROM roles WHERE org_id IS NULL AND bindable_at IS NOT NULL`
+    // NULL = "any scope", ON THE FIVE LADDER ROWS. Backfilling any non-NULL value for them would
+    // retroactively make live bindings illegal the day the write door starts enforcing it:
+    // Viewer/Operator/Approver/Administrator/Owner are bound at org roots, services and components
+    // across deployments, and 0097 has no way to know which.
+    //
+    // SCOPED TO THE LADDER BY NAME, not to "every built-in", because drizzle/0099 seeds five
+    // PURPOSE roles that DO carry a `bindable_at` (role-model.md §3) — they have no bindings in the
+    // field to invalidate, since there is no write door yet. Their exact arrays are asserted in
+    // `routes/rbac-permission-splits.integration.test.ts`; what belongs here is the 0097 property
+    // that the pre-existing rows were left alone.
+    const filled = await admin.query<{ name: string }>(
+      `SELECT name FROM roles
+       WHERE org_id IS NULL AND bindable_at IS NOT NULL
+         AND name IN ('Viewer', 'Operator', 'Approver', 'Administrator', 'Owner')
+       ORDER BY name`
     );
-    expect(filled.rows[0]!.n).toBe("0");
+    expect(filled.rows.map((r) => r.name)).toEqual([]);
   });
 
   // -----------------------------------------------------------------------------------------
@@ -572,7 +586,15 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
 
     /** `roles.permissions` for `Owner` EXACTLY as 0002:220-222 writes it — the literal a re-run of
      *  that seed puts on disk today, copied here so this fixture is the real producer and not a
-     *  stylised one. */
+     *  stylised one.
+     *
+     *  IT STILL INCLUDES `org:admin`, WHICH THE LIVE ROW NO LONGER CARRIES. drizzle/0099 deleted
+     *  that permission with `array_remove` and deliberately LEFT 0002's literal alone: a shipped
+     *  migration is a record of what the database was asked to do at that version, and editing one
+     *  makes the file on disk disagree with the hash `__drizzle_migrations` recorded on every
+     *  deployment that already ran it. So a re-executed 0002 seed really does still write this,
+     *  and the divergence it manufactures is now BIDIRECTIONAL — the stale row is no longer a
+     *  strict subset of the live one, which the assertions below measure rather than assume. */
     const OWNER_PERMISSIONS_AS_SEEDED_BY_0002 = [
       "object:read",
       "relationship:read",
@@ -596,6 +618,10 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
       // edge case: whichever way it lands, one of the two Owners is deleted and every Owner
       // binding in the org is repointed at the other.
       const staleOwnerId = `${UUID_ZERO_PREFIX}e1`;
+      // Captured INSIDE the transaction and asserted after the rollback, so the "nothing was left
+      // behind" check compares against the row that was actually there rather than against an
+      // arithmetic restatement of every grant migration to date.
+      let liveOwnerPermissionCount = -1;
 
       await admin.query("BEGIN");
       try {
@@ -608,23 +634,26 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
         const liveOwner = live.rows[0]!;
         expect(staleOwnerId < liveOwner.id).toBe(true);
 
-        // Re-run 0002's seed row for Owner. Its permission literal is FROZEN at M1; the five
-        // migrations that later appended to Owner by name (0010/0012/0083/0088/0094) are already
-        // in `__drizzle_migrations` and do not re-run over the new row. So the duplicate is born
-        // behind — which is exactly why "every grant migration updates all duplicates identically"
-        // does not imply "duplicates are identical".
+        // Re-run 0002's seed row for Owner. Its permission literal is FROZEN at M1; the six
+        // migrations that later edited Owner by name (0010/0012/0083/0088/0094 append,
+        // 0099 appends three and removes one) are already in `__drizzle_migrations` and do not
+        // re-run over the new row. So the duplicate is born behind — which is exactly why "every
+        // grant migration updates all duplicates identically" does not imply "duplicates are
+        // identical".
         await admin.query(
           `INSERT INTO roles (id, org_id, name, permissions) VALUES ($1, NULL, 'Owner', $2::text[])`,
           [staleOwnerId, OWNER_PERMISSIONS_AS_SEEDED_BY_0002]
         );
+        liveOwnerPermissionCount = liveOwner.permissions.length;
 
-        // The delta, MEASURED rather than asserted from a comment. If a future migration grants
-        // Owner a tenth permission, this recomputes and the message assertion below follows it.
+        // The delta, MEASURED rather than asserted from a comment. If a future migration edits
+        // Owner again, this recomputes and the message assertions below follow it.
         const dropped = liveOwner.permissions
           .filter((p) => !OWNER_PERMISSIONS_AS_SEEDED_BY_0002.includes(p))
           .sort();
         expect(dropped).toEqual([
           "campaign:deadline-override",
+          "change:accept",
           "change:emergency",
           "federation:pair",
           "federation:read",
@@ -632,13 +661,20 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
           "freeze:override",
           "freeze:write",
           "governance:move",
-          "policy:write"
+          "policy:write",
+          "scan:override",
+          "secret:write"
         ]);
-        // The two rows disagree in ONE direction only here: the stale row is a strict subset. The
-        // migration still refuses, because repointing bindings the other way would WIDEN.
-        expect(
-          OWNER_PERMISSIONS_AS_SEEDED_BY_0002.filter((p) => !liveOwner.permissions.includes(p))
-        ).toEqual([]);
+        // AND THE OTHER DIRECTION IS NO LONGER EMPTY. Until drizzle/0099 the stale row was a strict
+        // SUBSET of the live one, and the case still refused because repointing bindings the other
+        // way would WIDEN. 0099 REMOVED `org:admin` from the live Owner (it gated nothing at any
+        // call site) while deliberately leaving 0002's frozen literal alone — so a re-executed seed
+        // now manufactures a duplicate that is behind in twelve permissions AND ahead in one dead
+        // one. Both directions in one fixture, which is what §1a's predicate is written for.
+        const gained = OWNER_PERMISSIONS_AS_SEEDED_BY_0002.filter(
+          (p) => !liveOwner.permissions.includes(p)
+        ).sort();
+        expect(gained).toEqual(["org:admin"]);
 
         let caught: (Error & { code?: string; detail?: string; hint?: string }) | undefined;
         try {
@@ -661,7 +697,8 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
         const detail = caught.detail ?? "";
         expect(detail).toContain(liveOwner.id);
         expect(detail).toContain(staleOwnerId);
-        expect(detail).toContain("LOSING 9 permission(s)");
+        expect(detail).toContain(`LOSING ${dropped.length} permission(s)`);
+        expect(detail).toContain(`GAINING ${gained.length} [${gained.join(", ")}]`);
         for (const permission of dropped) expect(detail).toContain(permission);
         expect(caught.hint ?? "").toContain("re-run the upgrade");
       } finally {
@@ -677,7 +714,8 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
       );
       expect(after.rowCount).toBe(1);
       expect(after.rows[0]!.id).not.toBe(staleOwnerId);
-      expect(Number(after.rows[0]!.n)).toBe(OWNER_PERMISSIONS_AS_SEEDED_BY_0002.length + 9);
+      expect(liveOwnerPermissionCount).toBeGreaterThan(0);
+      expect(Number(after.rows[0]!.n)).toBe(liveOwnerPermissionCount);
     });
 
     it("does NOT abort when the duplicates agree — order and repeats are not divergence", async () => {

@@ -360,10 +360,65 @@ Administrator already holds, where before they needed an Owner to `freeze:overri
 admitted exactly *one* change. **The strictly wider act now takes the strictly narrower
 permission.** The scope bound is real and verified (an S-scoped Administrator genuinely cannot touch
 the org-root freeze; `authz/resolve.ts`'s `scopeExpandCte` expands upward only), and there is no
-route to self-escalation — `role_binding:write` has no write API — so this is a deliberate widening,
-not a hole. But it is a widening of a gate a migration comment calls deliberate, and reconciling the
-two is a governance call, not an implementation one. Shipped as `freeze:write` pending the ruling;
-the three exits are:
+route to self-escalation **so long as the no-escalation subset rule bounds every door that can confer
+a role — which, since 2026-08-27, it does; see the note below for the second door it had to be
+extended to** — so this is a deliberate widening, not a hole. But it is a widening of a gate a
+migration comment calls deliberate, and reconciling the two is a governance call, not an
+implementation one. Shipped as `freeze:write` pending the ruling; the three exits are:
+
+> **The no-self-escalation half was re-founded on 2026-08-27, and the sentence above was corrected
+> rather than left standing — TWICE, and the second correction is the interesting one.** It used to
+> end *"— `role_binding:write` has no write API —"*, which was true when written and was load-bearing
+> safety resting on an unbuilt feature. `role-model.md` §5 step 5 built it
+> (`routes/role-bindings.ts`): there is now a `POST /api/v1/role-bindings`, and `role_binding:write`
+> is held by Administrator, Owner and the new OrgAdmin. **The property survives on the NO-ESCALATION
+> SUBSET RULE instead** (`authz/role-binding-door.ts` §2) — a binding may be written only if every
+> permission the granted role carries is one the writer already holds at that scope, resolved through
+> `hasPermission` per permission rather than read off the writer's role rows. Owner carries
+> `freeze:override`, `change:emergency` and `campaign:deadline-override`; Administrator carries none
+> of them; so Administrator granting itself Owner is refused, naming the three.
+>
+> **The first version of this note then closed with an exhaustiveness claim that was false, and the
+> qualifier above exists so the main text no longer carries a bare unqualified assertion.** It said
+> the only remaining breaker was "somebody grants Administrator `freeze:override`, a visible migration
+> rather than an absence". There was a third breaker with no migration behind it: a role binding held
+> by a GROUP resolves for every member (`authz/resolve.ts`'s `subject_expand` walks `member_of`), so
+> binding a `freeze:override`-carrying role to a group and then joining it conferred the permission
+> with no `role_bindings` row written for the joiner at all — and creating that edge needed only
+> `relationship:write` at both endpoints, which **every org-root principal from Operator upward holds
+> for every object in the org**. The escalation floor was four rungs below Administrator.
+>
+> **Addressed by `authz/role-binding-door.ts` §2a**, which applies the SAME subset rule at
+> `graph/relationships-repo.ts`'s `createRelationship` — the choke point, so IaC apply and every other
+> caller inherit it, with the federation-import carve-out this repo already takes at that function.
+>
+> **THIRD CORRECTION, SAME DAY, AND THIS ONE IS THE LESSON.** The paragraph above originally closed
+> "so the accurate statement is: the subset rule now bounds BOTH doors … and what would break the
+> property now is granting Administrator `freeze:override`". That was the SECOND exhaustiveness claim
+> in the same note, and the REVERSED ORDERING of the same two requests disproved it: an Operator joins
+> an *empty* team (201 — it is the common case and must stay one), an Owner then binds a
+> `freeze:override`-carrying role to that team, and the Operator holds the permission. §2a guards the
+> join; nothing guarded the grant. `role-binding-door.ts` §2b is the third door.
+>
+> **This note now states what is CHECKED and lists what is OPEN, and stops there.** Checked: a grant
+> requires the actor to hold the role's permissions at that scope (§2); a `member_of` create requires
+> the same of the edge's author (§2a); a grant whose subject is a group/team is refused when it would
+> reach a principal this door will not bind directly (§2b). Open — the full list, with its reasoning
+> and its measurements, is `authz/role-binding-door.ts` §8:
+>
+> - §2a applies the subset rule and **not** bar §1, so `relationship:write` alone chooses who is in a
+>   group. That is an unauthorised delegation of authority the actor already has, never an elevation
+>   of the actor.
+> - **A grant to a group is blind to its members' standing.** §2b refuses on the membership's SHAPE
+>   (a soft-deleted or non-bindable member) and measured that a standing-based refusal there can never
+>   fire: every authority bar on the grant door is a question about the actor, the role and the scope,
+>   so "could the granter have granted this to that principal directly" has the same answer for
+>   everyone. Making the granter acknowledge the principals they empower is an API change and wants an
+>   owner ruling.
+> - `member_of` edges arriving on the federation-import path are exempt from §2a by design.
+>
+> Granting Administrator `freeze:override` would also break the property, and remains the loudest way
+> to do it — a migration rather than an absence.
 
   a. **Accept it** — amend `0010`'s comment and DESIGN §10.3 to say that `freeze:override` gates
      *bypassing* a standing freeze and `freeze:write` gates *authoring and retracting* one.

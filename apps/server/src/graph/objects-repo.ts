@@ -21,6 +21,10 @@ import { deriveUrn } from "./urn.js";
 import { requireObjectType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
+import {
+  assertOrgRetainsAdministrativeFloor,
+  objectTouchesRoleAuthority
+} from "../authz/role-binding-door.js";
 import { eventBus } from "../events/event-bus.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { assertOutpostPeerBinding, isPeerBoundObjectType } from "../federation/outpost-binding.js";
@@ -1821,6 +1825,31 @@ export async function deleteObject(
     }
   }
 
+  // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7) — DOOR C, HALF ONE: the RELEVANCE
+  // PROBE, which has to be read HERE because the tombstone below and the edge cascade further down
+  // both destroy the evidence it reads. The check itself runs at the END of this function.
+  //
+  // Tombstoning the USER who holds the org's only administrative binding removes no edge at all, so
+  // the cascade's per-edge check cannot see it; tombstoning the TEAM that holds it cascades its
+  // `member_of` edges, which the cascade's check does see. Both are covered by asking the invariant
+  // once, after everything this function does.
+  //
+  // The probe is sound rather than convenient: the floor reads `role_bindings` rows at the org root,
+  // `roles.permissions`, live `member_of` edges and `objects.deleted_at`/`type_id`. An object that
+  // is no binding's subject and has no live `member_of` edge is in no candidate closure, and this
+  // function's cascade will tombstone no `member_of` edge either — so its tombstone cannot change
+  // the floor's answer. It reads exactly the two tables the floor reads, which is what keeps the
+  // short-circuit honest as those inputs change.
+  //
+  // The same two carve-outs the cascade and the orphan guard take, for the same reasons: a peer's
+  // `object_tombstone` must not be refused (it would abort the whole signed bundle and diverge this
+  // replica from its authority), and a foreign-shadow removal is local cleanup of a row this domain
+  // never authored.
+  const touchesRoleAuthority =
+    !input.federationImport && !removedForeignShadow
+      ? await objectTouchesRoleAuthority(tx, input.orgId, existing.id)
+      : false;
+
   // CONTAINMENT ROUTE 3 — TOMBSTONING A CONTAINER, which writes no containment field and yet
   // detaches everything beneath it (every route in `graph/containment.ts` skips a deleted ANCESTOR).
   //
@@ -1902,6 +1931,26 @@ export async function deleteObject(
         id: edge.id
       });
     }
+  }
+
+  // THE ADMINISTRATOR FLOOR — DOOR C, HALF TWO. AFTER the tombstone AND after the edge cascade, so
+  // it judges the state this whole operation actually leaves behind rather than modelling any part
+  // of it. MEASURED before this guard, four plain sequential requests: `DELETE /objects/user/{id}`
+  // on the org's only administrator returned 200 and left the estate holding a `role_bindings` row
+  // naming a tombstone — unadministrable, hand-written SQL the only recovery.
+  //
+  // The cascade's own per-edge check (`graph/relationships-repo.ts`) already covers the case where
+  // this row is a GROUP with members; that redundancy is deliberate and cheap. What only this call
+  // catches is the row that IS the principal: tombstoning it removes no edge, so nothing in the
+  // cascade fires.
+  //
+  // The predicate takes §0's org lock itself, which this transaction is already holding by now
+  // (every `appendAuditEvent` in the cascade took the same key). See `role-binding-door.ts` §7.
+  if (touchesRoleAuthority) {
+    await assertOrgRetainsAdministrativeFloor(tx, {
+      orgId: input.orgId,
+      act: `deleting ${input.typeId} '${existing.urn}'`
+    });
   }
 
   await appendAuditEvent(tx, {

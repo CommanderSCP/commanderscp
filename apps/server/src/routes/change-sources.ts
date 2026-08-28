@@ -375,10 +375,15 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // `secret:write` at the org root, NOT `object:write` — role-model.md §1.3d, drizzle/0099.
+        // The third credential door, and the one whose blast radius is least obvious: this secret
+        // is what `POST /change-sources/{kind}/webhook` verifies inbound signatures against, so
+        // whoever SETS it can thereafter FORGE signed source events into the estate. The scope
+        // stays the org root (§8.6's no-sweep list); only the permission changes.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
+          permission: "secret:write",
           scopeObjectId: auth.orgId
         });
         const secretKey = `change-source-webhook:${request.params.sourceKind}`;

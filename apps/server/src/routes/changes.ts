@@ -438,10 +438,9 @@ export async function assertReadableAtSomeChangeTarget(
  * deliberately word-for-word `authorize()`'s so the wire answer is unchanged from the per-target
  * loop this replaced.
  *
- * `accept` and `rollback` keep `object:write` FOR NOW. The purpose-built `change:accept`
- * permission is a LATER increment (role-model.md §5 step 3) and needs a migration to seed it onto
- * the roles that should hold it; this increment fixes the SCOPE only. Do not read the presence of
- * a per-target check here as evidence that the permission split has shipped.
+ * `cancel` TAKES THIS BAR ALONE. `accept` and `rollback` compose
+ * {@link assertAcceptableAtEveryChangeTarget}, which runs this one FIRST and then demands
+ * `change:accept` on top of it — see there for why cancel is deliberately left out.
  */
 export async function assertWritableAtEveryChangeTarget(
   tx: TenantTx,
@@ -451,22 +450,95 @@ export async function assertWritableAtEveryChangeTarget(
     change: { id: string; properties: Record<string, unknown> };
   }
 ): Promise<void> {
+  await assertPermittedAtEveryChangeTarget(tx, { ...input, permission: "object:write" });
+}
+
+/**
+ * ONE EVERY-TARGET WRITE BAR, PARAMETERISED BY PERMISSION — extracted so the two bars `accept` and
+ * `rollback` stack cannot drift on the org-root arm, the trap-4 refusal or the wording of the 403.
+ * The message names the permission it actually demanded, which is the whole diagnostic value of a
+ * stacked bar: "lacks 'change:accept' at scope X" tells an operator to grant a purpose role, while
+ * "lacks 'object:write' at scope X" tells them the principal has no standing on that target at all.
+ */
+async function assertPermittedAtEveryChangeTarget(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    subjectObjectId: string;
+    change: { id: string; properties: Record<string, unknown> };
+    permission: Permission;
+  }
+): Promise<void> {
   const verdict = await checkAtOrgRootOrChangeTargets(tx, {
     orgId: input.orgId,
     subjectObjectId: input.subjectObjectId,
     change: input.change,
-    permission: "object:write",
+    permission: input.permission,
     quantifier: "every"
   });
   if (verdict.ok) return;
   if (verdict.reason === "no-target-set") unestablishableChangeTargetSet(input.change.id);
   throw forbidden(
     verdict.refusedScopeObjectId
-      ? `subject '${input.subjectObjectId}' lacks 'object:write' at scope ` +
+      ? `subject '${input.subjectObjectId}' lacks '${input.permission}' at scope ` +
           `'${verdict.refusedScopeObjectId}'`
-      : `subject '${input.subjectObjectId}' lacks 'object:write' at the org root and at every ` +
-          `target of change '${input.change.id}' (${verdict.targetObjectIds.join(", ")})`
+      : `subject '${input.subjectObjectId}' lacks '${input.permission}' at the org root and at ` +
+          `every target of change '${input.change.id}' (${verdict.targetObjectIds.join(", ")})`
   );
+}
+
+/**
+ * ACCEPT bar: {@link assertWritableAtEveryChangeTarget} **and then** `change:accept`, each at the
+ * ORG ROOT **or** at EVERY one of the change's targets (role-model.md §1.3f/§4.3/§8.4;
+ * drizzle/0099).
+ *
+ * ADDED, NEVER SUBSTITUTED. `object:write` at every target is still demanded and is still checked
+ * FIRST, so this door only ever refuses MORE principals than it did before — a subject who could
+ * not accept yesterday cannot accept today by holding `change:accept` alone. Running the generic
+ * bar first also keeps the refusal an operator sees for the ordinary "you have no standing on
+ * target B" case byte-identical to the one 2.5a shipped; the `change:accept` refusal is reached
+ * only by a principal who genuinely does administer every target.
+ *
+ * SAME LOOP, SAME QUANTIFIER, SAME ORG-ROOT-ARM ORDERING. Both bars go through
+ * {@link checkAtOrgRootOrChangeTargets}, so the pure-widening property (the org-root arm is
+ * evaluated before the persisted target set is even read) and the trap-4 refusal (an empty,
+ * missing or malformed `properties.targets` refuses a SCOPED principal explicitly rather than
+ * passing vacuously) hold for the new bar exactly as they do for the old one. Writing a second
+ * hand-rolled loop here is how those two properties would have silently diverged.
+ *
+ * EVERY TARGET, not any: a ComponentAdmin over one target of a five-target change must not be able
+ * to accept the release into the four they have no standing on.
+ *
+ * ------------------------------------------------------------------------------------------------
+ * WHY `cancel` DOES NOT COMPOSE THIS — the boundary, stated where it is easiest to erase
+ * ------------------------------------------------------------------------------------------------
+ * Cancelling STOPS a release; accepting and rolling back AUTHORIZE one (a rollback proposes a NEW
+ * change carrying the original's target set and drives it through the same wave machinery). Folding
+ * cancel in would make a cancel-only incident-responder role — hold `object:write`, stop a bad
+ * release, authorize nothing — inexpressible, and that is the role an org most obviously wants to
+ * seat on-call. `routes/changes.ts`'s cancel handler therefore calls
+ * {@link assertWritableAtEveryChangeTarget} directly and must keep doing so.
+ *
+ * ------------------------------------------------------------------------------------------------
+ * THIS IS THE ONE INTENTIONALLY BREAKING GRANT IN THE ROLE DESIGN
+ * ------------------------------------------------------------------------------------------------
+ * drizzle/0099 grants `change:accept` to Owner, Administrator, OrgAdmin, ServiceAdmin and
+ * ComponentAdmin, and DELIBERATELY NOT to Operator or Approver. Both of those hold `object:write`
+ * and can accept and roll back releases on every deployment today, and on upgrade they stop being
+ * able to. That is the intent — accepting a release into production is not the same authority as
+ * editing the graph, and it was only ever the same permission because the cumulative ladder had no
+ * way to say otherwise (role-model.md §0). It has to be ANNOUNCED, not discovered in a 403.
+ */
+export async function assertAcceptableAtEveryChangeTarget(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    subjectObjectId: string;
+    change: { id: string; properties: Record<string, unknown> };
+  }
+): Promise<void> {
+  await assertWritableAtEveryChangeTarget(tx, input);
+  await assertPermittedAtEveryChangeTarget(tx, { ...input, permission: "change:accept" });
 }
 
 // ===========================================================================================
@@ -932,10 +1004,12 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const outcome = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // `object:write` at EVERY target. CANCEL IS NOT ACCEPT: it STOPS a release rather than
-        // authorizing one, so it deliberately stays on the generic write verb. Folding it into the
-        // future `change:accept` (role-model.md §5 step 3) would make a cancel-only role — the
-        // shape an incident responder wants — inexpressible.
+        // `object:write` at EVERY target, and DELIBERATELY NOT `change:accept` — this is the one
+        // door of the three that does not compose `assertAcceptableAtEveryChangeTarget`. CANCEL IS
+        // NOT ACCEPT: it STOPS a release rather than authorizing one. Folding it into
+        // `change:accept` (role-model.md §5 step 3, shipped in drizzle/0099) would make a
+        // cancel-only role — the shape an incident responder wants — inexpressible, so an Operator
+        // who can no longer accept can still stop a bad release.
         await assertWritableAtEveryChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -988,11 +1062,12 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const outcome = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // `object:write` at EVERY target — one target's admin must not be able to accept the
-        // release into the other four. STILL `object:write`, NOT `change:accept`: that permission
-        // does not exist yet (role-model.md §5 step 3 seeds it in a migration). This increment
-        // fixes the SCOPE only.
-        await assertWritableAtEveryChangeTarget(tx, {
+        // `object:write` AND `change:accept`, each at EVERY target — one target's admin must not
+        // be able to accept the release into the other four, and accepting a release is no longer
+        // the same authority as editing the graph (role-model.md §5 step 3, drizzle/0099).
+        // BREAKING, DELIBERATELY: Operator and Approver hold `object:write` and are NOT granted
+        // `change:accept`, so a principal on either rung stops being able to accept on upgrade.
+        await assertAcceptableAtEveryChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           change: await getChange(tx, auth.orgId, request.params.id)
@@ -1049,11 +1124,12 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const outcome = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // `object:write` at EVERY target of the ORIGINAL change — a rollback proposes a NEW change
-        // carrying that same target set (`coordination/rollback.ts` reads it with the very same
-        // `targetObjectIdsOf`), so anything less would let one target's admin drive a release into
-        // the rest. Also still `object:write`, for the reason `accept` above records.
-        await assertWritableAtEveryChangeTarget(tx, {
+        // `object:write` AND `change:accept` at EVERY target of the ORIGINAL change — a rollback
+        // proposes a NEW change carrying that same target set (`coordination/rollback.ts` reads it
+        // with the very same `targetObjectIdsOf`) and drives it through the same wave machinery, so
+        // it AUTHORIZES a release rather than stopping one. Anything less would also let one
+        // target's admin drive a release into the rest. Same breaking grant as `accept` above.
+        await assertAcceptableAtEveryChangeTarget(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           change: await getChange(tx, auth.orgId, request.params.id)
