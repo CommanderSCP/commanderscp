@@ -321,6 +321,10 @@ describe("GrantPreviewResponseSchema — the projection's honesty fields", () =>
     principals: [
       { id: UUID_B, typeId: "user", name: "ada", depth: 1, deleted: false, bindable: true }
     ],
+    // Required, not optional: a client that has to infer whether a subject's membership is managed
+    // by an identity provider is a client that will assume "no" and read the acknowledgement as a
+    // durable fact about who holds the role. See the field's own doc.
+    subjectExternallySynced: false,
     ...over
   });
 
