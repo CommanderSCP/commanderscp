@@ -553,6 +553,29 @@ export async function hasRoleAtScope(tx: TenantTx, check: RoleCheck): Promise<bo
       AND rb.subject_id IN (SELECT subject_id FROM subject_expand)
       AND rb.scope_object_id IN (SELECT scope_id FROM scope_expand)
       AND rl.name = ${check.roleName}
+      -- ===========================================================================================
+      -- THE QUORUM BYPASS THIS CLOSES (role-model.md §5 step 10's gate; owner decision 2026-08-27)
+      -- ===========================================================================================
+      -- WITHOUT THIS PREDICATE, a role NAME resolved to any row RLS would show, and roles' policy
+      -- is USING (org_id = current_org OR org_id IS NULL) — so the join matched the shared
+      -- built-in Approver OR an org's own row of the same name, while the role_bindings half
+      -- was org-filtered all along. An org able to author a ZERO-PERMISSION role named 'Approver'
+      -- would therefore make its holders eligible quorum voters everywhere a policy names Approver:
+      -- a self-service quorum bypass, granting nothing and deciding everything.
+      --
+      -- It was LATENT rather than live, and only because there is no custom-role authoring API —
+      -- which is exactly why role-model.md gates step 10 behind closing this first. Shipping
+      -- authoring without this predicate would have converted a documented hazard into a live one
+      -- in the same release.
+      --
+      -- THE RULE, OWNER-DECIDED: a policy's fromRole always means the BUILT-IN. Custom roles may
+      -- carry permissions and may be bound, and can never satisfy an approval quorum. The rejected
+      -- alternative was "the org's own row shadows the built-in", which is the intuitive reading
+      -- and narrows the bypass rather than closing it — an org would still decide what its own
+      -- quorum means, which is the property that made this exploitable. routes/governance.ts
+      -- validates fromRole against the built-in catalogue at AUTHORING time so a policy naming a
+      -- custom role is refused where it is written, rather than silently never being satisfiable.
+      AND rl.org_id IS NULL
   `);
 
   const effects = result.rows.map((r) => r.effect);
