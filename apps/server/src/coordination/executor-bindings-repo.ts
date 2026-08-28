@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { and, eq, exists, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { categoryOfType, type ExecutorType, type ExecutorCategory } from "@scp/schemas";
+import type { ExecutorLane } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { executorBindings, objects } from "../db/schema.js";
 import { badRequest, conflict, notFound } from "../errors.js";
@@ -155,7 +156,18 @@ export async function getExecutorBinding(
   tx: TenantTx,
   orgId: string,
   targetObjectId: string,
-  type: BindingType = DEFAULT_BINDING_TYPE
+  type: BindingType = DEFAULT_BINDING_TYPE,
+  /**
+   * ADR-0046 §4 / §14 res 7 — WHICH LANE. Defaults to `"build"`, which is what every caller in the
+   * dispatch path means and what every row was before lanes existed.
+   *
+   * FILTERED, NOT MERELY STORED, and that distinction is the whole point. Before it, this was a
+   * `.limit(1)` over `(org, target, type)` — with two lanes present that returns an ARBITRARY row,
+   * so a deploy could dispatch to the test-lane executor and nothing would say so. Same shape as
+   * the pre-P3 bug this file's own upsert comment records ("binding a component's second pipeline
+   * silently destroyed the first"), one dimension further along.
+   */
+  lane: ExecutorLane = "build"
 ): Promise<ExecutorBindingRow | undefined> {
   const rows = await tx
     .select()
@@ -164,7 +176,8 @@ export async function getExecutorBinding(
       and(
         eq(executorBindings.orgId, orgId),
         eq(executorBindings.targetObjectId, targetObjectId),
-        eq(executorBindings.type, type)
+        eq(executorBindings.type, type),
+        eq(executorBindings.lane, lane)
       )
     )
     .limit(1);
@@ -290,6 +303,12 @@ export interface UpsertExecutorBindingInput {
   allowedHosts?: string[];
   externalRef?: string | null;
   executionSystemId?: string | null;
+  /** @default "build" — see `getExecutorBinding`'s `lane` for why it is filtered, not just stored. */
+  lane?: ExecutorLane;
+  /** ADR-0046 §4 — the winning policy's object id when the domain reconciler derived this row;
+   *  omitted (NULL) for a hand-authored binding, which is what keeps the reconciler's prune off
+   *  one-offs. Provenance is read from the row, never inferred from what matches now. */
+  managedByPolicyId?: string | null;
   /** WHO/WHAT REQUEST is doing this write — carried through to `executor.binding.put`'s audit event
    *  (2026-08-25 gap: PUT and DELETE binding wrote no audit event at all; the only executor-ish
    *  audit action ever written was `change.wave_target.no_executor`, a READ-time observation, not a
@@ -319,7 +338,11 @@ export async function upsertExecutorBinding(
   // found "the" binding and UPDATED it — which is exactly how binding a component's second pipeline
   // silently destroyed the first one before P3.
   const type = input.type ?? DEFAULT_BINDING_TYPE;
-  const existing = await getExecutorBinding(tx, input.orgId, input.targetObjectId, type);
+  // …and on the LANE, for the reason that parameter's doc gives: without it this lookup finds "the"
+  // binding for (target, Type) and UPDATES it, so writing a test-lane binding would silently destroy
+  // the build-lane one — the identical failure the paragraph above records for Type.
+  const lane = input.lane ?? "build";
+  const existing = await getExecutorBinding(tx, input.orgId, input.targetObjectId, type, lane);
   let row: ExecutorBindingRow;
   if (existing) {
     const [updated] = await tx
@@ -332,6 +355,7 @@ export async function upsertExecutorBinding(
         allowedHosts: input.allowedHosts ?? [],
         externalRef: input.externalRef ?? null,
         executionSystemId: input.executionSystemId ?? null,
+        managedByPolicyId: input.managedByPolicyId ?? null,
         updatedAt: new Date()
       })
       .where(eq(executorBindings.id, existing.id))
@@ -351,7 +375,9 @@ export async function upsertExecutorBinding(
         secretRefs: input.secretRefs ?? {},
         allowedHosts: input.allowedHosts ?? [],
         externalRef: input.externalRef ?? null,
-        executionSystemId: input.executionSystemId ?? null
+        executionSystemId: input.executionSystemId ?? null,
+        lane,
+        managedByPolicyId: input.managedByPolicyId ?? null
       })
       .returning();
     row = toRow(inserted!);
@@ -508,7 +534,7 @@ export async function repointExecutorBindingTarget(
       .where(and(eq(executorBindings.orgId, orgId), eq(executorBindings.id, bindingId)))
       .returning();
   } catch (err) {
-    if (isUniqueViolation(err, "executor_bindings_org_target_type_key")) {
+    if (isUniqueViolation(err, "executor_bindings_org_target_type_lane_key")) {
       throw conflict(
         `target '${newTargetObjectId}' already has a binding for this type — relabel one first`
       );

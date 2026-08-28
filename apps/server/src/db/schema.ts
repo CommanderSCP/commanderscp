@@ -1944,14 +1944,23 @@ export const executorBindings = pgTable(
     // `image` build, an `infrastructure` apply), so bindings are 1:N per target, keyed by type.
     // Defaults to 'configuration'. Plain text (no pg enum / CHECK); the closed value set is Zod-enforced.
     type: text("type").notNull().default("configuration"),
+    /** ADR-0046 §4 / §14 res 7 — 'build' | 'test' (`ExecutorLaneSchema`). DEFAULT 'build': every
+     *  pre-lane row is in the build lane, because that is what every binding was before lanes
+     *  existed. Plain text, no pg enum, like `type` above and for the same reason. */
+    lane: text("lane").notNull().default("build"),
+    /** NULL for a hand-authored binding; the winning `executorBinding` policy's object id for one
+     *  the domain reconciler derived. Provenance is READ FROM THE ROW (ADR-0046 §4), which is what
+     *  lets the reconciler prune its own rows without touching a hand-authored one-off. */
+    managedByPolicyId: uuid("managed_by_policy_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
-    unique("executor_bindings_org_target_type_key").on(
+    unique("executor_bindings_org_target_type_lane_key").on(
       table.orgId,
       table.targetObjectId,
-      table.type
+      table.type,
+      table.lane
     ),
     index("executor_bindings_org").on(table.orgId)
   ]
