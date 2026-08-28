@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import {
+  PERMISSIONS,
   authorize,
   hasPermission,
   memberExpandCte,
@@ -1779,6 +1780,107 @@ export async function assertMayWriteRoleBinding(
         `'${check.scopeObjectId}': it carries ${missing.length} permission(s) the subject does not ` +
         `itself hold there — ${[...missing].sort().join(", ")}. A role binding can never confer ` +
         `more authority than the principal writing it already has.`
+    );
+  }
+}
+
+/**
+ * ================================================================================================
+ * §9. THE ROLE-AUTHORING DOOR — role-model.md §5 step 10
+ * ================================================================================================
+ *
+ * WHICH PERMISSION GOVERNS AUTHORING, AND WHY IT IS NOT A NEW ONE. `role_binding:write` — the
+ * permission that already answers "who may confer authority in this org" — checked AT THE ORG ROOT,
+ * because a role is an org-wide catalogue entry and there is no narrower object it belongs to.
+ *
+ * A new `role:write` was weighed and rejected. It would have to be seeded onto built-in roles by a
+ * migration (widening every existing binding of each — the §4.4 blast radius, paid for a capability
+ * that no deployment has asked for yet), it would need a drift-gate widening declaration, and it
+ * would split a decision nobody has asked to split: every principal who should be able to author a
+ * role is a principal who should be able to bind one, and the reverse. If that stops being true,
+ * splitting later is additive and cheap; un-minting a permission is neither.
+ *
+ * THE SUBSET RULE APPLIES HERE, AND IT IS NOT THE ESCALATION BAR. Authoring confers nothing:
+ * `POST /role-bindings` re-runs the full subset rule against whoever tries to bind the result, so a
+ * role carrying permissions its author lacks is simply unbindable by that author. The bar here is
+ * about the CATALOGUE: a Viewer able to author 'Estate Owner' with `freeze:override` makes
+ * `GET /roles` lie to every operator who reads it, and sets up the step where somebody with
+ * authority binds it without reading the array. That is the harm this refuses, and saying so keeps
+ * it from being filed under an unexamined "defence in depth".
+ */
+export async function assertMayAuthorRole(
+  tx: TenantTx,
+  check: {
+    orgId: string;
+    actorObjectId: string;
+    /** The permission array the role will carry AFTER this write. */
+    permissions: readonly string[];
+  }
+): Promise<void> {
+  // BAR 1 — authority to confer authority at all, at the org root.
+  if (
+    !(await hasPermission(tx, {
+      orgId: check.orgId,
+      subjectObjectId: check.actorObjectId,
+      scopeObjectId: check.orgId,
+      permission: "role_binding:write"
+    }))
+  ) {
+    throw forbidden(
+      "authoring a role requires 'role_binding:write' at the organization root — a role is an " +
+        "org-wide catalogue entry and there is no narrower scope it belongs to"
+    );
+  }
+
+  // BAR 2 — every permission in the catalogue this system defines. An unknown string renders in
+  // `GET /roles` as authority and gates nothing: verbatim the `org:admin` shape the drift gate
+  // (`authz/permission-drift.integration.test.ts`) exists to stop recurring, except authored
+  // through the API rather than a migration.
+  const known = new Set<string>(PERMISSIONS);
+  const unknown = [...new Set(check.permissions.filter((p) => !known.has(p)))].sort();
+  if (unknown.length > 0) {
+    throw unprocessable(
+      `unknown ${unknown.length === 1 ? "permission" : "permissions"}: ` +
+        `${unknown.map((u) => `'${u}'`).join(", ")}. A role may only carry permissions this ` +
+        `system defines, or it would advertise authority in GET /roles while gating nothing.`
+    );
+  }
+
+  // BAR 3 — the no-escalation subset rule, composing the SAME helper the binding door and the
+  // `member_of` choke point use, so there is one definition of "a subset".
+  const missing = await missingPermissionsFor(tx, {
+    orgId: check.orgId,
+    actorObjectId: check.actorObjectId,
+    permissions: check.permissions,
+    scopeObjectId: check.orgId
+  });
+  if (missing.length > 0) {
+    throw forbidden(
+      `a role may not carry permissions you do not hold at the organization root: ` +
+        `${missing.map((m) => `'${m}'`).join(", ")}. Authoring one would not grant it — the ` +
+        `binding door re-checks — but it would make the roles catalogue advertise authority its ` +
+        `author cannot confer.`
+    );
+  }
+}
+
+/**
+ * A custom role may not take a BUILT-IN's name.
+ *
+ * Refused at authoring because such a row is permanently unbindable anyway:
+ * {@link builtInNameCollisionReason} rejects it at the grant door, so allowing it here would let an
+ * org create a role it can never use and discover why only at the next grant. The refusal belongs
+ * where it is fixable.
+ *
+ * Not a database constraint: the collision is between the org partition and the built-in partition,
+ * which no single unique index can express (drizzle/0102 says so at the index).
+ */
+export function assertRoleNameNotBuiltIn(name: string, builtInNames: ReadonlySet<string>): void {
+  if (builtInNames.has(name)) {
+    throw conflict(
+      `'${name}' is a built-in role name. An org role of that name could never be bound — the ` +
+        `grant door refuses a custom role shadowing a built-in — and approval quorums resolve ` +
+        `built-in names only, so it would also be silently ineligible to vote. Choose another name.`
     );
   }
 }

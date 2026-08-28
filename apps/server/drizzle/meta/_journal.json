@@ -722,6 +722,13 @@
       "when": 1788158004000,
       "tag": "0102_operator_write_remaining_instance_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1788158004000,
+      "tag": "0102_custom_roles",
+      "breakpoints": true
     }
   ]
 }

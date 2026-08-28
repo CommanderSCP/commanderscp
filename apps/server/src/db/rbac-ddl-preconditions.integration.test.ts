@@ -171,21 +171,52 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
     expect(after.rows[0]!.n).toBe("1");
   });
 
-  it("is PARTIAL — an org's own custom roles may reuse a name, including a built-in's", async () => {
+  it("is PARTIAL — an org row may take a BUILT-IN's name at the DDL level", async () => {
     // The `WHERE org_id IS NULL` half. If someone "simplifies" the index to a plain UNIQUE(name),
     // this test is what tells them they just made every org's custom-role namespace global.
+    //
+    // NARROWED BY drizzle/0102, DELIBERATELY. This case used to insert TWO org rows named 'Viewer'
+    // and assert a count of 2 — which the new `roles_org_name_key` (`UNIQUE (org_id, name) WHERE
+    // org_id IS NOT NULL`) now refuses, because two roles sharing a name inside one org make the
+    // catalogue unreadable: both bind, both render identically in GET /roles, and a revoke names
+    // one of them. The CLAIM this case exists to make is unchanged and is still measured here —
+    // 0097's index does not constrain org rows, so an org row may take a built-in's name — it is
+    // now demonstrated with ONE row, which is all the claim ever needed.
+    //
+    // Such a row is refused by the AUTHORING door (`assertRoleNameNotBuiltIn`) and unbindable at
+    // the grant door (`builtInNameCollisionReason`). Those are doors, not DDL, which is exactly
+    // why this DDL-level assertion is still worth making: it pins that the database permits what
+    // the doors refuse, so nobody later "fixes" the index and silently changes two doors' meaning.
     await admin.query(
       `INSERT INTO roles (id, org_id, name, permissions)
-       VALUES (gen_random_uuid(), $1, 'Viewer', ARRAY['object:read']::text[]),
-              (gen_random_uuid(), $1, 'Viewer', ARRAY['object:read']::text[])`,
+       VALUES (gen_random_uuid(), $1, 'Viewer', ARRAY['object:read']::text[])`,
       [org.orgId]
     );
     const rows = await admin.query<{ n: string }>(
       `SELECT COUNT(*) AS n FROM roles WHERE org_id = $1 AND name = 'Viewer'`,
       [org.orgId]
     );
-    expect(rows.rows[0]!.n).toBe("2");
+    expect(rows.rows[0]!.n).toBe("1");
     await admin.query(`DELETE FROM roles WHERE org_id = $1 AND name = 'Viewer'`, [org.orgId]);
+  });
+
+  it("drizzle/0102 — but the SAME org may not hold two roles of one name", async () => {
+    // The other side of the narrowing above, asserted rather than left implied by the edit.
+    await admin.query(
+      `INSERT INTO roles (id, org_id, name, permissions)
+       VALUES (gen_random_uuid(), $1, 'Duplicated', ARRAY['object:read']::text[])`,
+      [org.orgId]
+    );
+    await expectSqlState(
+      () =>
+        admin.query(
+          `INSERT INTO roles (id, org_id, name, permissions)
+           VALUES (gen_random_uuid(), $1, 'Duplicated', ARRAY['object:write']::text[])`,
+          [org.orgId]
+        ),
+      "23505"
+    );
+    await admin.query(`DELETE FROM roles WHERE org_id = $1 AND name = 'Duplicated'`, [org.orgId]);
   });
 
   // -----------------------------------------------------------------------------------------

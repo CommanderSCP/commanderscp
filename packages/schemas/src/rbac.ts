@@ -441,3 +441,77 @@ export const EffectivePermissionsResponseSchema = z.object({
   contributingBindings: z.array(ContributingBindingSchema)
 });
 export type EffectivePermissionsResponse = z.infer<typeof EffectivePermissionsResponseSchema>;
+
+/**
+ * ================================================================================================
+ * CUSTOM ROLES — role-model.md §5 step 10
+ * ================================================================================================
+ *
+ * `POST /roles`, `PATCH /roles/{id}`, `DELETE /roles/{id}` — an org authoring its own roles.
+ *
+ * THIS WAS GATED, AND THE GATE IS NOW CLOSED. The module doc above says `GET /roles` is read-only
+ * "gated behind closing a live quorum bypass first". That bypass — `hasRoleAtScope` matching
+ * `rl.name` with no `org_id` predicate, so an org's own 'Approver' conferred quorum eligibility
+ * everywhere a policy named Approver — was closed by owner decision on 2026-08-27: quorum
+ * eligibility resolves BUILT-IN names only. Custom roles carry permissions and are bindable; they
+ * can never satisfy an approval quorum. That is the property that makes this API safe to ship, and
+ * it is enforced in `authz/resolve.ts` rather than here.
+ *
+ * ------------------------------------------------------------------------------------------------
+ * WHAT AUTHORING IS AND IS NOT
+ * ------------------------------------------------------------------------------------------------
+ * Authoring a role CONFERS NOTHING BY ITSELF — a role with no bindings grants no one anything, and
+ * `POST /role-bindings` applies the full no-escalation subset rule to every attempt to bind it. So
+ * the load-bearing bar against escalation is, and remains, the binding door.
+ *
+ * The subset rule is applied HERE TOO, and the reason is not escalation: a catalogue in which a
+ * `Viewer` can author a role named 'Estate Owner' carrying `freeze:override` is a catalogue that
+ * LIES to every operator who reads `GET /roles`, and it invites the social-engineering step where
+ * someone with authority binds it without reading its array. Refusing at authoring keeps the
+ * catalogue honest. Stated plainly because "defence in depth" is where unexamined bars accumulate.
+ */
+export const CreateRoleRequestSchema = z.object({
+  /** Unique within the org (`roles_org_name_key`, drizzle/0102) and refused when it collides with a
+   *  built-in name — a shadowing row would be permanently unbindable anyway
+   *  (`builtInNameCollisionReason`), so the refusal happens where it is fixable. */
+  name: z.string().min(1).max(200),
+  /** Must all be members of the catalogue `authz/resolve.ts` exports. An unknown string here is not
+   *  a harmless no-op: it renders in `GET /roles` as authority and gates nothing, which is exactly
+   *  the `org:admin` shape the drift gate exists to prevent recurring. */
+  permissions: z.array(z.string()).max(100),
+  /** Object type ids this role may be bound at; `null`/absent means ANY scope. */
+  bindableAt: z.array(z.string()).max(50).nullish(),
+  /** Mandatory for the same reason it is on a grant: authoring authority is a governance act and
+   *  `audit_events` has no payload column. */
+  reason: z.string().min(1).max(2000)
+});
+export type CreateRoleRequest = z.infer<typeof CreateRoleRequestSchema>;
+
+/**
+ * A partial update. Omitted fields are left alone rather than cleared — a PATCH that dropped
+ * `bindableAt` because the caller did not mention it would silently widen where the role may be
+ * bound.
+ *
+ * ⚠️ WIDENING A ROLE WIDENS EVERY EXISTING BINDING OF IT, with no re-check — the same property
+ * `role-binding-door.ts` §8 records for built-ins, except that here it is reachable through the API
+ * rather than only through a migration. The subset rule bounds it: a caller may only add
+ * permissions they themselves hold at the org root, so a role can never be widened past its
+ * editor's own authority. It is NOT bounded by what the original AUTHOR held, and it is not
+ * re-checked against the holders — both stated rather than implied.
+ */
+export const UpdateRoleRequestSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  permissions: z.array(z.string()).max(100).optional(),
+  bindableAt: z.array(z.string()).max(50).nullish(),
+  reason: z.string().min(1).max(2000)
+});
+export type UpdateRoleRequest = z.infer<typeof UpdateRoleRequestSchema>;
+
+export const RoleIdParamSchema = z.object({ id: z.string().uuid() });
+export type RoleIdParam = z.infer<typeof RoleIdParamSchema>;
+
+/** `DELETE /roles/{id}` — a body on a DELETE, same precedent as `DELETE /role-bindings/{id}`. */
+export const DeleteRoleRequestSchema = z.object({
+  reason: z.string().min(1).max(2000)
+});
+export type DeleteRoleRequest = z.infer<typeof DeleteRoleRequestSchema>;

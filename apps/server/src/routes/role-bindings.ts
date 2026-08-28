@@ -1,6 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
 import {
+  CreateRoleRequestSchema,
+  DeleteRoleRequestSchema,
+  RoleIdParamSchema,
+  RoleSchema,
+  UpdateRoleRequestSchema,
   CreateRoleBindingRequestSchema,
   DeleteRoleBindingRequestSchema,
   GrantPreviewQuerySchema,
@@ -19,12 +25,14 @@ import { authorize } from "../authz/resolve.js";
 import { checkAtOrgRootOrScopes } from "../authz/org-root-arm.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
-import { forbidden } from "../errors.js";
+import { conflict, forbidden } from "../errors.js";
 import { idempotencyKeyOf, withIdempotency } from "../idempotency.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import {
   ROLE_BINDING_SUBJECT_TYPES,
   assertBindableSubject,
+  assertMayAuthorRole,
+  assertRoleNameNotBuiltIn,
   assertGrantAcknowledgesEmpoweredPrincipals,
   assertGrantReachesOnlyBindableMembers,
   assertMayWriteRoleBinding,
@@ -40,6 +48,10 @@ import {
 } from "../authz/role-binding-door.js";
 import {
   builtInRoleNames,
+  countBindingsOfRole,
+  deleteRoleById,
+  insertRole,
+  updateRole,
   deleteRoleBindingById,
   getRoleBindingById,
   getRoleById,
@@ -174,6 +186,328 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
         });
       });
       reply.status(200).send({ items });
+    }
+  });
+
+  // ===========================================================================================
+  // POST / PATCH / DELETE /api/v1/roles — CUSTOM ROLES (role-model.md §5 step 10)
+  // ===========================================================================================
+  //
+  // UNBLOCKED, NOT UNGUARDED. The module doc above recorded these as gated behind a live quorum
+  // bypass: `hasRoleAtScope` matched a role NAME with no `org_id` predicate, so an org authoring a
+  // zero-permission 'Approver' would have made its holders eligible quorum voters everywhere a
+  // policy named Approver. That is closed (`authz/resolve.ts`, owner decision 2026-08-27): quorum
+  // eligibility resolves BUILT-IN names only. These three operations ship on top of that fix and
+  // would be unsafe without it.
+  //
+  // Every refusal is in `authz/role-binding-door.ts` §9. This file resolves inputs, orders the
+  // bars, and writes the audit chain.
+
+  typed.route({
+    method: "POST",
+    url: "/api/v1/roles",
+    schema: {
+      body: CreateRoleRequestSchema,
+      response: {
+        201: RoleSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        409: ProblemSchema,
+        422: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "createRole",
+        summary: "Author an organization-defined role",
+        tags: ["rbac"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const body = request.body;
+
+      const role = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // The same org advisory lock the binding door takes as its FIRST statement. Authoring reads
+        // the actor's own effective permissions to compute the subset rule, and a concurrent revoke
+        // of the actor's binding would otherwise let a role be authored against authority that no
+        // longer exists by the time the row lands.
+        await lockOrgRoleAuthority(tx, auth.orgId);
+
+        const builtIns = await builtInRoleNames(tx);
+        assertRoleNameNotBuiltIn(body.name, builtIns);
+        await assertMayAuthorRole(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          permissions: body.permissions
+        });
+
+        const created = await insertRole(tx, {
+          orgId: auth.orgId,
+          name: body.name,
+          permissions: [...body.permissions],
+          bindableAt: body.bindableAt ?? null
+        });
+
+        const decision = await insertDecision(tx, {
+          orgId: auth.orgId,
+          kind: "role_binding",
+          subjectId: created.id,
+          verdict: "allow",
+          inputContext: {
+            operation: "role.create",
+            roleName: created.name,
+            // The array AS AUTHORED, for the same reason a grant stores `grantedPermissions`: a
+            // later PATCH can widen this role, and the blast radius of that widening is only
+            // computable after the fact if the starting point was recorded.
+            permissions: [...created.permissions].sort(),
+            bindableAt: created.bindableAt,
+            actorId: auth.subjectObjectId,
+            reason: body.reason
+          },
+          reasonTree: {
+            summary:
+              `authored org role '${created.name}' — every permission it carries was already ` +
+              `held by the author at the organization root`,
+            subsetRuleSatisfied: true
+          }
+        });
+
+        await appendAuditEvent(tx, {
+          orgId: auth.orgId,
+          actorId: auth.subjectObjectId,
+          action: "role.create",
+          subjectId: created.id,
+          reason: body.reason,
+          decisionId: decision.id,
+          requestId: request.id
+        });
+
+        return created;
+      });
+
+      reply.status(201).send({
+        id: role.id,
+        orgId: role.orgId,
+        name: role.name,
+        permissions: role.permissions,
+        bindableAt: role.bindableAt,
+        deprecated: false,
+        deprecationReason: null
+      });
+    }
+  });
+
+  typed.route({
+    method: "PATCH",
+    url: "/api/v1/roles/:id",
+    schema: {
+      params: RoleIdParamSchema,
+      body: UpdateRoleRequestSchema,
+      response: {
+        200: RoleSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema,
+        422: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "updateRole",
+        summary: "Edit an organization-defined role (built-ins are immutable)",
+        tags: ["rbac"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const body = request.body;
+
+      const role = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await lockOrgRoleAuthority(tx, auth.orgId);
+
+        const existing = await getRoleById(tx, auth.orgId, request.params.id);
+        // A BUILT-IN IS NOT EDITABLE THROUGH ANY ORG'S API. `roles`' RLS admits `org_id IS NULL`
+        // for reads, so `getRoleById` legitimately returns a shared singleton — and editing one
+        // would rewrite the permission set of every org on the deployment at once. `updateRole`'s
+        // `org_id` predicate makes it unaddressable anyway; this refusal exists so the answer is a
+        // stated 403 rather than a confusing 404.
+        if (existing.orgId === null) {
+          throw forbidden(
+            `'${existing.name}' is a shared built-in role. Built-ins are the same rows for every ` +
+              `organization on this deployment and cannot be edited by a tenant; author an org ` +
+              `role instead.`
+          );
+        }
+
+        if (body.name !== undefined) {
+          assertRoleNameNotBuiltIn(body.name, await builtInRoleNames(tx));
+        }
+        // Checked against the RESULTING array, not the delta. A PATCH that omits `permissions`
+        // leaves them unchanged and still re-runs the rule, so an editor whose own authority has
+        // since narrowed cannot rename a role they could no longer author.
+        const nextPermissions = body.permissions ?? existing.permissions;
+        await assertMayAuthorRole(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          permissions: nextPermissions
+        });
+
+        const updated = await updateRole(tx, {
+          orgId: auth.orgId,
+          id: request.params.id,
+          name: body.name,
+          permissions: body.permissions ? [...body.permissions] : undefined,
+          // `nullish` in the schema: absent leaves it alone, explicit null clears it to ANY scope.
+          bindableAt: body.bindableAt === undefined ? undefined : (body.bindableAt ?? null)
+        });
+
+        const added = updated.permissions.filter((p) => !existing.permissions.includes(p)).sort();
+        const removed = existing.permissions.filter((p) => !updated.permissions.includes(p)).sort();
+
+        const decision = await insertDecision(tx, {
+          orgId: auth.orgId,
+          kind: "role_binding",
+          subjectId: updated.id,
+          verdict: "allow",
+          inputContext: {
+            operation: "role.update",
+            roleName: updated.name,
+            permissionsBefore: [...existing.permissions].sort(),
+            permissionsAfter: [...updated.permissions].sort(),
+            // THE BLAST RADIUS, recorded because it is not re-checked anywhere. Adding a permission
+            // widens EVERY EXISTING BINDING of this role with no re-evaluation — the same property
+            // `role-binding-door.ts` §8 records for built-ins, except reachable through the API
+            // here. The subset rule bounds it to the editor's own authority and nothing bounds it
+            // to the original author's.
+            permissionsAdded: added,
+            permissionsRemoved: removed,
+            actorId: auth.subjectObjectId,
+            reason: body.reason
+          },
+          reasonTree: {
+            summary:
+              added.length > 0
+                ? `widened org role '${updated.name}' by ${added.join(", ")} — every existing ` +
+                  `binding of this role now confers them`
+                : `edited org role '${updated.name}' without widening it`,
+            subsetRuleSatisfied: true
+          }
+        });
+
+        await appendAuditEvent(tx, {
+          orgId: auth.orgId,
+          actorId: auth.subjectObjectId,
+          action: "role.update",
+          subjectId: updated.id,
+          reason: body.reason,
+          decisionId: decision.id,
+          requestId: request.id
+        });
+
+        return updated;
+      });
+
+      reply.status(200).send({
+        id: role.id,
+        orgId: role.orgId,
+        name: role.name,
+        permissions: role.permissions,
+        bindableAt: role.bindableAt,
+        deprecated: false,
+        deprecationReason: null
+      });
+    }
+  });
+
+  typed.route({
+    method: "DELETE",
+    url: "/api/v1/roles/:id",
+    schema: {
+      params: RoleIdParamSchema,
+      body: DeleteRoleRequestSchema,
+      response: {
+        204: z.undefined(),
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "deleteRole",
+        summary: "Delete an organization-defined role that no binding points at",
+        tags: ["rbac"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+
+      await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await lockOrgRoleAuthority(tx, auth.orgId);
+
+        const existing = await getRoleById(tx, auth.orgId, request.params.id);
+        if (existing.orgId === null) {
+          throw forbidden(
+            `'${existing.name}' is a shared built-in role and cannot be deleted by a tenant.`
+          );
+        }
+        await assertMayAuthorRole(tx, {
+          orgId: auth.orgId,
+          actorObjectId: auth.subjectObjectId,
+          permissions: existing.permissions
+        });
+
+        // REFUSES WITH BINDINGS, rather than cascading. `role_bindings.role_id` is a plain FK, so a
+        // cascade here would silently revoke authority from every holder in one request with one
+        // audit event naming the ROLE and not the principals — an unreviewable mass revoke wearing
+        // a tidy-up's name. The same shape as the containment rule that refuses to delete a
+        // container with children: the caller revokes the bindings first, and each revoke is its own
+        // audited, floor-checked decision.
+        const holders = await countBindingsOfRole(tx, auth.orgId, existing.id);
+        if (holders > 0) {
+          throw conflict(
+            `role '${existing.name}' still has ${holders} binding${holders === 1 ? "" : "s"}. ` +
+              `Revoke them first — deleting the role here would revoke authority from every ` +
+              `holder at once, under one audit event that names the role rather than the ` +
+              `principals who lost it.`
+          );
+        }
+
+        const decision = await insertDecision(tx, {
+          orgId: auth.orgId,
+          kind: "role_binding",
+          subjectId: existing.id,
+          verdict: "allow",
+          inputContext: {
+            operation: "role.delete",
+            roleName: existing.name,
+            permissions: [...existing.permissions].sort(),
+            bindingCount: 0,
+            actorId: auth.subjectObjectId,
+            reason: request.body.reason
+          },
+          reasonTree: {
+            summary: `deleted org role '${existing.name}', which no binding pointed at`
+          }
+        });
+
+        await appendAuditEvent(tx, {
+          orgId: auth.orgId,
+          actorId: auth.subjectObjectId,
+          action: "role.delete",
+          subjectId: existing.id,
+          reason: request.body.reason,
+          decisionId: decision.id,
+          requestId: request.id
+        });
+
+        await deleteRoleById(tx, auth.orgId, existing.id);
+      });
+
+      reply.status(204).send(undefined);
     }
   });
 

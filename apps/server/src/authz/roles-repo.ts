@@ -23,6 +23,25 @@ import type { BindableRole } from "./role-binding-door.js";
 
 /** Built-ins first (the catalogue an operator recognises), then org rows; alphabetical within each,
  *  so the listing is stable across calls without a cursor. */
+
+/** One row -> the shape every door and route consumes. Shared by the write functions below so a new
+ *  field cannot be mapped by one and forgotten by another. */
+function toBindableRole(r: {
+  id: string;
+  orgId: string | null;
+  name: string;
+  permissions: string[];
+  bindableAt: string[] | null;
+}): BindableRole {
+  return {
+    id: r.id,
+    orgId: r.orgId,
+    name: r.name,
+    permissions: r.permissions,
+    bindableAt: r.bindableAt
+  };
+}
+
 export async function listRoles(tx: TenantTx, orgId: string): Promise<BindableRole[]> {
   const rows = await tx
     .select()
@@ -272,4 +291,94 @@ export async function assertPolicyApprovalRolesExist(
       `never be satisfied by any principal and the gate would block forever while appearing ` +
       `correctly configured. Available: ${[...builtIns].sort().join(", ")}.`
   );
+}
+
+/** Storage for the custom-role authoring API (role-model.md §5 step 10). Decides nothing: every
+ *  refusal lives in `authz/role-binding-door.ts` §9 and runs before any of these are called. */
+export async function insertRole(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    name: string;
+    permissions: string[];
+    bindableAt: string[] | null;
+  }
+): Promise<BindableRole> {
+  const id = uuidv7();
+  try {
+    const [row] = await tx
+      .insert(roles)
+      .values({
+        id,
+        orgId: input.orgId,
+        name: input.name,
+        permissions: input.permissions,
+        bindableAt: input.bindableAt
+      })
+      .returning();
+    return toBindableRole(row!);
+  } catch (err) {
+    // `roles_org_name_key` (drizzle/0102). Translated here rather than pre-checked with a SELECT,
+    // because a pre-check is a TOCTOU: two concurrent authors both see the name free.
+    if (isUniqueViolation(err)) {
+      throw conflict(`this organization already has a role named '${input.name}'`);
+    }
+    throw err;
+  }
+}
+
+export async function updateRole(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    id: string;
+    name?: string;
+    permissions?: string[];
+    bindableAt?: string[] | null;
+  }
+): Promise<BindableRole> {
+  const patch: Record<string, unknown> = {};
+  if (input.name !== undefined) patch.name = input.name;
+  if (input.permissions !== undefined) patch.permissions = input.permissions;
+  if (input.bindableAt !== undefined) patch.bindableAt = input.bindableAt;
+
+  try {
+    const [row] = await tx
+      .update(roles)
+      .set(patch)
+      // `org_id = :orgId` is NOT redundant with RLS here: `roles`' policy admits `org_id IS NULL`
+      // for READS (that is how every org sees the built-in singletons), so a filter of
+      // `id = :id` alone would match a BUILT-IN row and RLS's WITH CHECK is what would have to
+      // catch it. Naming the org makes a built-in unaddressable by this function at all.
+      .where(and(eq(roles.id, input.id), eq(roles.orgId, input.orgId)))
+      .returning();
+    if (!row) throw notFound(`role '${input.id}' not found in this organization`);
+    return toBindableRole(row);
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw conflict(`this organization already has a role named '${input.name}'`);
+    }
+    throw err;
+  }
+}
+
+/** How many bindings point at this role. The delete door refuses a non-zero count. */
+export async function countBindingsOfRole(
+  tx: TenantTx,
+  orgId: string,
+  roleId: string
+): Promise<number> {
+  const rows = await tx.execute<{ n: string }>(
+    sql`SELECT count(*)::text AS n FROM role_bindings WHERE org_id = ${orgId} AND role_id = ${roleId}`
+  );
+  return Number(rows.rows[0]?.n ?? "0");
+}
+
+export async function deleteRoleById(tx: TenantTx, orgId: string, id: string): Promise<void> {
+  const rows = await tx
+    .delete(roles)
+    // Same `org_id` reasoning as `updateRole`: a built-in must not be addressable here.
+    .where(and(eq(roles.id, id), eq(roles.orgId, orgId)))
+    .returning({ id: roles.id });
+  if (rows.length === 0) throw notFound(`role '${id}' not found in this organization`);
 }
