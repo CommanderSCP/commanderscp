@@ -637,6 +637,26 @@ bundledExecutor:
     enabled: false
     namespace: scp-gitea
     scpAccount: scp-gitea-admin
+  # Bundled Argo Workflows (Mode B — the CI/build/TEST backend, and the executor D11's coordinated
+  # test hooks run on). SLIM BLOCK, exactly like `gitea` above: the vendored render lives in
+  # deploy/helm-bundled; the main chart carries only what the SCP-SIDE integration needs — the
+  # enabled flag and the namespace — so `allow-argo-workflows` egress can be rendered.
+  #
+  # NO `scpAccount`, and no auto-wire hook, DELIBERATELY: upstream's vendored argo-server runs with
+  # `args: [server]` and therefore Argo Workflows' DEFAULT auth mode, which is `server` — the API
+  # server performs Kubernetes operations as its OWN ServiceAccount and does not require a per-client
+  # bearer token. There is no scoped token to mint, so a token-minting hook of the kind argocd and
+  # gitea need would create a credential nothing consumes. The plugin's `tokenSecretKey` stays
+  # optional for the BYO case, where an operator's own instance runs `--auth-mode=client|sso` and
+  # does require one.
+  #
+  # ACCESS CONTROL IS THEREFORE NETWORK-LEVEL for the bundled instance: anything that can reach
+  # argo-server can drive it. That is upstream's documented posture for `server` auth mode, and it is
+  # why the egress allow below is a precise namespaceSelector on a single port rather than anything
+  # broader — the NetworkPolicy is the control, so it has to be tight.
+  argoWorkflows:
+    enabled: false
+    namespace: scp-argo-workflows
 
 # -------------------------------------------------------------------------------------------
 # Federation mTLS transport identity (DESIGN §13, M8 hardening) — host-level, operator-owned

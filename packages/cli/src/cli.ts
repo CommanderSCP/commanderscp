@@ -6918,6 +6918,32 @@ export function buildProgram(): Command {
     .option("--correlation-key <key>", "correlation key for grouping related changes")
     .option("--workspace <workspace>", "Terraform/OpenTofu workspace name")
     .option("--artifact-digest <digest>", "artifact digest linking this to an app-side change")
+    // M21.2/D23 — the BUILT COMMIT, not a ref. `--ref` above is a moving label; a gate pinned to
+    // "whatever that branch holds now" is exactly what D23 replaces. The typed door has accepted
+    // `commitSha` since increment 8 and no flag reached it, so a CI step could not send one.
+    .option(
+      "--commit-sha <sha>",
+      "the BUILT COMMIT this release was produced from (full 40-char sha, not a ref) — required for " +
+        "a D23 test-bundle pin to resolve"
+    )
+    // D23 (increment 8) — a REFERENCE to the test bundle captured at the built commit. Like --sbom-*,
+    // SCP stores the reference and NEVER the bundle bytes: do not pipe the bundle itself.
+    .option(
+      "--test-bundle-repository <repo>",
+      "D23 test bundle: the OCI repository the captured workflows were pushed to (required with " +
+        "--test-bundle-digest)"
+    )
+    .option(
+      "--test-bundle-digest <digest>",
+      "D23 test bundle: its digest as sha256:<64 lowercase hex> (required with --test-bundle-repository)"
+    )
+    // D13 (increment 8) — what this build ACTUALLY produced, verified at propose time against the
+    // class the pipeline declared (`source_mappings.type`). A disagreement REFUSES the release.
+    .option(
+      "--artifact-class <class>",
+      "D13: the artifact class this build produced (image|rpm|deb|npm|maven|python|go|chart|vm-image) " +
+        "— verified against the class the pipeline declared; a mismatch refuses the release"
+    )
     .option("--plan-json <path>", "path to a `tofu show -json`-shaped plan file, attached verbatim")
     // M12 P4B coupled pipelines — THE pipeline declaration channel (a raw provider push webhook
     // cannot carry a key; this CI step can). Same flag format as `scp change propose`.
@@ -6982,6 +7008,10 @@ export function buildProgram(): Command {
           correlationKey?: string;
           workspace?: string;
           artifactDigest?: string;
+          commitSha?: string;
+          testBundleRepository?: string;
+          testBundleDigest?: string;
+          artifactClass?: string;
           planJson?: string;
           provides?: string;
           requires?: string;
@@ -7036,16 +7066,54 @@ export function buildProgram(): Command {
               generatedAt: opts.sbomGeneratedAt
             }
           : undefined;
+        // D23 — the bundle reference is all-or-nothing on its TWO parts, for the same reason the
+        // SBOM reference is on its three: a half-declared pin is dropped by the server's
+        // `TestBundleRefSchema` parse and quarantined, so the run captures nothing, the gate holds
+        // forever, and the operator sees a correctly-named reason for a flag they thought they set.
+        const bundleFlags = [opts.testBundleRepository, opts.testBundleDigest];
+        if (bundleFlags.some(Boolean) && !bundleFlags.every(Boolean)) {
+          throw new Error(
+            "--test-bundle-repository and --test-bundle-digest must be given together (a test-bundle reference needs both)"
+          );
+        }
+        const testBundle = opts.testBundleRepository
+          ? { repository: opts.testBundleRepository, digest: opts.testBundleDigest! }
+          : undefined;
+        // D13 — refused HERE as well as at the door. The server would 400 an unknown class anyway
+        // (the report body is a `strictObject` over a closed enum), but a CI step that typo'd
+        // `--artifact-class Image` deserves the valid set in the message rather than a wire error.
+        const validArtifactClasses = [
+          "image",
+          "rpm",
+          "deb",
+          "npm",
+          "maven",
+          "python",
+          "go",
+          "chart",
+          "vm-image"
+        ] as const;
+        if (
+          opts.artifactClass &&
+          !(validArtifactClasses as readonly string[]).includes(opts.artifactClass)
+        ) {
+          throw new Error(
+            `--artifact-class must be one of ${validArtifactClasses.join("|")} (got '${opts.artifactClass}')`
+          );
+        }
         const result = await client.changeSources.report(sourceKind, {
           status: opts.status as (typeof validStatuses)[number],
           repo: opts.repo,
           path: opts.path,
           ref: opts.ref,
+          commitSha: opts.commitSha,
           correlationKey: opts.correlationKey,
           workspace: opts.workspace,
           artifactDigest: opts.artifactDigest,
           planJson,
           sbom,
+          testBundle,
+          artifactClass: opts.artifactClass as (typeof validArtifactClasses)[number] | undefined,
           provides: parseList(opts.provides),
           requires: parseRequiresFlag(opts.requires),
           stageDependencies: parseStageDependenciesFlags(opts.stageDependsOn, opts.stageDependsAt)

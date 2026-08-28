@@ -1858,6 +1858,25 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
         `[${label}] bundledExecutor.${be}.enabled but no allow-${be} NetworkPolicy egress in the main chart`
       );
     }
+    // Argo Workflows is asserted SEPARATELY from the loop above, because it legitimately has only
+    // ONE of the two SCP-side integrations: the egress allow, and no auto-wire Job. Upstream's
+    // vendored argo-server runs `args: [server]`, i.e. the default `server` auth mode, in which the
+    // API server acts as its own ServiceAccount and requires no per-client bearer token — so there
+    // is no scoped token to mint and a hook would produce a credential nothing consumes. Adding it
+    // to the loop would therefore demand a Job that must not exist.
+    //
+    // The egress allow, by contrast, is load-bearing in the strongest sense: it is the path D11's
+    // coordinated test hooks trigger over, so without it every declared hook triggers into a blocked
+    // connection and the wave it gates waits forever. This assertion is what makes deleting the
+    // policy a red test rather than a silent regression discovered by a team whose release never
+    // moves.
+    assert(
+      docs.some(
+        (d) =>
+          d.kind === "NetworkPolicy" && String(d.metadata?.name).includes("allow-argo-workflows")
+      ),
+      `[${label}] bundledExecutor.argoWorkflows.enabled but no allow-argo-workflows NetworkPolicy egress in the main chart`
+    );
     // ...and the third thing the main chart must keep for them: a path from the hook pods to the
     // Kubernetes API server under the chart's own default-deny. See autowireHookKubeApiViolations.
     for (const v of autowireHookKubeApiViolations(label, docs)) fail(v);
@@ -2136,6 +2155,11 @@ function main(): void {
       "bundledExecutor.argocd.enabled=true",
       "--set",
       "bundledExecutor.gitea.enabled=true",
+      // Argo Workflows joins the kitchen sink now that the MAIN chart carries a slim block for it.
+      // "Every optional feature toggled on" has to include it, or the allow-argo-workflows assertion
+      // renders against a chart where the backend is OFF and passes vacuously.
+      "--set",
+      "bundledExecutor.argoWorkflows.enabled=true",
       // Executor egress allowlist (Mode A / BYO-coordinate) — one entry exercising BOTH `to` shapes
       // at once (an in-cluster namespaceSelector AND an external ipBlock) plus multiple ports.
       "--set-json",

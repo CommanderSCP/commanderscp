@@ -114,6 +114,46 @@ spec:
         - { protocol: TCP, port: 443 }
 ---
 {{- end }}
+{{- if .Values.bundledExecutor.argoWorkflows.enabled }}
+# Egress: bundled Argo Workflows (Mode B — the CI/build/test backend). api/worker reach the
+# in-cluster argo-server API in its own namespace to submit WorkflowTemplates and poll their status:
+# this is the path D11's coordinated test hooks run on, so WITHOUT this allow every declared
+# postMerge/postDeploy/continuous hook triggers into a blocked connection, the run never reaches a
+# terminal phase, and the wave it gates waits forever with a correctly-named reason and no way for a
+# team to fix it. In-cluster destination, so a precise namespaceSelector (not the RFC1918 ipBlock) is
+# the correct allow, as for allow-argocd and allow-gitea above.
+#
+# PORT 2746 is argo-server's own container port from the vendored upstream manifest (`containerPort:
+# 2746, name: web`) and it serves HTTPS there by default — the vendored Deployment's readinessProbe
+# uses `scheme: HTTPS`, which is the observable evidence rather than an assumption about upstream
+# defaults. 443 and 80 are allowed too for installs that front argo-server with a Service or ingress
+# on the standard web ports, matching what allow-gitea does for the same reason.
+#
+# NO kube-API egress is added for this backend: unlike argocd and gitea there is no auto-wire hook to
+# read a generated secret cross-namespace (see the `argoWorkflows` block in values.yaml for why there
+# is no token to mint), so `allow-kube-api-autowire` below deliberately does not gate on it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-allow-argo-workflows
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "commanderscp.selectorLabels" . | nindent 6 }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.bundledExecutor.argoWorkflows.namespace }}
+      ports:
+        - { protocol: TCP, port: 2746 }
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }
+---
+{{- end }}
 {{- if .Values.bundledExecutor.gitea.enabled }}
 # Egress: bundled Gitea (Mode B — the default unified registry, ADR-0012). api/worker AND the
 # post-install auto-wire hook reach the in-cluster Gitea HTTP API in its own namespace to mint the
