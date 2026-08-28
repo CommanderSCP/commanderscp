@@ -618,7 +618,17 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
             properties: {
               ...(scope ? { scope } : {}),
               enforcement: "required",
-              effects: [{ requireApprovals: { count: 99, fromRole: "NonexistentRole" } }]
+              // `Approver`, NOT the "NonexistentRole" this fixture used to carry. role-model.md §5
+              // step 6's `fromRole` validation refuses a policy naming a non-built-in at the
+              // `objects-repo` choke point — which IaC apply passes through — so the old value now
+              // 422s. The negative cases below were unaffected (the authority check refuses first,
+              // still 403), but the NON-REGRESSION case at the end of this test legitimately
+              // succeeds, and it was failing on the role name rather than on the thing under test.
+              //
+              // Using a real role keeps the only variable SCOPE AUTHORITY. `count: 99` is retained
+              // because the unsatisfiable-quorum shape is the point of the exploit; that part is
+              // still expressible, and is a different defect from naming a role nobody can hold.
+              effects: [{ requireApprovals: { count: 99, fromRole: "Approver" } }]
             }
           }
         ],
