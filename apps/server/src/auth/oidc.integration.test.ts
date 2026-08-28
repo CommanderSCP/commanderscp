@@ -14,6 +14,7 @@ import type { AppDeps } from "../types.js";
 // be registered BEFORE the SCP test server starts listening.
 const SCP_PORT = 18099;
 const SCP_BASE_URL = `http://127.0.0.1:${SCP_PORT}/api/v1`;
+const SCP_APP_ROLE = "SCP.OrgAdmin";
 const SCP_REDIRECT_URI = `http://127.0.0.1:${SCP_PORT}/api/v1/auth/oidc/callback`;
 const KEYCLOAK_REALM = "scp-test";
 const KEYCLOAK_CLIENT_ID = "scp-cli";
@@ -60,6 +61,28 @@ async function keycloakAdminToken(kcBaseUrl: string): Promise<string> {
   return body.access_token;
 }
 
+/** Keycloak admin GET — the POST helper above returns no body, and the role/user/client ids this
+ *  fixture needs are only discoverable by reading them back. */
+async function keycloakAdminGet(
+  baseUrl: string,
+  token: string,
+  path: string
+): Promise<Record<string, string>[] & Record<string, string>> {
+  const res = await fetch(`${baseUrl}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`keycloak GET ${path} failed: ${res.status} ${await res.text()}`);
+  return (await res.json()) as never;
+}
+
+/** The client's internal UUID, which protocol-mapper URLs need — distinct from its `clientId`. */
+async function clientUuid(baseUrl: string, token: string): Promise<string> {
+  const found = await keycloakAdminGet(
+    baseUrl,
+    token,
+    `/admin/realms/${KEYCLOAK_REALM}/clients?clientId=${KEYCLOAK_CLIENT_ID}`
+  );
+  return (found as unknown as Array<{ id: string }>)[0]!.id;
+}
+
 async function keycloakAdminApi(
   kcBaseUrl: string,
   adminToken: string,
@@ -91,6 +114,8 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
   let app: Awaited<ReturnType<typeof buildApp>>;
   let deps: AppDeps;
   let orgId: string;
+  let kcUserId: string;
+  let bootstrapAdminToken: string;
   let orgName: string;
 
   beforeAll(async () => {
@@ -137,6 +162,52 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
       credentials: [{ type: "password", value: KEYCLOAK_TEST_PASSWORD, temporary: false }]
     });
 
+    // ------------------------------------------------------------------------------------------
+    // THE ENTRA APP-ROLE SHAPE, reproduced on Keycloak (role-model.md — SSO groups)
+    // ------------------------------------------------------------------------------------------
+    // Entra emits assigned APP ROLES as a `roles` claim whose values you choose. Keycloak does the
+    // same thing under a different name: a realm role plus a `oidc-usermodel-realm-role-mapper`
+    // that writes them into the ID TOKEN. `id.token.claim: "true"` is the load-bearing setting —
+    // without it the role lands in the ACCESS token only, `tokens.claims()` never sees it, and the
+    // sync silently reconciles to nothing. That is the exact silent-strip this feature refuses.
+    await keycloakAdminApi(kcBaseUrl, adminToken, `/admin/realms/${KEYCLOAK_REALM}/roles`, {
+      name: SCP_APP_ROLE
+    });
+    const realmRole = await keycloakAdminGet(
+      kcBaseUrl,
+      adminToken,
+      `/admin/realms/${KEYCLOAK_REALM}/roles/${SCP_APP_ROLE}`
+    );
+    const kcUsers = await keycloakAdminGet(
+      kcBaseUrl,
+      adminToken,
+      `/admin/realms/${KEYCLOAK_REALM}/users?username=${KEYCLOAK_TEST_USER}`
+    );
+    kcUserId = (kcUsers as unknown as Array<{ id: string }>)[0]!.id;
+    await keycloakAdminApi(
+      kcBaseUrl,
+      adminToken,
+      `/admin/realms/${KEYCLOAK_REALM}/users/${kcUserId}/role-mappings/realm`,
+      [{ id: realmRole.id, name: realmRole.name }]
+    );
+    await keycloakAdminApi(
+      kcBaseUrl,
+      adminToken,
+      `/admin/realms/${KEYCLOAK_REALM}/clients/${await clientUuid(kcBaseUrl, adminToken)}/protocol-mappers/models`,
+      {
+        name: "realm-roles-to-id-token",
+        protocol: "openid-connect",
+        protocolMapper: "oidc-usermodel-realm-role-mapper",
+        config: {
+          "claim.name": "roles",
+          "jsonType.label": "String",
+          multivalued: "true",
+          "id.token.claim": "true",
+          "access.token.claim": "true"
+        }
+      }
+    );
+
     const config = loadConfig({
       DATABASE_URL: testDatabaseUrl(),
       SCP_RUNTIME_DATABASE_URL: testRuntimeDatabaseUrl(),
@@ -144,7 +215,9 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
       SCP_BOOTSTRAP_ORG: `oidc-e2e-${randomUUID()}`,
       SCP_OIDC_ISSUER: issuer,
       SCP_OIDC_CLIENT_ID: KEYCLOAK_CLIENT_ID,
-      SCP_OIDC_REDIRECT_URI: SCP_REDIRECT_URI
+      SCP_OIDC_REDIRECT_URI: SCP_REDIRECT_URI,
+      // Explicit even though `roles` is the default, so this fixture states the contract it tests.
+      SCP_OIDC_ROLE_CLAIM: "roles"
     });
     const pool = createPool(config.runtimeDatabaseUrl);
     const db = createDb(pool);
@@ -163,6 +236,21 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
     );
     orgId = bootstrap.orgId;
     orgName = config.bootstrapOrgName;
+
+    // The SSO-groups case below needs an authenticated ADMIN to author the mapped group and bind a
+    // role to it — the human half of the feature, which no IdP performs. Logging in through the
+    // real local-auth door rather than minting a session directly, so the fixture uses the same
+    // path an operator would.
+    const adminLogin = await fetch(`${SCP_BASE_URL}/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        username: "oidc-e2e-bootstrap-admin",
+        password: bootstrap.oneTimePassword
+      })
+    });
+    if (!adminLogin.ok) throw new Error(`bootstrap admin login failed: ${adminLogin.status}`);
+    bootstrapAdminToken = ((await adminLogin.json()) as { token: string }).token;
   }, 180_000);
 
   afterAll(async () => {
@@ -271,6 +359,78 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
     // Sanity: the org itself is the one this test bootstrapped.
     const org = await deps.db.query.orgs.findFirst({ where: eq(orgs.id, orgId) });
     expect(org?.name).toBe(orgName);
+  }, 120_000);
+
+  it("SSO GROUPS END TO END: an app-role claim in a REAL login grants the mapped group's role", async () => {
+    // ------------------------------------------------------------------------------------------
+    // THE WIRING THIS FILE EXISTS TO PROVE, and which nothing else could.
+    // ------------------------------------------------------------------------------------------
+    // `identity-sync.integration.test.ts` calls `syncExternalGroupMembership` DIRECTLY, so it
+    // proves reconciliation and proves nothing about whether a login ever reaches it. The chain
+    // handleCallback -> claims.raw -> claimValuesFrom(config.roleClaim) -> sync was, until this
+    // test, verified only by reading the source. Delete the sync call from `routes/oidc.ts` and
+    // every other test in the suite stays green — which is this repo's dominant failure class
+    // wearing an SSO costume.
+    //
+    // Keycloak stands in for Entra deliberately: same generic-OIDC seam, same `roles` claim, no
+    // per-provider code. What is NOT covered is Entra's own quirks — the groups-claim overage in
+    // particular — which no local fixture can reproduce.
+    const asAdmin = {
+      authorization: `Bearer ${bootstrapAdminToken}`,
+      "content-type": "application/json"
+    };
+
+    // A group mapped to the claim value Keycloak will emit, carrying a real role.
+    const groupRes = await fetch(`${SCP_BASE_URL}/groups`, {
+      method: "POST",
+      headers: asAdmin,
+      body: JSON.stringify({
+        name: `idp-mapped-${randomUUID()}`,
+        properties: { externalIdentity: { claimValue: SCP_APP_ROLE } }
+      })
+    });
+    // Read the body ONCE. `expect(res.status, await res.text())` consumes it eagerly — the message
+    // argument is evaluated whether or not the assertion fails — and the following `.json()` then
+    // throws "Body is unusable". Cost one run to find.
+    const groupBody = await groupRes.text();
+    expect(groupRes.status, groupBody).toBe(201);
+    const group = JSON.parse(groupBody) as { id: string };
+
+    const rolesRes = await fetch(`${SCP_BASE_URL}/roles`, { headers: asAdmin });
+    const roles = (await rolesRes.json()) as { items: Array<{ id: string; name: string }> };
+    const orgAdmin = roles.items.find((r) => r.name === "OrgAdmin");
+    expect(orgAdmin, "OrgAdmin must be seeded (drizzle/0099)").toBeDefined();
+
+    const bindRes = await fetch(`${SCP_BASE_URL}/role-bindings`, {
+      method: "POST",
+      headers: asAdmin,
+      body: JSON.stringify({
+        subjectId: group.id,
+        roleId: orgAdmin!.id,
+        scopeObjectId: orgId,
+        reason: "idp-mapped admins",
+        acknowledgedPrincipalIds: []
+      })
+    });
+    const bindBody = await bindRes.text();
+    expect(bindRes.status, bindBody).toBe(201);
+
+    // A REAL PKCE login against the real Keycloak, whose ID token now carries roles: ["SCP.OrgAdmin"].
+    const sessionCookieHeader = await loginViaOidc();
+
+    const effective = await fetch(`${SCP_BASE_URL}/authz/effective?scopeObjectId=${orgId}`, {
+      headers: { cookie: sessionCookieHeader }
+    });
+    const effectiveBody = await effective.text();
+    expect(effective.status, effectiveBody).toBe(200);
+    const body = JSON.parse(effectiveBody) as { permissions: string[] };
+
+    // The whole feature in one assertion: a claim the operator never typed into SCP, carried by a
+    // real IdP through a real login, resolving to a permission at a real door. `policy:write` is
+    // OrgAdmin's and is NOT held by the Viewer floor every OIDC user is provisioned with, so this
+    // cannot pass by way of the JIT binding.
+    expect(body.permissions).toContain("policy:write");
+    expect(body.permissions).toContain("role_binding:write");
   }, 120_000);
 
   it("returns 404 when OIDC is not configured", async () => {
