@@ -4176,6 +4176,33 @@ export const zCreatePlanResponse = z.object({
             quietWindowSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
             reason: z.string()
         })).optional(),
+        rollouts: z.array(z.object({
+            kind: z.literal('rollout'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetClass: z.string(),
+            rollout: z.unknown().nullable(),
+            reason: z.string()
+        })).optional(),
+        convergence: z.array(z.object({
+            kind: z.literal('convergence'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            converge: z.boolean().nullable(),
+            scope: z.string().nullable(),
+            reason: z.string()
+        })).optional(),
         summary: z.object({
             creates: z.int().gte(-9007199254740991).lte(9007199254740991),
             updates: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -4517,6 +4544,33 @@ export const zGetPlanResponse = z.object({
             everySeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
             maxAgeSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
             quietWindowSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+            reason: z.string()
+        })).optional(),
+        rollouts: z.array(z.object({
+            kind: z.literal('rollout'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetClass: z.string(),
+            rollout: z.unknown().nullable(),
+            reason: z.string()
+        })).optional(),
+        convergence: z.array(z.object({
+            kind: z.literal('convergence'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            converge: z.boolean().nullable(),
+            scope: z.string().nullable(),
             reason: z.string()
         })).optional(),
         summary: z.object({
@@ -4861,6 +4915,33 @@ export const zApplyPlanResponse = z.object({
                 everySeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
                 maxAgeSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
                 quietWindowSeconds: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+                reason: z.string()
+            })).optional(),
+            rollouts: z.array(z.object({
+                kind: z.literal('rollout'),
+                action: z.enum([
+                    'create',
+                    'update',
+                    'delete',
+                    'noop'
+                ]),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                targetClass: z.string(),
+                rollout: z.unknown().nullable(),
+                reason: z.string()
+            })).optional(),
+            convergence: z.array(z.object({
+                kind: z.literal('convergence'),
+                action: z.enum([
+                    'create',
+                    'update',
+                    'delete',
+                    'noop'
+                ]),
+                componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                converge: z.boolean().nullable(),
+                scope: z.string().nullable(),
                 reason: z.string()
             })).optional(),
             summary: z.object({

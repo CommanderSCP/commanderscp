@@ -65,7 +65,9 @@ import {
   type ResolvedManifestDependencyProducer,
   type ResolvedManifestExecutorBinding,
   type ResolvedManifestObject,
+  type ResolvedManifestConvergence,
   type ResolvedManifestPipelineHook,
+  type ResolvedManifestRollout,
   type ResolvedManifestPlacement,
   type ResolvedManifestSourceMapping
 } from "./plan-diff.js";
@@ -106,6 +108,14 @@ import {
   listHooksForComponents,
   upsertHook
 } from "../coordination/pipeline-hooks-repo.js";
+import {
+  deleteComponentConvergence,
+  deleteComponentRollout,
+  listConvergenceForComponents,
+  listRolloutsForComponents,
+  upsertComponentConvergence,
+  upsertComponentRollout
+} from "./rollout-convergence-repo.js";
 import { validatePluginConfig } from "../plugin-host/plugin-manifests.js";
 
 /**
@@ -804,6 +814,40 @@ export async function computeDiffForManifest(
     }
   }
 
+  // ROLLOUTS AND CONVERGENCE POOLS (D12/D25(b); migration 0106). Read UNCONDITIONALLY, unlike the
+  // hook pool above: absent means EMPTY for these two, so a prune is always in scope and a pool we
+  // skipped reading would silently make every prune a no-op.
+  const managedRollouts: ResolvedManifestRollout[] = [];
+  for (const row of await listRolloutsForComponents(tx, orgId, ownedIdList)) {
+    const componentUrn = urnOfOwnedId(row.componentObjectId);
+    if (!componentUrn) continue;
+    managedRollouts.push({
+      componentUrn,
+      targetClass: row.targetClass,
+      rollout: row.rollout
+    });
+  }
+  const managedConvergence: ResolvedManifestConvergence[] = [];
+  for (const row of await listConvergenceForComponents(tx, orgId, ownedIdList)) {
+    const componentUrn = urnOfOwnedId(row.componentObjectId);
+    // The PRODUCT is not in `objectsById` — that map holds this stack's owned objects and their
+    // placements, and a convergence row points at an infrastructure product another stack may own.
+    // Resolved individually; the row count is per component, not per estate.
+    const targetUrn = (
+      await getObjectByIdOrUrnAnyType(tx, orgId, row.targetObjectId).catch(() => undefined)
+    )?.urn;
+    // Both endpoints must be nameable, for the reason the hook pool gives for one: a row whose
+    // component or product cannot be named is invisible to matching AND pruning, so this plan
+    // neither duplicates it nor deletes it.
+    if (!componentUrn || !targetUrn) continue;
+    managedConvergence.push({
+      componentUrn,
+      targetUrn,
+      converge: row.converge,
+      scope: row.scope
+    });
+  }
+
   // A manifest may name its execution-system by id OR URN (`CreateExecutorBindingRequest` semantics,
   // and a URN is the only stable reference an offline-authored manifest has). The table stores a real
   // object id, so resolve here — a DB read, hence not in the pure diff engine. Without it a
@@ -877,6 +921,20 @@ export async function computeDiffForManifest(
     // `convergence` follow the ordinary rule and are not projected at all yet.
     pipelineHooks:
       manifest.pipelineHooks === undefined ? null : manifest.pipelineHooks.map(resolvePipelineHook),
+    // D12 / D25(b) — ORDINARY rule, so `?? []`: absent and empty both mean "declares none" and both
+    // prune. Until migration 0106 these two were projected NOWHERE, so a declared canary reached
+    // the server and was discarded without a word.
+    rollouts: (manifest.rollouts ?? []).map((r) => ({
+      componentUrn: r.componentUrn,
+      targetClass: r.targetClass,
+      rollout: r.rollout
+    })),
+    convergence: (manifest.convergence ?? []).map((c) => ({
+      componentUrn: c.componentUrn,
+      targetUrn: c.targetUrn,
+      converge: c.converge,
+      scope: c.scope
+    })),
     executorBindings: (manifest.executorBindings ?? []).map((b) => ({
       targetUrn: b.targetUrn,
       deploymentTargetUrn: b.deploymentTargetUrn ?? null,
@@ -907,7 +965,9 @@ export async function computeDiffForManifest(
     managedDependencyProducers,
     existingDependencyProducers,
     managedGovernanceMoveRungs,
-    managedPipelineHooks
+    managedPipelineHooks,
+    managedRollouts,
+    managedConvergence
   });
   // Strict create-in-service, IaC path (M12 P5a): reject at plan-compute so the invalid manifest
   // never becomes a stored plan and the human reviews only a valid diff. C1's two guards run at the
@@ -1387,6 +1447,29 @@ export async function prepareApplyChecks(
     if (entry.action === "noop") continue;
     const component = await resolveEndpoint(entry.componentUrn);
     checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
+  }
+
+  // ROLLOUTS (D12) and CONVERGENCE (D25(b)) — `object:write` AT THE COMPONENT, the same rule the
+  // hook loop above uses and for the same reason: ownership of both is the component's, so the
+  // component's scope is where the authority to change them lives.
+  //
+  // `delete` is included on both, matching the hook loop rather than the placement one: retracting
+  // a rollout removes a declared strategy, and retracting a convergence declaration stops a fleet
+  // self-healing. Neither is a gate, but neither is something a principal with no write authority
+  // on the component should be able to do.
+  for (const entry of diff.rollouts ?? []) {
+    if (entry.action === "noop") continue;
+    const component = await resolveEndpoint(entry.componentUrn);
+    checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
+  }
+  for (const entry of diff.convergence ?? []) {
+    if (entry.action === "noop") continue;
+    const component = await resolveEndpoint(entry.componentUrn);
+    checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
+    // Resolved but NOT checked — the product may belong to another stack, and demanding write on it
+    // would hand every product owner a veto over who may converge onto it. Same rule, same reason,
+    // as the placement loop's deployment-target.
+    await resolveEndpoint(entry.targetUrn);
   }
 
   // C1/ADR-0026 — `object:write` at the COMPONENT, which is also where OWNERSHIP lives (decision
@@ -1905,6 +1988,47 @@ export async function executePlanDiff(
       componentObjectId: endpointId(entry.componentUrn),
       kind: entry.hookKind,
       hookId: entry.hookId
+    });
+  }
+
+  // ROLLOUTS AND CONVERGENCE (D12/D25(b); migration 0106) — the writes that end the drop. Deletes
+  // first, then upserts, mirroring the hook block above so a same-key delete+create in one plan
+  // cannot land in the order that leaves nothing behind.
+  //
+  // `update` IS APPLIED HERE TOO, unlike hooks, which have no update action: a rollout's identity is
+  // `(component, targetClass)` and the strategy is its VALUE, so a changed strategy is one row
+  // changing. Treating it as a delete+create would imply a window with no strategy at all.
+  for (const entry of diff.rollouts ?? []) {
+    if (entry.action !== "delete") continue;
+    await deleteComponentRollout(tx, orgId, endpointId(entry.componentUrn), entry.targetClass);
+  }
+  for (const entry of diff.rollouts ?? []) {
+    if (entry.action !== "create" && entry.action !== "update") continue;
+    await upsertComponentRollout(tx, orgId, {
+      componentObjectId: endpointId(entry.componentUrn),
+      targetClass: entry.targetClass,
+      // Written as the plan SHOWED it — the entry the operator reviewed is the row that lands.
+      rollout: entry.rollout
+    });
+  }
+  for (const entry of diff.convergence ?? []) {
+    if (entry.action !== "delete") continue;
+    await deleteComponentConvergence(
+      tx,
+      orgId,
+      endpointId(entry.componentUrn),
+      endpointId(entry.targetUrn)
+    );
+  }
+  for (const entry of diff.convergence ?? []) {
+    if (entry.action !== "create" && entry.action !== "update") continue;
+    await upsertComponentConvergence(tx, orgId, {
+      componentObjectId: endpointId(entry.componentUrn),
+      targetObjectId: endpointId(entry.targetUrn),
+      // `converge: false` lands as a stored `false`, never as a missing row — D8 makes the manifest
+      // say which, and an opt-out has to be as visible in the database as an opt-in.
+      converge: entry.converge ?? false,
+      scope: entry.scope ?? "changedSubset"
     });
   }
 

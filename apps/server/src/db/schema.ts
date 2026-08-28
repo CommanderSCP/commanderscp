@@ -2881,6 +2881,64 @@ export const configSourceStacks = pgTable(
   })
 );
 
+/**
+ * D12 — the rollout strategy a component declares per TARGET CLASS, and D25(b) — whether a config
+ * pipeline placed at an infrastructure product re-applies its released state when that product's
+ * membership changes.
+ *
+ * BOTH WERE AUTHORABLE AND DROPPED before migration 0106: the contract defined the collections and
+ * `@scp/iac` emitted them, and `plans-repo.ts` projected neither, so a declared canary planned
+ * green and vanished at apply. See the migration header.
+ *
+ * Ordinary prune rule (absent = empty = prune), unlike `pipelineHooks`; ownership derives from
+ * `component_object_id`, so there is no `managed_by_stack` column on either.
+ */
+export const componentRollouts = pgTable(
+  "component_rollouts",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    componentObjectId: uuid("component_object_id").notNull(),
+    /** 'cluster' | 'instanceGroup' (`RolloutTargetClassSchema`). Plain text, Zod-enforced. */
+    targetClass: text("target_class").notNull(),
+    /** `RolloutStrategySchema` — discriminated on `strategy` (D15(c)). */
+    rollout: jsonb("rollout").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("component_rollouts_identity").on(
+      table.orgId,
+      table.componentObjectId,
+      table.targetClass
+    )
+  ]
+);
+
+export const componentConvergence = pgTable(
+  "component_convergence",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    componentObjectId: uuid("component_object_id").notNull(),
+    /** The infrastructure product whose observed membership drives convergence. */
+    targetObjectId: uuid("target_object_id").notNull(),
+    /** Stored explicitly INCLUDING `false` — D8 requires the manifest to say which. */
+    converge: boolean("converge").notNull(),
+    /** 'changedSubset' | 'fullGroup'. */
+    scope: text("scope").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    unique("component_convergence_identity").on(
+      table.orgId,
+      table.componentObjectId,
+      table.targetObjectId
+    )
+  ]
+);
+
 export const pipelineHooks = pgTable(
   "pipeline_hooks",
   {

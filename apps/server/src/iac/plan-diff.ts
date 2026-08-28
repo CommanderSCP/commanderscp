@@ -8,8 +8,10 @@ import type {
   PlanGovernanceMoveRungDiffEntry,
   PlanObjectDiffEntry,
   PlanObjectTarget,
+  PlanConvergenceDiffEntry,
   PlanPipelineHookDiffEntry,
   PlanPlacementDiffEntry,
+  PlanRolloutDiffEntry,
   PlanRelationshipDiffEntry,
   PlanSourceMappingDiffEntry,
   PipelineClassification,
@@ -272,6 +274,16 @@ export interface ResolvedManifest {
    *  exactly as `sourceMappings`/`executorBindings` are: the pool a prune considers is hooks whose
    *  component this stack owns. */
   pipelineHooks: ResolvedManifestPipelineHook[] | null;
+  /**
+   * D12 / D25(b) — the two collections that were authorable and dropped until migration 0106.
+   *
+   * ORDINARY RULE, unlike `pipelineHooks` directly above: absent and empty are the SAME here and
+   * both prune, so these are plain arrays rather than `| null`. The asymmetry is the contract's and
+   * is deliberate — an omitted hook DISARMS A GATE, while an omitted rollout costs a declared
+   * strategy that is visible the next time anything deploys.
+   */
+  rollouts: ResolvedManifestRollout[];
+  convergence: ResolvedManifestConvergence[];
 }
 
 export interface ExistingObjectSnapshot {
@@ -290,6 +302,30 @@ export interface ExistingRelationshipTriple {
   typeId: string;
   fromUrn: string;
   toUrn: string;
+}
+
+export interface ResolvedManifestRollout {
+  componentUrn: string;
+  targetClass: string;
+  rollout: unknown;
+}
+
+export interface ResolvedManifestConvergence {
+  componentUrn: string;
+  targetUrn: string;
+  converge: boolean;
+  scope: string;
+}
+
+/** Identity keys. A rollout's identity is `(component, targetClass)` and a convergence row's is
+ *  `(component, target)` — the PAYLOAD is deliberately NOT part of either, which is what makes a
+ *  changed strategy an `update` in place rather than the delete+create a hook gets. */
+function rolloutKey(r: { componentUrn: string; targetClass: string }): string {
+  return [r.componentUrn, r.targetClass].join("\u0000");
+}
+
+function convergenceKey(c: { componentUrn: string; targetUrn: string }): string {
+  return [c.componentUrn, c.targetUrn].join("\u0000");
 }
 
 export interface PlanDiffSnapshot {
@@ -378,6 +414,11 @@ export interface PlanDiffSnapshot {
    * a prune pool we must never act on would only invite a later edit to act on it.
    */
   managedPipelineHooks: ResolvedManifestPipelineHook[];
+  /** Rows on components this stack owns — the pool for both matching and pruning, exactly as for
+   *  hooks. Always read (unlike the hook pool) because absent means empty here, so a prune is
+   *  always in scope. */
+  managedRollouts: ResolvedManifestRollout[];
+  managedConvergence: ResolvedManifestConvergence[];
 }
 
 function relKey(t: ExistingRelationshipTriple): string {
@@ -1123,9 +1164,10 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
   //  - OWNERSHIP IS THE COMPONENT'S. The pool is hooks on components this stack owns, exactly as
   //    the projection tables' is; `unownedProjectionDeclarations` refuses the write half.
   //
-  // ROLLOUTS AND CONVERGENCE ARE DELIBERATELY NOT HERE. They follow the ORDINARY rule and have no
-  // storage yet; wiring them is a separate increment's work, and a half-wired collection that
-  // silently ignores its own manifest key is what this block is fixing.
+  // ROLLOUTS AND CONVERGENCE ARE NOW BELOW, and they follow the ORDINARY rule rather than this one
+  // (absent = empty = prune). Until migration 0106 they had no storage and this file said so — the
+  // half-wired state that comment warned about was live for both: `@scp/iac` emitted them and the
+  // server discarded them.
   // -----------------------------------------------------------------------------------------
   let pipelineHookEntries: PlanPipelineHookDiffEntry[] | undefined;
   if (manifest.pipelineHooks !== null) {
@@ -1182,6 +1224,112 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     pipelineHookEntries = entries;
   }
 
+  // -----------------------------------------------------------------------------------------
+  // ROLLOUTS (D12) and CONVERGENCE (D25(b)) — the ORDINARY collection rule.
+  //
+  // Absent and empty mean the same thing and both prune, so there is no `!== null` guard above
+  // these: a stack that stops declaring a rollout retracts it, and the cost of being wrong in that
+  // direction is a strategy that has to be re-declared — visible the next time anything deploys,
+  // unlike a disarmed gate whose symptom is an absence of refusals.
+  //
+  // UNLIKE HOOKS, THESE CARRY `update`. A hook's diff keys on the whole declaration, so a changed
+  // hook is a delete plus a create — two lines a reviewer sees, which is right when the change may
+  // disarm something. A rollout's identity is genuinely `(component, targetClass)`: the strategy is
+  // its VALUE, so a changed strategy is one object changing, and showing it as a deletion would
+  // imply a window in which the component had no strategy at all.
+  // -----------------------------------------------------------------------------------------
+  const rolloutEntries: PlanRolloutDiffEntry[] = [];
+  const existingRollouts = new Map(snapshot.managedRollouts.map((r) => [rolloutKey(r), r]));
+  const declaredRolloutKeys = new Set<string>();
+  for (const declared of manifest.rollouts) {
+    const key = rolloutKey(declared);
+    if (declaredRolloutKeys.has(key)) continue;
+    declaredRolloutKeys.add(key);
+    const existing = existingRollouts.get(key);
+    const same =
+      existing !== undefined && canonicalJson(existing.rollout) === canonicalJson(declared.rollout);
+    rolloutEntries.push({
+      kind: "rollout",
+      action: existing === undefined ? "create" : same ? "noop" : "update",
+      componentUrn: declared.componentUrn,
+      targetClass: declared.targetClass,
+      rollout: declared.rollout,
+      reason:
+        existing === undefined
+          ? "no existing rollout for this component and target class"
+          : same
+            ? "matches current state"
+            : "declared strategy differs from the stored one"
+    });
+    if (existing === undefined) creates++;
+    else if (same) noops++;
+    else updates++;
+  }
+  for (const managed of [...snapshot.managedRollouts]
+    .filter((r) => !declaredRolloutKeys.has(rolloutKey(r)))
+    .sort((a, b) => rolloutKey(a).localeCompare(rolloutKey(b)))) {
+    rolloutEntries.push({
+      kind: "rollout",
+      action: "delete",
+      componentUrn: managed.componentUrn,
+      targetClass: managed.targetClass,
+      rollout: null,
+      reason:
+        "declared on a component this stack owns, no longer present in the desired manifest's rollouts"
+    });
+    deletes++;
+  }
+
+  const convergenceEntries: PlanConvergenceDiffEntry[] = [];
+  const existingConvergence = new Map(
+    snapshot.managedConvergence.map((c) => [convergenceKey(c), c])
+  );
+  const declaredConvergenceKeys = new Set<string>();
+  for (const declared of manifest.convergence) {
+    const key = convergenceKey(declared);
+    if (declaredConvergenceKeys.has(key)) continue;
+    declaredConvergenceKeys.add(key);
+    const existing = existingConvergence.get(key);
+    const same =
+      existing !== undefined &&
+      existing.converge === declared.converge &&
+      existing.scope === declared.scope;
+    convergenceEntries.push({
+      kind: "convergence",
+      action: existing === undefined ? "create" : same ? "noop" : "update",
+      componentUrn: declared.componentUrn,
+      targetUrn: declared.targetUrn,
+      // `false` is a DECLARED VALUE, not an absence — a plan showing `converge: false` is showing
+      // an opt-out someone wrote, which is exactly why D8 makes the manifest say which.
+      converge: declared.converge,
+      scope: declared.scope,
+      reason:
+        existing === undefined
+          ? "no existing convergence declaration for this component and product"
+          : same
+            ? "matches current state"
+            : "declared convergence differs from the stored one"
+    });
+    if (existing === undefined) creates++;
+    else if (same) noops++;
+    else updates++;
+  }
+  for (const managed of [...snapshot.managedConvergence]
+    .filter((c) => !declaredConvergenceKeys.has(convergenceKey(c)))
+    .sort((a, b) => convergenceKey(a).localeCompare(convergenceKey(b)))) {
+    convergenceEntries.push({
+      kind: "convergence",
+      action: "delete",
+      componentUrn: managed.componentUrn,
+      targetUrn: managed.targetUrn,
+      converge: null,
+      scope: null,
+      reason:
+        "declared on a component this stack owns, no longer present in the desired manifest's convergence"
+    });
+    deletes++;
+  }
+
   return {
     objects: objectEntries,
     relationships: relationshipEntries,
@@ -1196,6 +1344,11 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       : {}),
     // Same rule, same reason — see `ResolvedManifest.pipelineHooks`.
     ...(pipelineHookEntries !== undefined ? { pipelineHooks: pipelineHookEntries } : {}),
+    // ORDINARY RULE, so these are emitted whenever they have content and omitted when empty — the
+    // omission carries no meaning here (absent and empty are the same), it just keeps a manifest
+    // that declares neither byte-identical to one from before they existed.
+    ...(rolloutEntries.length > 0 ? { rollouts: rolloutEntries } : {}),
+    ...(convergenceEntries.length > 0 ? { convergence: convergenceEntries } : {}),
     summary: { creates, updates, deletes, noops }
   };
 }

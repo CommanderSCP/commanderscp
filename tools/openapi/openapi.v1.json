@@ -49060,6 +49060,116 @@
                             "additionalProperties": false
                           }
                         },
+                        "rollouts": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "rollout"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "targetClass": {
+                                "type": "string"
+                              },
+                              "rollout": {
+                                "anyOf": [
+                                  {},
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "componentUrn",
+                              "targetClass",
+                              "rollout",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "convergence": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "convergence"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "targetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "converge": {
+                                "anyOf": [
+                                  {
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "scope": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "componentUrn",
+                              "targetUrn",
+                              "converge",
+                              "scope",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
                         "summary": {
                           "type": "object",
                           "properties": {
@@ -50637,6 +50747,116 @@
                               "everySeconds",
                               "maxAgeSeconds",
                               "quietWindowSeconds",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "rollouts": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "rollout"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "targetClass": {
+                                "type": "string"
+                              },
+                              "rollout": {
+                                "anyOf": [
+                                  {},
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "componentUrn",
+                              "targetClass",
+                              "rollout",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "convergence": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "convergence"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "componentUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "targetUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "converge": {
+                                "anyOf": [
+                                  {
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "scope": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "componentUrn",
+                              "targetUrn",
+                              "converge",
+                              "scope",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -52222,6 +52442,116 @@
                                   "everySeconds",
                                   "maxAgeSeconds",
                                   "quietWindowSeconds",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "rollouts": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "rollout"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "update",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "targetClass": {
+                                    "type": "string"
+                                  },
+                                  "rollout": {
+                                    "anyOf": [
+                                      {},
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "componentUrn",
+                                  "targetClass",
+                                  "rollout",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "convergence": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "convergence"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "update",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "componentUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "targetUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "converge": {
+                                    "anyOf": [
+                                      {
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "scope": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "componentUrn",
+                                  "targetUrn",
+                                  "converge",
+                                  "scope",
                                   "reason"
                                 ],
                                 "additionalProperties": false
