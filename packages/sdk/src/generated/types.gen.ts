@@ -13561,6 +13561,7 @@ export type ReportChangeSourceData = {
             repository: string;
             digest: string;
         };
+        artifactClass?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image';
     };
     path: {
         sourceKind: string;

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { UrnSchema } from "./graph.js";
-import { ExecutorTypeSchema, type ExecutorType } from "./executors.js";
+import { ArtifactClassSchema, ExecutorTypeSchema, type ExecutorType } from "./executors.js";
 import { Sha256DigestSchema, TestBundleRefSchema } from "./supply-chain.js";
 
 /**
@@ -103,27 +103,20 @@ export const InfraKindSchema = z.enum(["cluster", "instanceGroup", "database", "
 export type InfraKind = z.infer<typeof InfraKindSchema>;
 
 /**
- * D13/D24's artifact-class taxonomy, DERIVED as the "build family" subset of `ExecutorTypeSchema`
- * (`@scp/schemas/executors`) — never a second hand-written list. D13's ruling this session: "Type
- * stays the closed three-value enum" describes this package's **Category**, not `ExecutorType`; the
- * resolution was to extend `ExecutorTypeSchema` itself with the missing artifact classes so one
- * vocabulary covers everything, and make this a genuine subset of it.
+ * `ArtifactClassSchema` / `ArtifactClass` MOVED to `executors.ts` (D13 verification, increment 8).
  *
- * MECHANISM: `.exclude(["infrastructure", "configuration"])` rather than `.extract([...the nine
- * build members...])`, on purpose. `ExecutorCategorySchema` is closed at exactly three values
- * forever (build/infrastructure/configuration — never stored, never accepted as input, see
- * `executors.ts`), so "the build family" is structurally "every Type that is not infrastructure and
- * not configuration" — a fact that holds by construction, not by enumeration. Excluding the two
- * non-build members means a FUTURE build-family addition to `ExecutorTypeSchema` (another artifact
- * class) is automatically part of `ArtifactClassSchema` with no second edit required and no chance
- * to forget one; `.extract()` would have needed that second edit every time. Both `.exclude()` and
- * `.extract()` are compile-checked against `ExecutorTypeSchema`'s own literal union (a member that
- * does not exist on the base enum fails to type-check), so either direction satisfies "cannot
- * drift" for members that DO exist — this choice is about which one also protects against a
- * forgotten ADD.
+ * It is DERIVED from `ExecutorTypeSchema` by `.exclude(["infrastructure", "configuration"])`, and
+ * that base lives in `executors.ts` — so the derivation now sits beside the thing it derives from.
+ * The move (rather than a copy) is forced, not stylistic: `ChangeReportRequestSchema` in
+ * `executors.ts` has to accept a reported artifact class, and this file already imports
+ * `ExecutorTypeSchema` FROM `executors.ts`. An import back would be a cycle whose failure mode is a
+ * ReferenceError at module-evaluation time, not a compile error — the same trap D23 hit and closed
+ * the same way when it relocated `Sha256DigestSchema`/`TestBundleRefSchema` to `supply-chain.ts`.
+ *
+ * Re-exported here so every existing importer of `@scp/schemas/pipeline-behaviors` keeps working:
+ * one definition, two names for the same object, never two lists.
  */
-export const ArtifactClassSchema = ExecutorTypeSchema.exclude(["infrastructure", "configuration"]);
-export type ArtifactClass = z.infer<typeof ArtifactClassSchema>;
+export { ArtifactClassSchema, type ArtifactClass } from "./executors.js";
 
 /**
  * D12/D24's target class — "TargetClass is this same discriminant — one vocabulary, not two" — now
@@ -745,8 +738,7 @@ export type ContinuousTestHold = z.infer<typeof ContinuousTestHoldSchema>;
 
 /**
  * D13 — a pipeline DECLARES its artifact class, and the declaration is then VERIFIED against what
- * the build and the registry actually produced. A mismatch is loud, Decision-backed, and never
- * silently re-inferred.
+ * the build actually produced. A mismatch is loud, Decision-backed, and never silently re-inferred.
  *
  * WHY VERIFY AT ALL, GIVEN THE ENUM IS CLOSED AND TYPE-CHECKED: the closed enum stops a typo, not
  * a lie. The declared class selects the journey template — an image builds/pushes/bumps/syncs, an
@@ -757,13 +749,32 @@ export type ContinuousTestHold = z.infer<typeof ContinuousTestHoldSchema>;
  * `observed` is `null` when the evidence carried nothing to check — which is NOT a match. The
  * verdict for "no evidence yet" is `unverified`, and it is spelled differently from `match` so that
  * a journey running on an unverified declaration is a visible state rather than an assumed pass.
+ *
+ * `declared` IS THE FULL `ExecutorTypeSchema`, NOT `ArtifactClassSchema` — widened when this record
+ * gained its first consumer (increment 8). The declaration read at propose time is
+ * `source_mappings.type`, whose column default is `configuration`, so the non-build members are
+ * reachable values on the declared side and a narrower type would make them unrepresentable. That
+ * matters for a real case rather than a hypothetical one: an `infrastructure` or `configuration`
+ * pipeline that reports having produced an `image` is precisely a mismatch worth refusing, and
+ * narrowing `declared` would have forced a SECOND parallel mechanism to carry it. One total
+ * function, one record, one refusal path.
+ *
+ * `evidenceSource` NARROWED to the single member `buildReport`, also on gaining its first consumer.
+ * It previously also listed `registryObservation`, which NOTHING PRODUCED — the whole reason this
+ * record sat unbuilt. A member no code can emit reads as coverage that does not exist, so it is
+ * removed rather than carried: registry observation returns to this enum when something actually
+ * observes a registry IN THIS VOCABULARY (today's `artifact` objects speak `artifactType`, a
+ * different vocabulary, and are minted at promotion export — after this verdict is computed). The
+ * field stays an enum rather than collapsing to a constant because naming WHICH evidence answered
+ * is the point, and the set is expected to grow.
  */
 export const ArtifactClassVerificationSchema = z.object({
-  declared: ArtifactClassSchema,
-  /** What build/registry evidence says was actually produced. `null` = nothing to check yet. */
+  /** What the pipeline declared it produces — `source_mappings.type` at propose time. */
+  declared: ExecutorTypeSchema,
+  /** What build evidence says was actually produced. `null` = nothing to check yet. */
   observed: ArtifactClassSchema.nullable(),
   /** Which evidence answered. `null` alongside a `null` `observed`. */
-  evidenceSource: z.enum(["buildReport", "registryObservation"]).nullable(),
+  evidenceSource: z.enum(["buildReport"]).nullable(),
   verdict: z.enum(["match", "mismatch", "unverified"])
 });
 export type ArtifactClassVerification = z.infer<typeof ArtifactClassVerificationSchema>;

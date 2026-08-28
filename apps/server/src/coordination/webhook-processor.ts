@@ -6,6 +6,7 @@ import {
   StageDependencySchema,
   TestBundleRefSchema,
   normalizeSbomDigest,
+  type ArtifactClass,
   type SbomRef,
   type StageDependency,
   type TestBundleRef
@@ -25,6 +26,11 @@ import {
 import { writeOutboxEvent } from "../events/outbox-repo.js";
 import { recordBumpHeadCommit } from "../dependencies/bump-authorship-repo.js";
 import { proposeChange } from "./changes-repo.js";
+import {
+  artifactClassMismatchReason,
+  parseReportedArtifactClass,
+  verifyArtifactClass
+} from "./artifact-class-verification.js";
 import { deriveUrn } from "../graph/urn.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import { withoutServerOwnedSourceRefKeys } from "../federation/boundary-bundle-ref.js";
@@ -124,6 +130,12 @@ export interface ExtractedHint {
    *  webhook adapters set none (a push payload knows nothing about a capture step), so this stays
    *  undefined for them and their behaviour is unchanged. */
   testBundle?: TestBundleRef;
+  /** D13 (increment 8) — the artifact class the build REPORTED producing
+   *  (`ChangeReportRequestSchema.artifactClass`), verified at propose time against the class the
+   *  matched source mapping DECLARED (`source_mappings.type`). Undefined for every provider webhook
+   *  adapter — a raw push payload knows nothing about what a build produced — so their behaviour is
+   *  unchanged and their verdict is `unverified`. */
+  artifactClass?: ArtifactClass;
   /** M12 P4B coupled pipelines — `ChangeReportRequestSchema.provides`, read from the flat
    *  first-party report body and threaded into `proposeChange` exactly as `POST /changes` threads
    *  its own typed field. Provider webhook payloads carry no coupling key (coupled-pipelines.md
@@ -175,6 +187,12 @@ function genericHint(payload: unknown): ExtractedHint {
   // and quarantined by `canonicalizeSourceRef`, never thrown. It is metadata about which tests were
   // captured, not an execution precondition, so it sits with `sbom` and not with `requires`.
   const testBundle = TestBundleRefSchema.safeParse(p.testBundle);
+  // D13 — best-effort like `sbom`/`testBundle`: an UNRECOGNISED class is dropped here and
+  // quarantined on `sourceRef` rather than thrown. Dropping fails to `unverified`, which HOLDS
+  // NOTHING and blocks nothing — it is the same behaviour as a report that never carried a class,
+  // so a typo cannot become an outage. The refusal is reserved for a class that parses and
+  // DISAGREES, which is a real contradiction rather than an unreadable field.
+  const artifactClass = parseReportedArtifactClass(p.artifactClass);
   // M12 P4B — the coupling declaration, validated against the SAME shapes `POST /changes` uses.
   // `provides`: a malformed value is dropped like `sbom` (fail-CLOSED for the coupling: a dropped
   // `provides` releases nobody; waiters keep waiting and their wait-status names the gap).
@@ -227,6 +245,7 @@ function genericHint(payload: unknown): ExtractedHint {
     // payload is still preserved verbatim in `sourceRef`, so nothing is lost for forensics).
     sbom: sbom.success ? sbom.data : undefined,
     testBundle: testBundle.success ? testBundle.data : undefined,
+    artifactClass,
     provides: provides.success && provides.data.length > 0 ? provides.data : undefined,
     ...(p.requires === undefined || p.requires === null
       ? {}
@@ -310,6 +329,7 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
     // resolves an adapter (a `scp change-source report` for sourceKind `github`, the common case),
     // and the loss would surface only as `no_captured_workflow` on every hook run of that change.
     testBundle: generic.testBundle,
+    artifactClass: generic.artifactClass,
     // M12 P4B: no provider webhook payload carries a coupling declaration either (§6#1) — like
     // `sbom`, these ride the flat first-party shape. Carried through EXPLICITLY because this
     // branch reconstructs field-by-field rather than spreading `generic`: omitting them here is
@@ -404,6 +424,20 @@ export function canonicalizeSourceRef(
     // and unmistakable for an attested reference.
     delete sourceRef.testBundle;
     sourceRef.testBundle_invalid = raw.testBundle;
+  }
+  if (hint.artifactClass) {
+    // D13 — the OBSERVED side of the artifact-class verification, kept on the change so the verdict
+    // stays re-derivable from stored data rather than existing only in the moment the event was
+    // processed. A `match` writes no Decision (see the propose path: persisting one per successful
+    // release is the unbounded-growth shape this codebase has already paid for once), so without
+    // this key a satisfied verification would leave no trace at all.
+    sourceRef.artifact_class = hint.artifactClass;
+  } else if ("artifactClass" in raw) {
+    // The SAME quarantine `sbom`/`testBundle` get. The downstream contract is
+    // "`sourceRef.artifact_class`, when present, IS a valid `ArtifactClass`" — an unrecognised value
+    // left under that key would later read as a real observation and could flip a verdict.
+    delete sourceRef.artifact_class;
+    sourceRef.artifact_class_invalid = raw.artifactClass;
   }
   return sourceRef;
 }
@@ -620,6 +654,23 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
             `report carried a malformed \`stageDependencies\` — each entry must be {dependsOn, minWeight?, atTargets?} (got ${JSON.stringify(hint.stageDependenciesInvalid)})`
           );
         }
+        // D13 (increment 8) — the artifact-class verification, at the one point where BOTH sides are
+        // in hand: `match.type` is the declaration the journey is about to be shaped by, and
+        // `hint.artifactClass` is what the build said it produced.
+        //
+        // MISMATCH REFUSES THE RELEASE, and refusing is the whole point rather than an escalation of
+        // it: the declared class selects the journey template, so letting a disagreeing release
+        // through produces a journey shaped for bytes it does not have in which every individual step
+        // still "succeeds". A refusal here is loud, recorded, and fixable; the alternative is silent
+        // and is discovered in an environment.
+        //
+        // `unverified` and `match` BOTH proceed untouched — the additive property. Only a parsed
+        // class that DISAGREES stops anything, so every reporter that never heard of this field, and
+        // every provider webhook adapter, is byte-for-byte unaffected.
+        const artifactClassVerification = verifyArtifactClass(match.type, hint.artifactClass);
+        if (artifactClassVerification.verdict === "mismatch") {
+          throw badRequest(artifactClassMismatchReason(artifactClassVerification));
+        }
         const { change } = await proposeChange(inner, {
           orgId,
           actorObjectId: SYSTEM_ACTOR_ID,
@@ -693,6 +744,13 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
           path: hint.path ?? null,
           provides: hint.provides ?? null,
           requires: hint.requires ?? hint.requiresInvalid ?? null,
+          // D13 — the verification RECORD, not just the message. `ArtifactClassVerificationSchema`
+          // exists so a refusal carries its own inputs (charter principle 6: every verdict persists
+          // the inputs it was reached from), which is what makes "why was this release refused"
+          // answerable from the Decision alone rather than by re-deriving it from a sentence.
+          // Recomputed from the same two values the refusal was reached from, and `null` for every
+          // refusal that has nothing to do with artifact class.
+          artifactClassVerification: verifyArtifactClass(match.type, hint.artifactClass),
           error: reason
         },
         reasonTree: {
