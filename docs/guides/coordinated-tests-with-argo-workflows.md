@@ -99,11 +99,47 @@ The strict end is the default.
 `continuous` evidence **time-decays**: `maxAge` is part of the hook contract, so stale evidence stops
 counting rather than passing forever. The freshness boundary is recorded in the Decision.
 
-> **Current limitation.** The `@scp/iac` constructs for declaring hooks (`PostMergeTest`,
-> `PostDeployTest`, `ContinuousTest`, `BakeAlarms`) **do not exist yet**, and `Stack.synth()` does not
-> yet assemble the `pipelineHooks` collection. Until they land, hooks are declared by hand-authoring
-> the `pipelineHooks` entries in a desired-state manifest posted to `POST /plans` — the plan/apply
-> path applies them normally. This guide will be updated when the constructs ship.
+### Declaring them in IaC
+
+A `Workflow` names the file once, inheriting `repo` and `branch` from its pipeline; the hooks hang
+off it:
+
+```ts
+import { Duration, Workflow, PostMergeTest, PostDeployTest, ContinuousTest, BakeAlarms } from "@scp/iac";
+
+const integration = new Workflow(pipeline, "integration", { path: ".argo/integration.yaml" });
+
+new PostMergeTest(integration);   // id defaults to the hook kind
+new PostDeployTest(integration);  // no `stage` -> gates EVERY wave's exit
+
+new ContinuousTest(integration, "canary", {
+  every: Duration.minutes(5),
+  maxAge: Duration.minutes(15)    // evidence older than this stops counting
+});
+
+new BakeAlarms(pipeline, "bakeAlarms", { quietWindow: Duration.minutes(10) });
+```
+
+Durations are `Duration` values, never `"5m"` strings — they resolve to plain seconds at the
+construct boundary, so the manifest carries `everySeconds` / `maxAgeSeconds` / `quietWindowSeconds`
+as numbers.
+
+Two behaviours worth knowing before you are surprised by them:
+
+- **A hook under a service-rung pipeline is refused, not defaulted.** Every hook keys on a component,
+  and which components inherit a service-rung pipeline is resolved at read time by the nearest-rung
+  ladder — so there is no component for synth to name. Declare hooks on the component's own pipeline.
+- **`stage` is omitted, not defaulted.** Absent is the *strict* end (gates every wave), not "unset,
+  pick something".
+
+The L1 escape hatch is `stack.addPipelineHook(...)` (with `addRollout` / `addConvergence` alongside),
+and it takes the same manifest entry the constructs synthesize — the typed classes are sugar over it,
+not a different path.
+
+> **Retracting the last hook needs a hand-authored `"pipelineHooks": []`.** The collection is omitted
+> when empty rather than emitted as `[]`, because absent means UNMANAGED — so a program that declares
+> no hooks does not silently retract the ones a component already has. Removing the final hook is the
+> one case the constructs cannot express, exactly as it is for `producers`.
 
 ## 5. Binding the Argo Workflows instance (operator)
 
