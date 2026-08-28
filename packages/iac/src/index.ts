@@ -50,6 +50,9 @@ export type {
 } from "./construct.js";
 export { deriveConstructUrn, slugify } from "./urn.js";
 export { canonicalJson } from "./canonical.js";
+// ADR-0047 — the scaffold grouping decision, shared by `scp iac scaffold` and the /connect wizards.
+export { groupDiscoveryProposal } from "./scaffold.js";
+export type { ScaffoldGroupingResult, UngroupedComponent } from "./scaffold.js";
 export { Duration } from "./duration.js";
 // team-pipeline-iac D11/D12/D15/D16 — the typed pipeline behaviours (L2), thin sugar over the
 // increment-8 contract's own Zod types. The L1 doors they emit through (`Stack.addPipelineHook`,

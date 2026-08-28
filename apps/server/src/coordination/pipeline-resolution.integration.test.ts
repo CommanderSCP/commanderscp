@@ -318,7 +318,7 @@ describe("pipeline inheritance: the three-rung walk (D15)", () => {
   it("a component with no service still reaches the org default", async () => {
     // Rung 2 is absent entirely rather than empty. An implementation that required a service to
     // continue the walk would strand every not-yet-organized import on no pipeline.
-    const orphan = await createOrphanComponent(admin, "orphan-no-service");
+    const orphan = await createOrphanComponent(server, org, "orphan-no-service");
     const orgPipeline = await topology("orphan-org");
 
     await withOrgDefault(orgPipeline.id, async () => {

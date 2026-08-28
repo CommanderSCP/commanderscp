@@ -218,11 +218,11 @@ describe("readable scope: the containment walk run DOWNWARD (role-model.md §8.2
     const assemblyA = (await admin.assemblies.create({ name: uniq("assembly-a") })).id;
     await contains(serviceA, assemblyA);
 
-    const compA1 = (await createOrphanComponent(admin, uniq("comp-a1"))).id;
+    const compA1 = (await createOrphanComponent(server, org, uniq("comp-a1"))).id;
     await contains(assemblyA, compA1);
-    const compA2 = (await createOrphanComponent(admin, uniq("comp-a2"))).id;
+    const compA2 = (await createOrphanComponent(server, org, uniq("comp-a2"))).id;
     await contains(serviceA, compA2);
-    const compB1 = (await createOrphanComponent(admin, uniq("comp-b1"))).id;
+    const compB1 = (await createOrphanComponent(server, org, uniq("comp-b1"))).id;
     await contains(serviceB, compB1);
 
     // Routes 3 + 4: one placement, whose two containing scopes are its component AND its target.
@@ -232,7 +232,7 @@ describe("readable scope: the containment walk run DOWNWARD (role-model.md §8.2
     ).id;
 
     // The tombstone case: live under serviceA, then soft-deleted through the real DELETE door.
-    const compDoomed = (await createOrphanComponent(admin, uniq("comp-doomed"))).id;
+    const compDoomed = (await createOrphanComponent(server, org, uniq("comp-doomed"))).id;
     await contains(serviceA, compDoomed);
     await admin.components.delete(compDoomed);
 

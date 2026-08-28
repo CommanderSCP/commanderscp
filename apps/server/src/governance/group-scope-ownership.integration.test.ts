@@ -96,7 +96,7 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
     groupId = group.id;
 
     const ownedService = await admin.object("service").create({ name: "payments-api" });
-    const ownedComponent = await createOrphanComponent(admin, "payments-api-worker");
+    const ownedComponent = await createOrphanComponent(server, org, "payments-api-worker");
     await admin.relationships.create({
       typeId: "contains",
       fromId: ownedService.id,
@@ -113,7 +113,7 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
     ownedComponentId = ownedComponent.id;
 
     const otherService = await admin.object("service").create({ name: "reporting-api" });
-    const otherComponent = await createOrphanComponent(admin, "reporting-api-worker");
+    const otherComponent = await createOrphanComponent(server, org, "reporting-api-worker");
     await admin.relationships.create({
       typeId: "contains",
       fromId: otherService.id,
@@ -209,7 +209,7 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
     // person or a team rather than the group named by the policy. The same `member_of` closure
     // that expands a subject upward must expand the group downward, or this case silently misses.
     const service = await admin.object("service").create({ name: "ledger-api" });
-    const component = await createOrphanComponent(admin, "ledger-api-worker");
+    const component = await createOrphanComponent(server, org, "ledger-api-worker");
     await admin.relationships.create({
       typeId: "contains",
       fromId: service.id,
@@ -364,7 +364,7 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
 
   it("(h) a soft-deleted `owns` edge stops conferring the group's governance", async () => {
     const service = await admin.object("service").create({ name: "temp-owned-svc" });
-    const component = await createOrphanComponent(admin, "temp-owned-comp");
+    const component = await createOrphanComponent(server, org, "temp-owned-comp");
     await admin.relationships.create({
       typeId: "contains",
       fromId: service.id,

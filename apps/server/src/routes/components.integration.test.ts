@@ -103,7 +103,7 @@ describe("components: strict create-in-service (M12 P5a)", () => {
   });
 
   it("IMPORT stays permissive — discovery/accept mints an orphan component with no `contains` edge", async () => {
-    const orphan = await createOrphanComponent(admin, `imported-${randomUUID().slice(0, 8)}`);
+    const orphan = await createOrphanComponent(server, org, `imported-${randomUUID().slice(0, 8)}`);
     const edges = await admin.relationships.list({ typeId: "contains", toId: orphan.id });
     expect(edges.items).toHaveLength(0);
   });
@@ -215,7 +215,7 @@ describe("components: assign / atomic move into a service (M12 P5b)", () => {
 
   it("assign: an imported orphan gains a `contains` edge to the chosen service", async () => {
     const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
-    const orphan = await createOrphanComponent(admin, `orphan-${randomUUID().slice(0, 8)}`);
+    const orphan = await createOrphanComponent(server, org, `orphan-${randomUUID().slice(0, 8)}`);
     expect((await containsEdges(orphan.id)).items).toHaveLength(0);
 
     const returned = await admin.components.setService(orphan.id, svc.id);
@@ -269,7 +269,7 @@ describe("components: assign / atomic move into a service (M12 P5b)", () => {
 
   it("assign is authority-gated at BOTH endpoints — a subject that can write the component but not the service is refused", async () => {
     const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
-    const orphan = await createOrphanComponent(admin, `orphan-${randomUUID().slice(0, 8)}`);
+    const orphan = await createOrphanComponent(server, org, `orphan-${randomUUID().slice(0, 8)}`);
 
     // Operator on the component only — has relationship:write there, but NOT over `svc`.
     const user = await createTestUser(server, org, [{ role: "Operator", scope: orphan.id }]);
@@ -334,8 +334,8 @@ describe("components: driving-case merge (M12 P5d)", () => {
     (await admin.executors.listBindings(id)).map((b) => b.type).sort();
 
   it("folds a binding-only loser into the survivor: bindings move here, loser soft-deleted", async () => {
-    const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
-    const loser = await createOrphanComponent(admin, `lose-${rand()}`);
+    const survivor = await createOrphanComponent(server, org, `surv-${rand()}`);
+    const loser = await createOrphanComponent(server, org, `lose-${rand()}`);
     await putBinding(survivor.id, "infrastructure");
     await putBinding(loser.id, "configuration");
 
@@ -348,8 +348,8 @@ describe("components: driving-case merge (M12 P5d)", () => {
   });
 
   it("REJECTS a binding-type collision (Q1); relabel-then-merge is the driving-case flow", async () => {
-    const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
-    const loser = await createOrphanComponent(admin, `lose-${rand()}`);
+    const survivor = await createOrphanComponent(server, org, `surv-${rand()}`);
+    const loser = await createOrphanComponent(server, org, `lose-${rand()}`);
     // Both default to 'configuration' (the guaranteed argocd double-import collision).
     await putBinding(survivor.id, "configuration");
     await putBinding(loser.id, "configuration");
@@ -370,7 +370,7 @@ describe("components: driving-case merge (M12 P5d)", () => {
   });
 
   it("REJECTS a loser with live graph edges — general graph-rewrite is out of scope", async () => {
-    const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
+    const survivor = await createOrphanComponent(server, org, `surv-${rand()}`);
     const svc = await admin.services.create({ name: `svc-${rand()}` });
     // A loser assigned to a service has a `contains` edge — not a binding-only orphan.
     const loser = await createTestComponent(admin, { name: `lose-${rand()}`, service: svc.id });
@@ -383,8 +383,8 @@ describe("components: driving-case merge (M12 P5d)", () => {
   });
 
   it("REJECTS a merge while an in-flight change targets either component", async () => {
-    const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
-    const loser = await createOrphanComponent(admin, `lose-${rand()}`);
+    const survivor = await createOrphanComponent(server, org, `surv-${rand()}`);
+    const loser = await createOrphanComponent(server, org, `lose-${rand()}`);
     await putBinding(loser.id, "configuration");
     // A freshly-proposed change on the survivor is in-flight (non-terminal).
     await admin.changes.propose({ name: "in-flight", targets: [survivor.id] });
@@ -396,15 +396,15 @@ describe("components: driving-case merge (M12 P5d)", () => {
   });
 
   it("rejects self-merge (400) and a non-component loser (400)", async () => {
-    const comp = await createOrphanComponent(admin, `c-${rand()}`);
+    const comp = await createOrphanComponent(server, org, `c-${rand()}`);
     await expect(admin.components.merge(comp.id, comp.id)).rejects.toMatchObject({ status: 400 });
     const svc = await admin.services.create({ name: `svc-${rand()}` });
     await expect(admin.components.merge(comp.id, svc.id)).rejects.toMatchObject({ status: 400 });
   });
 
   it("requires object:write on BOTH components (a subject scoped only to the survivor is refused)", async () => {
-    const survivor = await createOrphanComponent(admin, `surv-${rand()}`);
-    const loser = await createOrphanComponent(admin, `lose-${rand()}`);
+    const survivor = await createOrphanComponent(server, org, `surv-${rand()}`);
+    const loser = await createOrphanComponent(server, org, `lose-${rand()}`);
     await putBinding(loser.id, "configuration");
 
     const user = await createTestUser(server, org, [{ role: "Operator", scope: survivor.id }]);

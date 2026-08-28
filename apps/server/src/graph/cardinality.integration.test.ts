@@ -84,7 +84,7 @@ describe("cardinality: many_to_one and `releases_via`", () => {
   });
 
   it("REFUSES a component a second pipeline — and the FIRST attachment survives", async () => {
-    const comp = await createOrphanComponent(admin, "mto-one-pipeline");
+    const comp = await createOrphanComponent(server, org, "mto-one-pipeline");
     const first = await topology("mto-first");
     const second = await topology("mto-second");
 
@@ -106,8 +106,8 @@ describe("cardinality: many_to_one and `releases_via`", () => {
     // The mirror of the test above, and the one that catches a `many_to_one` implemented as
     // `one_to_one`: both edges point AT the same topology, which a to-side check would reject.
     const shared = await topology("mto-shared");
-    const a = await createOrphanComponent(admin, "mto-sharer-a");
-    const b = await createOrphanComponent(admin, "mto-sharer-b");
+    const a = await createOrphanComponent(server, org, "mto-sharer-a");
+    const b = await createOrphanComponent(server, org, "mto-sharer-b");
 
     await admin.relationships.create({ typeId: "releases_via", fromId: a.id, toId: shared.id });
     await admin.relationships.create({ typeId: "releases_via", fromId: b.id, toId: shared.id });
@@ -120,7 +120,7 @@ describe("cardinality: many_to_one and `releases_via`", () => {
     // Both the app check and the 0049 index filter `deleted_at IS NULL`, so detaching a pipeline
     // must let a different one be attached. An index that omitted that filter would pass every test
     // above and permanently freeze the first choice.
-    const comp = await createOrphanComponent(admin, "mto-reattach");
+    const comp = await createOrphanComponent(server, org, "mto-reattach");
     const oldPipeline = await topology("mto-old");
     const newPipeline = await topology("mto-new");
 
@@ -147,7 +147,7 @@ describe("cardinality: many_to_one and `releases_via`", () => {
     // to_id)` does not help here — the to_ids differ. Migration 0049's partial unique index on
     // (org_id, from_id) is the backstop, mirroring 0022. Driven CONCURRENTLY, which the sequential
     // tests above cannot catch.
-    const comp = await createOrphanComponent(admin, "mto-race-target");
+    const comp = await createOrphanComponent(server, org, "mto-race-target");
     const p1 = await topology("mto-race-a");
     const p2 = await topology("mto-race-b");
 

@@ -250,7 +250,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       // A 404 here means the path is not mounted. Any other status — including a 400 or a 403 —
       // means the route IS mounted and something further in is refusing, which is a different bug
       // and belongs to a different case.
-      const producer = await createOrphanComponent(admin, `wiring-producer-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `wiring-producer-${uuidv7()}`);
       const response = await post(declareUrl(), org.adminToken, {
         ecosystem: "npm",
         coordinate: `@acme/wiring-${uuidv7()}`,
@@ -279,8 +279,8 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       // principal asserted this coordinate is ours" was answerable only with whatever the asserter
       // typed. The request below TRIES to name someone else and is ignored — the extra key is not
       // in the schema at all, so this also pins that the schema stayed closed.
-      const producer = await createOrphanComponent(admin, `provenance-${uuidv7()}`);
-      const impostor = await createOrphanComponent(admin, `impostor-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `provenance-${uuidv7()}`);
+      const impostor = await createOrphanComponent(server, org, `impostor-${uuidv7()}`);
       const coordinate = `@acme/provenance-${uuidv7()}`;
       const response = await post(declareUrl(), org.adminToken, {
         ecosystem: "npm",
@@ -363,7 +363,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
 
       // NEGATIVE CONTROL: a real component on the identical request is accepted, so the three
       // refusals above are about the producer's TYPE and not about the route refusing everything.
-      const component = await createOrphanComponent(admin, `real-${uuidv7()}`);
+      const component = await createOrphanComponent(server, org, `real-${uuidv7()}`);
       const accepted = await post(declareUrl(), org.adminToken, {
         ecosystem: "npm",
         coordinate,
@@ -378,7 +378,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       // `scopeExpandCte` expands strictly UPWARD — so a component-bound principal reaches its
       // siblings not at all. Custody of the producing component was never evidence of jurisdiction
       // over its consumers.
-      const producer = await createOrphanComponent(admin, `authz-producer-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `authz-producer-${uuidv7()}`);
       // `Administrator` at the PRODUCER's own scope: the built-in role that DOES hold `policy:write`
       // (drizzle/0010), bound narrowly. So this author fails on SCOPE and not on permission — which
       // is the distinction the case is about, and a role without `policy:write` would satisfy the
@@ -429,8 +429,8 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       // The only way a declarer can see WHOSE repositories they are about to affect before they do.
       // A dry run that reported an empty radius would be worse than none, so the positive half is
       // asserted alongside the "nothing was written" half.
-      const producer = await createOrphanComponent(admin, `dry-producer-${uuidv7()}`);
-      const consumer = await createOrphanComponent(admin, `dry-consumer-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `dry-producer-${uuidv7()}`);
+      const consumer = await createOrphanComponent(server, org, `dry-consumer-${uuidv7()}`);
       const coordinate = `@acme/dry-${uuidv7()}`;
       const line = await inOrg((tx) =>
         upsertDependencyLine(tx, org.orgId, { ecosystem: "npm", coordinate, major: "1" })
@@ -527,7 +527,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       // head SURVIVES, because `recordDependencyLineHead` refuses backward movement, so internal
       // detection can never bring the head down to the org's real `2.1.0`. The coordinate is left
       // permanently wedged at a version that exists in no registry of the org's.
-      const producer = await createOrphanComponent(admin, `clear-producer-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `clear-producer-${uuidv7()}`);
       const coordinate = `@acme/poisoned-${uuidv7()}`;
       const line = await inOrg((tx) =>
         upsertDependencyLine(tx, org.orgId, { ecosystem: "npm", coordinate, major: "9" })
@@ -604,8 +604,8 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
      * | BOTH together — the true pre-fix state | FAILS at (a) on the defect verbatim: the third declare's `decisionId` IS the first declare's row id, so a transfer between two teams is reported as the original declaration |
      */
     it("every declare and retract records its OWN Decision — one per audit event, transfers included", async () => {
-      const p = await createOrphanComponent(admin, `xfer-p-${uuidv7()}`);
-      const q = await createOrphanComponent(admin, `xfer-q-${uuidv7()}`);
+      const p = await createOrphanComponent(server, org, `xfer-p-${uuidv7()}`);
+      const q = await createOrphanComponent(server, org, `xfer-q-${uuidv7()}`);
       const coordinate = `@acme/transfer-${uuidv7()}`;
       const declareTo = async (producerId: string) => {
         const r = await post(declareUrl(), org.adminToken, {
@@ -648,7 +648,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       // the sequence persist-on-change was suppressing — while the audit chain recorded all three.
       // A Decision log that is missing an act the audit chain asserts happened is principle 6
       // failing on the quiet side.
-      const idempotent = await createOrphanComponent(admin, `xfer-idem-${uuidv7()}`);
+      const idempotent = await createOrphanComponent(server, org, `xfer-idem-${uuidv7()}`);
       const idemCoordinate = `@acme/idempotent-${uuidv7()}`;
       for (let i = 0; i < 3; i += 1) {
         const r = await post(declareUrl(), org.adminToken, {
@@ -692,7 +692,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       //     when a component is on the latest of its major line. A head left over from the internal
       //     era, on a coordinate that is third-party again, can grant a vendor-pass against a
       //     version NO REGISTRY EVER PUBLISHED.
-      const producer = await createOrphanComponent(admin, `retract-producer-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `retract-producer-${uuidv7()}`);
       const coordinate = `@acme/retract-${uuidv7()}`;
       const line = await inOrg((tx) =>
         upsertDependencyLine(tx, org.orgId, { ecosystem: "npm", coordinate, major: "2" })
@@ -773,8 +773,8 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       // `@acme/lib` to a PUBLIC INDEX PLUGIN, where a stranger's package answering `9.9.9` bumps
       // every subscriber onto it. Both barriers built against that read the column, and a column
       // nobody filled in is NULL, so neither fires.
-      const producer = await createOrphanComponent(admin, `major-producer-${uuidv7()}`);
-      const consumer = await createOrphanComponent(admin, `major-consumer-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `major-producer-${uuidv7()}`);
+      const consumer = await createOrphanComponent(server, org, `major-consumer-${uuidv7()}`);
       const coordinate = `@acme/newmajor-${uuidv7()}`;
 
       // Declared while only major `2` exists.
@@ -852,8 +852,8 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       // A coordinate carries no ecosystem in itself. Matching the anti-join on `coordinate` alone
       // would let an `npm` declaration silently remove an `oci` line of the same string from the
       // poll — the false-positive direction, whose symptom is an ABSENCE of security updates.
-      const producer = await createOrphanComponent(admin, `pair-producer-${uuidv7()}`);
-      const consumer = await createOrphanComponent(admin, `pair-consumer-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `pair-producer-${uuidv7()}`);
+      const consumer = await createOrphanComponent(server, org, `pair-consumer-${uuidv7()}`);
       const shared = `acme/shared-${uuidv7()}`;
 
       await inOrg((tx) =>
@@ -971,8 +971,8 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       //
       // `oci` deliberately: the released version comes from the wave target's `observed.images`, so
       // the chain needs no git provider and the plugin host stays inert.
-      const producer = await createOrphanComponent(admin, `cap-producer-${uuidv7()}`);
-      const consumer = await createOrphanComponent(admin, `cap-consumer-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `cap-producer-${uuidv7()}`);
+      const consumer = await createOrphanComponent(server, org, `cap-consumer-${uuidv7()}`);
       const coordinate = `registry.internal/acme/cap-${uuidv7()}`;
 
       // (a) THE DECLARATION, through the ROUTE — not the repo function. That is the whole point.
@@ -1065,7 +1065,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
 
   describe("(8) the list read", () => {
     it("returns this org's declarations, narrows VERBATIM, and carries the dependencyManagement envelope", async () => {
-      const producer = await createOrphanComponent(admin, `list-producer-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `list-producer-${uuidv7()}`);
       const scoped = `@acme/List-${uuidv7()}`;
       await post(declareUrl(), org.adminToken, {
         ecosystem: "npm",

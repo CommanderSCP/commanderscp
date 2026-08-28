@@ -66,7 +66,7 @@ describe("service board with an assembly child", () => {
 
   it("reports the assembly child with its own component count, and keeps rows per-component", async () => {
     // ONE component directly under the service...
-    const direct = await createOrphanComponent(admin, "gateway");
+    const direct = await createOrphanComponent(server, org, "gateway");
     await contains(service.id, direct.id);
 
     // ...and TWO under an assembly, so the assembly's count (2) can never be confused with the
@@ -74,8 +74,8 @@ describe("service board with an assembly child", () => {
     const assembly = await admin.assemblies.create({ name: "control-plane" });
     await contains(service.id, assembly.id);
     const nested = [
-      await createOrphanComponent(admin, "scheduler"),
-      await createOrphanComponent(admin, "reconciler")
+      await createOrphanComponent(server, org, "scheduler"),
+      await createOrphanComponent(server, org, "reconciler")
     ];
     for (const c of nested) await contains(assembly.id, c.id);
 

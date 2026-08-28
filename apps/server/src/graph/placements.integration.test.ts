@@ -57,7 +57,7 @@ describe("placement: one component at one deployment target", () => {
   const target = (name: string) => admin.deploymentTargets.create({ name });
 
   it("writes the object AND both derived edges in one call", async () => {
-    const comp = await createOrphanComponent(admin, "pl-keycloak");
+    const comp = await createOrphanComponent(server, org, "pl-keycloak");
     const prod = await target("pl-prod");
 
     const placement = await admin.placements.create({
@@ -82,7 +82,7 @@ describe("placement: one component at one deployment target", () => {
     // `slugify` maps every non-alphanumeric run to '-', so an '@' in the URN would be indistinguishable
     // from a hyphen that came out of either endpoint's own name. '/' is admitted by the URN grammar and
     // STRIPPED by slugify, so a '/' in a placement URN can only be the separator.
-    const comp = await createOrphanComponent(admin, "pl sep component");
+    const comp = await createOrphanComponent(server, org, "pl sep component");
     const tgt = await target("pl sep target");
     const placement = await admin.placements.create({
       component: comp.id,
@@ -97,7 +97,7 @@ describe("placement: one component at one deployment target", () => {
   });
 
   it("REFUSES a second placement of the same component at the same target", async () => {
-    const comp = await createOrphanComponent(admin, "pl-dup");
+    const comp = await createOrphanComponent(server, org, "pl-dup");
     const tgt = await target("pl-dup-target");
     await admin.placements.create({ component: comp.id, deploymentTarget: tgt.id });
 
@@ -111,8 +111,8 @@ describe("placement: one component at one deployment target", () => {
 
   it("ALLOWS one component at MANY targets, and one target holding MANY components", async () => {
     // The whole point of the type: a one-column key cannot address a two-dimensional grid.
-    const keycloak = await createOrphanComponent(admin, "pl-grid-keycloak");
-    const market = await createOrphanComponent(admin, "pl-grid-market");
+    const keycloak = await createOrphanComponent(server, org, "pl-grid-keycloak");
+    const market = await createOrphanComponent(server, org, "pl-grid-market");
     const gamma = await target("pl-grid-gamma");
     const prod = await target("pl-grid-prod");
 
@@ -134,7 +134,7 @@ describe("placement: one component at one deployment target", () => {
     // Nothing in this graph cascades: `deleteObject` does not touch relationships. A withdrawal that
     // dropped only the object would leave two live edges pointing out of a dead one, and traversal
     // would keep reporting the component as placed.
-    const comp = await createOrphanComponent(admin, "pl-withdraw");
+    const comp = await createOrphanComponent(server, org, "pl-withdraw");
     const tgt = await target("pl-withdraw-target");
     const placement = await admin.placements.create({
       component: comp.id,
@@ -155,7 +155,7 @@ describe("placement: one component at one deployment target", () => {
     // 0051's index filters `deleted_at IS NULL`, so the pair is freed. The second half is the one
     // that catches a withdrawal which forgot the edges: the component would end up with TWO live
     // `places` edges and read as placed at the same target twice.
-    const comp = await createOrphanComponent(admin, "pl-redeclare");
+    const comp = await createOrphanComponent(server, org, "pl-redeclare");
     const tgt = await target("pl-redeclare-target");
     const first = await admin.placements.create({ component: comp.id, deploymentTarget: tgt.id });
     await admin.placements.delete(first.id);
@@ -179,7 +179,7 @@ describe("placement: one component at one deployment target", () => {
     // The race itself is not theoretical: 0049's mutation testing showed two concurrent creates
     // both getting past an application-level check under READ COMMITTED. Here there is no
     // application-level pre-check at all, so the index is the sole guard by construction.
-    const comp = await createOrphanComponent(admin, "pl-race");
+    const comp = await createOrphanComponent(server, org, "pl-race");
     const tgt = await target("pl-race-target");
     const urnBase = `urn:scp:${org.orgId}:placement:pl-race`;
 
@@ -201,7 +201,7 @@ describe("placement: one component at one deployment target", () => {
     // Two well-formed UUIDs satisfy migration 0051's `required` perfectly. Only the typed route
     // resolves them and checks what they actually are.
     const svc = await admin.object("service").create({ name: "pl-wrong-type-svc" });
-    const comp = await createOrphanComponent(admin, "pl-wrong-type-comp");
+    const comp = await createOrphanComponent(server, org, "pl-wrong-type-comp");
     const tgt = await target("pl-wrong-type-target");
 
     await expect(
@@ -217,7 +217,7 @@ describe("placement: one component at one deployment target", () => {
   });
 
   it("the generic /objects/placement door is refused — no side entrance past the pairing rule", async () => {
-    const comp = await createOrphanComponent(admin, "pl-sidedoor-comp");
+    const comp = await createOrphanComponent(server, org, "pl-sidedoor-comp");
     const tgt = await target("pl-sidedoor-target");
 
     const res = await server.app.inject({
@@ -240,7 +240,7 @@ describe("placement: one component at one deployment target", () => {
   it("the federation OVERLAY door is refused too — the second user-facing create surface", async () => {
     // Overlay takes a free-form `overlayTypeId` + properties, so it is the same side entrance one
     // module over. Refusing only the generic route would be the incomplete-call-site mistake.
-    const comp = await createOrphanComponent(admin, "pl-overlay-comp");
+    const comp = await createOrphanComponent(server, org, "pl-overlay-comp");
     const res = await server.app.inject({
       method: "POST",
       url: `/api/v1/federation/overlays`,

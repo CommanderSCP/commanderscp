@@ -183,7 +183,7 @@ require (
     pathPattern: string | null,
     repoPattern: string = REPO
   ): Promise<string> {
-    const component = await createOrphanComponent(admin, `${label}-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `${label}-${uuidv7()}`);
     await addMapping(component.id, pathPattern, repoPattern);
     return component.id;
   }

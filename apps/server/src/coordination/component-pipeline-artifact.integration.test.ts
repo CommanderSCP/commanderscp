@@ -203,10 +203,10 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   };
 
   it("`artifact: null` when no change of the component carries a digest — and when it has no change at all", async () => {
-    const bare = await createOrphanComponent(admin, uniq("no-change"));
+    const bare = await createOrphanComponent(server, org, uniq("no-change"));
     expect((await pipelineOf(bare.id)).artifact, "emitted as null, not omitted").toBeNull();
 
-    const digestless = await createOrphanComponent(admin, uniq("no-digest"));
+    const digestless = await createOrphanComponent(server, org, uniq("no-digest"));
     await proposeWith(digestless.id, { repo: "acme/checkout", commit: "abc" });
     await proposeWith(digestless.id, undefined);
     expect(
@@ -216,7 +216,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("reads digests + SBOM verbatim off the picked change; nothing scanned ⇒ `not_run`; nothing exported ⇒ no promotionExports; the SBOM's origin signatureRef is the only signature ref", async () => {
-    const component = await createOrphanComponent(admin, uniq("artifact"));
+    const component = await createOrphanComponent(server, org, uniq("artifact"));
     const digest = digestOf("a");
     const change = await proposeWith(component.id, { artifactDigest: digest, sbom });
 
@@ -234,7 +234,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("reduces the change's scan rows to the NEWEST per (scanner, digest), flags the managed one, and reads E6's own verdict: `pass`", async () => {
-    const component = await createOrphanComponent(admin, uniq("scans"));
+    const component = await createOrphanComponent(server, org, uniq("scans"));
     const digest = digestOf("c");
     const change = await proposeWith(component.id, { artifact_digest: [digest] });
 
@@ -289,7 +289,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("E6 read-only: a scan row that is not digest-bound reads `fail` (evidence exists, covers nothing)", async () => {
-    const component = await createOrphanComponent(admin, uniq("unbound"));
+    const component = await createOrphanComponent(server, org, uniq("unbound"));
     const digest = digestOf("d");
     const change = await proposeWith(component.id, { artifactDigest: digest });
     await seedScan(change.id, digest, { digestMatch: false, scannedDigest: digestOf("e") });
@@ -301,7 +301,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("prefers a change the STAGES show over a newer digest-carrying change they do not; among the fallback the newest wins", async () => {
-    const component = await createOrphanComponent(admin, uniq("pick"));
+    const component = await createOrphanComponent(server, org, uniq("pick"));
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     const topo = await admin.object("release-topology").create({
       name: uniq("topo"),
@@ -340,7 +340,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("the fallback pick is not pushed out of its page by NEWER metadata-only promotion imports (the importer stamps `artifactDigests: []` on every promoted change; the SQL prefilter admits the importer's key only when NON-EMPTY)", async () => {
-    const component = await createOrphanComponent(admin, uniq("page-pressure"));
+    const component = await createOrphanComponent(server, org, uniq("page-pressure"));
     const carrier = await proposeWith(component.id, { artifactDigest: digestOf("7") });
     expect((await pipelineOf(component.id)).artifact!.changeId).toBe(carrier.id);
 
@@ -369,7 +369,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("an unparseable `sbom` reads null and is STATED under unknownFields — the digests are unaffected", async () => {
-    const component = await createOrphanComponent(admin, uniq("bad-sbom"));
+    const component = await createOrphanComponent(server, org, uniq("bad-sbom"));
     const digest = digestOf("f");
     await proposeWith(component.id, {
       artifactDigest: digest,
@@ -385,7 +385,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("keeps the NEWEST row per (scanner, digest) even when it is a FAIL over an older pass — the reduction is by recency, never 'prefer pass'; and E6 reads `fail`: the newer fail is the control's CURRENT answer, an older pass never outvotes it", async () => {
-    const component = await createOrphanComponent(admin, uniq("newer-fail"));
+    const component = await createOrphanComponent(server, org, uniq("newer-fail"));
     const digest = digestOf("8");
     const change = await proposeWith(component.id, { artifactDigest: digest });
 
@@ -418,7 +418,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("E6 admits a scan outcome by its PRODUCER, never by the shape of its evidence: a `webhook-control` row echoing a perfect scan-shaped pass shows in `scans[]` but reads `fail`; the same row from `scan-result-control` reads `pass`", async () => {
-    const component = await createOrphanComponent(admin, uniq("producer"));
+    const component = await createOrphanComponent(server, org, uniq("producer"));
     const digest = digestOf("w");
     const change = await proposeWith(component.id, { artifactDigest: digest });
 
@@ -437,7 +437,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     ).toBe("fail");
 
     // A NULL module on a bound (non-managed) control id is unattributable — fail-closed too.
-    const component2 = await createOrphanComponent(admin, uniq("producer-null"));
+    const component2 = await createOrphanComponent(server, org, uniq("producer-null"));
     const change2 = await proposeWith(component2.id, { artifactDigest: digest });
     await seedScan(change2.id, digest, { status: "pass", pluginModule: null });
     expect((await pipelineOf(component2.id)).artifact!.exportGate).toBe("fail");
@@ -448,7 +448,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("`managed` is read off the SYNTHETIC CONTROL ID alone — a gateRef claiming `promotionScanStep` on an org control does not make it managed, and a managed row with no gateRef method still is (method falls back to the scanner)", async () => {
-    const component = await createOrphanComponent(admin, uniq("managed-flag"));
+    const component = await createOrphanComponent(server, org, uniq("managed-flag"));
     const digest = digestOf("5");
     const change = await proposeWith(component.id, { artifactDigest: digest });
 
@@ -503,7 +503,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("E6 over a MULTI-digest change: a passing digest-bound row for ONE of two digests reads `fail`; a row for the other flips it to `pass`", async () => {
-    const component = await createOrphanComponent(admin, uniq("two-digests"));
+    const component = await createOrphanComponent(server, org, uniq("two-digests"));
     const d1 = digestOf("3");
     const d2 = digestOf("4");
     const change = await proposeWith(component.id, { artifact_digest: [d1, d2] });
@@ -531,7 +531,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     // copy: `promotion-repo.ts` refuses this crossing `below_instance_floor`, so the tile must not
     // say `pass`. The control itself PASSED — against a tenant-loose ceiling (maxHigh 50) — which is
     // precisely the case the operator-write/tenant-read floor exists for.
-    const component = await createOrphanComponent(admin, uniq("floor"));
+    const component = await createOrphanComponent(server, org, uniq("floor"));
     const digest = digestOf("5");
     const change = await proposeWith(component.id, { artifactDigest: digest });
     await seedScan(change.id, digest, {
@@ -565,7 +565,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("`POST /changes` REFUSES a sourceRef that plants a server-owned stamp (`promotionExports`, `boundaryBundleChecksums`) — 400, nothing stored", async () => {
-    const component = await createOrphanComponent(admin, uniq("planted"));
+    const component = await createOrphanComponent(server, org, uniq("planted"));
     for (const key of [PROMOTION_EXPORTS_KEY, "boundaryBundleChecksums"]) {
       const res = await server.app.inject({
         method: "POST",
@@ -585,7 +585,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("renders a stored promotionExports[] stamp with `peerName: null` when no peer row exists, and COUNTS an unparseable one", async () => {
-    const component = await createOrphanComponent(admin, uniq("stamped"));
+    const component = await createOrphanComponent(server, org, uniq("stamped"));
     const digest = digestOf("7");
     const peerDomainId = randomUUID();
     const manifest = {
@@ -672,7 +672,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("§10.4: a change stamped ONLY the way the importer stamps (`artifacts[]` + `artifactDigests[]`, no `artifact_digest`) is PICKED and reads ONLY the typed `oci` digest (never the SBOM blob's, which the flat list also names), and `signing.importedManifest` carries the manifest + signature verbatim, `exporterName: null` when no peer row names the exporter", async () => {
-    const component = await createOrphanComponent(admin, uniq("imported"));
+    const component = await createOrphanComponent(server, org, uniq("imported"));
     const digest = digestOf("8");
     const exporterDomainId = randomUUID();
     const promotedFromDomain = randomUUID();
@@ -771,7 +771,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   it("§10.4: a stamped manifest WITHOUT a signature is null + `importedManifest:unsigned`; one that does not parse is null + `importedManifest:unparseable`; a `promotedFromDomain` that is not a string reads null", async () => {
-    const component = await createOrphanComponent(admin, uniq("imported-stated"));
+    const component = await createOrphanComponent(server, org, uniq("imported-stated"));
     const digest = digestOf("5");
     const change = await proposeWith(component.id, { artifactDigest: digest });
     const manifest = importedStamp(digest, randomUUID());

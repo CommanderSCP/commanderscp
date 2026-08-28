@@ -153,7 +153,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
       name: uniq("field-cluster"),
       properties: { substrate: "kubernetes", cluster: "field-eks" }
     });
-    const component = await createOrphanComponent(admin, uniq("facet"));
+    const component = await createOrphanComponent(server, org, uniq("facet"));
     await admin.placements.create({ component: component.id, deploymentTarget: placedTarget.id });
     await attachTopology(component.id, [
       { name: "prod", target: placedTarget.id },
@@ -191,7 +191,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
       name: uniq("eu-west-2-prod (aws)"),
       properties: { environment: "prod" }
     });
-    const component = await createOrphanComponent(admin, uniq("no-facet"));
+    const component = await createOrphanComponent(server, org, uniq("no-facet"));
     await admin.placements.create({ component: component.id, deploymentTarget: bare.id });
 
     const p = await pipelineOf(component.id);
@@ -219,7 +219,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
   // ------------------------------------------------------------------------------------------
 
   it("registry: `none` when the component has no `publishes_to` edge — every identity field null", async () => {
-    const component = await createOrphanComponent(admin, uniq("no-registry"));
+    const component = await createOrphanComponent(server, org, uniq("no-registry"));
 
     const p = await pipelineOf(component.id);
 
@@ -235,7 +235,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
   });
 
   it("registry: `declared` from ONE edge — name off the object, kind off `properties.kind`, url = webUrl base, repository off the EDGE", async () => {
-    const component = await createOrphanComponent(admin, uniq("one-registry"));
+    const component = await createOrphanComponent(server, org, uniq("one-registry"));
     const hq = await registrySystem(uniq("hq-registry"), {
       domainLocal: true,
       webUrl: "https://registry.hq.invalid/ui/"
@@ -262,7 +262,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
   });
 
   it("registry: a DELETED `publishes_to` edge no longer counts — `declared` returns to `none` with edgeCount 0 (a tombstone is not a declaration)", async () => {
-    const component = await createOrphanComponent(admin, uniq("deleted-edge"));
+    const component = await createOrphanComponent(server, org, uniq("deleted-edge"));
     const hq = await registrySystem(uniq("hq-registry"), { domainLocal: true });
     const edge = await admin.relationships.create({
       typeId: "publishes_to",
@@ -290,7 +290,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
   });
 
   it("registry: `ambiguous` with the COUNT and null identity when >1 edge — stated, never picked", async () => {
-    const component = await createOrphanComponent(admin, uniq("two-registries"));
+    const component = await createOrphanComponent(server, org, uniq("two-registries"));
     const a = await registrySystem(uniq("registry-a"), { domainLocal: true });
     const b = await registrySystem(uniq("registry-b"), { domainLocal: true });
     await admin.relationships.create({
@@ -320,7 +320,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
   });
 
   it("registry: falls back to `serverUrl` when there is no `webUrl`, and to null kind when `kind` is not a string", async () => {
-    const component = await createOrphanComponent(admin, uniq("serverurl-registry"));
+    const component = await createOrphanComponent(server, org, uniq("serverurl-registry"));
     const sys = await registrySystem(uniq("kindless-registry"), { domainLocal: true, kind: 42 });
     await admin.relationships.create({
       typeId: "publishes_to",
@@ -339,7 +339,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
   });
 
   it("a `publishes_to` edge to a domainLocal:true execution-system NEVER journals — and the shared control does", async () => {
-    const component = await createOrphanComponent(admin, uniq("journal"));
+    const component = await createOrphanComponent(server, org, uniq("journal"));
     const local = await registrySystem(uniq("local-registry"), { domainLocal: true });
     const shared = await registrySystem(uniq("shared-registry"), { domainLocal: false });
 
@@ -367,7 +367,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
   });
 
   it("a non-string `properties.repository` on the edge reads as null — no crash — and the API refuses to write one", async () => {
-    const component = await createOrphanComponent(admin, uniq("bad-repo"));
+    const component = await createOrphanComponent(server, org, uniq("bad-repo"));
     const sys = await registrySystem(uniq("legacy-registry"), { domainLocal: true });
 
     // The door is closed: 0065's open property schema types `repository` as a string.

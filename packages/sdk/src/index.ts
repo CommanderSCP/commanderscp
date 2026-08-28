@@ -166,8 +166,6 @@ export type {
   PluginManifestListResponse,
   DiscoveryProposal,
   RunDiscoveryRequest,
-  AcceptDiscoveryRequest,
-  AcceptDiscoveryResponse,
   ChangeReportRequest,
   CreateWebhookSecretRequest,
   WebhookSecretConfiguredResponse

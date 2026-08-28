@@ -296,7 +296,6 @@ import {
   deleteSecret as deleteSecretRequest,
   listPluginManifests as listPluginManifestsRequest,
   runDiscovery as runDiscoveryRequest,
-  acceptDiscoveryProposal as acceptDiscoveryProposalRequest,
   backfillSourceMappings as backfillSourceMappingsRequest,
   // The live event stream (`GET /events/stream`) — a generated SSE operation like any other
   // generated operation, `responseValidator` included, since the SSE API-parity work declared it
@@ -478,8 +477,6 @@ import type {
   PluginManifestListResponse,
   RunDiscoveryRequest,
   DiscoveryProposal,
-  AcceptDiscoveryRequest,
-  AcceptDiscoveryResponse,
   BackfillSourceMappingsResponse,
   ServiceBoardResponse,
   RelayedEvent,
@@ -2880,11 +2877,6 @@ export class ScpClient {
      *  (DESIGN §11: "reviewed/accepted into the graph, never auto-committed"). */
     run: async (req: RunDiscoveryRequest): Promise<DiscoveryProposal> => {
       const result = await runDiscoveryRequest({ client: this.client, body: req });
-      return unwrap(result);
-    },
-    /** The ONLY call that commits a discovery proposal's objects/relationships into the graph. */
-    accept: async (req: AcceptDiscoveryRequest): Promise<AcceptDiscoveryResponse> => {
-      const result = await acceptDiscoveryProposalRequest({ client: this.client, body: req });
       return unwrap(result);
     },
     /** Backfill source_mappings onto ALREADY-imported components (M12 P5 follow-up) — matches a fresh

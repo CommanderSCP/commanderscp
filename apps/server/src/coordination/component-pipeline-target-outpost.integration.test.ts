@@ -147,7 +147,7 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
   }
 
   async function placedComponentOn(targetId: string, slug: string) {
-    const component = await createOrphanComponent(admin, uniq(slug));
+    const component = await createOrphanComponent(server, org, uniq(slug));
     await admin.placements.create({ component: component.id, deploymentTarget: targetId });
     return component;
   }
@@ -233,7 +233,7 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
       name: uniq("hq-target"),
       properties: { environment: "prod" }
     });
-    const component = await createOrphanComponent(admin, uniq("self-target"));
+    const component = await createOrphanComponent(server, org, uniq("self-target"));
     await admin.placements.create({ component: component.id, deploymentTarget: target.id });
 
     const p = await pipelineOf(component.id);
@@ -260,7 +260,7 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
     });
     const placedTarget = await targetUnderPeer(peer, "field-cluster");
     const unplacedTarget = await targetUnderPeer(peer, "field-cluster-2");
-    const component = await createOrphanComponent(admin, uniq("field-component"));
+    const component = await createOrphanComponent(server, org, uniq("field-component"));
     await admin.placements.create({ component: component.id, deploymentTarget: placedTarget.id });
     await attachTopology(component.id, [
       { name: "field", target: placedTarget.id },
@@ -288,7 +288,7 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
   it("`peer-without-outpost` — a target under a paired peer with NO outpost object names the PEER, id null, tier null", async () => {
     const peer = await pairOutpostPeer("prod-highside");
     const target = await targetUnderPeer(peer, "highside-cluster");
-    const component = await createOrphanComponent(admin, uniq("highside-component"));
+    const component = await createOrphanComponent(server, org, uniq("highside-component"));
     await admin.placements.create({ component: component.id, deploymentTarget: target.id });
 
     const p = await pipelineOf(component.id);
@@ -326,7 +326,7 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
       });
       return object;
     });
-    const component = await createOrphanComponent(admin, uniq("stranger-component"));
+    const component = await createOrphanComponent(server, org, uniq("stranger-component"));
     await admin.placements.create({ component: component.id, deploymentTarget: target.id });
 
     const p = await pipelineOf(component.id);
@@ -346,7 +346,7 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
     const peer = await pairOutpostPeer("eu-edge");
     const config = await admin.federation.createOutpost({ peerDomainId: peer.id });
     const target = await targetUnderPeer(peer, "edge-cluster");
-    const component = await createOrphanComponent(admin, uniq("edge-component"));
+    const component = await createOrphanComponent(server, org, uniq("edge-component"));
     await admin.placements.create({ component: component.id, deploymentTarget: target.id });
 
     const p = await pipelineOf(component.id);
@@ -531,7 +531,7 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
       name: uniq("hq-prod"),
       properties: { environment: "prod" }
     });
-    const component = await createOrphanComponent(admin, uniq("hq-component"));
+    const component = await createOrphanComponent(server, org, uniq("hq-component"));
     await admin.placements.create({ component: component.id, deploymentTarget: placedTarget.id });
     await attachTopology(component.id, [
       { name: "gamma", target: placedTarget.id },

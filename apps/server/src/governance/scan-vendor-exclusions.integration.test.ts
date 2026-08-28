@@ -336,7 +336,7 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
     await admitVendorLatest();
     const org = await createTestOrg(server, "vendor-base");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createOrphanComponent(admin, "comp-vendor-base");
+    const component = await createOrphanComponent(server, org, "comp-vendor-base");
     await seedInventory(org.orgId, component.id, [currentBase]);
 
     await vendorExclusionPolicy(admin, "vendor-base", org.orgId);
@@ -374,7 +374,7 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
     await admitVendorLatest();
     const org = await createTestOrg(server, "vendor-digest");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createOrphanComponent(admin, "comp-vendor-digest");
+    const component = await createOrphanComponent(server, org, "comp-vendor-digest");
     await seedInventory(org.orgId, component.id, [
       { ...currentBase, resolvedDigest: BASE_OLD_DIGEST }
     ]);
@@ -417,7 +417,7 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
     // (a) never observed — the shape an OUTPOST is always in, because
     // `dependencyVersionPollRoleGuard` refuses to poll on anything that has not explicitly declared
     // itself a commander, and `dependency_lines` does not federate.
-    const never = await createOrphanComponent(admin, "comp-vendor-never");
+    const never = await createOrphanComponent(server, org, "comp-vendor-never");
     await seedInventory(org.orgId, never.id, [
       {
         ...currentBase,
@@ -427,7 +427,7 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
       }
     ]);
     // (b) observed, but longer ago than three poll cycles (the default poll is daily => 3 days).
-    const stale = await createOrphanComponent(admin, "comp-vendor-stale");
+    const stale = await createOrphanComponent(server, org, "comp-vendor-stale");
     await seedInventory(org.orgId, stale.id, [
       {
         ...currentBase,
@@ -467,7 +467,7 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
     await admitVendorLatest();
     const org = await createTestOrg(server, "vendor-lang");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createOrphanComponent(admin, "comp-vendor-lang");
+    const component = await createOrphanComponent(server, org, "comp-vendor-lang");
     await seedInventory(org.orgId, component.id, [
       {
         ecosystem: "npm",
@@ -510,7 +510,7 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
     // control for the whole increment: being up to date is not, by itself, permission.
     const org = await createTestOrg(server, "vendor-unadmitted");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const component = await createOrphanComponent(admin, "comp-vendor-unadmitted");
+    const component = await createOrphanComponent(server, org, "comp-vendor-unadmitted");
     await seedInventory(org.orgId, component.id, [currentBase]);
 
     await vendorExclusionPolicy(admin, "vendor-unadmitted", org.orgId);
@@ -540,8 +540,8 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
     await admitVendorLatest();
     const org = await createTestOrg(server, "vendor-multi");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const current = await createOrphanComponent(admin, "comp-vendor-multi-a");
-    const behind = await createOrphanComponent(admin, "comp-vendor-multi-b");
+    const current = await createOrphanComponent(server, org, "comp-vendor-multi-a");
+    const behind = await createOrphanComponent(server, org, "comp-vendor-multi-b");
     await seedInventory(org.orgId, current.id, [currentBase]);
     await seedInventory(org.orgId, behind.id, [
       { ...currentBase, resolvedDigest: BASE_OLD_DIGEST }

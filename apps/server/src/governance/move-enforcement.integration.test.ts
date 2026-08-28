@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import {
   buildTestServer,
+  createOrphanComponent,
   createTestOrg,
   createTestUser,
   testDatabaseUrl,
@@ -154,19 +155,12 @@ describe("governance:move enforcement (proposal §9.2)", () => {
 
     // A component with NO `contains` edge — the only shape a `POST /relationships` of `contains`
     // can succeed against (the 0022 partial unique index permits exactly one live parent). The
-    // generic `/objects/component` route REFUSES an orphan by design (create-strict), so it is made
-    // the way the harness's `createOrphanComponent` makes one: through discovery accept, which is
-    // import-permissive.
-    const orphan = await call("POST", admin, "/api/v1/discovery/accept", {
-      proposal: {
-        objects: [{ typeId: "component", name: `${label}-orphan`, properties: {} }],
-        relationships: [],
-        bindings: []
-      }
-    });
-    expect(orphan.status, orphan.body).toBe(201);
-    const orphanComponentId = (orphan.json() as { createdObjectIds: string[] })
-      .createdObjectIds[0]!;
+    // generic `/objects/component` route REFUSES an orphan by design (create-strict), and since
+    // increment 6 removed `POST /discovery/accept` there is NO HTTP door that produces one. It is
+    // therefore made the way the harness's `createOrphanComponent` now makes one: straight through
+    // `graph/objects-repo.ts`, which is the same function every import path calls.
+    const orphanComponent = await createOrphanComponent(server, org, `${label}-orphan`);
+    const orphanComponentId = orphanComponent.id;
     const orphanRead = await call("GET", admin, `/api/v1/objects/component/${orphanComponentId}`);
     expect(orphanRead.status, orphanRead.body).toBe(200);
     const orphanComponentUrn = orphanRead.json().urn as string;
@@ -412,61 +406,14 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     expect(prunedOk.status, prunedOk.body).toBe(200);
   });
 
-  it("POST /discovery/accept (contains onto a PRE-EXISTING child) is a move and is refused (m9)", async () => {
-    // The third caller-supplied-`typeId` relationship door. It reads like an import and is not one:
-    // the proposal comes from the request body under `requireAuth`, and both endpoints resolve to
-    // LIVE rows — so this is a move made by a real principal, not a replica following its authority.
-    const f = await makeFixture("gm-discovery");
-    expect((await enableRung(f, f.domainId)).status).toBe(200);
-
-    const accept = (token: string, body: Record<string, unknown>): Promise<Response> =>
-      call("POST", token, "/api/v1/discovery/accept", body);
-
-    const refused = await accept(f.operatorToken, {
-      proposal: {
-        objects: [],
-        relationships: [{ typeId: "contains", fromUrn: f.serviceUrn, toUrn: f.orphanComponentUrn }],
-        bindings: []
-      }
-    });
-    expect(refused.status, refused.body).toBe(403);
-    expect(detailOf(refused)).toContain("is governed here");
-
-    const admitted = await accept(f.administratorToken, {
-      proposal: {
-        objects: [],
-        relationships: [{ typeId: "contains", fromUrn: f.serviceUrn, toUrn: f.orphanComponentUrn }],
-        bindings: []
-      }
-    });
-    expect(admitted.status, admitted.body).toBe(201);
-
-    // THE CARVE-OUT, pinned as a SUCCESS so the refusals above cannot be mistaken for "discovery is
-    // off under a rung": a child CREATED IN THIS SAME BATCH has no prior governance reach to leave,
-    // so contaning it is a create, not a move — the same rule `createObject`'s rooting follows at
-    // the other doors. An ordinary plugin proposal (new objects + their edges) keeps working for an
-    // Operator under an enabled rung.
-    const fresh = await accept(f.operatorToken, {
-      proposal: {
-        objects: [
-          {
-            typeId: "component",
-            name: "gm-discovery-fresh",
-            properties: {},
-            urn: "proposal-local:fresh"
-          }
-        ],
-        relationships: [
-          { typeId: "contains", fromUrn: f.serviceUrn, toUrn: "proposal-local:fresh" }
-        ],
-        bindings: []
-      }
-    });
-    expect(fresh.status, fresh.body).toBe(201);
-    expect(
-      (fresh.json() as { createdRelationshipIds: string[] }).createdRelationshipIds
-    ).toHaveLength(1);
-  });
+  // THE m9 CASE IS GONE WITH ITS DOOR. `POST /discovery/accept` was the third caller-supplied-
+  // `typeId` relationship door and this case proved a `contains` through it was refused as a move.
+  // Increment 6 removed the route (ADR-0047), so there is nothing left to drive: the guard it
+  // exercised (`assertGovernanceMoveAdmits` on a `contains` write) is still proven by the
+  // `POST /relationships` and IaC-apply cases above, which are the doors that remain.
+  //
+  // Recorded rather than deleted silently, because the mutation log at the top of this file names
+  // m9 and a reader finding no such case should learn why, not wonder.
 
   it("PUT /components/{idOrUrn}/service refuses an Operator under an enabled rung (m3)", async () => {
     const f = await makeFixture("gm-set-service");

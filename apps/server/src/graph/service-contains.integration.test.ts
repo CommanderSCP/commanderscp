@@ -178,8 +178,8 @@ describe("service --contains--> component (membership, one service per component
 
   it("a service may contain MANY components", async () => {
     const svc = await admin.object("service").create({ name: "billing" });
-    const a = await createOrphanComponent(admin, "billing-api");
-    const b = await createOrphanComponent(admin, "billing-worker");
+    const a = await createOrphanComponent(server, org, "billing-api");
+    const b = await createOrphanComponent(server, org, "billing-worker");
 
     await admin.relationships.create({ typeId: "contains", fromId: svc.id, toId: a.id });
     await admin.relationships.create({ typeId: "contains", fromId: svc.id, toId: b.id });
@@ -191,7 +191,7 @@ describe("service --contains--> component (membership, one service per component
   it("REFUSES a component in a second service — the actual 'one service per component' guarantee", async () => {
     const svc1 = await admin.object("service").create({ name: "checkout" });
     const svc2 = await admin.object("service").create({ name: "fulfilment" });
-    const comp = await createOrphanComponent(admin, "checkout-api");
+    const comp = await createOrphanComponent(server, org, "checkout-api");
 
     await admin.relationships.create({ typeId: "contains", fromId: svc1.id, toId: comp.id });
 
@@ -230,7 +230,7 @@ describe("service --contains--> component (membership, one service per component
     // orphan by construction (it calls createObject server-side, never the strict route), so an
     // imported component has no `contains` edge until it is organized. (The strict-route requirement
     // is covered in components.integration.test.ts.)
-    const orphan = await createOrphanComponent(admin, "imported-from-argocd");
+    const orphan = await createOrphanComponent(server, org, "imported-from-argocd");
     expect(orphan.id).toBeTruthy();
     const edges = await admin.relationships.list({ typeId: "contains", toId: orphan.id });
     expect(edges.items).toHaveLength(0);
@@ -245,7 +245,7 @@ describe("service --contains--> component (membership, one service per component
     // exactly one must win, whether it loses at the app check or the DB constraint.
     const s1 = await admin.object("service").create({ name: "race-a" });
     const s2 = await admin.object("service").create({ name: "race-b" });
-    const comp = await createOrphanComponent(admin, "race-target");
+    const comp = await createOrphanComponent(server, org, "race-target");
 
     const results = await Promise.allSettled([
       admin.relationships.create({ typeId: "contains", fromId: s1.id, toId: comp.id }),
@@ -262,7 +262,7 @@ describe("service --contains--> component (membership, one service per component
   it("frees the component once the edge is deleted (re-assignable, so organize-after works)", async () => {
     const svc1 = await admin.object("service").create({ name: "notifications" });
     const svc2 = await admin.object("service").create({ name: "messaging" });
-    const comp = await createOrphanComponent(admin, "notify-worker");
+    const comp = await createOrphanComponent(server, org, "notify-worker");
 
     const edge = await admin.relationships.create({
       typeId: "contains",

@@ -302,8 +302,8 @@ describe("executor-binding lifecycle audit events: component merge's repoint (th
     // ORPHAN, not `createTestComponent` — `mergeComponents` requires a binding-only loser with no
     // live relationships, and `createTestComponent` gives it a `contains` edge from a throwaway
     // service (`components.integration.test.ts`'s own merge describe block uses the same helper).
-    const survivor = await createOrphanComponent(admin, `surv-${randomUUID().slice(0, 8)}`);
-    const loser = await createOrphanComponent(admin, `lose-${randomUUID().slice(0, 8)}`);
+    const survivor = await createOrphanComponent(server, org, `surv-${randomUUID().slice(0, 8)}`);
+    const loser = await createOrphanComponent(server, org, `lose-${randomUUID().slice(0, 8)}`);
     await admin.executors.putBinding(loser.id, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`

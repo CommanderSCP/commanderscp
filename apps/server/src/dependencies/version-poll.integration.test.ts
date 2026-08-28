@@ -262,8 +262,8 @@ esac
     // per-call parameter), so the pinned-binary override is set on the process for this file.
     process.env.SCP_SKOPEO_BIN = skopeoBin;
 
-    subscribed = (await createOrphanComponent(admin, `poll-sub-${uuidv7()}`)).id;
-    unsubscribed = (await createOrphanComponent(admin, `poll-unsub-${uuidv7()}`)).id;
+    subscribed = (await createOrphanComponent(server, org, `poll-sub-${uuidv7()}`)).id;
+    unsubscribed = (await createOrphanComponent(server, org, `poll-unsub-${uuidv7()}`)).id;
 
     await declare(subscribed, {
       ecosystem: "oci",
@@ -1000,7 +1000,7 @@ esac
     const lineId = await declare(subscribed, { ecosystem: "npm", coordinate, major: "2" });
     // Q is a SECOND, REAL component. Without it this test could only compare a component against
     // itself, which is the very comparison the boolean form got right.
-    const q = await createOrphanComponent(admin, `race-transfer-new-producer-${uuidv7()}`);
+    const q = await createOrphanComponent(server, org, `race-transfer-new-producer-${uuidv7()}`);
 
     // t0 — the coordinate is P's (`subscribed`). P's derivation reads this in phase 1 and then
     // leaves the transaction to fetch a manifest.
