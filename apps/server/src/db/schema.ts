@@ -2831,6 +2831,47 @@ export const scanFindings = pgTable(
  * by the Zod discriminated union at every write door, and a CHECK matrix here would be a second,
  * driftable copy of it.
  */
+/**
+ * D26 (owner ruling 2026-08-27) — WHICH STACKS A CONFIG SOURCE ACTUALLY DELIVERS.
+ *
+ * Ownership follows delivery: a stack the sync has applied for a config source is repo-owned
+ * whether or not an operator wrote it into that registration's `stackTeams` map, and the D7
+ * CLI-apply guard reads this table UNION the explicit claims. See `drizzle/0101` for the full
+ * reasoning and for why the PRIMARY KEY is `(org_id, stack_name)` rather than including the source.
+ *
+ * SERVER-OWNED, like `plans` and `decisions`: no IaC manifest can declare or prune a row here, and
+ * there is deliberately no `managed_by_stack` column to suggest otherwise.
+ */
+export const configSourceStacks = pgTable(
+  "config_source_stacks",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** The delivered `DesiredStateManifest.stackName` — the same bare string `plans` and
+     *  `objects.managed_by_stack` key on. A second spelling here would be a second definition of
+     *  what a stack is. */
+    stackName: text("stack_name").notNull(),
+    /** The `config-source` object that delivered it. Org-unbound `REFERENCES objects(id)`. */
+    configSourceId: uuid("config_source_id").notNull(),
+    /** The team the apply RAN AS — recorded, never re-derived from a document that may since have
+     *  been edited (the provenance-is-read-not-inferred rule ADR-0046 §4 states for derived
+     *  bindings). */
+    teamObjectId: uuid("team_object_id").notNull(),
+    lastCommitSha: text("last_commit_sha").notNull(),
+    lastManifestPath: text("last_manifest_path").notNull(),
+    firstDeliveredAt: timestamp("first_delivered_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastDeliveredAt: timestamp("last_delivered_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.orgId, table.stackName],
+      name: "config_source_stacks_pkey"
+    }),
+    bySource: index("config_source_stacks_by_source").on(table.orgId, table.configSourceId)
+  })
+);
+
 export const pipelineHooks = pgTable(
   "pipeline_hooks",
   {

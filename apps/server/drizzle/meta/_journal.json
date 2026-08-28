@@ -708,6 +708,13 @@
       "when": 1788158002000,
       "tag": "0100_config_source_object_type",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1788158003000,
+      "tag": "0101_config_source_stack_delivery",
+      "breakpoints": true
     }
   ]
 }

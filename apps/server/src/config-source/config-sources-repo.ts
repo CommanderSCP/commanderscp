@@ -29,6 +29,7 @@ import { objects } from "../db/schema.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import type { ConfigSourceRegistration } from "./registration-match.js";
 import type { StackConfigSourceBinding } from "./cli-apply-guard.js";
+import { findDeliveredStackOwner } from "./stack-delivery-repo.js";
 import {
   CONFIG_SOURCE_TYPE_ID,
   parseConfigSourceDocument,
@@ -154,8 +155,12 @@ export async function listConfigSourceRegistrations(
  * sync silently reverts it — D7's own failure mode, reached by forgetting a line rather than by
  * doing anything wrong. The ruling is that **ownership follows delivery**: the sync records every
  * stack it has applied for a config source, and this function returns the explicit claims UNION
- * that record. The record cannot exist before the sync loop that writes it, so this function is
- * deliberately half-built and says so, rather than reading as a settled rule.
+ * that record. `stack-delivery-repo.ts` writes it when the sync applies a stack, and this function
+ * returns the explicit claims UNION it.
+ *
+ * ORDER OF THE UNION IS NOT ARBITRARY: the explicit claim is checked FIRST, because it is what an
+ * operator wrote and is therefore what a refusal should name. The delivered record answers only for
+ * a stack nobody claimed — precisely the case that was unprotected.
  *
  * WHEN TWO REGISTRATIONS CLAIM ONE STACK NAME this returns the lowest-id one, and that is a
  * reporting choice, not an adjudication: the answer to "is this stack repo-owned" is `true` under
@@ -169,10 +174,22 @@ export async function findStackConfigSourceBinding(
   stackName: string
 ): Promise<StackConfigSourceBinding | null> {
   const { registrations, names } = await listConfigSourceRegistrations(tx, orgId);
-  const owner = registrations.find((r) => r.stackTeams?.[stackName] !== undefined);
-  if (!owner) return null;
+  const claimed = registrations.find((r) => r.stackTeams?.[stackName] !== undefined);
+  if (claimed) {
+    return { configSourceId: claimed.id, configSourceName: names.get(claimed.id) ?? claimed.id };
+  }
+
+  // D26 — the delivered half. A stack this config source has APPLIED is repo-owned even though no
+  // operator wrote it into the map: the thing D7 protects against is the next sync reverting a
+  // push, and the next sync will revert it either way.
+  const delivered = await findDeliveredStackOwner(tx, orgId, stackName);
+  if (!delivered) return null;
+  // The name comes from the registrations read above while the source is live. A DELETED config
+  // source keeps its delivery row on purpose (`drizzle/0101`), and its id is then the only honest
+  // name to give — reporting "unowned" would hand the stack back to CLI-push while the manifest
+  // that produced it still sits in a repo someone can re-register.
   return {
-    configSourceId: owner.id,
-    configSourceName: names.get(owner.id) ?? owner.id
+    configSourceId: delivered.configSourceId,
+    configSourceName: names.get(delivered.configSourceId) ?? delivered.configSourceId
   };
 }
