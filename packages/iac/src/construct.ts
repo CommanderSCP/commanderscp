@@ -704,6 +704,46 @@ export class Stack extends Construct {
       ...(governanceMoveRungs.length > 0 ? { governanceMoveRungs } : {})
     };
 
+    // TWO OBJECTS, ONE URN — REFUSED HERE, BEFORE THE MANIFEST CAN CARRY BOTH.
+    //
+    // A URN is derived from `(stackName, construct id)` through `slugify`, WHICH LOWERCASES. So
+    // sibling constructs whose ids differ only in case — `Api` and `api`, `payBlue` and `PayBlue` —
+    // are two distinct constructs (the tree's own duplicate-id check compares ids exactly, and CDK
+    // semantics say those are different resources) that derive ONE URN. Punctuation folds the same
+    // way: `pay-blue` and `pay_blue` both slug to `pay-blue`.
+    //
+    // Nothing downstream could catch it. `DesiredStateManifestSchema` has no cross-entry
+    // constraint, and the server DIFFS BY URN (`iac/plan-diff.ts`), so the second entry silently
+    // becomes an update of the first: one of the two objects the author declared never exists, and
+    // the plan reads as a clean create + update. The symptom is a missing object, discovered
+    // whenever someone goes looking for it.
+    //
+    // MEASURED, not theorised: `new Service(stack, "Api", …)` beside `new Service(stack, "api", …)`
+    // synthesized two entries both carrying `urn:scp:probe:service:api`. Found by the fast-check
+    // generator in `products.test.ts`, which produced the id pair `("F", "f")` and hit
+    // `collectProducts`'s identifier-collision throw — the products module was the only place in
+    // the library incidentally protected, and only because `camelIdentifier` folds case too.
+    //
+    // Named by CONSTRUCT PATH, not by URN: the URNs are identical (that is the defect), so printing
+    // them twice tells the author nothing about what to change. The paths are what differ and what
+    // they must rename — D16's construct-path error rule, which the validation branch below already
+    // follows.
+    const urnOwners = new Map<string, string>();
+    for (const [i, entry] of objects.entries()) {
+      const location = objectLocations[i] ?? entry.urn;
+      const existing = urnOwners.get(entry.urn);
+      if (existing !== undefined) {
+        throw new Error(
+          `Stack "${this.stackName}" declares two objects with the same URN "${entry.urn}":\n` +
+            `  [construct: ${existing}]\n` +
+            `  [construct: ${location}]\n` +
+            `A URN is derived by lowercasing and slugifying the construct id, so ids differing ` +
+            `only in case or punctuation collide. Rename one of the two.`
+        );
+      }
+      urnOwners.set(entry.urn, location);
+    }
+
     const parsed = DesiredStateManifestSchema.safeParse(candidate);
     if (parsed.success) return parsed.data;
 
