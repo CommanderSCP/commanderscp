@@ -659,6 +659,30 @@ bundledExecutor:
     namespace: scp-argo-workflows
 
 # -------------------------------------------------------------------------------------------
+# Executor TLS trust (SCP_EXECUTOR_TLS_CA_FILE) — an ADDITIONAL CA bundle plugin subprocesses
+# verify execution-system endpoints against, for backends serving HTTPS with a private or
+# self-signed certificate. The bundled Argo Workflows server is the case that forced it: it listens
+# on 2746 with a self-signed cert, so #321's NetworkPolicy opened the network and every request
+# still failed verification.
+#
+# THIS EXTENDS TRUST, IT NEVER DISABLES IT. There is deliberately no insecure/skip-verify option
+# anywhere on this path: a certificate chaining to neither the system roots nor this bundle is still
+# refused. The system trust store is kept alongside it, so a publicly-signed BYO executor is
+# unaffected.
+#
+# OPERATOR-PROVENANCE. It is mounted from a Secret you create and reaches the plugin as an env var
+# the host forwards — never from an executor binding or plugin config, which are tenant-writable. A
+# tenant that could name the CA could vouch for the endpoint it also names.
+#
+# The Secret must contain a `ca.crt` key holding the PEM bundle (concatenate multiple CAs into one
+# file). A path that is set but unreadable REFUSES TO BOOT rather than silently degrading to system
+# roots only.
+executorTls:
+  enabled: false
+  # Name of an EXISTING Secret with a `ca.crt` key. Required when enabled.
+  existingSecret: ""
+
+# -------------------------------------------------------------------------------------------
 # Federation mTLS transport identity (DESIGN §13, M8 hardening) — host-level, operator-owned
 # client certificate the federation-https subprocess presents to the commander. Air-gap file
 # transport is unaffected either way.
