@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { ExecutionPhase, ExecutorPlugin } from "@scp/plugin-api";
-import type { CapturedWorkflowRef, PipelineHookKind, TestRunEvidence } from "@scp/schemas";
+import type {
+  CapturedWorkflowRef,
+  ExecutorLane,
+  PipelineHookKind,
+  TestRunEvidence
+} from "@scp/schemas";
 import { CapturedWorkflowRefSchema, TestBundleRefSchema, WorkflowRefSchema } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -13,7 +18,7 @@ import { getChangeRow } from "./changes-repo.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import {
   DEFAULT_BINDING_TYPE,
-  getExecutorBinding,
+  resolveLaneBinding,
   resolveExecutorPluginInstance
 } from "./executor-bindings-repo.js";
 import { recordTestRunEvidence } from "./pipeline-hooks-repo.js";
@@ -106,12 +111,36 @@ export function isTerminalHookRunStatus(status: HookRunStatus): boolean {
  * by persisting the wave target's Type. This table does not carry a Type column, so agreement is
  * bought instead by there being a single definition that both paths read.
  *
- * `configuration` because §14 resolution 6's DEDICATED TEST LANE would be a new member of
- * `ExecutorTypeSchema`, which is a closed enum in `@scp/schemas` and therefore an API-surface change
- * owned by a different increment. When that member lands, this constant is the ONE line that
- * changes, and trigger and poll move together by construction.
+ * `configuration` STAYS the Type. The prediction this doc used to carry — that §14's dedicated test
+ * lane would arrive as a new member of `ExecutorTypeSchema` — turned out WRONG, and it is corrected
+ * here rather than left to misdirect the next reader: the lane landed as a SEPARATE DIMENSION
+ * (`ExecutorLaneSchema`, migration 0105) alongside the Type, not as a value inside it. A hook run
+ * therefore resolves the same Type as everything else and discriminates on `HOOK_RUN_EXECUTOR_LANE`
+ * below. That is the better shape — a lane is orthogonal to which pipeline a release drives, and
+ * folding it into the Type would have made every (Type x lane) pair a new enum member.
  */
 export const HOOK_RUN_EXECUTOR_TYPE = DEFAULT_BINDING_TYPE;
+
+/**
+ * Which LANE a hook run dispatches on (§14 resolution 7, ADR-0046 §4) — `test`.
+ *
+ * SAME ONE-CONSTANT PROPERTY as the Type above, and it is load-bearing in a sharper way here. The
+ * trigger resolves a plugin instance; the poll re-resolves it from the same derived carrier and
+ * REFUSES to poll when the instance it finds is not the one the run was claimed under
+ * (`pluginInstanceId`). So a trigger on `test` and a poll on the default `build` would not fail
+ * loudly — the poll would resolve a different instance, decide the binding had changed, and leave
+ * every run in flight forever while logging once per tick. Both paths read this constant.
+ *
+ * WHY `test` IS SAFE AS THE DEFAULT FOR EVERY ESTATE, including the ones that have never heard of
+ * lanes: `resolveLaneBinding` falls back to the BUILD lane's row when no `test` binding is declared
+ * (§14 res 7 — "a test lane request with no test declaration resolves to the build lane's answer").
+ * An estate that never separates its lanes therefore behaves exactly as it did before this constant
+ * existed. The fallback is read-time and deliberately NOT materialised by the reconciler, so hand-
+ * authored estates — which is every estate today — never carry a test row, and asking for `test`
+ * without the fallback would resolve NOTHING and make `ensureHookRunTriggered` throw its
+ * loud-unbound refusal on every run.
+ */
+export const HOOK_RUN_EXECUTOR_LANE: ExecutorLane = "test";
 
 // ---------------------------------------------------------------------------------------------
 // Identity and the idempotency key
@@ -541,7 +570,13 @@ export async function ensureHookRunTriggered(
       orgId: ctx.orgId,
       targetObjectId: carrier,
       masterKey: ctx.masterKey,
-      type
+      type,
+      // THE DISPATCH SEAM. This is the call that decides WHICH plugin instance the run executes on,
+      // and it defaulted to the build lane before increment 5 round B2 gave it a `lane`. Passing the
+      // lane to the `externalRef` lookup below and NOT to this one would produce a run whose row
+      // says `test` while it executes on the deploy executor — the two halves of one dispatch
+      // disagreeing, silently, in a way that reads as correct in the database.
+      lane: HOOK_RUN_EXECUTOR_LANE
     });
     if (!resolved) {
       // LOUD-UNBOUND, never a silent default (§14 resolution 2). A hook run that cannot address an
@@ -552,7 +587,14 @@ export async function ensureHookRunTriggered(
         `no '${type}' executor binding for ${carrier} — refusing to claim a '${input.hook.kind}' hook run that could not be dispatched`
       );
     }
-    const binding = await getExecutorBinding(tx, ctx.orgId, carrier, type);
+    // The SAME rule the dispatch seam above resolved through — `resolveLaneBinding` is the one
+    // definition of the lane fallback (increment 5 round B2), deliberately not re-implemented here
+    // as `getExecutorBinding(test) ?? getExecutorBinding(build)`. Two copies of a fallback is how
+    // one of them later grows a condition the other does not, and this one has an edge already: an
+    // AMBIGUOUS test lane must not fall back, because substituting the build lane would resolve an
+    // operator's conflict in favour of a declaration they never made for that lane.
+    const binding = (await resolveLaneBinding(tx, ctx.orgId, carrier, type, HOOK_RUN_EXECUTOR_LANE))
+      ?.row;
     // THE D23 CAPTURE, resolved HERE rather than asked of the caller (see `capturedWorkflow`'s doc).
     // Read from the change row inside this transaction, so the pin is a fact about the change as it
     // stands at the moment the dispatch becomes durable. A missing change row is a missing fact like
@@ -850,7 +892,13 @@ export async function pollNonTerminalHookRuns(
           orgId: ctx.orgId,
           targetObjectId: hookRunBindingCarrier(run),
           masterKey: ctx.masterKey,
-          type: HOOK_RUN_EXECUTOR_TYPE
+          type: HOOK_RUN_EXECUTOR_TYPE,
+          // MUST match the trigger's lane, and the failure mode if it does not is quiet rather than
+          // loud: the guard below refuses to poll an instance that is not the one the run was
+          // claimed under, so a poll on the default `build` would decide the binding had changed and
+          // leave every test-laned run in flight forever, logging once per tick. Same one-constant
+          // discipline the Type already uses, for a sharper reason.
+          lane: HOOK_RUN_EXECUTOR_LANE
         })
       );
       if (!resolved || resolved.instanceConfig.id !== run.pluginInstanceId) {
