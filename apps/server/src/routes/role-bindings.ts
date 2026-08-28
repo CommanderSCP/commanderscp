@@ -28,6 +28,7 @@ import { insertDecision } from "../coordination/decisions-repo.js";
 import { conflict, forbidden } from "../errors.js";
 import { idempotencyKeyOf, withIdempotency } from "../idempotency.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { externalIdentityOf } from "../auth/identity-sync.js";
 import {
   ROLE_BINDING_SUBJECT_TYPES,
   assertBindableSubject,
@@ -715,7 +716,11 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
           acknowledgementComplete: withheldPrincipalCount === 0,
           withheldPrincipalCount,
           acknowledgedPrincipalIds: principals.map((p) => p.id),
-          principals
+          principals,
+          // Read off the SUBJECT's own properties, which the caller has already been authorized to
+          // ask about — this discloses a fact about the group being previewed, never about its
+          // members, so it needs no filtering of its own.
+          subjectExternallySynced: externalIdentityOf(subject.properties) !== null
         };
       });
       reply.status(200).send(body);

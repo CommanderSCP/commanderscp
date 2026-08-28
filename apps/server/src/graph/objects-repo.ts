@@ -21,6 +21,10 @@ import { deriveUrn } from "./urn.js";
 import { requireObjectType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
 import { assertPolicyApprovalRolesExist } from "../authz/roles-repo.js";
+import {
+  assertMayWriteIdentityMapping,
+  identityMappingChanged
+} from "../authz/identity-mapping-door.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import {
   assertOrgRetainsAdministrativeFloor,
@@ -298,6 +302,25 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // here is — a throw mid-bundle wedges a peer's entire signed journal.
   if (!input.federationImport && input.typeId === "policy") {
     await assertPolicyApprovalRolesExist(tx, properties);
+  }
+
+  // THE IdP MAPPING DOOR (`authz/identity-mapping-door.ts`). Same choke point, same reason: a group
+  // is an ordinary graph object, so `POST /groups`, `PATCH`, `PUT` and IaC apply all pass through
+  // here, and gating at one route would leave the others open. On CREATE, `before` is nothing, so
+  // any mapping present is a change.
+  if (
+    !input.federationImport &&
+    (input.typeId === "group" || input.typeId === "team") &&
+    identityMappingChanged(undefined, properties)
+  ) {
+    await assertMayWriteIdentityMapping(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      // On create the object does not exist yet, so it can hold no bindings and rule 2 is vacuous.
+      // The id is passed for uniformity; the door reads zero rows for it. The MAP-FIRST-BIND-SECOND
+      // ordering is closed by the grant door, not here — see that module's enumeration.
+      subjectObjectId: input.id ?? input.orgId
+    });
   }
 
   const containmentParent = await resolveContainmentParent(tx, input.orgId, input.domainId);
@@ -990,6 +1013,20 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   // comment above records having already been paid for once on this file.
   if (!input.federationImport && input.typeId === "policy") {
     await assertPolicyApprovalRolesExist(tx, nextProperties);
+  }
+
+  // The UPDATE half. This is the ordering that matters — a group that ALREADY carries bindings
+  // being pointed at a claim — so `before` is the stored properties and rule 2 reads real rows.
+  if (
+    !input.federationImport &&
+    (input.typeId === "group" || input.typeId === "team") &&
+    identityMappingChanged(existing.properties, nextProperties)
+  ) {
+    await assertMayWriteIdentityMapping(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      subjectObjectId: existing.id
+    });
   }
 
   // M16.2 phase A (E1) — the UPDATE half of the same choke point (see `createObject` above). An

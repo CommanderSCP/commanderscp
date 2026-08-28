@@ -203,7 +203,8 @@ export const zPreviewRoleBindingGrantResponse = z.object({
         depth: z.int().gte(-9007199254740991).lte(9007199254740991),
         deleted: z.boolean(),
         bindable: z.boolean()
-    }))
+    })),
+    subjectExternallySynced: z.boolean()
 });
 
 /**

@@ -163,6 +163,23 @@ export interface ServerConfig {
     /** Must exactly match what's registered at the IdP. */
     redirectUri: string;
     scopes: string;
+    /**
+     * The ID-token claim carrying the values that map to SCP groups (`SCP_OIDC_ROLE_CLAIM`,
+     * default `roles`).
+     *
+     * `roles` — Entra APP ROLES — is the default and the recommended shape, over the `groups`
+     * claim, for two measured reasons. (1) Its values are ones YOU choose in the app registration,
+     * so they are readable in SCP's UI and stable across tenant changes, where `groups` carries
+     * opaque directory GUIDs. (2) The `groups` claim OVERFLOWS: past roughly 200 groups Entra omits
+     * it entirely and substitutes `_claim_names`/`_claim_sources` pointing at MS Graph, and
+     * resolving that needs an outbound call to graph.microsoft.com — which CLAUDE.md principle 5
+     * forbids outright. App roles are assigned per application and do not overflow in practice.
+     *
+     * Configurable rather than hard-coded because non-Entra issuers name this differently
+     * (Keycloak's default mapper emits `roles`; Okta commonly `groups`), and the whole point of the
+     * generic-OIDC seam is no per-provider special casing.
+     */
+    roleClaim: string;
   };
   /**
    * `EventBus` backend toggle (DESIGN.md §8 "Scaling insurance", BUILD_AND_TEST.md M3 item 8).
@@ -282,7 +299,8 @@ function loadOidcConfig(env: NodeJS.ProcessEnv): ServerConfig["oidc"] {
     clientId,
     clientSecret: env.SCP_OIDC_CLIENT_SECRET,
     redirectUri,
-    scopes: env.SCP_OIDC_SCOPES ?? "openid profile email"
+    scopes: env.SCP_OIDC_SCOPES ?? "openid profile email",
+    roleClaim: env.SCP_OIDC_ROLE_CLAIM ?? "roles"
   };
 }
 
