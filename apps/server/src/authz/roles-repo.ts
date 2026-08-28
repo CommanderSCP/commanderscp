@@ -318,7 +318,7 @@ export async function insertRole(
       .returning();
     return toBindableRole(row!);
   } catch (err) {
-    // `roles_org_name_key` (drizzle/0102). Translated here rather than pre-checked with a SELECT,
+    // `roles_org_name_key` (drizzle/0103). Translated here rather than pre-checked with a SELECT,
     // because a pre-check is a TOCTOU: two concurrent authors both see the name free.
     if (isUniqueViolation(err)) {
       throw conflict(`this organization already has a role named '${input.name}'`);

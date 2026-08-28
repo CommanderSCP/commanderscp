@@ -175,7 +175,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
     // The `WHERE org_id IS NULL` half. If someone "simplifies" the index to a plain UNIQUE(name),
     // this test is what tells them they just made every org's custom-role namespace global.
     //
-    // NARROWED BY drizzle/0102, DELIBERATELY. This case used to insert TWO org rows named 'Viewer'
+    // NARROWED BY drizzle/0103, DELIBERATELY. This case used to insert TWO org rows named 'Viewer'
     // and assert a count of 2 — which the new `roles_org_name_key` (`UNIQUE (org_id, name) WHERE
     // org_id IS NOT NULL`) now refuses, because two roles sharing a name inside one org make the
     // catalogue unreadable: both bind, both render identically in GET /roles, and a revoke names
@@ -200,7 +200,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
     await admin.query(`DELETE FROM roles WHERE org_id = $1 AND name = 'Viewer'`, [org.orgId]);
   });
 
-  it("drizzle/0102 — but the SAME org may not hold two roles of one name", async () => {
+  it("drizzle/0103 — but the SAME org may not hold two roles of one name", async () => {
     // The other side of the narrowing above, asserted rather than left implied by the edit.
     await admin.query(
       `INSERT INTO roles (id, org_id, name, permissions)

@@ -4,7 +4,7 @@ import { buildTestServer, testDatabaseUrl, type TestServer } from "../test-suppo
 
 /**
  * ================================================================================================
- * EVERY INSTANCE-SCOPED TABLE HAS A WRITE PRINCIPAL — role-model.md §5 step 9, drizzle/0101
+ * EVERY INSTANCE-SCOPED TABLE HAS A WRITE PRINCIPAL — role-model.md §5 step 9, drizzle/0102
  * ================================================================================================
  *
  * THE PROPERTY. An instance-scoped table here is tenant-READ (a `tenant_read` policy,
@@ -32,7 +32,7 @@ import { buildTestServer, testDatabaseUrl, type TestServer } from "../test-suppo
  * evidence that a grant exists.** The catalog is the only instrument in this environment that can
  * see the thing being asserted.
  */
-describe("every tenant-read instance table has an operator write principal (drizzle/0101)", () => {
+describe("every tenant-read instance table has an operator write principal (drizzle/0102)", () => {
   let server: TestServer;
   let admin: pg.Client;
   let tenantReadTables: string[];
@@ -58,7 +58,7 @@ describe("every tenant-read instance table has an operator write principal (driz
   it("the census found the instance-scoped tables (known-positive control)", () => {
     // Every assertion below is "for each member of this set...", which passes vacuously on an empty
     // set — and this set comes from a query that can legitimately return zero rows if the policy
-    // naming convention ever changes. Seven tables carry `tenant_read` as of drizzle/0101.
+    // naming convention ever changes. Seven tables carry `tenant_read` as of drizzle/0102.
     expect(tenantReadTables.length).toBeGreaterThanOrEqual(7);
     expect(tenantReadTables).toContain("governance_move_instance_rung");
     expect(tenantReadTables).toContain("dependency_subscription_unlock");

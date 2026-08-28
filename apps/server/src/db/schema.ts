@@ -3116,7 +3116,7 @@ export const pipelineHookRuns = pgTable(
 );
 
 /**
- * drizzle/0103 — instance-tier operator credentials (role-model.md §5 step 9).
+ * drizzle/0104 — instance-tier operator credentials (role-model.md §5 step 9).
  *
  * INSTANCE TIER: no `org_id`. One row set binds the whole deployment, the same DESIGN §4.2
  * exception `instance_freezes` takes. Modelled on {@link personalAccessTokens} rather than invented:

@@ -107,7 +107,7 @@ export interface CreatedOperatorCredential {
  *
  * WRITES THROUGH THE OPERATOR CONNECTION, not the request-serving one. `scp_app` holds SELECT and
  * UPDATE on this table and deliberately no INSERT or DELETE — the same read/write split every other
- * instance-scoped table has (drizzle/0076, 0086, 0101). The verifier needs to read rows and stamp
+ * instance-scoped table has (drizzle/0076, 0086, 0102). The verifier needs to read rows and stamp
  * `last_used_at` on the request path; nothing on that path should be able to MINT authority.
  *
  * MEASURED, not assumed: the first version of this function used `deps.db` and returned a 500 on

@@ -471,7 +471,7 @@ export type EffectivePermissionsResponse = z.infer<typeof EffectivePermissionsRe
  * catalogue honest. Stated plainly because "defence in depth" is where unexamined bars accumulate.
  */
 export const CreateRoleRequestSchema = z.object({
-  /** Unique within the org (`roles_org_name_key`, drizzle/0102) and refused when it collides with a
+  /** Unique within the org (`roles_org_name_key`, drizzle/0103) and refused when it collides with a
    *  built-in name — a shadowing row would be permanently unbindable anyway
    *  (`builtInNameCollisionReason`), so the refusal happens where it is fixable. */
   name: z.string().min(1).max(200),

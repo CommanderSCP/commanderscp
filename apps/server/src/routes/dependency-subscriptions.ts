@@ -273,7 +273,7 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
       const body = request.body;
       // `withOperatorDb` for the reason stated at the sibling door in `routes/governance-move.ts`:
       // the inline `createPool(config.databaseUrl)` dialled an admin connection api/worker pods are
-      // never given, and `scp_app` holds SELECT only on this FORCE-RLS table. drizzle/0101 adds the
+      // never given, and `scp_app` holds SELECT only on this FORCE-RLS table. drizzle/0102 adds the
       // grant + `operator_write` policy. These were the last two instance-scoped tables in the
       // schema without a write principal.
       await withOperatorDb(deps.config, "the dependency-subscription unlock", async (client) => {

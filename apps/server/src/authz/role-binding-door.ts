@@ -1873,7 +1873,7 @@ export async function assertMayAuthorRole(
  * where it is fixable.
  *
  * Not a database constraint: the collision is between the org partition and the built-in partition,
- * which no single unique index can express (drizzle/0102 says so at the index).
+ * which no single unique index can express (drizzle/0103 says so at the index).
  */
 export function assertRoleNameNotBuiltIn(name: string, builtInNames: ReadonlySet<string>): void {
   if (builtInNames.has(name)) {

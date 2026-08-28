@@ -359,7 +359,7 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
       // The inline form was wrong twice: `databaseUrl` is the ADMIN connection, which the hardened
       // Helm shape never gives api/worker pods (so `loadConfig` fell back to its localhost literal
       // and this dialled 127.0.0.1 inside its own pod, returning a bare 500), and `scp_app` holds
-      // SELECT only on this FORCE-RLS table anyway. drizzle/0101 adds the grant + `operator_write`
+      // SELECT only on this FORCE-RLS table anyway. drizzle/0102 adds the grant + `operator_write`
       // policy that make the `scp_operator` connection able to write it.
       await withOperatorDb(deps.config, "the governance:move instance rung", async (client) => {
         await client.query(
