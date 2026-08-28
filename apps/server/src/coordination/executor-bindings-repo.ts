@@ -412,6 +412,37 @@ export async function upsertExecutorBinding(
  * funnel through, so the audit event needs writing here once, not per caller. A no-op delete (no
  * such binding) writes NOTHING — there is no row to name, and the route 404s instead.
  */
+/**
+ * THE LANE FALLBACK, IN ONE PLACE (ADR-0046 section 4; proposal section 14 resolution 7).
+ *
+ * Ask for a lane; get that lane's binding, or the BUILD lane's when the requested lane is not
+ * separately declared. The result says which happened.
+ *
+ * WHY THIS IS A HELPER AND NOT TWO LINES AT EACH CALL SITE. There are two consumers by design — the
+ * reconciler, which must not report a spurious GAP for a test lane the build lane already covers,
+ * and the hook-run dispatcher, which must not fail to dispatch because a domain never separated its
+ * lanes. Written twice, one copy later grows a condition the other does not, and the divergence is
+ * invisible: both still return a binding, just different ones.
+ *
+ * FALLBACK IS READ-TIME, NEVER STORED. The reconciler writes rows only for lanes someone actually
+ * declared. Materialising a test-lane row that merely duplicates the build lane would double every
+ * target's rows and leave two records to keep in step — and it would be wrong for the estates that
+ * have no binding policy at all, which is every estate today.
+ */
+export async function resolveLaneBinding(
+  tx: TenantTx,
+  orgId: string,
+  targetObjectId: string,
+  type: BindingType = DEFAULT_BINDING_TYPE,
+  lane: ExecutorLane = "build"
+): Promise<{ row: ExecutorBindingRow; viaLaneFallback: boolean } | undefined> {
+  const own = await getExecutorBinding(tx, orgId, targetObjectId, type, lane);
+  if (own) return { row: own, viaLaneFallback: false };
+  if (lane === "build") return undefined;
+  const build = await getExecutorBinding(tx, orgId, targetObjectId, type, "build");
+  return build ? { row: build, viaLaneFallback: true } : undefined;
+}
+
 export async function deleteExecutorBinding(
   tx: TenantTx,
   orgId: string,
@@ -422,7 +453,20 @@ export async function deleteExecutorBinding(
   // `executor.binding.put`/`.delete` had NO caller writing them at all until now). Both current
   // callers (the DELETE route, `iac/plans-repo.ts`'s apply-time prune) already hold both.
   actorObjectId: string,
-  requestId: string
+  requestId: string,
+  /**
+   * WHICH LANE to delete. Defaults to `"build"`, which is what both existing callers (the DELETE
+   * route and `iac/plans-repo.ts`'s apply-time prune) mean.
+   *
+   * THIS PARAMETER CLOSES A DEFECT THE LANE COLUMN OPENED, and it is worth stating plainly because
+   * the column shipped one commit earlier (migration 0105): this DELETE was keyed on
+   * `(org, target, type)`, so once a target held two lanes it deleted BOTH ROWS and then audited
+   * exactly one of them — `.returning()` destructures the first. The identity grew a dimension and
+   * three consumers had to grow with it; `getExecutorBinding` and `upsertExecutorBinding` were
+   * updated with the column, and this one was not. Latent rather than live (nothing wrote a test
+   * lane until the reconciler existed), and fixed before the reconciler starts pruning per lane.
+   */
+  lane: ExecutorLane = "build"
 ): Promise<ExecutorBindingRow | undefined> {
   const [deleted] = await tx
     .delete(executorBindings)
@@ -430,7 +474,8 @@ export async function deleteExecutorBinding(
       and(
         eq(executorBindings.orgId, orgId),
         eq(executorBindings.targetObjectId, targetObjectId),
-        eq(executorBindings.type, type)
+        eq(executorBindings.type, type),
+        eq(executorBindings.lane, lane)
       )
     )
     .returning();
@@ -1106,6 +1151,24 @@ export async function resolveExecutorPluginInstance(
      *  supplies this from the wave target, so reconcile starts the instance for the pipeline it is
      *  about to trigger. */
     type?: BindingType;
+    /**
+     * WHICH LANE to dispatch to (ADR-0046 §4, §14 res 7). Defaults to `"build"`, which is every
+     * deploy caller and every estate that has not separated its lanes.
+     *
+     * THIS IS THE SEAM THAT DECIDES DISPATCH, and it must go through the SAME fallback rule as
+     * everything else or the two halves of one dispatch can disagree. The concrete failure, found
+     * by the increment-8 session while reading the lane work: a caller that resolved a test-lane
+     * row for its `externalRef` but left THIS function on its `build` default would pin the run to
+     * the build lane's plugin instance while the row said `test` — a run that reads as correctly
+     * test-laned in the database and executes on the deploy executor. Worse than honest build-only
+     * behaviour, because it looks right.
+     *
+     * Note this is the OPPOSITE hazard to the one `getExecutorBinding`'s own `lane` doc records.
+     * That one was an ARBITRARY row; the lane filter closed it. This one is a row PINNED to build,
+     * which the same filter created — the fix for a widened identity has to reach every consumer of
+     * it, and this is the third.
+     */
+    lane?: ExecutorLane;
   }
 ): Promise<ResolvedExecutorInstance | undefined> {
   // DELIBERATELY LITERAL, and this is load-bearing rather than an oversight (ADR-0026 amendment).
@@ -1114,13 +1177,18 @@ export async function resolveExecutorPluginInstance(
   // `resolveBindingForTarget` resolved the binding ONTO — the placement, not the component. So the
   // placement fallback belongs at the point where a WAVE TARGET is interpreted, not here, and adding
   // it here would make this module depend on `binding-resolution.ts` which depends on it.
-  const binding = await getExecutorBinding(
+  // ONE FALLBACK RULE, shared with every other consumer (`resolveLaneBinding`) rather than spelled
+  // out again here: a `test` request with no test declaration resolves to the build lane's row, and
+  // an AMBIGUOUS test lane is refused upstream rather than silently substituted.
+  const resolved = await resolveLaneBinding(
     tx,
     input.orgId,
     input.targetObjectId,
-    input.type ?? DEFAULT_BINDING_TYPE
+    input.type ?? DEFAULT_BINDING_TYPE,
+    input.lane ?? "build"
   );
-  if (!binding) return undefined;
+  if (!resolved) return undefined;
+  const binding = resolved.row;
 
   // Resolve the effective plugin identity + config from one of two sources:
   //   - execution-system-backed (M12 P2): a shared `execution-system` graph object supplies the
