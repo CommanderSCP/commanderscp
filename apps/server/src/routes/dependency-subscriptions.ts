@@ -20,7 +20,7 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { createPool } from "../db/client.js";
+import { withOperatorDb } from "./operator-db.js";
 import { objects } from "../db/schema.js";
 import { authorize } from "../authz/resolve.js";
 import { operatorTokenMatches } from "./operator-db.js";
@@ -284,11 +284,15 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
       requireOperator(deps, request);
 
       const body = request.body;
-      const pool = createPool(deps.config.databaseUrl, { max: 1 });
-      try {
+      // `withOperatorDb` for the reason stated at the sibling door in `routes/governance-move.ts`:
+      // the inline `createPool(config.databaseUrl)` dialled an admin connection api/worker pods are
+      // never given, and `scp_app` holds SELECT only on this FORCE-RLS table. drizzle/0101 adds the
+      // grant + `operator_write` policy. These were the last two instance-scoped tables in the
+      // schema without a write principal.
+      await withOperatorDb(deps.config, "the dependency-subscription unlock", async (client) => {
         // Upsert on the pinned singleton key — the CHECK in 0062 makes `'default'` the only row this
         // table can ever hold, so there is no "which unlock" to get wrong.
-        await pool.query(
+        await client.query(
           `INSERT INTO dependency_subscription_unlock (id, unlocked, note, updated_at)
              VALUES ('default', $1, $2, now())
            ON CONFLICT (id) DO UPDATE SET
@@ -297,9 +301,7 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
              updated_at = now()`,
           [body.unlocked, body.note ?? null]
         );
-      } finally {
-        await pool.end();
-      }
+      });
       // Read back through the tenant path, so the response is the same projection the GET returns
       // and is produced by the same "no row means locked" reader.
       const unlock = await withTenantTx(deps.db, auth.orgId, readUnlockForApi);

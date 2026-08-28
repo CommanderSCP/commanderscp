@@ -715,6 +715,13 @@
       "when": 1788158003000,
       "tag": "0101_config_source_stack_delivery",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1788158004000,
+      "tag": "0102_operator_write_remaining_instance_tables",
+      "breakpoints": true
     }
   ]
 }

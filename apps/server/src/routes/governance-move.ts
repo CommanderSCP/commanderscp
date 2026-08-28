@@ -13,7 +13,7 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { createPool } from "../db/client.js";
+import { withOperatorDb } from "./operator-db.js";
 import { authorize } from "../authz/resolve.js";
 import { operatorTokenMatches } from "./operator-db.js";
 import { forbidden, notFound } from "../errors.js";
@@ -368,9 +368,14 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
       const auth = await requireAuth(deps, request);
       requireOperator(deps, request);
 
-      const pool = createPool(deps.config.databaseUrl, { max: 1 });
-      try {
-        await pool.query(
+      // `withOperatorDb`, NOT an inline `createPool(config.databaseUrl)` — role-model.md §5 step 9.
+      // The inline form was wrong twice: `databaseUrl` is the ADMIN connection, which the hardened
+      // Helm shape never gives api/worker pods (so `loadConfig` fell back to its localhost literal
+      // and this dialled 127.0.0.1 inside its own pod, returning a bare 500), and `scp_app` holds
+      // SELECT only on this FORCE-RLS table anyway. drizzle/0101 adds the grant + `operator_write`
+      // policy that make the `scp_operator` connection able to write it.
+      await withOperatorDb(deps.config, "the governance:move instance rung", async (client) => {
+        await client.query(
           `INSERT INTO governance_move_instance_rung (id, enabled, updated_at)
              VALUES ('default', $1, now())
            ON CONFLICT (id) DO UPDATE SET
@@ -378,9 +383,7 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
              updated_at = now()`,
           [request.body.enabled]
         );
-      } finally {
-        await pool.end();
-      }
+      });
       const instance = await withTenantTx(deps.db, auth.orgId, readInstanceForApi);
       reply.status(200).send(instance);
     }
