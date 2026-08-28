@@ -899,6 +899,7 @@ export type PreviewRoleBindingGrantResponses = {
             deleted: boolean;
             bindable: boolean;
         }>;
+        subjectExternallySynced: boolean;
     };
 };
 

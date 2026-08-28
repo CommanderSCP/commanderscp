@@ -307,6 +307,21 @@ export interface CreateRelationshipInput {
   labels?: Record<string, unknown>;
   /** M6: see `graph/objects-repo.ts`'s `FederationImportContext` doc comment. */
   federationImport?: FederationImportContext;
+  /**
+   * IdP GROUP SYNC (`auth/identity-sync.ts`) — exempts this write from the `member_of` subset rule
+   * below, and from NOTHING ELSE.
+   *
+   * A login-time sync has no human actor: the "actor" is the identity provider, so the rule that
+   * asks whether the actor already holds what the group confers can never be satisfied. Owner
+   * decision (2026-08-28): carve the sync out and move the bar to AUTHORING THE MAPPING
+   * (`authz/identity-mapping-door.ts`), because the escalation §2a closes is a principal choosing
+   * to join a high-privileged group — and nobody chooses their own claims.
+   *
+   * DELIBERATELY A SEPARATE FLAG FROM `federationImport`, not a reuse of it. The two exemptions
+   * cover different guards for different reasons, and folding this into that boolean would silently
+   * widen the federation path the day either rule changes.
+   */
+  identitySync?: true;
 }
 
 export async function createRelationship(
@@ -414,7 +429,7 @@ export async function createRelationship(
   //
   // The type guard keeps this off every other relationship write in the system — a `contains`,
   // `owns`, `places` or `depends_on` create short-circuits on a string comparison and costs nothing.
-  if (type.id === "member_of" && !input.federationImport) {
+  if (type.id === "member_of" && !input.federationImport && !input.identitySync) {
     await assertMayJoinRoleBearingSubject(tx, {
       orgId: input.orgId,
       actorObjectId: input.actorObjectId,
@@ -452,6 +467,64 @@ export async function createRelationship(
     input.federationImport?.originDomainId ??
     (await ensureFederationSelf(tx, input.orgId)).domainId;
   const revision = input.federationImport?.revision ?? 1;
+
+  // ================================================================================================
+  // RESURRECTION — re-creating an edge that was previously removed
+  // ================================================================================================
+  //
+  // `relationships_org_type_from_to_key` is a FULL unique constraint on
+  // `(org_id, type_id, from_id, to_id)` — NOT partial on `deleted_at IS NULL` — while every removal
+  // in this codebase is a SOFT delete. Those two facts together meant an edge could be created
+  // exactly once, ever: after a delete the triple was permanently occupied by a tombstone that
+  // confers nothing, and re-creating it returned `409 relationship already exists` naming a row the
+  // caller cannot see and which grants nothing.
+  //
+  // MEASURED on the ordinary route, not inferred: join a group, `DELETE /relationships/{id}`, then
+  // POST the same edge -> 409. So a person removed from a team could never be re-added, by anyone,
+  // for the life of the deployment. Pre-existing and independent of any IdP; found because a
+  // directory sync must handle leave-and-rejoin, which is an entirely ordinary event.
+  //
+  // THE FIX IS RESURRECTION, NOT A PARTIAL INDEX. Making the index partial would allow N tombstones
+  // plus one live row for the same triple, so `member_of` history would fan out and every reader
+  // joining on the triple would have to learn to pick. Reviving the existing row keeps ONE row per
+  // triple — the identity the constraint already asserts — and keeps the tombstone's history.
+  //
+  // EVERY GUARD ABOVE HAS ALREADY RUN at this point, including the `member_of` subset rule, so a
+  // resurrection is authorized exactly as strictly as a first-time create. It deliberately does NOT
+  // reuse the tombstone's old properties/labels: this is a new edge that happens to reuse a triple,
+  // so the caller's current input wins, and `revision` advances rather than resetting.
+  const tombstone = await tx.query.relationships.findFirst({
+    where: (t, { eq: eqOp, and: andOp, isNotNull: isNotNullOp }) =>
+      andOp(
+        eqOp(t.orgId, input.orgId),
+        eqOp(t.typeId, input.typeId),
+        eqOp(t.fromId, input.fromId),
+        eqOp(t.toId, input.toId),
+        isNotNullOp(t.deletedAt)
+      )
+  });
+  if (tombstone) {
+    const [revived] = await tx
+      .update(relationships)
+      .set({
+        deletedAt: null,
+        properties,
+        labels,
+        revision: tombstone.revision + 1,
+        contentHash: computeRelationshipContentHash({
+          id: tombstone.id,
+          orgId: input.orgId,
+          typeId: input.typeId,
+          fromId: input.fromId,
+          toId: input.toId,
+          properties,
+          labels
+        })
+      })
+      .where(eq(relationships.id, tombstone.id))
+      .returning();
+    return toRelationship(revived!);
+  }
 
   let row: typeof relationships.$inferSelect | undefined;
   try {

@@ -161,6 +161,11 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
 
   // ---- deliberate escalation bars: org-root so a NARROWER binding cannot satisfy them -----------
   {
+    site: "authz/identity-mapping-door.ts :: assertMayWriteIdentityMapping() :: role_binding:write",
+    cls: "escalation-bar",
+    why: "mapping a group to an IdP claim delegates to the directory the decision of who holds whatever that group carries — an org-wide federation act with no narrower object it belongs to. Org-root ON PURPOSE: a service-scoped role_binding:write holder must not be able to point a claim they control at a group. The second bar (every binding the group already holds must be one the actor could have written) is per-binding at that binding's own scope, so it is not an org-root pin and is not listed here"
+  },
+  {
     site: "authz/role-binding-door.ts :: assertMayAuthorRole() :: role_binding:write",
     cls: "escalation-bar",
     why: "a role is an ORG-WIDE catalogue entry with no narrower object it belongs to, and one authored here can afterwards be bound anywhere in the org; a service-scoped role_binding:write holder must not be able to author it (role-model.md §5 step 10)"

@@ -91,6 +91,11 @@ export async function authorize(oidc: OidcConfig): Promise<AuthorizeResult> {
 
 export interface OidcClaims {
   sub: string;
+  /** The full validated claim set, so `auth/identity-sync.ts` can read whichever claim this
+   *  deployment configured (`SCP_OIDC_ROLE_CLAIM`) without this module knowing its name. Carries
+   *  no token or code — `tokens.claims()` is the decoded, signature- and nonce-verified ID token
+   *  payload, and the SECURITY note above still forbids logging any of it. */
+  raw: Record<string, unknown>;
   email?: string;
   preferredUsername?: string;
   name?: string;
@@ -120,6 +125,7 @@ export async function handleCallback(
 
   return {
     sub: claims.sub,
+    raw: claims as unknown as Record<string, unknown>,
     email: typeof claims.email === "string" ? claims.email : undefined,
     preferredUsername:
       typeof claims.preferred_username === "string" ? claims.preferred_username : undefined,

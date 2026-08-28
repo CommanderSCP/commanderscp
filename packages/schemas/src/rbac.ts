@@ -368,7 +368,24 @@ export const GrantPreviewResponseSchema = z.object({
    *  principals it does empower; the two are told apart by `withheldPrincipalCount`. */
   acknowledgedPrincipalIds: z.array(z.string().uuid()),
   /** The same set with the detail a human needs to decide — filtered identically. */
-  principals: z.array(EmpoweredPrincipalSchema)
+  principals: z.array(EmpoweredPrincipalSchema),
+  /**
+   * `true` when this subject's membership is managed by an IDENTITY PROVIDER
+   * (`auth/identity-sync.ts` — the group carries an `externalIdentity.claimValue`).
+   *
+   * WHY THIS IS ON THE PREVIEW AND NOT JUST IN A DOC. D7 asks the granter to acknowledge WHOM a
+   * group binding empowers, and the acknowledgement is a statement about a moment. For a
+   * directory-synced group that moment is shorter than it looks: the membership this response
+   * enumerates is whatever the provider said at the last login of each member, and it changes
+   * without anyone touching SCP. A granter who reads the list and concludes "these five people"
+   * has understood the wrong thing.
+   *
+   * So the honest framing, which a UI should render and a CLI should print: binding a role here
+   * delegates the choice of WHO HOLDS IT to whoever administers the directory. The acknowledgement
+   * still means what it says about today; it stops being a control tomorrow, and this flag is how
+   * the caller finds that out BEFORE granting rather than afterwards.
+   */
+  subjectExternallySynced: z.boolean()
 });
 export type GrantPreviewResponse = z.infer<typeof GrantPreviewResponseSchema>;
 

@@ -8,6 +8,7 @@ import {
 } from "../auth/oidc.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { claimValuesFrom, syncExternalGroupMembership } from "../auth/identity-sync.js";
 import { notFound, sendProblem, unauthorized } from "../errors.js";
 
 const PKCE_COOKIE = "scp_oidc_pkce";
@@ -84,15 +85,50 @@ export function registerOidcRoutes(app: FastifyInstance, deps: AppDeps): void {
       claims
     });
 
-    await withTenantTx(deps.db, provisioned.orgId, (tx) =>
-      appendAuditEvent(tx, {
+    // IdP GROUP SYNC + the login audit event, in ONE transaction (`auth/identity-sync.ts`).
+    //
+    // TOGETHER ON PURPOSE: a sync that commits without its audit event leaves authority changing
+    // with no record, and an audit event that commits without the sync claims a login reconciled
+    // membership it did not. Charter principle 6 asks for the audit write to share the action's
+    // transaction; this is that rule applied to a login.
+    //
+    // AFTER the session is created and BEFORE the cookie is set, so a sync failure — an overage
+    // token, most importantly — surfaces as a failed login rather than as a signed-in user whose
+    // authority silently did not update.
+    const syncOutcome = await withTenantTx(deps.db, provisioned.orgId, async (tx) => {
+      const outcome = await syncExternalGroupMembership(tx, {
+        orgId: provisioned.orgId,
+        subjectObjectId: provisioned.subjectObjectId,
+        claimValues: claimValuesFrom(claims.raw, oidc.roleClaim),
+        requestId: request.id
+      });
+      await appendAuditEvent(tx, {
         orgId: provisioned.orgId,
         actorId: provisioned.subjectObjectId,
         action: "user.login.oidc",
         subjectId: provisioned.subjectObjectId,
         requestId: request.id
-      })
-    );
+      });
+      return outcome;
+    });
+
+    // Membership CHANGES are audited as their own events, and only when something actually moved —
+    // a login that reconciles to no change writes nothing, so the audit chain stays readable and a
+    // real membership change is findable rather than buried under one row per login per user.
+    if (syncOutcome.joined.length > 0 || syncOutcome.left.length > 0) {
+      await withTenantTx(deps.db, provisioned.orgId, (tx) =>
+        appendAuditEvent(tx, {
+          orgId: provisioned.orgId,
+          actorId: provisioned.subjectObjectId,
+          action: "identity.group_sync",
+          subjectId: provisioned.subjectObjectId,
+          reason:
+            `identity provider reconciled group membership: joined ` +
+            `${syncOutcome.joined.length}, left ${syncOutcome.left.length}`,
+          requestId: request.id
+        })
+      );
+    }
 
     reply.setCookie("scp_session", provisioned.session.token, {
       path: "/",
