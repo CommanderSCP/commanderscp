@@ -570,3 +570,175 @@ export async function hasRoleAtScope(tx: TenantTx, check: RoleCheck): Promise<bo
   );
   return false;
 }
+
+/**
+ * ================================================================================================
+ * EFFECTIVE PERMISSIONS — role-model.md §5 step 6
+ * ================================================================================================
+ *
+ * Answers "what may THIS subject do AT THIS object", in ONE round trip rather than one per
+ * permission.
+ *
+ * WHY NOT A LOOP OVER {@link PERMISSIONS}. The obvious implementation calls {@link hasPermission}
+ * 22 times. Each call runs TWO recursive CTEs — the `member_of` subject walk and the containment
+ * scope walk — so the loop re-derives both expansions 22 times to vary one scalar in the WHERE
+ * clause, and the walks are the expensive half. Worse, it is not merely slow but RACY: 22
+ * statements see 22 snapshots unless the caller wraps them, so a binding revoked mid-loop yields a
+ * permission set that never existed at any instant. One statement is one snapshot.
+ *
+ * DENY-OVERRIDE IS PRESERVED EXACTLY, and it is per-permission rather than per-binding: a `deny`
+ * binding suppresses only the permissions ITS OWN ROLE carries. That is what {@link hasPermission}
+ * does — it filters to bindings whose role holds the requested permission and only then looks for a
+ * deny — and the `bool_or` pair below is the same rule evaluated for every permission at once. A
+ * whole-binding deny would be a different and much blunter semantics; getting this backwards would
+ * make one narrow deny silently revoke everything.
+ *
+ * THE RETURNED STRINGS ARE NOT FILTERED THROUGH {@link PERMISSIONS}. `roles.permissions` is a plain
+ * `text[]` with no CHECK (drizzle/0002 §7), so a restored dump or a hand-written org role can hold
+ * a string the code does not define. This reports what the subject ACTUALLY holds, including such a
+ * string, because the question is "what does this binding confer" and quietly dropping it would
+ * make the answer disagree with `hasPermission` — which does a plain `= ANY(rl.permissions)` and
+ * would happily match it. The drift gate (`permission-drift.integration.test.ts`) is what keeps the
+ * BUILT-IN catalogue clean; this function does not re-litigate it.
+ */
+export async function effectivePermissions(
+  tx: TenantTx,
+  check: { orgId: string; subjectObjectId: string; scopeObjectId: string }
+): Promise<string[]> {
+  const result = await tx.execute<{ permission: string; denied: boolean; allowed: boolean }>(sql`
+    WITH RECURSIVE ${subjectExpandCte(check.orgId, check.subjectObjectId)},
+    ${scopeExpandCte(check.orgId, check.scopeObjectId)}
+    SELECT p AS permission,
+           bool_or(rb.effect = 'deny') AS denied,
+           bool_or(rb.effect = 'allow') AS allowed
+    FROM role_bindings rb
+    JOIN roles rl ON rl.id = rb.role_id
+    CROSS JOIN LATERAL unnest(rl.permissions) AS p
+    WHERE rb.org_id = ${check.orgId}
+      AND rb.subject_id IN (SELECT subject_id FROM subject_expand)
+      AND rb.scope_object_id IN (SELECT scope_id FROM scope_expand)
+    GROUP BY p
+  `);
+
+  const held = result.rows
+    .filter((r) => r.allowed && !r.denied)
+    .map((r) => r.permission)
+    .sort();
+
+  // ADR-0037, INHERITED DELIBERATELY. Every permission ABSENT from `held` is a refusal, and a
+  // refusal produced by a walk that hit the depth bound is a lie: a grant may exist beyond it. The
+  // probe runs at most once here — `hasPermission` pays it per refusal, and this function would
+  // otherwise pay it up to 22 times to say the same thing about the same two walks.
+  //
+  // The condition is "some permission was refused", not "nothing was found": a subject holding 3 of
+  // 22 permissions has been refused 19 times, and those 19 refusals are exactly as untrustworthy
+  // under truncation as a total blank would be.
+  if (held.length < PERMISSIONS.length) {
+    await assertDenyNotTruncated(
+      tx,
+      check.orgId,
+      check.subjectObjectId,
+      check.scopeObjectId,
+      "the effective-permission set"
+    );
+  }
+
+  return held;
+}
+
+/** One binding that reached the evaluated scope, with the subject it was written on. */
+export interface ContributingBindingRow {
+  roleId: string;
+  roleName: string;
+  scopeObjectId: string;
+  viaSubjectId: string;
+  effect: "allow" | "deny";
+}
+
+/**
+ * The EXPLANATION half of {@link effectivePermissions} — every binding that reached the scope, and
+ * through which subject.
+ *
+ * IT LIVES HERE, BESIDE THE WALKS, ON PURPOSE. The obvious home is `authz/roles-repo.ts` with the
+ * other binding reads, and putting it there would mean a SECOND transcription of the `member_of`
+ * and containment expansions. This repo has already paid for a duplicated walk definition
+ * (`role-binding-door.ts` §2b emits its downward walk from the same `memberOfClosureCte` as the
+ * upward one for exactly this reason), and two copies of a traversal that disagree about the depth
+ * bound or a live edge is a defect that presents as an explanation which does not match the
+ * decision it explains.
+ *
+ * DELIBERATELY UNFILTERED BY EFFECT. `deny` rows are returned alongside `allow` rows, because a
+ * caller asking "why can I not do X here" is usually looking at a deny, and omitting it would make
+ * the explanation actively misleading — a permission absent from the set with no visible reason.
+ */
+export async function contributingBindingsAt(
+  tx: TenantTx,
+  check: { orgId: string; subjectObjectId: string; scopeObjectId: string }
+): Promise<ContributingBindingRow[]> {
+  const result = await tx.execute<{
+    role_id: string;
+    role_name: string;
+    scope_object_id: string;
+    via_subject_id: string;
+    effect: string;
+  }>(sql`
+    WITH RECURSIVE ${subjectExpandCte(check.orgId, check.subjectObjectId)},
+    ${scopeExpandCte(check.orgId, check.scopeObjectId)}
+    SELECT DISTINCT rb.role_id, rl.name AS role_name, rb.scope_object_id,
+           rb.subject_id AS via_subject_id, rb.effect
+    FROM role_bindings rb
+    JOIN roles rl ON rl.id = rb.role_id
+    WHERE rb.org_id = ${check.orgId}
+      AND rb.subject_id IN (SELECT subject_id FROM subject_expand)
+      AND rb.scope_object_id IN (SELECT scope_id FROM scope_expand)
+    ORDER BY rl.name, rb.scope_object_id
+  `);
+
+  return result.rows.map((r) => ({
+    roleId: r.role_id,
+    roleName: r.role_name,
+    scopeObjectId: r.scope_object_id,
+    viaSubjectId: r.via_subject_id,
+    effect: r.effect === "deny" ? "deny" : "allow"
+  }));
+}
+
+/**
+ * Every binding the subject holds ANYWHERE in the org — direct, or through a group/team.
+ *
+ * The subject expansion only; NO scope walk. That is the difference between this and
+ * {@link contributingBindingsAt}, and it is why the result must never be described as authority:
+ * these bindings are scattered across the estate and each one reaches only what sits beneath it.
+ * `packages/schemas/src/auth.ts`'s `permissionsAnywhere` carries the full warning.
+ */
+export async function bindingsAnywhereFor(
+  tx: TenantTx,
+  check: { orgId: string; subjectObjectId: string }
+): Promise<Array<ContributingBindingRow & { permissions: string[] }>> {
+  const result = await tx.execute<{
+    role_id: string;
+    role_name: string;
+    scope_object_id: string;
+    via_subject_id: string;
+    effect: string;
+    permissions: string[];
+  }>(sql`
+    WITH RECURSIVE ${subjectExpandCte(check.orgId, check.subjectObjectId)}
+    SELECT DISTINCT rb.role_id, rl.name AS role_name, rb.scope_object_id,
+           rb.subject_id AS via_subject_id, rb.effect, rl.permissions
+    FROM role_bindings rb
+    JOIN roles rl ON rl.id = rb.role_id
+    WHERE rb.org_id = ${check.orgId}
+      AND rb.subject_id IN (SELECT subject_id FROM subject_expand)
+    ORDER BY rl.name, rb.scope_object_id
+  `);
+
+  return result.rows.map((r) => ({
+    roleId: r.role_id,
+    roleName: r.role_name,
+    scopeObjectId: r.scope_object_id,
+    viaSubjectId: r.via_subject_id,
+    effect: r.effect === "deny" ? "deny" : "allow",
+    permissions: r.permissions ?? []
+  }));
+}

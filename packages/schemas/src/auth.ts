@@ -42,7 +42,40 @@ export const CurrentUserSchema = z.object({
   orgName: z.string(),
   username: z.string(),
   subjectObjectId: z.string().uuid(),
-  instanceRole: InstanceRoleSchema
+  instanceRole: InstanceRoleSchema,
+  /**
+   * Every role binding this caller holds ANYWHERE in the org, including ones reached through group
+   * or team membership (role-model.md §5 step 6).
+   *
+   * Bindings rather than a rank, because after drizzle/0099 there is no rank: the five purpose
+   * roles are deliberately unordered, so "SecurityOfficer" tells a client nothing unless it also
+   * knows what SecurityOfficer carries and WHERE the binding sits.
+   */
+  roleBindings: z.array(
+    z.object({
+      roleId: z.string().uuid(),
+      roleName: z.string(),
+      scopeObjectId: z.string().uuid(),
+      effect: z.enum(["allow", "deny"])
+    })
+  ),
+  /**
+   * ⚠️ THE UNION OF PERMISSIONS HELD AT *SOME* SCOPE — NOT AUTHORITY EVERYWHERE.
+   *
+   * The name is `permissionsAnywhere` and not `permissions` on purpose, and it is the one place
+   * this step deviates from role-model.md §5 step 6's wording. A field called `permissions` on an
+   * endpoint called "me" reads as "what I can do", and the obvious client line —
+   * `me.permissions.includes("object:write")` to decide whether to render a Create button — is
+   * WRONG for exactly the principals these roles exist to express: a ComponentAdmin bound at one
+   * component holds `object:write` at that component and nowhere else, and would be shown a global
+   * control that 403s. The longer name makes the misuse visible at the call site.
+   *
+   * WHAT IT IS LEGITIMATELY FOR: coarse navigation. "Should the Policies section appear in the nav
+   * at all" is answerable from this union — if the caller holds `policy:write` nowhere, the section
+   * is dead for them everywhere. Anything finer than that is `GET /api/v1/authz/effective`, which
+   * takes the object and is the only field that can answer per-scope questions.
+   */
+  permissionsAnywhere: z.array(z.string())
 });
 export type CurrentUser = z.infer<typeof CurrentUserSchema>;
 

@@ -10,6 +10,8 @@ import {
 } from "@scp/schemas";
 import { invalidateSessionByToken, login } from "../auth/local-auth.js";
 import { extractToken, requireAuth } from "../auth/require-auth.js";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { bindingsAnywhereFor } from "../authz/resolve.js";
 import { isPatToken } from "../auth/pat.js";
 import { unauthorized } from "../errors.js";
 import type { AppDeps } from "../types.js";
@@ -75,6 +77,34 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
+
+      // role-model.md §5 step 6. Read in ONE transaction so the bindings and the union derived
+      // from them cannot disagree — the union is computed from these exact rows rather than by a
+      // second query that could see a different snapshot.
+      const identity = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const bindings = await bindingsAnywhereFor(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId
+        });
+        // DENY ROWS ARE EXCLUDED FROM THE UNION AND KEPT IN THE LIST. A deny suppresses the
+        // permissions its own role carries at its own scope; it confers nothing anywhere, so
+        // folding it into a union of what the caller CAN do would be strictly false. The binding
+        // stays visible in `roleBindings` because an operator asking why a control is missing
+        // needs to see it.
+        const permissionsAnywhere = [
+          ...new Set(bindings.filter((b) => b.effect === "allow").flatMap((b) => b.permissions))
+        ].sort();
+        return {
+          roleBindings: bindings.map(({ roleId, roleName, scopeObjectId, effect }) => ({
+            roleId,
+            roleName,
+            scopeObjectId,
+            effect
+          })),
+          permissionsAnywhere
+        };
+      });
+
       reply.status(200).send({
         userId: auth.userId,
         orgId: auth.orgId,
@@ -84,7 +114,9 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
         // outpost-ui.md §9.2 — the serving instance's install-time role, so the web shell can
         // mount the commander site or the smaller outpost site. Read from config, never from
         // federation_self: one deterministic answer per instance.
-        instanceRole: deps.config.federationRole
+        instanceRole: deps.config.federationRole,
+        roleBindings: identity.roleBindings,
+        permissionsAnywhere: identity.permissionsAnywhere
       });
     }
   });
