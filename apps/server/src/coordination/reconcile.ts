@@ -109,6 +109,7 @@ import {
 import { evaluateRegionalDeployGate } from "./regional-executors.js";
 import { REGIONAL_EXECUTOR_EXPECTED_MODULE } from "@scp/schemas";
 import { processChangeSourceEvents } from "./webhook-processor.js";
+import { reconcileExecutorBindingsForOrg } from "../binding-policy/reconcile-bindings.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
 import { resolvePolicies } from "../governance/policy-model.js";
 import { prewarmGovernanceForChange } from "../governance/gate-orchestrator.js";
@@ -3006,6 +3007,26 @@ export async function reconcileOrgTick(
     await withTenantTx(db, orgId, (tx) => processChangeSourceEvents(tx, orgId));
   } catch (err) {
     console.error(`[reconcile] org ${orgId} change-source-event processing failed:`, err);
+  }
+  // ADR-0046 §4 — THE DOMAIN-LOCAL BINDING RECONCILER. Joins the federated WHAT (placements a team
+  // declared, which arrive over the journal) against this domain's own HOW (`executorBinding` policy
+  // effects) and materialises `executor_bindings` rows, so teams never file per-outpost binding
+  // tickets and credentials never leave the domain that owns them.
+  //
+  // ON THIS TICK rather than a loop of its own, for the reason the hook-run observation below it
+  // gives: a second `boss.work()` would be a COMPETING CONSUMER on the reconcile queue. It runs
+  // BEFORE the advance* steps so a change reaching a wave this tick dispatches against bindings that
+  // already reflect the current policy, rather than one tick behind it.
+  //
+  // ITS FAILURE IS CAUGHT AND LOGGED, never allowed to abort the tick: a malformed binding policy
+  // must not stop changes advancing. The gaps it reports are the loud half of §14 res 2 and are
+  // surfaced through the config-source/pipeline status surfaces, not through this loop's return.
+  try {
+    await withTenantTx(db, orgId, (tx) =>
+      reconcileExecutorBindingsForOrg(tx, orgId, `reconcile-bindings-${orgId}`)
+    );
+  } catch (err) {
+    console.error(`[reconcile] org ${orgId} executor-binding reconciliation failed:`, err);
   }
   await advanceProposedChanges(db, orgId, gateDeps, selfDomainId);
   await advanceEvaluatedChanges(db, orgId, gateDeps, selfDomainId);
