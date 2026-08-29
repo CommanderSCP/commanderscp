@@ -202,17 +202,35 @@ log "captured bootstrap admin one-time password"
 log "waiting for all pods Ready"
 kubectl wait --for=condition=Ready pods --all --timeout=180s
 
-log "port-forwarding to the api Service"
-kubectl port-forward "svc/${RELEASE_NAME}-commanderscp-api" 18090:80 >/tmp/kind-drill-pf.log 2>&1 &
-PF_PID=$!
-sleep 3
-
 BASE_URL="http://127.0.0.1:18090"
-for i in $(seq 1 30); do
-  curl -fsS "${BASE_URL}/healthz" >/dev/null 2>&1 && break
-  [ "$i" -eq 30 ] && { echo "api never became healthy" >&2; exit 1; }
-  sleep 1
-done
+
+# A PORT-FORWARD DOES NOT SURVIVE A ROLLOUT, so it is (re)established rather than assumed.
+#
+# `kubectl port-forward svc/X` resolves the Service once and PINS to a single backing pod. Every
+# rollout in this drill — the upgrade AND the rollback — replaces that pod, which silently kills
+# the tunnel. The next curl through it does not get an HTTP error, it gets an EMPTY REPLY (curl
+# exit 52), so the failure surfaces as whatever step ran next rather than as "the tunnel died":
+# the post-upgrade data check failed with exit 52 while the data was perfectly intact.
+#
+# The zero-downtime witness was moved in-cluster for the same underlying reason (see it below).
+# This client stays a port-forward because it is the drill's OPERATOR-SHAPED client — it exercises
+# the same path a human uses — so the right fix is to re-dial it after each rollout, not to
+# pretend it survived one.
+start_port_forward() {
+  [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
+  kubectl port-forward "svc/${RELEASE_NAME}-commanderscp-api" 18090:80 >/tmp/kind-drill-pf.log 2>&1 &
+  PF_PID=$!
+  local i
+  for i in $(seq 1 30); do
+    curl -fsS "${BASE_URL}/healthz" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  echo "api never became reachable through the port-forward" >&2
+  return 1
+}
+
+log "port-forwarding to the api Service"
+start_port_forward || exit 1
 
 log "golden path: login as bootstrap admin (one-time password captured above), register a service"
 LOGIN_RESPONSE="$(curl -fsS -X POST "${BASE_URL}/api/v1/auth/login" -H "content-type: application/json" \
@@ -284,6 +302,10 @@ if [ -n "$NON_200_COUNT" ] && [ "$NON_200_COUNT" -gt 0 ]; then
 fi
 log "PASS: zero downtime observed during helm upgrade (old code served every request until new pods were ready)"
 
+# The upgrade replaced the api pod, so the pre-upgrade tunnel is dead — re-dial before using it.
+log "re-establishing the port-forward (the upgrade replaced the pod the old tunnel was pinned to)"
+start_port_forward || exit 1
+
 log "verifying data survived the upgrade (the service registered against the OLD image is still there)"
 LIST_RESPONSE="$(curl -fsS "${BASE_URL}/api/v1/services" -H "authorization: Bearer ${TOKEN}")"
 echo "$LIST_RESPONSE" | grep -q '"kind-drill-service"' || { echo "FAIL: data lost across upgrade: $LIST_RESPONSE" >&2; exit 1; }
@@ -298,6 +320,10 @@ log "helm rollback -> revision 1 (the OLD image + install-time replica counts: w
 helm rollback "$RELEASE_NAME" 1 --wait --timeout 180s
 WORKER_READY_AFTER_ROLLBACK="$(kubectl get deployment "${RELEASE_NAME}-commanderscp-worker" -o jsonpath='{.status.readyReplicas}')"
 [ "$WORKER_READY_AFTER_ROLLBACK" = "1" ] || { echo "FAIL: rollback did not restore worker replica count to install-time 1 (got ${WORKER_READY_AFTER_ROLLBACK})" >&2; exit 1; }
+# Same again: the rollback rolled the api pod, so anything using BASE_URL after this point needs a
+# fresh tunnel. Re-dialled here so the drill ends with a WORKING client rather than a stale one —
+# a later step added below this line would otherwise fail with the same misleading curl 52.
+start_port_forward || exit 1
 log "PASS: helm rollback succeeded"
 
 log "M8 kind drill: ALL CHECKS PASSED (install -> golden path -> zero-downtime upgrade -> data preserved -> rollback)"
