@@ -262,9 +262,9 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     why: "role-model.md §8.6 — discovery makes SCP dial an execution system with STORED credentials, so the bar is org-root regardless of what it discovers"
   },
   {
-    site: "routes/executors.ts :: POST /api/v1/discovery/accept :: object:write",
+    site: "routes/executors.ts :: POST /api/v1/discovery/scaffold :: object:read",
     cls: "escalation-bar",
-    why: "role-model.md §8.6 — accepting a discovery proposal creates objects the caller never named, from a run that used the org's credentials"
+    why: "replaces the removed /discovery/accept entry (ADR-0047). It writes NOTHING — it renders a proposal as @scp/iac source — but the proposal and the emitted code name the org's services, repos and targets, so the bar stays where /discovery/run's is: role-model.md §8.6's rule is about what the DOOR exposes, not about whether it mutates, and a narrower binding must not satisfy either"
   },
   {
     site: "routes/executors.ts :: POST /api/v1/discovery/backfill-source-mappings :: object:write",
