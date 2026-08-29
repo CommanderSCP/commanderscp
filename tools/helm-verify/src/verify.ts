@@ -2228,8 +2228,10 @@ function main(): void {
         `not let this check quietly stop running.`
     );
     if (backendSvc) {
-      const svcPorts = ((backendSvc.spec as Record<string, unknown> | undefined)?.ports ??
-        []) as { port?: number; targetPort?: number | string }[];
+      const svcPorts = ((backendSvc.spec as Record<string, unknown> | undefined)?.ports ?? []) as {
+        port?: number;
+        targetPort?: number | string;
+      }[];
       // An ABSENT targetPort means "same as port" (Kubernetes' default), so it is resolved here
       // rather than dropped — dropping it is what made this silently skip Gitea, whose Service
       // omits targetPort entirely.
@@ -2240,13 +2242,13 @@ function main(): void {
         (d) => d.kind === "NetworkPolicy" && (d.metadata?.name ?? "").endsWith(`-allow-${be}`)
       );
       const allowed = (
-        (((policy?.spec as Record<string, unknown> | undefined)?.egress ?? []) as {
+        ((policy?.spec as Record<string, unknown> | undefined)?.egress ?? []) as {
           ports?: { port?: number }[];
-        }[])
-          .flatMap((r) => r.ports ?? [])
-          .map((pp) => pp.port)
-          .filter((n): n is number => typeof n === "number")
-      );
+        }[]
+      )
+        .flatMap((r) => r.ports ?? [])
+        .map((pp) => pp.port)
+        .filter((n): n is number => typeof n === "number");
       if (policy && targetPorts.length > 0) {
         const missing = targetPorts.filter((tp) => !allowed.includes(tp));
         assert(
