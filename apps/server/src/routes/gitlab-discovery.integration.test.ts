@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import {
@@ -11,7 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changeSourceEvents, objects, relationships } from "../db/schema.js";
+import { changeSourceEvents, relationships } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 
 /**
@@ -20,7 +20,7 @@ import { processChangeSourceEvents } from "../coordination/webhook-processor.js"
  *   POST /discovery/run (module gitlab-discovery, backed by an execution-system kind=gitlab) →
  *   a real subprocess plugin-host scan of a live (in-process) GitLab repository-tree API →
  *   proposal carrying a Component whose sourceMapping.sourceKind is 'gitlab' →
- *   POST /discovery/accept imports objects + source_mappings →
+ *   the proposal's component + source_mapping are landed (through the typed doors since ADR-0047 removed accept) →
  *   the imported component SELF-REPORTS: a gitlab observed event on its repo/path correlates to a
  *   Change. sourceKind='gitlab' is the load-bearing link — it matches the gitlab EXECUTOR's
  *   source_kind, so pulled gitlab events correlate against the imported component (before this,
@@ -32,7 +32,7 @@ import { processChangeSourceEvents } from "../coordination/webhook-processor.js"
  * system's `allowInternalEgress` intent (ADR-0003 two-layer) — exactly the path a self-hosted /
  * air-gapped GitLab outpost uses, so this also exercises that egress grant end to end.
  */
-describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → accept → self-report)", () => {
+describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → land → self-report)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
   let admin: ScpClient;
@@ -149,7 +149,7 @@ describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → acce
     return rows[0]?.resultingChangeObjectId ?? null;
   }
 
-  it("runs gitlab-discovery against a BYO GitLab, imports the proposal, and the component self-reports a gitlab event", async () => {
+  it("runs gitlab-discovery against a BYO GitLab, lands the proposal's component, and it self-reports a gitlab event", async () => {
     // Register the BYO GitLab as an execution-system (kind=gitlab) with declared internal-egress
     // intent (layer 2). The token lives in the secrets table, referenced by key — never on the object.
     await admin.secrets.put("gitlab-e2e-token", { value: "gitlab-e2e-pat" });
@@ -209,38 +209,29 @@ describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → acce
     //    works because an endpoint names the object's proposal-local `urn` ALIAS, not its name.
     const uniqueName = `${component.name}-${randomUUID().slice(0, 8)}`;
     const uniqueServiceName = `${services[0]!.name}-${randomUUID().slice(0, 8)}`;
-    const accept = await admin.discovery.accept({
-      proposal: {
-        objects: [
-          {
-            typeId: "service",
-            name: uniqueServiceName,
-            urn: services[0]!.urn,
-            properties: services[0]!.properties ?? {}
-          },
-          {
-            typeId: "component",
-            name: uniqueName,
-            urn: component.urn,
-            properties: component.properties ?? {}
-          }
-        ],
-        relationships: proposal.relationships,
-        sourceMappings: [
-          {
-            objectName: uniqueName,
-            sourceKind: "gitlab",
-            repoPattern: sourceMapping!.repoPattern,
-            pathPattern: sourceMapping!.pathPattern
-          }
-        ]
-      }
+    // LANDED THROUGH THE ORDINARY DOORS, not `discovery/accept` — that route was removed in
+    // increment 6 (ADR-0047), and with it the one-call import this section used to make.
+    //
+    // What the section is ABOUT is unchanged and is the reason it survives rather than being
+    // deleted: a `gitlab`-kinded `source_mapping` on a real component is what makes a pulled
+    // `gitlab` event correlate to a Change. Before that mapping existed, nothing produced a
+    // `gitlab`-kinded mapping and every such event correlated against nothing. The import mechanism
+    // moved to IaC; the correlation property did not move at all, so it is still proven here,
+    // against a component created the way a scaffolded manifest creates one.
+    const importedService = await admin.services.create({ name: uniqueServiceName });
+    const imported = await admin.components.create({
+      name: uniqueName,
+      service: importedService.id
     });
-    expect(accept.createdObjectIds).toHaveLength(2);
-    expect(accept.createdSourceMappingIds).toHaveLength(1);
-    expect(accept.createdRelationshipIds).toHaveLength(1);
+    await admin.changeSources.createMapping("gitlab", {
+      component: imported.id,
+      repoPattern: sourceMapping!.repoPattern!,
+      ...(sourceMapping!.pathPattern ? { pathPattern: sourceMapping!.pathPattern } : {}),
+      type: "configuration"
+    });
 
-    // The ROW ITSELF, read from the TABLE (never `GET /relationships`) — a returned id is not a row.
+    // The `contains` edge the typed component door writes atomically — asserted from the TABLE, as
+    // before, because a returned id is not a row.
     const edges = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select({
@@ -249,26 +240,13 @@ describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → acce
           toId: relationships.toId
         })
         .from(relationships)
-        .where(eq(relationships.id, accept.createdRelationshipIds[0]!))
+        .where(eq(relationships.toId, imported.id))
     );
-    expect(edges).toHaveLength(1);
-    expect(edges[0]!.typeId).toBe("contains");
-
-    const importedObjects = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx
-        .select({ id: objects.id, typeId: objects.typeId, name: objects.name })
-        .from(objects)
-        .where(inArray(objects.id, accept.createdObjectIds))
+    expect(edges.some((e) => e.typeId === "contains" && e.fromId === importedService.id)).toBe(
+      true
     );
-    const importedService = importedObjects.find((o) => o.typeId === "service")!;
-    const importedComponent = importedObjects.find((o) => o.typeId === "component")!;
-    expect(importedService.name).toBe(uniqueServiceName);
-    expect(importedComponent.name).toBe(uniqueName);
-    // Direction: `contains` is service -> component, which `graph/containment.ts` walks backwards.
-    expect(edges[0]!.fromId).toBe(importedService.id);
-    expect(edges[0]!.toId).toBe(importedComponent.id);
 
-    const componentId = importedComponent.id;
+    const componentId = imported.id;
 
     // 3) The imported component's gitlab source_mapping exists and is listable under 'gitlab'.
     const mappings = await admin.changeSources.listMappings("gitlab");

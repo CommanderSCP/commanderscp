@@ -559,8 +559,9 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
     let interloper: string;
 
     beforeAll(async () => {
-      interloper = (await createOrphanComponent(server, org, `interloper-${randomUUID().slice(0, 8)}`))
-        .id;
+      interloper = (
+        await createOrphanComponent(server, org, `interloper-${randomUUID().slice(0, 8)}`)
+      ).id;
     });
 
     /**

@@ -9249,6 +9249,22 @@ export const zListNotificationBindingsResponse = z.object({
 /**
  * Success
  */
+export const zScaffoldDiscoveryProposalResponse = z.object({
+    stacks: z.array(z.object({
+        stackName: z.string(),
+        serviceName: z.string(),
+        source: z.string(),
+        placeholderCount: z.int().gte(-9007199254740991).lte(9007199254740991)
+    })),
+    ungrouped: z.array(z.object({
+        name: z.string(),
+        typeId: z.string()
+    }))
+});
+
+/**
+ * Success
+ */
 export const zRunDiscoveryResponse = z.object({
     objects: z.array(z.object({
         typeId: z.string(),

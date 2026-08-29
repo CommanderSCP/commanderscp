@@ -296,6 +296,7 @@ import {
   deleteSecret as deleteSecretRequest,
   listPluginManifests as listPluginManifestsRequest,
   runDiscovery as runDiscoveryRequest,
+  scaffoldDiscoveryProposal as scaffoldDiscoveryProposalRequest,
   backfillSourceMappings as backfillSourceMappingsRequest,
   // The live event stream (`GET /events/stream`) — a generated SSE operation like any other
   // generated operation, `responseValidator` included, since the SSE API-parity work declared it
@@ -476,6 +477,8 @@ import type {
   SecretKeyListResponse,
   PluginManifestListResponse,
   RunDiscoveryRequest,
+  ScaffoldDiscoveryRequest,
+  ScaffoldDiscoveryResponse,
   DiscoveryProposal,
   BackfillSourceMappingsResponse,
   ServiceBoardResponse,
@@ -2877,6 +2880,13 @@ export class ScpClient {
      *  (DESIGN §11: "reviewed/accepted into the graph, never auto-committed"). */
     run: async (req: RunDiscoveryRequest): Promise<DiscoveryProposal> => {
       const result = await runDiscoveryRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    /** ADR-0047 — a proposal in, IaC SOURCE out. Writes nothing; the caller commits what comes
+     *  back and a normal `scp apply` lands it. This is what replaced `discovery.accept`, and the
+     *  shape difference is the point: accept returned created ids, this returns text. */
+    scaffold: async (req: ScaffoldDiscoveryRequest): Promise<ScaffoldDiscoveryResponse> => {
+      const result = await scaffoldDiscoveryProposalRequest({ client: this.client, body: req });
       return unwrap(result);
     },
     /** Backfill source_mappings onto ALREADY-imported components (M12 P5 follow-up) — matches a fresh

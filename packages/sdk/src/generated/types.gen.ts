@@ -23672,6 +23672,102 @@ export type ListNotificationBindingsResponses = {
 
 export type ListNotificationBindingsResponse = ListNotificationBindingsResponses[keyof ListNotificationBindingsResponses];
 
+export type ScaffoldDiscoveryProposalData = {
+    body: {
+        proposal: {
+            objects: Array<{
+                typeId: string;
+                name: string;
+                properties?: {
+                    [key: string]: unknown;
+                };
+                urn?: string;
+            }>;
+            relationships: Array<{
+                typeId: string;
+                fromUrn: string;
+                toUrn: string;
+            }>;
+            bindings?: Array<{
+                objectName: string;
+                executionSystemId: string;
+                externalRef?: string;
+            }>;
+            sourceMappings?: Array<{
+                objectName: string;
+                sourceKind: string;
+                repoPattern?: string;
+                pathPattern?: string;
+                type?: 'image' | 'rpm' | 'deb' | 'npm' | 'maven' | 'python' | 'go' | 'chart' | 'vm-image' | 'infrastructure' | 'configuration';
+            }>;
+        };
+        group: {
+            [key: string]: string;
+        };
+    };
+    path?: never;
+    query?: never;
+    url: '/discovery/scaffold';
+};
+
+export type ScaffoldDiscoveryProposalErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ScaffoldDiscoveryProposalError = ScaffoldDiscoveryProposalErrors[keyof ScaffoldDiscoveryProposalErrors];
+
+export type ScaffoldDiscoveryProposalResponses = {
+    /**
+     * Success
+     */
+    200: {
+        stacks: Array<{
+            stackName: string;
+            serviceName: string;
+            source: string;
+            placeholderCount: number;
+        }>;
+        ungrouped: Array<{
+            name: string;
+            typeId: string;
+        }>;
+    };
+};
+
+export type ScaffoldDiscoveryProposalResponse = ScaffoldDiscoveryProposalResponses[keyof ScaffoldDiscoveryProposalResponses];
+
 export type RunDiscoveryData = {
     body: {
         pluginModule: string;

@@ -279,8 +279,10 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
       const undeclared = await listenTestServer();
       try {
         const uOrg = await createTestOrg(undeclared, "dep-read-undeclared");
-        const uAdmin = new ScpClient({ baseUrl: undeclared.baseUrl, token: uOrg.adminToken });
-        const c = (await createOrphanComponent(server, org, `undeclared-${uuidv7()}`)).id;
+        // The component belongs to the OTHER server's org — `undeclared`/`uOrg`, not the outer
+        // `server`/`org`. The mechanical call-site update for the new signature pointed this at the
+        // outer pair, which would have created it in the wrong org and quietly tested nothing.
+        const c = (await createOrphanComponent(undeclared, uOrg, `undeclared-${uuidv7()}`)).id;
         const inv = await undeclared.app.inject({
           method: "GET",
           url: `/api/v1/components/${c}/dependency-inventory`,

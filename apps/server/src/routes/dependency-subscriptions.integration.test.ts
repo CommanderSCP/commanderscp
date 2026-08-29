@@ -938,8 +938,9 @@ describe("(7) the resolve answer is QUALIFIED by whether dependencies are manage
         target = await listenTestServer({ ...posture.options });
         targetOrg = await createTestOrg(target, `dep-env-${posture.reason}`);
         client = new ScpClient({ baseUrl: target.baseUrl, token: targetOrg.adminToken });
-        component = (await createOrphanComponent(target, targetOrg, `dep-env-${posture.reason}-${uuidv7()}`))
-          .id;
+        component = (
+          await createOrphanComponent(target, targetOrg, `dep-env-${posture.reason}-${uuidv7()}`)
+        ).id;
         // A component-scoped enable, authored the only way a subscription can be — a
         // `dependencySubscription` effect on an ordinary policy (ADR-0032 §3a). With the instance
         // unlocked above, this makes the pair resolve ENABLED on a deployment that will never act

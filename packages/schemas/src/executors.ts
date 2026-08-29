@@ -490,6 +490,42 @@ export const RunDiscoveryRequestSchema = z.object({
 });
 export type RunDiscoveryRequest = z.infer<typeof RunDiscoveryRequestSchema>;
 
+/**
+ * `POST /discovery/scaffold` (ADR-0047) — turn a discovery proposal into IaC SOURCE.
+ *
+ * The replacement for `accept`, and deliberately a different SHAPE rather than the same verb with a
+ * flag: it writes nothing, reads nothing, and returns text. Its whole job is to run the emitter that
+ * `scp iac scaffold` runs, so the wizard and the CLI produce the same code from the same proposal.
+ *
+ * WHY IT IS A SERVER ENDPOINT AND NOT A BROWSER IMPORT. `apps/web` may import only `@scp/sdk` and
+ * `@scp/schemas` — never `@scp/iac`, `@scp/cli` or the server (eslint `no-restricted-imports`, the
+ * API -> SDK -> CLI -> IaC -> UI chain). The UI gets everything through the public API, and the
+ * emitter is no exception.
+ */
+export const ScaffoldDiscoveryRequestSchema = z.object({
+  proposal: DiscoveryProposalSchema,
+  /** component name -> service name. A component absent from this map is UNGROUPED and is reported
+   *  rather than emitted — ADR-0047's rule, applied server-side so the CLI and the wizard cannot
+   *  disagree about what "ungrouped" means. */
+  group: z.record(z.string(), z.string().min(1))
+});
+export type ScaffoldDiscoveryRequest = z.infer<typeof ScaffoldDiscoveryRequestSchema>;
+
+export const ScaffoldDiscoveryResponseSchema = z.object({
+  stacks: z.array(
+    z.object({
+      stackName: z.string(),
+      serviceName: z.string(),
+      /** The emitted `scp/stack.ts`, ready to commit. */
+      source: z.string(),
+      /** How many `repo` placeholders the author must fill before this will typecheck (D18). */
+      placeholderCount: z.number().int()
+    })
+  ),
+  ungrouped: z.array(z.object({ name: z.string(), typeId: z.string() }))
+});
+export type ScaffoldDiscoveryResponse = z.infer<typeof ScaffoldDiscoveryResponseSchema>;
+
 /*
  * `POST /discovery/accept` AND ITS TWO SCHEMAS ARE GONE (ADR-0047; team-pipeline-iac D1, section 14
  * resolution 3). Discovery is a SCAFFOLDER: `discovery/run` still proposes, and its output becomes

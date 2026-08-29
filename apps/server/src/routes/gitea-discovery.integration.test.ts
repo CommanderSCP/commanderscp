@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import {
@@ -11,7 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changeSourceEvents, objects, relationships } from "../db/schema.js";
+import { changeSourceEvents, relationships } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 
 /**
@@ -20,7 +20,7 @@ import { processChangeSourceEvents } from "../coordination/webhook-processor.js"
  *   POST /discovery/run (module gitea-discovery, backed by an execution-system kind=gitea) →
  *   a real subprocess plugin-host scan of a live (in-process) Gitea contents API →
  *   proposal carrying a Component whose sourceMapping.sourceKind is 'gitea' →
- *   POST /discovery/accept imports objects + source_mappings →
+ *   the proposal's component + source_mapping are landed (through the typed doors since ADR-0047 removed accept) →
  *   the imported component SELF-REPORTS: a gitea observed event on its repo/path correlates to a
  *   Change. sourceKind='gitea' is the load-bearing link — it matches the gitea EXECUTOR's
  *   source_kind, so pulled gitea events correlate against the imported component (before this,
@@ -32,7 +32,7 @@ import { processChangeSourceEvents } from "../coordination/webhook-processor.js"
  * system's `allowInternalEgress` intent (ADR-0003 two-layer) — exactly the path a self-hosted /
  * air-gapped Gitea outpost uses, so this also exercises that egress grant end to end.
  */
-describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → accept → self-report)", () => {
+describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → land → self-report)", () => {
   let server: ListeningTestServer;
   let org: TestOrg;
   let admin: ScpClient;
@@ -151,7 +151,7 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → accept
     return rows[0]?.resultingChangeObjectId ?? null;
   }
 
-  it("runs gitea-discovery against a BYO Gitea, imports the proposal, and the component self-reports a gitea event", async () => {
+  it("runs gitea-discovery against a BYO Gitea, lands the proposal's component, and it self-reports a gitea event", async () => {
     // Register the BYO Gitea as an execution-system (kind=gitea) with declared internal-egress intent
     // (layer 2). The token lives in the secrets table, referenced by key — never on the object.
     await admin.secrets.put("gitea-e2e-token", { value: "gitea-e2e-pat" });
@@ -220,41 +220,29 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → accept
     //    object's proposal-local `urn` ALIAS rather than anything derived from its name.
     const uniqueName = `${component.name}-${randomUUID().slice(0, 8)}`;
     const uniqueServiceName = `${services[0]!.name}-${randomUUID().slice(0, 8)}`;
-    const accept = await admin.discovery.accept({
-      proposal: {
-        objects: [
-          {
-            typeId: "service",
-            name: uniqueServiceName,
-            urn: services[0]!.urn,
-            properties: services[0]!.properties ?? {}
-          },
-          {
-            typeId: "component",
-            name: uniqueName,
-            urn: component.urn,
-            properties: component.properties ?? {}
-          }
-        ],
-        relationships: proposal.relationships,
-        sourceMappings: [
-          {
-            objectName: uniqueName,
-            sourceKind: "gitea",
-            repoPattern: sourceMapping!.repoPattern,
-            pathPattern: sourceMapping!.pathPattern
-          }
-        ]
-      }
+    // LANDED THROUGH THE ORDINARY DOORS, not `discovery/accept` — that route was removed in
+    // increment 6 (ADR-0047), and with it the one-call import this section used to make.
+    //
+    // What the section is ABOUT is unchanged and is the reason it survives rather than being
+    // deleted: a `gitea`-kinded `source_mapping` on a real component is what makes a pulled
+    // `gitea` event correlate to a Change. Before that mapping existed, nothing produced a
+    // `gitea`-kinded mapping and every such event correlated against nothing. The import mechanism
+    // moved to IaC; the correlation property did not move at all, so it is still proven here,
+    // against a component created the way a scaffolded manifest creates one.
+    const importedService = await admin.services.create({ name: uniqueServiceName });
+    const imported = await admin.components.create({
+      name: uniqueName,
+      service: importedService.id
     });
-    expect(accept.createdObjectIds).toHaveLength(2);
-    expect(accept.createdSourceMappingIds).toHaveLength(1);
-    expect(accept.createdRelationshipIds).toHaveLength(1);
+    await admin.changeSources.createMapping("gitea", {
+      component: imported.id,
+      repoPattern: sourceMapping!.repoPattern!,
+      ...(sourceMapping!.pathPattern ? { pathPattern: sourceMapping!.pathPattern } : {}),
+      type: "configuration"
+    });
 
-    // The ROW ITSELF, read from the TABLE (never `GET /relationships`, which a type filter could
-    // make vacuous) — a returned id is not a row, and this is the assertion the old
-    // `relationships: []` made unreachable. Direction is asserted too: `contains` is
-    // service -> component, and `graph/containment.ts` walks it backwards on that assumption.
+    // The `contains` edge the typed component door writes atomically — asserted from the TABLE, as
+    // before, because a returned id is not a row.
     const edges = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select({
@@ -263,25 +251,13 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → accept
           toId: relationships.toId
         })
         .from(relationships)
-        .where(eq(relationships.id, accept.createdRelationshipIds[0]!))
+        .where(eq(relationships.toId, imported.id))
     );
-    expect(edges).toHaveLength(1);
-    expect(edges[0]!.typeId).toBe("contains");
-
-    const importedObjects = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx
-        .select({ id: objects.id, typeId: objects.typeId, name: objects.name })
-        .from(objects)
-        .where(inArray(objects.id, accept.createdObjectIds))
+    expect(edges.some((e) => e.typeId === "contains" && e.fromId === importedService.id)).toBe(
+      true
     );
-    const importedService = importedObjects.find((o) => o.typeId === "service")!;
-    const importedComponent = importedObjects.find((o) => o.typeId === "component")!;
-    expect(importedService.name).toBe(uniqueServiceName);
-    expect(importedComponent.name).toBe(uniqueName);
-    expect(edges[0]!.fromId).toBe(importedService.id);
-    expect(edges[0]!.toId).toBe(importedComponent.id);
 
-    const componentId = importedComponent.id;
+    const componentId = imported.id;
 
     // 3) The imported component's gitea source_mapping exists and is listable under 'gitea'.
     const mappings = await admin.changeSources.listMappings("gitea");

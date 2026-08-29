@@ -80,6 +80,9 @@ importers:
       '@scp/git-provider-core':
         specifier: workspace:*
         version: link:../../packages/plugins/git-provider-core
+      '@scp/iac':
+        specifier: workspace:*
+        version: link:../../packages/iac
       '@scp/plugin-api':
         specifier: workspace:*
         version: link:../../packages/plugin-api
@@ -195,9 +198,6 @@ importers:
       '@scp/cli':
         specifier: workspace:*
         version: link:../../packages/cli
-      '@scp/iac':
-        specifier: workspace:*
-        version: link:../../packages/iac
       '@scp/plugin-testkit':
         specifier: workspace:*
         version: link:../../packages/plugin-testkit

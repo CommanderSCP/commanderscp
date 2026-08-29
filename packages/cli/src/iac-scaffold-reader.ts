@@ -1,6 +1,3 @@
-import type { DiscoveryProposal, GraphObject } from "@scp/schemas";
-import { slugify } from "@scp/iac";
-
 /**
  * The `scp iac scaffold` half of the estate-reading layer (team-pipeline-iac.md §7/D1, ADR-0047) —
  * turns a `discovery run` proposal into `@scp/iac`'s `ServiceSpec` shape, GROUPED into services by
@@ -9,6 +6,8 @@ import { slugify } from "@scp/iac";
  * export's live-graph reads — both hand their output to the SAME shared emitter
  * (`@scp/iac`'s `estate-program.ts`), landed first.
  */
+
+import type { GraphObject } from "@scp/schemas";
 
 // -------------------------------------------------------------------------------------------
 // `scp iac scaffold --from <execution-system-urn>` (§7/D1/ADR-0047)

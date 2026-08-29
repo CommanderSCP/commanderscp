@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { groupDiscoveryProposal, renderEstateProgram } from "@scp/iac";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import {
@@ -20,6 +21,8 @@ import {
   RegionalExecutorViewSchema,
   RegistryIdOrUrnParamSchema,
   RunDiscoveryRequestSchema,
+  ScaffoldDiscoveryRequestSchema,
+  ScaffoldDiscoveryResponseSchema,
   SecretConfiguredResponseSchema,
   SecretKeyListResponseSchema,
   SecretKeyParamSchema,
@@ -714,6 +717,76 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
   // doc comment records why it used not to); `/accept` is the ONLY path that ever writes what a
   // discovery scan found into the graph.
   // -----------------------------------------------------------------------------------------
+
+  /**
+   * `POST /discovery/scaffold` (ADR-0047) — a discovery proposal in, IaC SOURCE out.
+   *
+   * THE REPLACEMENT FOR `accept`, and a different shape on purpose: it writes nothing, reads
+   * nothing from the graph, and returns text. Accept's defect was that it wrote — bypassing strict
+   * create and leaving components with no owning service. This asks the grouping question instead
+   * and hands back code for a human to commit, so the graph write happens through `POST /plans`
+   * with every ordinary door in the way.
+   *
+   * PURE TRANSFORM, BUT STILL AUTHENTICATED AND AUTHORIZED: a proposal describes an org's estate,
+   * and the emitted code names its services and repos. `object:read` at the org root is the same bar
+   * `POST /plans` uses for diff computation, which is the closest analogue — a read-shaped request
+   * whose body the caller supplied.
+   *
+   * IT EXISTS AT ALL because `apps/web` may import only `@scp/sdk` and `@scp/schemas` — never
+   * `@scp/iac` (eslint `no-restricted-imports`, the API -> SDK -> CLI -> IaC -> UI chain). The
+   * wizard gets the emitter's output the way it gets everything else: through the API.
+   */
+  typed.route({
+    method: "POST",
+    url: "/api/v1/discovery/scaffold",
+    schema: {
+      body: ScaffoldDiscoveryRequestSchema,
+      response: {
+        200: ScaffoldDiscoveryResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "scaffoldDiscoveryProposal",
+        summary: "Render a discovery proposal as @scp/iac source — writes nothing to the graph",
+        tags: ["discovery"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      await withTenantTx(deps.db, auth.orgId, (tx) =>
+        authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: auth.orgId
+        })
+      );
+
+      // THE SAME FUNCTIONS `scp iac scaffold` CALLS. Not a second implementation: one definition of
+      // "which components are ungrouped" (ADR-0047's whole point is that the set is surfaced), and
+      // one emitter, so the wizard and the CLI cannot produce different code from one proposal.
+      const { specs, ungrouped } = groupDiscoveryProposal(
+        request.body.proposal,
+        request.body.group
+      );
+      reply.status(200).send({
+        stacks: specs.map((spec) => {
+          const rendered = renderEstateProgram(spec);
+          return {
+            stackName: spec.stackName,
+            serviceName: spec.serviceName,
+            source: rendered.source,
+            placeholderCount: rendered.placeholderCount
+          };
+        }),
+        ungrouped
+      });
+    }
+  });
 
   typed.route({
     method: "POST",

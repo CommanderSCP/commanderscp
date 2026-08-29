@@ -1,13 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderToStaticMarkup } from "react-dom/server";
-import type {
-  AcceptDiscoveryResponse,
-  CreateObjectRequest,
-  DiscoveryProposal,
-  GraphObject
-} from "@scp/schemas";
+import type { CreateObjectRequest, DiscoveryProposal, GraphObject } from "@scp/schemas";
 import { flush, render, typeInto } from "../test-support/render-dom";
 
 /**
@@ -60,12 +54,11 @@ vi.mock("../lib/client", () => ({
       create: vi.fn(async () => systemFixture()),
       list: vi.fn(async () => ({ items: [] }))
     }),
-    discovery: { run: runDiscoverySpy, accept: vi.fn(async () => acceptFixture()) }
+    discovery: { run: runDiscoverySpy }
   }
 }));
 
 const {
-  ImportSummary,
   RegisterStep,
   argoCdSystems,
   defaultTokenKey,
@@ -93,23 +86,6 @@ function systemFixture(): GraphObject {
   } as unknown as GraphObject;
 }
 
-function acceptFixture(overrides: Partial<AcceptDiscoveryResponse> = {}): AcceptDiscoveryResponse {
-  return {
-    createdObjectIds: [],
-    createdRelationshipIds: [],
-    createdBindingIds: [],
-    createdSourceMappingIds: [],
-    ...overrides
-  };
-}
-
-function ids(n: number): string[] {
-  return Array.from(
-    { length: n },
-    (_, i) => `019f0000-0000-7000-8000-0000000000${String(i).padStart(2, "0")}`
-  );
-}
-
 /** A double for the four doors the wizard may use, recording call ORDER as well as arguments — the
  *  secret must be written before the system that references it. */
 function doorsDouble() {
@@ -130,8 +106,7 @@ function doorsDouble() {
     runDiscovery: vi.fn(async (): Promise<DiscoveryProposal> => ({
       objects: [],
       relationships: []
-    })),
-    acceptProposal: vi.fn(async () => acceptFixture())
+    }))
   };
 }
 
@@ -218,48 +193,17 @@ describe("hazard (b): the Argo CD token reaches secrets.put and nothing else", (
 // ---------------------------------------------------------------------------------------------
 
 describe("hazard (c): the success screen reports what the SERVER returned", () => {
-  it("says the components are not part of any service when NO relationship was created", () => {
-    const html = renderToStaticMarkup(
-      <ImportSummary
-        result={acceptFixture({
-          createdObjectIds: ids(3),
-          createdBindingIds: ids(3),
-          createdSourceMappingIds: ids(2),
-          createdRelationshipIds: []
-        })}
-        systemName="prod"
-      />
-    );
-    expect(html).toContain("argocd-orphan-notice");
-    expect(html).toContain("not part of any service yet");
-    // Each count comes off the response — three DIFFERENT numbers, so a summary reading the wrong
-    // field cannot coincidentally agree with all of them.
-    expect(html).toMatch(/argocd-created-graph-objects[\s\S]*?>3</);
-    expect(html).toMatch(/argocd-created-executor-bindings[\s\S]*?>3</);
-    expect(html).toMatch(/argocd-created-source-mappings[\s\S]*?>2</);
-    expect(html).toMatch(/argocd-created-graph-relationships[\s\S]*?>0</);
-  });
+  // THE ORPHAN-NOTICE PAIR IS GONE WITH `ImportSummary` (ADR-0047).
+  //
+  // Both cases asserted that the post-import screen told the truth about components the accept path
+  // had just created without a service — the notice appeared when no relationships were written and
+  // stayed away when they were. There is no post-import screen now, and no component can be created
+  // without a service: the scaffolder refuses to EMIT one, so the state those cases described is
+  // unreachable rather than merely unreported.
+  //
+  // What replaced them is `scaffold-panel.test.tsx`'s ungrouped case, which asserts the same
+  // concern one step earlier — at authoring time, where ADR-0047 moved it.
 
-  it("does NOT say it when relationships WERE created — the notice follows the data, not a belief", () => {
-    // argocd-discovery returns `relationships: []` today. If it ever stops doing so, a hardcoded
-    // orphan notice becomes the lie, which is why this direction is pinned too.
-    const html = renderToStaticMarkup(
-      <ImportSummary
-        result={acceptFixture({ createdObjectIds: ids(2), createdRelationshipIds: ids(2) })}
-        systemName="prod"
-      />
-    );
-    expect(html).not.toContain("argocd-orphan-notice");
-    expect(html).not.toContain("not part of any service yet");
-    expect(html).toMatch(/argocd-created-graph-relationships[\s\S]*?>2</);
-  });
-});
-
-// ---------------------------------------------------------------------------------------------
-// What step 1 writes, and what step 2 sends
-// ---------------------------------------------------------------------------------------------
-
-describe("step 1 writes the same thing `scp connect argocd` writes", () => {
   it("stores the secret BEFORE creating the system that references it", async () => {
     const doors = doorsDouble();
     await registerExecutionSystem(doors, {

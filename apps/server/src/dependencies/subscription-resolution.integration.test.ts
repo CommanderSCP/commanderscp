@@ -167,7 +167,8 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
     actorObjectId = adminRow.objectId;
 
     subscribedComponent = (await createOrphanComponent(server, org, `subscribed-${uuidv7()}`)).id;
-    unsubscribedComponent = (await createOrphanComponent(server, org, `unsubscribed-${uuidv7()}`)).id;
+    unsubscribedComponent = (await createOrphanComponent(server, org, `unsubscribed-${uuidv7()}`))
+      .id;
 
     // Two npm lines under ONE component. Coordinates go in verbatim, and the opted-out one is the
     // slug-colliding spelling of the other (`graph/urn.ts` collapses both to `acme-lib`), so an
@@ -654,7 +655,8 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
     const CONDITION = 'change.properties.environment == "prod"';
 
     beforeAll(async () => {
-      conditionalComponent = (await createOrphanComponent(server, org, `conditional-${uuidv7()}`)).id;
+      conditionalComponent = (await createOrphanComponent(server, org, `conditional-${uuidv7()}`))
+        .id;
       conditionalLine = { ecosystem: "go", coordinate: "github.com/acme/conditional", major: "v2" };
       await declare(conditionalComponent, conditionalLine);
       await setInstanceUnlock(true);

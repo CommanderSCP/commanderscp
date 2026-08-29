@@ -7134,30 +7134,10 @@ export function buildProgram(): Command {
       }
     );
 
-  discoveryCmd
-    .command("accept")
-    .description(
-      "EXPLICITLY accept a discovery proposal — the only command that commits discovered objects/relationships"
-    )
-    .requiredOption(
-      "--proposal <path-or-json>",
-      "a file path to (or literal JSON of) a proposal from `discovery run`"
-    )
-    .option("--domain <idOrUrn>", "domain to create discovered objects under (default: org root)")
-    .option("--base-url <url>", "API base URL override")
-    .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts & { proposal: string; domain?: string }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const raw = opts.proposal.trim().startsWith("{")
-        ? opts.proposal
-        : await readFile(opts.proposal, "utf8");
-      const proposal = JSON.parse(raw) as { objects: unknown[]; relationships: unknown[] };
-      const result = await client.discovery.accept({
-        domainId: opts.domain,
-        proposal: proposal as never
-      });
-      printResult(result, opts.output, (item) => item as Record<string, unknown>);
-    });
+  // `scp discovery accept` IS GONE with the route it called (ADR-0047). It committed a proposal
+  // straight into the graph — the path that made imported components RBAC orphans. Its replacement
+  // is `scp iac scaffold`, which turns the same proposal into IaC code a human commits; the graph
+  // write then goes through `scp apply` with strict create and ordinary authorization.
 
   // M12 P5 follow-up: automated backfill of source_mappings onto ALREADY-imported components (the 50
   // argocd orphans imported before discovery emitted mappings). Feed a fresh `discovery run` proposal;

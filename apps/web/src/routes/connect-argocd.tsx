@@ -1,14 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
-import type {
-  AcceptDiscoveryResponse,
-  CreateObjectRequest,
-  DiscoveryProposal,
-  GraphObject
-} from "@scp/schemas";
+import type { CreateObjectRequest, DiscoveryProposal, GraphObject } from "@scp/schemas";
 import { client } from "../lib/client";
 import { Badge } from "../components/ui/badge";
+import { ScaffoldPanel } from "../components/scaffold/scaffold-panel";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
@@ -106,7 +101,6 @@ export interface ConnectDoors {
   createExecutionSystem(req: CreateObjectRequest): Promise<GraphObject>;
   listExecutionSystems(): Promise<GraphObject[]>;
   runDiscovery(executionSystemId: string, instanceId: string): Promise<DiscoveryProposal>;
-  acceptProposal(proposal: DiscoveryProposal): Promise<AcceptDiscoveryResponse>;
 }
 
 export const sdkDoors: ConnectDoors = {
@@ -123,8 +117,7 @@ export const sdkDoors: ConnectDoors = {
       // "a grant on system X authorizing egress to a caller-supplied address". So the wizard neither
       // re-sends the URL nor ever handles the token again after step 1.
       config: { executionSystemId }
-    }),
-  acceptProposal: (proposal) => client.discovery.accept({ proposal })
+    })
 };
 
 /**
@@ -428,27 +421,20 @@ export function EnumerateStep({
 // Step 3 — review and import
 // ---------------------------------------------------------------------------------------------
 
-export function ReviewStep({
-  doors,
-  proposal,
-  onImported
-}: {
-  doors: ConnectDoors;
-  proposal: DiscoveryProposal;
-  onImported: (result: AcceptDiscoveryResponse) => void;
-}): React.JSX.Element {
-  const accept = useMutation({
-    mutationFn: async (): Promise<AcceptDiscoveryResponse> => doors.acceptProposal(proposal),
-    onSuccess: onImported
-  });
-
+export function ReviewStep({ proposal }: { proposal: DiscoveryProposal }): React.JSX.Element {
+  // WAS "3. Review and import", which called `discovery.accept` and wrote the whole proposal —
+  // objects, bindings and mappings — in one transaction. ADR-0047 retired that path: it bypassed
+  // strict create, and the components it made had no owning service.
+  //
+  // Now it scaffolds. The grouping question is asked before anything exists, and the operator
+  // commits the emitted code.
   return (
     <Card data-testid="connect-argocd-review">
       <CardHeader>
-        <CardTitle className="text-base">3. Review and import</CardTitle>
+        <CardTitle className="text-base">3. Review and scaffold</CardTitle>
         <CardDescription>
-          Nothing below exists in the graph yet. Accepting creates the objects, their executor
-          bindings and their source mappings in one transaction.
+          Nothing below exists in the graph, and this step does not create it. Group the components
+          into services and commit the IaC.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -458,41 +444,8 @@ export function ReviewStep({
               {count} {typeId}
             </Badge>
           ))}
-          <Badge variant="secondary">{proposal.bindings?.length ?? 0} executor binding</Badge>
-          <Badge variant="secondary">{proposal.sourceMappings?.length ?? 0} source mapping</Badge>
-          <Badge variant="secondary">{proposal.relationships.length} relationship</Badge>
         </div>
-
-        <ul className="max-h-64 overflow-auto rounded border border-slate-200 text-sm">
-          {proposal.objects.map((object) => (
-            <li
-              key={`${object.typeId}:${object.name}`}
-              className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-1.5 last:border-b-0"
-              data-testid="argocd-proposal-object"
-            >
-              <span className="font-mono">{object.name}</span>
-              <span className="text-xs text-slate-500">{object.typeId}</span>
-            </li>
-          ))}
-          {proposal.objects.length === 0 && (
-            <li className="px-3 py-2 text-slate-500" data-testid="argocd-proposal-empty">
-              This Argo CD reported no Applications. Nothing to import.
-            </li>
-          )}
-        </ul>
-
-        {accept.isError && <ErrorNotice error={accept.error} testId="argocd-accept-error" />}
-
-        <div>
-          <Button
-            type="button"
-            disabled={accept.isPending || proposal.objects.length === 0}
-            onClick={() => accept.mutate()}
-            data-testid="argocd-accept-submit"
-          >
-            {accept.isPending ? "Importing…" : "Import and coordinate"}
-          </Button>
-        </div>
+        <ScaffoldPanel proposal={proposal} testIdPrefix="argocd-scaffold" />
       </CardContent>
     </Card>
   );
@@ -502,90 +455,15 @@ export function ReviewStep({
 // The result — hazard 3 lives here
 // ---------------------------------------------------------------------------------------------
 
-/**
- * WHAT WAS ACTUALLY CREATED, read off the accept response.
- *
- * Every number here comes from `result`. None is inferred from what `argocd-discovery` is believed
- * to emit — including the relationship count, which is the one this screen would most easily get
- * wrong: today the plugin returns `relationships: []`, so a "linked into your service graph" line
- * would be a lie, and hardcoding "0 relationships" would become a lie the day that changes. The
- * orphan notice keys on the response.
+/*
+ * `ImportSummary` IS GONE WITH THE WRITE IT SUMMARISED (ADR-0047). It counted the objects,
+ * relationships, bindings and mappings that `discovery.accept` had just created. Nothing is created
+ * here now — the wizard emits IaC and the operator commits it — so a summary of a write that did
+ * not happen would be a screen describing an event that no longer exists.
  */
-export function ImportSummary({
-  result,
-  systemName
-}: {
-  result: AcceptDiscoveryResponse;
-  systemName: string;
-}): React.JSX.Element {
-  const relationships = result.createdRelationshipIds.length;
-  const rows: Array<[string, number]> = [
-    ["graph objects", result.createdObjectIds.length],
-    ["executor bindings", result.createdBindingIds.length],
-    ["source mappings", result.createdSourceMappingIds.length],
-    ["graph relationships", relationships]
-  ];
 
-  return (
-    <Card data-testid="connect-argocd-summary">
-      <CardHeader>
-        <CardTitle className="text-base">Imported from {systemName}</CardTitle>
-        <CardDescription>
-          SCP now observes, triggers and reports on these Applications.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
-          {rows.map(([label, count]) => (
-            <div key={label} data-testid={`argocd-created-${label.replace(/\s+/g, "-")}`}>
-              <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
-              <dd className="font-mono text-lg text-slate-900">{count}</dd>
-            </div>
-          ))}
-        </dl>
-
-        {relationships === 0 && (
-          <div
-            className="rounded border border-slate-300 bg-slate-50 p-3 text-sm text-slate-800"
-            data-testid="argocd-orphan-notice"
-          >
-            <p className="font-medium">These components are not part of any service yet.</p>
-            <p className="mt-1">
-              The import created no graph relationships, so nothing links the new components to a
-              service, an owner or a dependency. Coordination works — the executor bindings above
-              are what SCP triggers and observes through — but service-level views will not show
-              them until you assign each component to a service.
-            </p>
-          </div>
-        )}
-
-        <Link
-          to="/$basePath"
-          params={{ basePath: "components" }}
-          className="text-sm text-slate-700 underline underline-offset-4 hover:text-slate-900"
-          data-testid="argocd-view-components-link"
-        >
-          View the imported components
-        </Link>
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------------------------
-// The page
-// ---------------------------------------------------------------------------------------------
-
-/**
- * The registered systems this wizard may resume — the ARGO CD ones, keyed on the `kind` property
- * each was created with.
- *
- * `execution-system` is one object type shared by every imported backend (gitea, gitlab, harbor,
- * argocd), so offering the unfiltered list would let an operator run `argocd-discovery` against
- * their Gitea and get a server-side error naming a plugin they never chose. A system with no `kind`
- * is omitted rather than assumed: this reads what is stored, and there is nothing here that could
- * tell an Argo CD from anything else without it.
- */
+/** The registered execution systems this wizard is about — unchanged, and restored here because it
+ *  sat inside the block `ImportSummary` occupied. */
 export function argoCdSystems(systems: GraphObject[] | undefined): GraphObject[] {
   return (systems ?? []).filter(
     (system) => (system.properties as { kind?: unknown } | undefined)?.kind === "argocd"
@@ -595,7 +473,6 @@ export function argoCdSystems(systems: GraphObject[] | undefined): GraphObject[]
 export function ConnectArgoCdPage(): React.JSX.Element {
   const [system, setSystem] = useState<GraphObject | null>(null);
   const [proposal, setProposal] = useState<DiscoveryProposal | null>(null);
-  const [result, setResult] = useState<AcceptDiscoveryResponse | null>(null);
 
   const systemsQuery = useQuery({
     queryKey: ["execution-systems"],
@@ -624,10 +501,8 @@ export function ConnectArgoCdPage(): React.JSX.Element {
         />
       )}
 
-      {result !== null && system !== null ? (
-        <ImportSummary result={result} systemName={system.name} />
-      ) : proposal !== null ? (
-        <ReviewStep doors={sdkDoors} proposal={proposal} onImported={setResult} />
+      {proposal !== null ? (
+        <ReviewStep proposal={proposal} />
       ) : system !== null ? (
         <EnumerateStep
           doors={sdkDoors}

@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import {
+  createOrphanComponent,
   createTestOrg,
   listenTestServer,
   type ListeningTestServer,
@@ -56,65 +57,19 @@ describe("source_mappings on import (M12 P5, Q3)", () => {
     return rows[0]?.resultingChangeObjectId ?? null;
   }
 
-  it("accept creates a source_mapping per proposed mapping, listable under its source kind", async () => {
-    const name = `imported-${randomUUID().slice(0, 8)}`;
-    const repo = `acme/${randomUUID().slice(0, 8)}`;
-    const result = await admin.discovery.accept({
-      proposal: {
-        objects: [{ typeId: "component", name, properties: {} }],
-        relationships: [],
-        sourceMappings: [
-          { objectName: name, sourceKind: "github", repoPattern: repo, type: "configuration" }
-        ]
-      }
-    });
-    expect(result.createdObjectIds).toHaveLength(1);
-    expect(result.createdSourceMappingIds).toHaveLength(1);
+  // THE THREE `accept`-BASED CASES ARE GONE WITH THE ROUTE (ADR-0047). They proved that importing
+  // through `discovery/accept` also created a `source_mapping` per component, so an imported
+  // component SELF-REPORTED releases instead of merely being triggerable.
+  //
+  // That property did not disappear — it moved. The scaffolder emits a pipeline carrying the
+  // proposal's source mapping (`iac-scaffold-reader.ts`), and applying the manifest creates the
+  // mapping through the ordinary `sourceMappings` collection, which `plans.integration.test.ts`'s
+  // C1 round trip already covers end to end. What changed is the door, not the guarantee.
+  //
+  // The BACKFILL cases below stay: `POST /discovery/backfill-source-mappings` survives until the
+  // estate migration completes (proposal section 7), because it is how the ~50 already-imported
+  // components get mappings without re-importing anything.
 
-    const componentId = result.createdObjectIds[0]!;
-    const mappings = await admin.changeSources.listMappings("github");
-    expect(
-      mappings.items.some((m) => m.componentObjectId === componentId && m.repoPattern === repo)
-    ).toBe(true);
-  });
-
-  it("the imported component SELF-REPORTS: a github event on its repo correlates to a Change", async () => {
-    const name = `imported-${randomUUID().slice(0, 8)}`;
-    const repo = `acme/${randomUUID().slice(0, 8)}`;
-    const result = await admin.discovery.accept({
-      proposal: {
-        objects: [{ typeId: "component", name, properties: {} }],
-        relationships: [],
-        sourceMappings: [{ objectName: name, sourceKind: "github", repoPattern: repo }]
-      }
-    });
-    const componentId = result.createdObjectIds[0]!;
-
-    // A github push to the mapped repo now correlates to the imported component — a Change is born.
-    const changeId = await reportAndProcess("github", repo);
-    expect(changeId).not.toBeNull();
-    const change = await admin.changes.get(changeId!);
-    expect(change.state).toBe("proposed");
-
-    // Control: an event on a DIFFERENT repo has no mapping → correlates against nothing → drops (the
-    // exact pre-P5 failure this closes). Proves the mapping is what wired the component, not luck.
-    const orphanChange = await reportAndProcess("github", `unmapped/${randomUUID().slice(0, 8)}`);
-    expect(orphanChange).toBeNull();
-    expect(componentId).toBeTruthy();
-  });
-
-  it("a proposal with NO sourceMappings creates none (imports without a source stay permissive)", async () => {
-    const name = `no-src-${randomUUID().slice(0, 8)}`;
-    const result = await admin.discovery.accept({
-      proposal: { objects: [{ typeId: "component", name, properties: {} }], relationships: [] }
-    });
-    expect(result.createdObjectIds).toHaveLength(1);
-    expect(result.createdSourceMappingIds).toHaveLength(0);
-  });
-
-  // The AUTOMATED backfill (M12 P5 follow-up) — wires mappings onto components imported BEFORE
-  // discovery emitted them (the 50 argocd orphans). Matches a proposal's sourceMappings to existing
-  // components by name; creates no objects; idempotent; reports every skip.
   describe("automated backfill", () => {
     const proposalOf = (mappings: Array<{ objectName: string; repoPattern: string }>) =>
       ({
@@ -124,12 +79,12 @@ describe("source_mappings on import (M12 P5, Q3)", () => {
       }) as never;
 
     it("matches existing components by name, creates mappings, is idempotent, and the component self-reports", async () => {
-      // An orphan imported BEFORE mappings existed (accept with no sourceMappings).
-      const name = `orphan-${randomUUID().slice(0, 8)}`;
+      // An orphan from BEFORE mappings existed. Made through the harness helper, which writes via
+      // `graph/objects-repo.ts` — there is no HTTP door that produces an orphan now that
+      // `discovery/accept` is gone, which is the point of removing it.
+      const orphan = await createOrphanComponent(server, org, `orphan-${randomUUID().slice(0, 8)}`);
+      const name = orphan.name;
       const repo = `acme/${randomUUID().slice(0, 8)}`;
-      await admin.discovery.accept({
-        proposal: { objects: [{ typeId: "component", name, properties: {} }], relationships: [] }
-      });
 
       // Backfill from a fresh proposal's sourceMappings → matched by name, mapping created.
       const first = await admin.discovery.backfillSourceMappings(
