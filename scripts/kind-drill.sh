@@ -156,25 +156,39 @@ helm install "$RELEASE_NAME" deploy/helm \
 # skipping" and even `--previous` can miss the first boot's logs. So we DON'T `--wait` on the install
 # above; instead we poll the api logs from first boot (accumulating current + previous container
 # logs) to capture the password reliably, and only THEN wait for full readiness.
-log "capturing the bootstrap admin one-time password by polling api logs from first boot"
+log "capturing the bootstrap admin one-time password by polling api+worker logs from first boot"
 CAPTURE_LOG="/tmp/kind-drill-api-capture.log"
 : > "$CAPTURE_LOG"
 ADMIN_PASSWORD=""
 for _ in $(seq 1 90); do
   API_POD="$(kubectl get pods -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-  if [ -n "$API_POD" ]; then
-    kubectl logs "$API_POD" --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
-    kubectl logs "$API_POD" --previous --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
-    LINE="$(grep -i "one-time password" "$CAPTURE_LOG" | tail -n1 || true)"
-    if [ -n "$LINE" ]; then
-      ADMIN_PASSWORD="$(printf '%s' "$LINE" | sed -n 's/.*shown once): \([^"]*\).*/\1/p')"
-      [ -n "$ADMIN_PASSWORD" ] && break
-    fi
+  # ALSO POLL THE WORKER. `main.ts` now creates the bootstrap admin only in the HTTP-serving role
+  # (`createsBootstrapAdmin`), so on any CURRENT build the password is in the api's log by
+  # construction. This drill, however, installs a HISTORICAL baseline first — and every baseline
+  # that predates that fix ran `ensureBootstrapAdmin` in EVERY process, so whichever of api/worker
+  # won the race printed the one-and-only copy of the credential. Polling just the api made this
+  # drill fail as "could not capture the bootstrap one-time password" whenever the worker won.
+  # The baseline is chosen relative to the newest migration, so it stays behind the product fix for
+  # as long as no new migration lands; reading both logs is what makes the drill work on both sides
+  # of that fix instead of only on the near side.
+  WORKER_POD="$(kubectl get pods -l app.kubernetes.io/component=worker -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  for POD in "$API_POD" "$WORKER_POD"; do
+    [ -n "$POD" ] || continue
+    kubectl logs "$POD" --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+    kubectl logs "$POD" --previous --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+  done
+  # Extraction is NOT gated on the api pod existing: the accumulated log may hold the line from the
+  # worker (a pre-fix baseline where the worker won the race), and gating on $API_POD would collect
+  # that line and then decline to read it.
+  LINE="$(grep -i "one-time password" "$CAPTURE_LOG" | tail -n1 || true)"
+  if [ -n "$LINE" ]; then
+    ADMIN_PASSWORD="$(printf '%s' "$LINE" | sed -n 's/.*shown once): \([^"]*\).*/\1/p')"
+    [ -n "$ADMIN_PASSWORD" ] && break
   fi
   sleep 2
 done
 if [ -z "$ADMIN_PASSWORD" ]; then
-  echo "FAIL: could not capture the bootstrap one-time password after polling api logs" >&2
+  echo "FAIL: could not capture the bootstrap one-time password after polling api+worker logs" >&2
   echo "--- accumulated api logs (tail) ---" >&2
   tail -60 "$CAPTURE_LOG" >&2 || true
   exit 1

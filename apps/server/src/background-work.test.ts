@@ -9,6 +9,7 @@ import type { CelSandbox } from "./governance/cel-sandbox.js";
 import type { PluginHost } from "./plugin-host/contract.js";
 import {
   BACKGROUND_LOOPS,
+  createsBootstrapAdmin,
   runsBackgroundWork,
   startBackgroundLoops,
   type BackgroundLoop,
@@ -144,6 +145,29 @@ describe("runsBackgroundWork", () => {
     expect(runsBackgroundWork({ role: "all" })).toBe(true);
     expect(runsBackgroundWork({ role: "worker" })).toBe(true);
     expect(runsBackgroundWork({ role: "api" })).toBe(false);
+  });
+});
+
+describe("createsBootstrapAdmin", () => {
+  it("is true for the HTTP-serving roles and FALSE for a pure worker", () => {
+    // The worker is the load-bearing case. It used to be true for every role, so the api and the
+    // worker raced on an empty database and the winner printed the bootstrap one-time password —
+    // a credential that is generated, shown once and never stored. When the worker won, the only
+    // copy landed in the worker's log, while every operator instruction (chart NOTES, docs,
+    // scripts/kind-drill.sh) says to read the API pod's. Reproduced 3/3 before this guard.
+    expect(createsBootstrapAdmin({ role: "api" })).toBe(true);
+    expect(createsBootstrapAdmin({ role: "all" })).toBe(true);
+    expect(createsBootstrapAdmin({ role: "worker" })).toBe(false);
+  });
+
+  it("is the COMPLEMENT of runsBackgroundWork for `worker`, and overlaps only on `all`", () => {
+    // Pins the intent rather than the literal: whoever owns loops must not be the one minting the
+    // credential, EXCEPT in the single-process `all` deployment where there is nobody else.
+    for (const role of ["api", "worker", "all"] as const) {
+      if (role === "all") continue;
+      expect(createsBootstrapAdmin({ role })).toBe(!runsBackgroundWork({ role }));
+    }
+    expect(createsBootstrapAdmin({ role: "all" })).toBe(runsBackgroundWork({ role: "all" }));
   });
 });
 

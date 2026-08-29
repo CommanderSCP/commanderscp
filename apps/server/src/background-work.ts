@@ -241,6 +241,40 @@ export function runsBackgroundWork(config: Pick<ServerConfig, "role">): boolean 
 }
 
 /**
+ * Does THIS process CREATE the bootstrap admin?
+ *
+ * Only the HTTP-serving roles, and that is the whole point rather than an optimisation.
+ *
+ * THE BUG THIS CLOSES (measured 2026-08-29, reproduced 3/3). `ensureBootstrapAdmin` used to run
+ * UNCONDITIONALLY in every process. In the chart's default split topology the api and worker pods
+ * boot at the same moment against the same empty database, so WHICHEVER WINS creates the admin and
+ * prints the one-time password — and that password is generated, shown once, and never stored. When
+ * the worker won, the api logged "bootstrap admin 'admin' already exists, skipping" and the only
+ * copy of the credential was in the WORKER's log.
+ *
+ * That is not merely untidy. Every operator-facing instruction — the chart NOTES, the docs, and
+ * `scripts/kind-drill.sh`, which polls the api pod and fails with "could not capture the bootstrap
+ * one-time password" — says to read the API pod's log. So on an unlucky boot the credential the
+ * whole install depends on was written somewhere nobody is told to look, with no error anywhere.
+ *
+ * Tying creation to the role that serves HTTP makes the password's location a PROPERTY OF THE
+ * DEPLOYMENT rather than of who won a startup race.
+ *
+ * WORKER-ONLY DEPLOYMENTS DO NOT BOOTSTRAP, deliberately: an install with no api has nothing to
+ * serve the credential to, and the chart always deploys an api (`role: all` covers the
+ * single-process case). A worker that starts first simply finds no org yet and picks it up on a
+ * later tick — its loops are all org-scoped queries, not a one-time init.
+ *
+ * NOT A FULL MUTUAL EXCLUSION: two api REPLICAS can still race each other. That path is already
+ * safe-by-construction rather than by this predicate — the loser's `existingAdmin` check returns
+ * early and logs "already exists, skipping" — so this fixes WHERE the password lands, which is what
+ * was broken and what was measured.
+ */
+export function createsBootstrapAdmin(config: Pick<ServerConfig, "role">): boolean {
+  return config.role === "all" || config.role === "api";
+}
+
+/**
  * Start every loop in `loops`, and return one handle that stops them all.
  *
  * SEQUENTIAL, IN ORDER, AND `stop()` STOPS IN THE SAME ORDER — preserving exactly what `main.ts`'s

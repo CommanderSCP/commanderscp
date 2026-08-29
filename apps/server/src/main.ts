@@ -11,7 +11,11 @@ import { startSseBridge } from "./events/sse-bridge.js";
 import { connectNatsFanout, type NatsFanoutHandle } from "./events/nats-fanout.js";
 import { loginAndSeedDemoData } from "./seed.js";
 import { startPluginHostForRole } from "./plugin-host/host-bootstrap.js";
-import { runsBackgroundWork, startBackgroundLoops } from "./background-work.js";
+import {
+  createsBootstrapAdmin,
+  runsBackgroundWork,
+  startBackgroundLoops
+} from "./background-work.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
 import { runSecretsDecryptCanary } from "./secrets/decrypt-canary.js";
 import { assertProductionSecretsOrThrow } from "./boot-checks.js";
@@ -79,11 +83,17 @@ async function main(): Promise<void> {
   const deps: AppDeps = { db, config };
   const app = await buildApp(deps);
 
-  const bootstrap = await ensureBootstrapAdmin(
-    db,
-    { orgName: config.bootstrapOrgName, adminUsername: config.bootstrapAdminUsername },
-    { info: (msg) => app.log.info(msg), warn: (msg) => app.log.warn(msg) }
-  );
+  // ONLY THE HTTP-SERVING ROLE CREATES THE ADMIN — `createsBootstrapAdmin`, whose doc carries the
+  // measured failure. Running this in every process meant the api and worker raced on an empty
+  // database and the winner printed the one-time password; when the worker won, the only copy of
+  // the credential landed in a log no operator instruction points at.
+  const bootstrap = createsBootstrapAdmin(config)
+    ? await ensureBootstrapAdmin(
+        db,
+        { orgName: config.bootstrapOrgName, adminUsername: config.bootstrapAdminUsername },
+        { info: (msg) => app.log.info(msg), warn: (msg) => app.log.warn(msg) }
+      )
+    : null;
 
   // ---------------------------------------------------------------------------------------------
   // THE FEDERATION-IDENTITY STARTUP CHECK (federation/self-origin-check.ts has the full rationale).
@@ -382,7 +392,10 @@ async function main(): Promise<void> {
   // eval stack turns it on). Needs the server actually listening (it talks to itself over HTTP,
   // PUBLIC API ONLY — seed.ts module doc), hence after `app.listen` above, not before. A
   // nice-to-have, not boot-critical: logged and swallowed on failure, never crashes the server.
-  if (config.seedDemo) {
+  // `&& bootstrap`: a process that did not CREATE the admin holds no fresh one-time password, so it
+  // cannot log in to seed — the same reason seed.ts already skips when `oneTimePassword` is null.
+  // The eval stack that turns this on runs `SCP_ROLE=all`, which does create it.
+  if (config.seedDemo && bootstrap) {
     await loginAndSeedDemoData(config, bootstrap, {
       info: (msg) => app.log.info(msg),
       warn: (msg) => app.log.warn(msg)
