@@ -51,6 +51,7 @@ import {
 } from "../governance/move-rung-write.js";
 import {
   computePlanDiff,
+  StackOwnershipConflictError,
   CONTAINS_TYPE_ID,
   duplicateProjectionDeclarations,
   invalidGovernanceMoveRungDeclarations,
@@ -955,7 +956,12 @@ export async function computeDiffForManifest(
   // its output well-formed, which would otherwise hide the manifest bug behind a plausible plan.
   assertProjectionsUnique(resolvedManifest);
 
-  const diff = computePlanDiff(resolvedManifest, {
+  // §9 — STACK THEFT IS A 409, NOT AN INTERNAL ERROR. `computePlanDiff` throws a typed
+  // `StackOwnershipConflictError` when the manifest names an object another stack manages; without
+  // this mapping it would surface as a 500 and read as a server fault rather than the deliberate
+  // refusal it is. Adoption of an UNMANAGED object is untouched and stays legal — that is how an
+  // existing estate comes under IaC in the first place.
+  const diff = computeDiffOrConflict(resolvedManifest, {
     existingObjects,
     managedRelationships,
     existingRelationships,
@@ -978,6 +984,54 @@ export async function computeDiffForManifest(
   assertGovernanceMoveRungsValid(diff);
   assertInlineBindingsValid(diff);
   return diff;
+}
+
+/**
+ * The apply-time half of §9's stack-theft refusal, read against LIVE `managed_by_stack`.
+ *
+ * Every non-delete object entry is checked, not only the ones the stored diff marked `adopted`: the
+ * marking is a fact about the instant the plan was computed, and trusting it here would make the
+ * guard exactly as stale as the thing it is guarding against.
+ */
+async function assertNoStackTheftAtApply(
+  tx: TenantTx,
+  orgId: string,
+  diff: PlanDiff,
+  stackName: string
+): Promise<void> {
+  const urns = diff.objects.filter((e) => e.action !== "delete").map((e) => e.urn);
+  if (urns.length === 0) return;
+  const rows = await tx
+    .select({ urn: objects.urn, managedByStack: objects.managedByStack })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), inArray(objects.urn, urns), isNull(objects.deletedAt)));
+
+  const conflicts = rows
+    .filter((r) => r.managedByStack !== null && r.managedByStack !== stackName)
+    .map((r) => ({ urn: r.urn, ownedBy: r.managedByStack as string }));
+  if (conflicts.length > 0) {
+    throw conflict(new StackOwnershipConflictError(conflicts, stackName).message);
+  }
+}
+
+/**
+ * `computePlanDiff` with its one typed refusal translated into an HTTP-shaped one.
+ *
+ * Kept as a named wrapper rather than a try/catch inline so the APPLY door can call exactly the
+ * same thing (`prepareApplyChecks` re-runs the ownership check against the STORED diff, because a
+ * plan is reviewed at one instant and applied at another, and the object could have been claimed by
+ * another stack in between).
+ */
+function computeDiffOrConflict(
+  resolvedManifest: ResolvedManifest,
+  snapshot: Parameters<typeof computePlanDiff>[1]
+): PlanDiff {
+  try {
+    return computePlanDiff(resolvedManifest, snapshot);
+  } catch (error) {
+    if (error instanceof StackOwnershipConflictError) throw conflict(error.message);
+    throw error;
+  }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1135,7 +1189,14 @@ export async function prepareApplyChecks(
   tx: TenantTx,
   orgId: string,
   actorObjectId: string,
-  diff: PlanDiff
+  diff: PlanDiff,
+  /**
+   * The stack this diff belongs to — REQUIRED, not optional, so §9's stack-theft check cannot be
+   * skipped by omission at a future call site. `PlanDiff` does not carry the name (the `plans` row
+   * does), and an optional parameter defaulting to "no check" is the shape that lets a third door
+   * quietly opt out of a guard the other two enforce.
+   */
+  stackName: string
 ): Promise<{ checks: ScopeCheck[]; objectResolutions: Map<string, ObjectResolution> }> {
   const objectResolutions = new Map<string, ObjectResolution>();
   const checks: ScopeCheck[] = [];
@@ -1144,6 +1205,12 @@ export async function prepareApplyChecks(
   // trusting plan-compute ran (e.g. a plan created by a pre-P5a build). Fail-closed: an uncaught
   // throw aborts before `executePlanDiff`, inside the route's transaction, so nothing applies.
   assertComponentsContained(diff);
+  // §9 STACK THEFT, RE-CHECKED AT APPLY AGAINST LIVE OWNERSHIP — and this door is the one that
+  // matters, not plan-compute's. A plan is reviewed at one instant and applied at another: an
+  // object that was unmanaged (legally adoptable) when the diff was computed may have been claimed
+  // by another stack since, and the stored diff would still say `adopted`. Reading the column here
+  // is the only check that sees the state the write will actually land on.
+  await assertNoStackTheftAtApply(tx, orgId, diff, stackName);
   // C1's two invariants get the same defense-in-depth treatment, and for a sharper reason: a plan
   // stored by a pre-C1 build cannot carry these collections at all, but a plan stored between
   // plan-compute and apply by ANY build must still be re-proved to write only onto objects this
