@@ -70,11 +70,14 @@ test("the wizard registers an Argo CD, enumerates it, and imports its Applicatio
 
   // --- Step 3: review -------------------------------------------------------------------------
   await expect(page.getByTestId("connect-argocd-review")).toBeVisible();
-  const proposed = page.getByTestId("argocd-proposal-object");
-  await expect(proposed).toHaveCount(FAKE_ARGOCD_APPS.length);
-  for (const app of FAKE_ARGOCD_APPS) {
-    await expect(proposed.filter({ hasText: app.metadata.name })).toHaveCount(1);
-  }
+  // The review step describes the proposal by TYPE and count rather than listing every object: the
+  // per-object list belonged to the import flow, where each row was about to become a graph write.
+  // Nothing here is about to be written, so what matters is that the proposal arrived intact and
+  // is understood as components. The per-app naming assertion did not go away — it moved to step 4,
+  // against the emitted SOURCE, which is the artifact that now carries the names.
+  await expect(page.getByTestId("argocd-proposal-counts")).toHaveText(
+    `${FAKE_ARGOCD_APPS.length} component`
+  );
 
   // --- Step 4: SCAFFOLD, not import (ADR-0047) -------------------------------------------------
   //

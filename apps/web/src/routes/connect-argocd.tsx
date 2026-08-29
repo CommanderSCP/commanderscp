@@ -382,9 +382,9 @@ export function EnumerateStep({
         <CardDescription>
           Runs <code className="font-mono">{ARGOCD_DISCOVERY_MODULE}</code> against{" "}
           <span data-testid="argocd-system-name">{system.name}</span> and returns a{" "}
-          <strong>proposal only</strong> — nothing is written to the graph until you accept it in
-          step 3. This call is also the connectivity check: it runs on the server, through
-          SCP&apos;s egress guard, with the token you just stored.
+          <strong>proposal only</strong> — nothing is written to the graph by this wizard at all;
+          step 3 turns it into IaC you commit. This call is also the connectivity check: it runs on
+          the server, through SCP&apos;s egress guard, with the token you just stored.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
