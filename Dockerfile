@@ -34,7 +34,7 @@ ARG COSIGN_IMAGE=ghcr.io/sigstore/cosign/cosign@sha256:bea051df6a6d3bc84288b6db0
 # tools/skopeo/pin.env — deploy/airgap/src/skopeo-bin.test.ts fails if they drift.
 # (Both ARGs sit above the first FROM: an ARG consumed by a FROM must be declared in the global
 # scope before any stage begins — the classic builder hard-errors otherwise.)
-ARG SKOPEO_IMAGE=quay.io/skopeo/stable@sha256:8b23fe434af822adf71bc7c8674a8dfab379771aa1400fb81ff655a5cecfca87
+ARG SKOPEO_IMAGE=quay.io/skopeo/stable@sha256:0e392474a4383b733038b85eff26ade929d2ff10e8deead25a6add3ed79fb362
 
 FROM ${COSIGN_IMAGE} AS cosign
 
@@ -78,7 +78,7 @@ COPY --from=cosign /ko-app/cosign /opt/scp/bin/cosign
 # vetted pin (static behavior + fail-closed version assertion) apart from somebody else's build.
 #
 # DEVIATION from the cosign pin: cosign's ko-built binary is static; skopeo's is DYNAMICALLY
-# linked against Fedora sonames (libgpgme.so.45, libsubid.so.5, …) that Debian does not ship. So
+# linked against Fedora sonames (libgpgme.so.11, libsubid.so.5, …) that Debian does not ship. So
 # we vendor the binary PLUS its closed shared-library closure PLUS Fedora's own ELF loader under
 # /opt/scp/libexec/skopeo, and /opt/scp/bin/skopeo is a wrapper that runs the binary against
 # exactly those vendored libraries (never the host's — host glibc version is irrelevant). The
@@ -98,7 +98,7 @@ COPY --from=skopeo \
   /lib64/libcrypt.so.2 \
   /lib64/libeconf.so.0 \
   /lib64/libgpg-error.so.0 \
-  /lib64/libgpgme.so.45 \
+  /lib64/libgpgme.so.11 \
   /lib64/libm.so.6 \
   /lib64/libpam.so.0 \
   /lib64/libpam_misc.so.0 \
