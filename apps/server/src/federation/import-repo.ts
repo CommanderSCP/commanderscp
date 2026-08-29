@@ -7,7 +7,8 @@ import {
   type SyncJournalEntry,
   type SyncScope,
   type TrustDomainId,
-  PipelineHookKindSchema
+  PipelineHookKindSchema,
+  TestRunEvidenceSchema
 } from "@scp/schemas";
 import {
   computeBundleChecksum,
@@ -29,7 +30,11 @@ import {
 import { recordBundleTransfer, type BundleTransport } from "./bundle-transfers-repo.js";
 import { recordAuditWitness } from "./audit-witness-repo.js";
 import { entryMatchesScope } from "./scope-filter.js";
-import { deleteHook, upsertHook } from "../coordination/pipeline-hooks-repo.js";
+import {
+  deleteHook,
+  recordTestRunEvidence,
+  upsertHook
+} from "../coordination/pipeline-hooks-repo.js";
 import {
   clearUnattachedChangeStatus,
   recordUnattachedChangeStatus
@@ -474,6 +479,16 @@ async function applyEntry(
       return;
     }
     case "pipeline_hook_upsert": {
+      // NO try/catch AROUND THE WRITE, and that is a correction rather than an omission. The first
+      // version wrapped it, on the reasoning that a throw wedges a peer's entire signed journal.
+      // MEASURED: catching a Postgres error inside a shared transaction does NOT un-poison it — the
+      // tx stays aborted, the catch hides the real failure, and the next statement dies with 25P02
+      // somewhere unrelated. A swallowed DB error is strictly worse than a propagated one.
+      //
+      // Tolerance therefore comes from VALIDATING BEFORE WRITING: every shape guard below runs
+      // before any row is touched, so a malformed or unparseable entry is skipped without the
+      // database ever seeing it. What remains after those guards is a genuine fault, and it
+      // propagates.
       // OUTPOST-RUN PROBES — the commander's declaration of WHAT to probe, applied locally so this
       // domain can run it. `federationImport: true` skips the journal append, or a receiver would
       // echo the entry back to its sender and, with two peers paired both ways, loop.
@@ -482,82 +497,139 @@ async function applyEntry(
       // peer's ENTIRE signed journal. A hook naming a component this domain has not replicated yet
       // is the ordinary out-of-order case, not corruption — it is dropped and re-sent on the next
       // sync, exactly as an unattached `change_status` is.
-      try {
-        const p = entry.payload as {
-          componentObjectId?: unknown;
-          kind?: unknown;
-          hookId?: unknown;
-          workflow?: unknown;
-          stage?: unknown;
-          everySeconds?: unknown;
-          maxAgeSeconds?: unknown;
-          quietWindowSeconds?: unknown;
-        };
-        const parsed = PipelineHookKindSchema.safeParse(p.kind);
-        if (
-          typeof p.componentObjectId !== "string" ||
-          typeof p.hookId !== "string" ||
-          !parsed.success
-        ) {
-          console.error("[federation] pipeline_hook_upsert: malformed payload — dropped");
-          return;
-        }
-        await upsertHook(tx, orgId, {
-          federationImport: true,
-          componentObjectId: p.componentObjectId,
-          kind: parsed.data,
-          hookId: p.hookId,
-          workflow: p.workflow,
-          stage: typeof p.stage === "string" ? p.stage : null,
-          everySeconds: typeof p.everySeconds === "number" ? p.everySeconds : null,
-          maxAgeSeconds: typeof p.maxAgeSeconds === "number" ? p.maxAgeSeconds : null,
-          quietWindowSeconds: typeof p.quietWindowSeconds === "number" ? p.quietWindowSeconds : null
-        });
-        return;
-      } catch (err) {
-        console.error(
-          `[federation] pipeline_hook_upsert dropped:`,
-          err instanceof Error ? err.message : String(err)
-        );
+      const p = entry.payload as {
+        componentObjectId?: unknown;
+        kind?: unknown;
+        hookId?: unknown;
+        workflow?: unknown;
+        stage?: unknown;
+        everySeconds?: unknown;
+        maxAgeSeconds?: unknown;
+        quietWindowSeconds?: unknown;
+      };
+      const parsed = PipelineHookKindSchema.safeParse(p.kind);
+      if (
+        typeof p.componentObjectId !== "string" ||
+        typeof p.hookId !== "string" ||
+        !parsed.success
+      ) {
+        console.error("[federation] pipeline_hook_upsert: malformed payload — dropped");
         return;
       }
+      await upsertHook(tx, orgId, {
+        federationImport: true,
+        componentObjectId: p.componentObjectId,
+        kind: parsed.data,
+        hookId: p.hookId,
+        workflow: p.workflow,
+        stage: typeof p.stage === "string" ? p.stage : null,
+        everySeconds: typeof p.everySeconds === "number" ? p.everySeconds : null,
+        maxAgeSeconds: typeof p.maxAgeSeconds === "number" ? p.maxAgeSeconds : null,
+        quietWindowSeconds: typeof p.quietWindowSeconds === "number" ? p.quietWindowSeconds : null
+      });
+      return;
     }
 
     case "pipeline_hook_tombstone": {
+      // NO try/catch AROUND THE WRITE, and that is a correction rather than an omission. The first
+      // version wrapped it, on the reasoning that a throw wedges a peer's entire signed journal.
+      // MEASURED: catching a Postgres error inside a shared transaction does NOT un-poison it — the
+      // tx stays aborted, the catch hides the real failure, and the next statement dies with 25P02
+      // somewhere unrelated. A swallowed DB error is strictly worse than a propagated one.
+      //
+      // Tolerance therefore comes from VALIDATING BEFORE WRITING: every shape guard below runs
+      // before any row is touched, so a malformed or unparseable entry is skipped without the
+      // database ever seeing it. What remains after those guards is a genuine fault, and it
+      // propagates.
       // The commander RETRACTED a probe. "Until they hear otherwise" is this entry: the outpost
       // stops running it because the declaration is gone, not because a schedule expired.
-      try {
-        const p = entry.payload as {
-          componentObjectId?: unknown;
-          kind?: unknown;
-          hookId?: unknown;
-        };
-        const parsed = PipelineHookKindSchema.safeParse(p.kind);
-        if (
-          typeof p.componentObjectId !== "string" ||
-          typeof p.hookId !== "string" ||
-          !parsed.success
-        ) {
-          console.error("[federation] pipeline_hook_tombstone: malformed payload — dropped");
-          return;
-        }
-        // A no-op delete is NOT an error — the same rule `deleteHook` itself states. A tombstone
-        // for a hook this domain never received (dropped out-of-order, or filtered by scope) is
-        // ordinary, and treating it as failure would re-deliver forever.
-        await deleteHook(
-          tx,
-          orgId,
-          { componentObjectId: p.componentObjectId, kind: parsed.data, hookId: p.hookId },
-          true
-        );
+      const p = entry.payload as {
+        componentObjectId?: unknown;
+        kind?: unknown;
+        hookId?: unknown;
+      };
+      const parsed = PipelineHookKindSchema.safeParse(p.kind);
+      if (
+        typeof p.componentObjectId !== "string" ||
+        typeof p.hookId !== "string" ||
+        !parsed.success
+      ) {
+        console.error("[federation] pipeline_hook_tombstone: malformed payload — dropped");
         return;
-      } catch (err) {
+      }
+      // A no-op delete is NOT an error — the same rule `deleteHook` itself states. A tombstone
+      // for a hook this domain never received (dropped out-of-order, or filtered by scope) is
+      // ordinary, and treating it as failure would re-deliver forever.
+      await deleteHook(
+        tx,
+        orgId,
+        { componentObjectId: p.componentObjectId, kind: parsed.data, hookId: p.hookId },
+        true
+      );
+      return;
+    }
+
+    case "pipeline_evidence_upsert": {
+      // NO try/catch AROUND THE WRITE, and that is a correction rather than an omission. The first
+      // version wrapped it, on the reasoning that a throw wedges a peer's entire signed journal.
+      // MEASURED: catching a Postgres error inside a shared transaction does NOT un-poison it — the
+      // tx stays aborted, the catch hides the real failure, and the next statement dies with 25P02
+      // somewhere unrelated. A swallowed DB error is strictly worse than a propagated one.
+      //
+      // Tolerance therefore comes from VALIDATING BEFORE WRITING: every shape guard below runs
+      // before any row is touched, so a malformed or unparseable entry is skipped without the
+      // database ever seeing it. What remains after those guards is a genuine fault, and it
+      // propagates.
+      // OUTPOST-RUN PROBES, THE UPWARD HALF — a probe result produced in a domain, applied at the
+      // commander so its wave gate can read it exactly as it reads local evidence.
+      //
+      // `source: "peer_reported"` IS STAMPED HERE, NOT READ FROM THE PAYLOAD, and the entry does not
+      // carry one. A signed journal proves WHO sent the bundle; it does not make the contents true,
+      // so the receiver records what it knows rather than what the sender claimed about its own
+      // authority. `producerSubjectId` is null for the same reason — there is no local principal
+      // behind a peer's machine-produced row, and inventing one would attribute a human to it.
+      //
+      // Tolerant like the hook cases: a throw wedges a peer's ENTIRE signed journal, and evidence
+      // naming a component this domain has not replicated is the ordinary out-of-order case.
+      const p = entry.payload as {
+        componentObjectId?: unknown;
+        targetObjectId?: unknown;
+        hookId?: unknown;
+        artifactDigest?: unknown;
+        commitSha?: unknown;
+        evidence?: unknown;
+      };
+      if (
+        typeof p.componentObjectId !== "string" ||
+        typeof p.targetObjectId !== "string" ||
+        typeof p.hookId !== "string"
+      ) {
+        console.error("[federation] pipeline_evidence_upsert: malformed payload — dropped");
+        return;
+      }
+      const parsed = TestRunEvidenceSchema.safeParse(p.evidence);
+      if (!parsed.success) {
+        // PARSED, NOT TRUSTED. The gate reads `payload` as a `TestRunEvidence` — a row that does
+        // not satisfy the schema would be silently unreadable by the only function that consults
+        // it, which is worse than absent because the hold would report "no evidence" while a row
+        // sat there.
         console.error(
-          `[federation] pipeline_hook_tombstone dropped:`,
-          err instanceof Error ? err.message : String(err)
+          "[federation] pipeline_evidence_upsert: payload is not TestRunEvidence — dropped"
         );
         return;
       }
+      await recordTestRunEvidence(tx, orgId, {
+        federationImport: true,
+        componentObjectId: p.componentObjectId,
+        targetObjectId: p.targetObjectId,
+        hookId: p.hookId,
+        artifactDigest: typeof p.artifactDigest === "string" ? p.artifactDigest : null,
+        commitSha: typeof p.commitSha === "string" ? p.commitSha : null,
+        source: "peer_reported",
+        producerSubjectId: null,
+        evidence: parsed.data
+      });
+      return;
     }
 
     case "change_status": {

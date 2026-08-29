@@ -2,11 +2,15 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { pipelineHooks } from "../db/schema.js";
+import { pipelineEvidence, pipelineHooks } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
-import { deleteHook, upsertHook } from "../coordination/pipeline-hooks-repo.js";
+import {
+  deleteHook,
+  recordTestRunEvidence,
+  upsertHook
+} from "../coordination/pipeline-hooks-repo.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
 import { pairPeer } from "./peers-repo.js";
 import { getCursor } from "./cursors-repo.js";
@@ -256,5 +260,75 @@ describe("pipeline hook federation: commander declares, outpost receives", () =>
     // And nothing from the refused bundle was applied — a partial apply would be worse than a
     // refusal, because the domain would hold a declaration the commander never signed.
     expect(await hooksAt(outpost, componentObjectId)).toHaveLength(0);
+  });
+
+  it("5. UPWARD: probe evidence produced at the outpost reaches the commander, stamped peer_reported", async () => {
+    // The other half of the round trip. A probe runs in the DOMAIN — the commander does not reach
+    // in, and the digest-pinned bundle is local to the outpost — so the result is produced there
+    // and has to travel back for the commander's gate to read it.
+    const componentObjectId = await replicatedComponent();
+    const targetObjectId = componentObjectId;
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      recordTestRunEvidence(tx, outpost.orgId, {
+        componentObjectId,
+        targetObjectId,
+        hookId: "canary",
+        artifactDigest: `sha256:${"ab".repeat(32)}`,
+        source: "executor_observed",
+        evidence: {
+          kind: "testRun",
+          hook: "continuous",
+          hookId: "canary",
+          workflow: {
+            repo: "acme/pipelines",
+            branch: "main",
+            path: "probes/canary.yaml",
+            commitSha: "9".repeat(40),
+            bundle: { repository: "acme/api-tests", digest: `sha256:${"7c".repeat(32)}` }
+          },
+          runId: "probe-1",
+          outcome: "passed",
+          startedAt: "2026-08-28T00:00:00.000Z",
+          completedAt: "2026-08-28T00:01:00.000Z"
+        }
+      })
+    );
+
+    // Outpost -> commander: the commander pulls from the outpost's journal.
+    const outpostSelf = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      ensureFederationSelf(tx, outpost.orgId)
+    );
+    const cursor = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      getCursor(tx, commander.orgId, outpostSelf.domainId, outpostSelf.domainId)
+    );
+    const bundle = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      exportSyncBundle(tx, outpost.orgId, commander.orgName, cursor.sequence)
+    );
+    await withTenantTx(commander.db, commander.orgId, (tx) =>
+      importSyncBundle(tx, commander.orgId, bundle)
+    );
+
+    const [row] = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      tx
+        .select()
+        .from(pipelineEvidence)
+        .where(
+          and(
+            eq(pipelineEvidence.orgId, commander.orgId),
+            eq(pipelineEvidence.componentObjectId, componentObjectId)
+          )
+        )
+    );
+    expect(row, "the probe result never reached the gate that needs it").toBeTruthy();
+    expect(row!.hookId).toBe("canary");
+    // PROVENANCE IS STAMPED BY THE RECEIVER. The outpost recorded this as `executor_observed`; the
+    // commander records what IT knows — that a peer reported it. Asserting the source is what makes
+    // that rule testable rather than aspirational: a receiver that trusted the payload would show
+    // `executor_observed` here and be claiming the commander observed a run in someone else's
+    // domain.
+    expect(row!.source).toBe("peer_reported");
+    expect(row!.producerSubjectId).toBeNull();
+    // The evidence itself survives intact — it is what the gate parses.
+    expect((row!.payload as { outcome?: string }).outcome).toBe("passed");
   });
 });
