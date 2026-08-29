@@ -3,6 +3,8 @@ import { v7 as uuidv7 } from "uuid";
 import type { AlarmStateEvidence, PipelineHookKind, TestRunEvidence } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, pipelineEvidence, pipelineHooks } from "../db/schema.js";
+import { appendJournalEntry } from "../federation/journal-repo.js";
+import { computePipelineHookContentHash } from "../graph/content-hash.js";
 import type { BakeAlarmReport } from "./pipeline-hook-verdicts.js";
 
 /**
@@ -50,7 +52,14 @@ export interface PipelineHookIdentity {
   hookId: string;
 }
 
-export interface UpsertPipelineHookInput extends PipelineHookIdentity {
+/** Set by the federation IMPORT path only. Skips the journal append, because a receiver that
+ *  re-journalled what it was sent would echo the entry back to its sender and, with two peers
+ *  paired both ways, loop. The same reason `createObject` carries `federationImport`. */
+export interface FederationImportable {
+  federationImport?: boolean;
+}
+
+export interface UpsertPipelineHookInput extends FederationImportable, PipelineHookIdentity {
   workflow?: unknown;
   stage?: string | null;
   everySeconds?: number | null;
@@ -145,7 +154,42 @@ export async function upsertHook(
       set: { ...values, updatedAt: new Date() }
     })
     .returning();
-  return toHookRow(row!);
+  const hook = toHookRow(row!);
+  // OUTPOST-RUN PROBES — the declaration travels to the domain that will RUN it. Journalled on the
+  // same seam objects and relationships use (`appendJournalEntry`), unconditionally: WHICH peers
+  // receive it is `scope-filter.ts`'s decision, not this writer's, exactly as for `object_upsert`.
+  // Emitting here rather than at the IaC apply site means a hook written by any door — apply, a
+  // future API, a test harness — federates, instead of one door federating and the others not.
+  if (input.federationImport !== true)
+    await appendJournalEntry(tx, {
+      orgId,
+      entryKind: "pipeline_hook_upsert",
+      contentHash: computePipelineHookContentHash({
+        orgId,
+        componentObjectId: hook.componentObjectId,
+        kind: hook.kind,
+        hookId: hook.hookId,
+        workflow: hook.workflow,
+        stage: hook.stage,
+        everySeconds: hook.everySeconds,
+        maxAgeSeconds: hook.maxAgeSeconds,
+        quietWindowSeconds: hook.quietWindowSeconds
+      }),
+      // IDENTITY PLUS DECLARATION, never the local row id — a hook's identity is
+      // `(orgId, componentObjectId, kind, hookId)` and the uuid belongs to whichever instance minted
+      // it. An outpost applying this mints its own.
+      payload: {
+        componentObjectId: hook.componentObjectId,
+        kind: hook.kind,
+        hookId: hook.hookId,
+        workflow: hook.workflow,
+        stage: hook.stage,
+        everySeconds: hook.everySeconds,
+        maxAgeSeconds: hook.maxAgeSeconds,
+        quietWindowSeconds: hook.quietWindowSeconds
+      }
+    });
+  return hook;
 }
 
 /** Removes one declared hook. Returns the deleted row, or `undefined` when there was none — a no-op
@@ -154,7 +198,8 @@ export async function upsertHook(
 export async function deleteHook(
   tx: TenantTx,
   orgId: string,
-  identity: PipelineHookIdentity
+  identity: PipelineHookIdentity,
+  federationImport?: boolean
 ): Promise<PipelineHookRow | undefined> {
   const [row] = await tx
     .delete(pipelineHooks)
@@ -167,7 +212,35 @@ export async function deleteHook(
       )
     )
     .returning();
-  return row ? toHookRow(row) : undefined;
+  if (!row) return undefined;
+  const hook = toHookRow(row);
+  // The tombstone carries the SAME content hash the upsert did, so a receiver can tell which
+  // declaration is being removed rather than only which identity — the discipline
+  // `relationship_tombstone` follows (it passes `existing.contentHash`). A no-op delete journals
+  // NOTHING: apply-time prune legitimately asks for hooks a previous apply already removed, and a
+  // tombstone for a row that never existed would be a fact this instance cannot vouch for.
+  if (federationImport !== true)
+    await appendJournalEntry(tx, {
+      orgId,
+      entryKind: "pipeline_hook_tombstone",
+      contentHash: computePipelineHookContentHash({
+        orgId,
+        componentObjectId: hook.componentObjectId,
+        kind: hook.kind,
+        hookId: hook.hookId,
+        workflow: hook.workflow,
+        stage: hook.stage,
+        everySeconds: hook.everySeconds,
+        maxAgeSeconds: hook.maxAgeSeconds,
+        quietWindowSeconds: hook.quietWindowSeconds
+      }),
+      payload: {
+        componentObjectId: hook.componentObjectId,
+        kind: hook.kind,
+        hookId: hook.hookId
+      }
+    });
+  return hook;
 }
 
 // ---------------------------------------------------------------------------------------------

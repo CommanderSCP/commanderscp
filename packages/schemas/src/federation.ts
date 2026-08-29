@@ -49,7 +49,24 @@ export const JournalEntryKindSchema = z.enum([
   "policy_upsert",
   "approval_evidence",
   "audit_segment",
-  "key_rotation"
+  "key_rotation",
+  // OUTPOST-RUN PROBES (team-pipeline-iac D11/D23). Three kinds, added together under one
+  // `api-v2-exception` because `entryKind` appears in two RESPONSES (`/federation/exports`,
+  // `/federation/resync`) and a response enum-value addition is breaking under `tools/openapi/
+  // check.sh` — measured, not assumed. See `tools/openapi/OASDIFF-EXCEPTIONS.md`.
+  //
+  // WHY THE JOURNAL AND NOT THE GRAPH: a `pipeline_hooks` row is deliberately a side table whose
+  // ownership DERIVES from `component_object_id` (migration 0096's header). Making hooks graph
+  // objects to ride `object_upsert` for free would reverse that decision; these carry the row.
+  //
+  // DIRECTION IS PART OF THE MEANING. The two `pipeline_hook_*` kinds travel commander -> outpost
+  // (the WHAT: which probe to run). `pipeline_evidence_upsert` travels outpost -> commander (the
+  // RESULT). An outpost never authors a hook and a commander never authors probe evidence — that
+  // asymmetry is enforced in `scope-filter.ts` and re-checked at import, because a journal is
+  // signed but its CONTENTS are still a peer's claim.
+  "pipeline_hook_upsert",
+  "pipeline_hook_tombstone",
+  "pipeline_evidence_upsert"
 ]);
 export type JournalEntryKind = z.infer<typeof JournalEntryKindSchema>;
 
