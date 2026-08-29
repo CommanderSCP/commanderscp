@@ -33,6 +33,7 @@ import { ConnectKindPage } from "./routes/connect";
 import { SetupPage } from "./routes/setup";
 import { AdminDependenciesPage } from "./routes/admin-dependencies";
 import { AdminGovernancePage } from "./routes/admin-governance";
+import { AdminAccessPage } from "./routes/admin-access";
 import { AdminDecisionsPage } from "./routes/admin-decisions";
 import { AdminAuditPage } from "./routes/admin-audit";
 
@@ -337,6 +338,18 @@ const adminDependenciesRoute = createRoute({
 // table with Enable at… / Disable. A static 2-segment path, out-ranking the dynamic
 // `/$basePath/$idOrUrn` registry-detail route below exactly as `/admin/dependencies` does.
 // Linked from BOTH the commander and outpost nav tables (enforcement is per-instance).
+// Admin › Access (role-model.md §5 steps 5/6/10) — the role catalogue, who holds what, and the
+// caller's own effective permissions at one object. A static 2-segment path, out-ranking the
+// dynamic `/$basePath/$idOrUrn` registry-detail route exactly as its siblings do.
+//
+// BOTH SITES: an outpost's own principals hold roles in its own domain, and step 6's "what may I
+// do here" is if anything MORE useful there — a field operator with no commander to ask.
+const adminAccessRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/admin/access",
+  component: AdminAccessPage
+});
+
 const adminGovernanceRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/admin/governance",
@@ -420,6 +433,7 @@ const routeTree = rootRoute.addChildren([
     setupRoute,
     adminDependenciesRoute,
     adminGovernanceRoute,
+    adminAccessRoute,
     adminDecisionsRoute,
     adminAuditRoute,
     registryListRoute,
