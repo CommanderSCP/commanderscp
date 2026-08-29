@@ -47,11 +47,12 @@ import { objects, relationships } from "../db/schema.js";
  * |---|---|
  * | remove the pair-bound guard from `plans-repo.ts` (the hole) | this test FAILS — apply creates a placement with NO derived edges |
  * | guard only `create` and not `update`/`delete` | the update case FAILS |
- * | remove the guard from `routes/executors.ts`'s accept handler | the hand-written-proposal test FAILS with 201 and a placement created |
  *
- * TWO doors, not one. The IaC hole was found first; censusing every `createObject` caller for the
- * guard turned up `POST /discovery/accept` as well — user-facing, since it takes its proposal from
- * the request body, while `pair-bound-types.ts` had classed it with internal journal replay.
+ * TWO doors WHEN THIS WAS WRITTEN, one now. The IaC hole was found first; censusing every
+ * `createObject` caller for the guard turned up `POST /discovery/accept` as well — user-facing,
+ * since it took its proposal from the request body, while `pair-bound-types.ts` had classed it with
+ * internal journal replay. ADR-0047 removed that door, so the census that found it now returns one
+ * user-facing caller: IaC apply, which is what remains under test here.
  */
 describe("IaC apply refuses pair-bound object types", () => {
   let server: ListeningTestServer;
@@ -114,45 +115,14 @@ describe("IaC apply refuses pair-bound object types", () => {
     expect(after.length, "no placement may be written").toBe(before);
   });
 
-  it("refuses a hand-written discovery proposal that declares one", async () => {
-    // `pair-bound-types.ts` deliberately leaves import paths permissive: "discovery/accept and
-    // federation-journal replay call createObject directly and never touch a create ROUTE". That
-    // reasoning is sound for REPLAY, which is internal and reproduces edges from their own journal
-    // entries. `POST /discovery/accept` is different in kind — it takes the proposal FROM THE
-    // REQUEST BODY, so a client can hand-write one rather than obtain it from a plugin run.
-    //
-    // Probed before the guard existed: HTTP 201, one placement created, no derived edges. So the
-    // permissive ruling WAS being applied to a door that is not an import path. Now refused.
-    const component = await createTestComponent(admin, { name: `pb3-comp-${uuidv7()}` });
-    const target = await admin.deploymentTargets.create({ name: `pb3-target-${uuidv7()}` });
-    const before = (await livePlacements()).length;
-
-    const res = await server.app.inject({
-      method: "POST",
-      url: "/api/v1/discovery/accept",
-      headers: { authorization: `Bearer ${org.adminToken}` },
-      payload: {
-        proposal: {
-          objects: [
-            {
-              typeId: "placement",
-              name: `smuggled-via-accept-${uuidv7().slice(0, 8)}`,
-              properties: { componentId: component.id, deploymentTargetId: target.id }
-            }
-          ],
-          relationships: []
-        }
-      }
-    });
-
-    expect(res.statusCode, "a hand-written proposal must not be a create door for a pair").toBe(
-      403
-    );
-    expect(
-      (await livePlacements()).length,
-      "and nothing may be written — a refusal that still created the row would pass a status-only check"
-    ).toBe(before);
-  });
+  // THE `accept` CASE IS GONE WITH ITS DOOR (ADR-0047). It proved that a hand-written proposal
+  // declaring `typeId: "placement"` was refused — accept was different in kind from the other
+  // import paths `pair-bound-types.ts` leaves permissive, because it took its proposal FROM THE
+  // REQUEST rather than from a signed journal, so a caller could hand-write one.
+  //
+  // No door of that kind remains: discovery proposes and a human commits IaC, and the manifest path
+  // is covered by the case above ("refuses a manifest that declares a placement as a raw object"),
+  // which is the door a hand-written declaration reaches now.
 
   it("leaves no untraversable island — the reason the generic route refuses at all", async () => {
     // The decisive property. A placement created without its derived edges is invisible to blast

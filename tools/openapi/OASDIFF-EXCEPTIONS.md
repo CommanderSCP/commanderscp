@@ -247,3 +247,21 @@ now writes through `graph/objects-repo.ts` (there is deliberately no HTTP door t
 orphan any more); the `move-enforcement` m9 case and `governance-managed-write-doors` DOOR 2, both of
 which drove the route as a door under test; and the write-door census table, which went from five
 doors to four — the census failing on a **vanished** write site is that mechanism working.
+
+`discovery-relationship-import.integration.test.ts` is **deleted in full**, and that is the one
+removal worth naming individually. Its whole subject was the door: a proposal could declare a
+BATCH-LOCAL `urn` alias, and the file pinned how accept resolved edges against it — an unresolvable
+alias refused rather than silently skipped, a duplicate alias a 409, an alias shadowing a live object
+a 409, and the stored object keyed by its own derived URN rather than the alias. That alias mechanism
+existed only inside accept's transaction; the scaffolder emits code in which a service is a construct
+reference, so there is no alias to resolve and nothing of the behaviour survives to re-test
+elsewhere. Deleting the file is therefore accurate rather than lossy — but it is a real reduction in
+what is covered, so it is recorded here rather than left to a diff.
+
+`relationship-typeid-doors.integration.test.ts` is likewise **deleted in full**, and for the same
+reason: its subject was `POST /discovery/accept` as a relationship write door — the one its own
+census table marked "THE HOLE", because it checked NEITHER endpoint's scope. The door is gone, so
+the hole is gone. Its remaining half compared accept against the generic `/relationships` door
+("the two doors agree"), and that door's both-endpoints rule is covered independently by
+`graph/relationship-authz.integration.test.ts` — verified before deleting, not assumed: that file
+pins from-only, to-only, both-succeed, the `member_of` escalation case and DELETE.

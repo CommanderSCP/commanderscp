@@ -495,16 +495,10 @@ describe("source-mapping write doors are scoped at the component, credential doo
     );
     expect(hookAsOwner.status, hookAsOwner.body).toBe(200);
 
-    const accepted = {
-      proposal: {
-        objects: [{ typeId: "component", name: `disc-${randomUUID().slice(0, 8)}` }],
-        relationships: []
-      }
-    };
-    const accept = await call("POST", mineToken, "/api/v1/discovery/accept", accepted);
-    expect(accept.status, accept.body).toBe(403);
-    const acceptAsOwner = await call("POST", org.adminToken, "/api/v1/discovery/accept", accepted);
-    expect(acceptAsOwner.status, acceptAsOwner.body).toBe(201);
+    // THE `accept` PROBE IS GONE WITH ITS DOOR (ADR-0047). It checked that a component-bound
+    // Administrator is refused at an org-root-barred door and the owner passes. That property is
+    // still proven immediately below by `/discovery/run`, which carries the same org-root bar and
+    // is the door that still exists — so the case keeps its subject, one probe lighter.
 
     // `/discovery/run`'s org-root bar is `object:read`, which the component-bound Administrator
     // holds AT THEIR COMPONENT and nowhere else — so it refuses for exactly the reason under test.
