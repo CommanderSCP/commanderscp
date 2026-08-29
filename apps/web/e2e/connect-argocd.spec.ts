@@ -76,31 +76,41 @@ test("the wizard registers an Argo CD, enumerates it, and imports its Applicatio
     await expect(proposed.filter({ hasText: app.metadata.name })).toHaveCount(1);
   }
 
-  await page.getByTestId("argocd-accept-submit").click();
+  // --- Step 4: SCAFFOLD, not import (ADR-0047) -------------------------------------------------
+  //
+  // This wizard used to end by clicking "accept", which wrote the proposal into the graph — the
+  // path that made imported components RBAC orphans. It now asks which service each component
+  // belongs to and emits IaC. The assertions below are the INVERSE of the ones they replace: the
+  // old spec proved the components existed in the graph afterwards; this one proves they do NOT,
+  // which is the guarantee the removal actually bought.
+  await expect(page.getByTestId("argocd-scaffold-panel")).toBeVisible();
+  await expect(page.getByTestId("argocd-scaffold-no-write-notice")).toBeVisible();
 
-  // --- The summary ----------------------------------------------------------------------------
-  await expect(page.getByTestId("connect-argocd-summary")).toBeVisible();
-  await expect(page.getByTestId("argocd-created-graph-objects")).toContainText(
-    String(FAKE_ARGOCD_APPS.length)
-  );
-  await expect(page.getByTestId("argocd-created-executor-bindings")).toContainText(
-    String(FAKE_ARGOCD_APPS.length)
-  );
-  // `discovery accept` creates no relationships for an argocd import (the 2026-07-15 correction in
-  // docs/proposals/import-existing-executors.md §3), so the wizard must SAY the imported components
-  // are orphans rather than imply a graph link that is not there.
-  await expect(page.getByTestId("argocd-created-graph-relationships")).toContainText("0");
-  await expect(page.getByTestId("argocd-orphan-notice")).toBeVisible();
+  // Every discovered component starts UNGROUPED and is named as such — the orphan problem surfaced
+  // at authoring time, where a human is, instead of repaired afterwards.
+  await expect(page.getByTestId("argocd-scaffold-ungrouped")).toBeVisible();
 
-  // --- What is actually in the graph ----------------------------------------------------------
+  const serviceName = `e2e-scaffold-${Date.now()}`;
+  await page.getByTestId("argocd-scaffold-bulk-input").fill(serviceName);
+  await page.getByTestId("argocd-scaffold-apply-all").click();
+
+  // Grouped: the emitted source names every app, and the ungrouped warning is gone.
+  const source = page.getByTestId("argocd-scaffold-source");
+  await expect(source).toBeVisible();
+  for (const app of FAKE_ARGOCD_APPS) {
+    await expect(source).toContainText(app.metadata.name);
+  }
+  await expect(page.getByTestId("argocd-scaffold-ungrouped")).toHaveCount(0);
+
+  // --- NOTHING WAS WRITTEN --------------------------------------------------------------------
+  //
+  // The load-bearing half. `POST /discovery/scaffold` renders text; the graph write happens only
+  // when a human commits the code and runs `scp apply`. A wizard that quietly kept writing would
+  // pass every assertion above.
   const { username, password } = adminCredentials();
   const api = new ScpClient({ baseUrl: apiBaseUrl() });
   await api.login(username, password);
 
-  // Paged, not `limit: 200` — `ObjectListQuerySchema` caps `limit` at 100 and the compose stack
-  // this runs against is seeded (`SCP_SEED_DEMO=true`), so the imported pair is not guaranteed to
-  // be on the first page. A single over-limit page would 400; a single default page (20) would
-  // silently miss them, which is worse.
   const components: GraphObject[] = [];
   let cursor: string | null = null;
   do {
@@ -109,16 +119,9 @@ test("the wizard registers an Argo CD, enumerates it, and imports its Applicatio
     cursor = batch.nextCursor;
   } while (cursor);
   for (const app of FAKE_ARGOCD_APPS) {
-    const imported = components.find((c) => c.name === app.metadata.name);
-    expect(imported, `component '${app.metadata.name}' exists after the import`).toBeDefined();
     expect(
-      (imported!.properties as { argocdApplication?: string }).argocdApplication,
-      "the Argo CD Application name is recorded, so a binding's externalRef addresses the right app"
-    ).toBe(app.metadata.name);
-
-    // The half that makes the import COORDINATION rather than a catalogue entry.
-    const bindings = await api.executors.listBindings(imported!.id);
-    expect(bindings.length, `an executor binding for '${app.metadata.name}'`).toBeGreaterThan(0);
-    expect(bindings.some((b) => b.externalRef === app.metadata.name)).toBe(true);
+      components.find((c) => c.name === app.metadata.name),
+      `component '${app.metadata.name}' must NOT exist — the wizard scaffolds, it does not import`
+    ).toBeUndefined();
   }
 });
