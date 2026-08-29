@@ -192,6 +192,9 @@ importers:
         specifier: ^4.0.0
         version: 4.4.3
     devDependencies:
+      '@scp/cli':
+        specifier: workspace:*
+        version: link:../../packages/cli
       '@scp/iac':
         specifier: workspace:*
         version: link:../../packages/iac

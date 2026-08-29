@@ -69,6 +69,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@scp/cli": "workspace:*",
     "@scp/iac": "workspace:*",
     "@scp/plugin-testkit": "workspace:*",
     "@scp/source-census": "workspace:*",

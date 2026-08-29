@@ -1426,6 +1426,23 @@ export async function prepareApplyChecks(
   }
 
   for (const entry of diff.relationships) {
+    // RESOLVED FOR EVERY NON-DELETE ENTRY, INCLUDING `noop` — checked only for the rest.
+    //
+    // `executePlanDiff` stamps relationship ownership over `action !== "delete"`, which INCLUDES
+    // noops, and `endpointId` throws an internal error for a URN this pass never resolved. So a
+    // manifest re-declaring an ALREADY-EXISTING edge between objects it does not itself declare
+    // (it only references them) produced a 500 at apply.
+    //
+    // THAT IS EXACTLY THE ADOPTION PATH, which is why no existing test caught it: an ordinary stack
+    // declares its own objects, so their URNs resolve in the object loop above. An estate exported
+    // by `scp iac export` references its service by URN (`Service.fromUrn`) and re-declares the
+    // `contains` edge that already exists — every endpoint a reference, every entry a noop.
+    // Measured end to end by `estate-migration.integration.test.ts`.
+    //
+    // Resolving is not checking: a noop changes nothing, so it demands no new permission — the same
+    // "RESOLVED BUT NOT CHECKED" split the placement loop below already makes for its target.
+    await resolveEndpoint(entry.fromUrn);
+    await resolveEndpoint(entry.toUrn);
     if (entry.action === "noop") continue;
     // M5 CRITICAL (adversarial review): a manifest can declare any `typeId` on a relationship entry
     // (`ManifestRelationshipSchema`), so this apply path — exactly like the generic
