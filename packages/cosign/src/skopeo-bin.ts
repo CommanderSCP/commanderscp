@@ -37,7 +37,7 @@ export const PINNED_SKOPEO_VERSION = "1.22.2";
  * to a registry.
  */
 export const PINNED_SKOPEO_IMAGE =
-  "quay.io/skopeo/stable@sha256:8b23fe434af822adf71bc7c8674a8dfab379771aa1400fb81ff655a5cecfca87";
+  "quay.io/skopeo/stable@sha256:0e392474a4383b733038b85eff26ade929d2ff10e8deead25a6add3ed79fb362";
 
 /**
  * Where the Dockerfile puts the vendored entry point inside the SCP runtime image — a wrapper

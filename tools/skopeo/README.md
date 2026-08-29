@@ -21,9 +21,9 @@ out below.
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Tool                                      | [containers/skopeo](https://github.com/containers/skopeo)                                                                                                                                |
 | Version                                   | **1.22.2** (`skopeo --version` reports `skopeo version 1.22.2 commit: c766fdc4c1ff9525fa6a38f860430f10646124b3`; note: **no leading `v`**, unlike cosign)                                |
-| Image ref (**what we actually use**)      | `quay.io/skopeo/stable@sha256:8b23fe434af822adf71bc7c8674a8dfab379771aa1400fb81ff655a5cecfca87` — the **linux/amd64 platform manifest** for tag `v1.22.2`                                |
-| Multi-arch index digest (provenance only) | `sha256:c7d3c512612f52805023cd38351081dad7e2729fc13d14b701e47c7c8bdd6615`                                                                                                                |
-| Path inside the upstream image            | `/usr/bin/skopeo` (Fedora-based image; mode `0755`, 26,006,776 B, `sha256:da3115824eadde2a920eda0b96241c2f7e5f91ce03b6b41d7d49361365832645`)                                             |
+| Image ref (**what we actually use**)      | `quay.io/skopeo/stable@sha256:0e392474a4383b733038b85eff26ade929d2ff10e8deead25a6add3ed79fb362` — the **linux/amd64 platform manifest** for tag `v1.22.2-immutable`                      |
+| Multi-arch index digest (provenance only) | `sha256:4a16d57b37617a04b3d643079a477a2848efe892dffcdf0ce56df4262b65f810`                                                                                                                |
+| Path inside the upstream image            | `/usr/bin/skopeo` (Fedora-based image; mode `0755`, 25,559,496 B, `sha256:23dfaf9bc12fd1eb8804ae86c91907bd78cbf498f564fc31a058eb175b743cd0`)                                             |
 | Paths inside the SCP image                | `/opt/scp/bin/skopeo` (wrapper) → `/opt/scp/libexec/skopeo/{skopeo, lib/*}` (real binary + its library closure + loader)                                                                 |
 | License                                   | Apache-2.0 (`LICENSE-skopeo`); the vendored `.so` files are unmodified Fedora-built libraries redistributed from the upstream image under their own licenses (glibc/libgpgme LGPL, etc.) |
 
@@ -34,8 +34,18 @@ publishes no release binaries at all** ([their install docs](https://github.com/
 say so explicitly) — `quay.io/skopeo/stable` _is_ the official binary distribution. A digest pin
 is also strictly stronger than any tag or URL+sha256: the digest is the content hash of the
 entire image, it is what the registry re-verifies on every pull, and a mutable tag cannot be
-re-pointed underneath it. Same precedent chain as `tools/cosign` and `apps/runner-iac`'s pinned
-OpenTofu image.
+re-pointed underneath it.
+
+> **A digest pin is immutable, not immortal — pin from the `-immutable` tag.** Nothing can change
+> what a digest _means_, but the registry can stop _serving_ it. Upstream re-pushes `v1.22.2`, and
+> quay.io then garbage-collects the digests the previous push pointed at; the pull fails
+> `not found` and every consumer of the pin breaks at once. That is what happened here: the pin
+> resolved from plain `v1.22.2` went 404 and the nightly deploy drills failed on it from
+> 2026-08-18 to 2026-08-29 — all four jobs, because each one builds the image first. Resolve the
+> digest from `vX.Y.Z-immutable`, which upstream publishes precisely so it is never re-pushed.
+> Note the rebuild also moved a soname (`libgpgme.so.45` → `.so.11`), which is why step 4 below
+> regenerates the closure rather than only swapping the digest. Same precedent chain as `tools/cosign` and `apps/runner-iac`'s pinned
+> OpenTofu image.
 
 ### Why the platform digest, not the index digest
 

@@ -2191,6 +2191,107 @@ function main(): void {
     ]);
     const violations = autowireHookKubeApiViolations(`autowire-${be}-only`, docs);
     for (const v of violations) fail(v);
+
+    // ------------------------------------------------------------------------------------------
+    // THE SAME POST-DNAT RULE, APPLIED TO THE BACKEND ITSELF — not just to the kube API.
+    // ------------------------------------------------------------------------------------------
+    // A NetworkPolicy egress rule matches the destination AFTER kube-proxy's DNAT, so the port
+    // that must be allowed is the Service's targetPort (the backing container's port), NOT the
+    // Service port the client dialled. The check above already states this for the apiserver
+    // ("the POST-DNAT apiserver destination, not the 443 ClusterIP port") — and the same property
+    // was then missed for the bundled backends themselves.
+    //
+    // It cost the air-gap drill every run: `allow-argocd` permitted 80/443 while
+    // `endpoints/argocd-server` was 8080, so under Calico the auto-wire hook's `POST
+    // /api/v1/session` was dropped and Node reported `TypeError: fetch failed` — an error with no
+    // status, address or port, so the one number that mattered appeared nowhere.
+    //
+    // DERIVED, NOT HARDCODED: the required port is read from the bundled chart's own Service, so
+    // an upstream bump that moves the container port fails here instead of silently in a drill
+    // that only some environments enforce. Gitea passes today by coincidence (Service port and
+    // container port are both 3000); this check is what stops that coincidence being mistaken for
+    // a rule.
+    const backendDocs = renderBundledChart([`--set`, `bundledExecutor.${be}.enabled=true`]);
+
+    // EVERY RENDERED DOC MUST CARRY AN apiVersion — `kubectl apply` refuses the WHOLE stream
+    // otherwise, so one malformed document takes the entire backend down with it.
+    //
+    // Measured 2026-08-29: the shared `commanderscp.renderVendoredBackend` helper emitted its
+    // Namespace with the leading newline chomped, so `apiVersion: v1` was appended onto the
+    // caller's last comment line and swallowed by it — the document then began at `kind:`. It hit
+    // ALL THREE callers of that helper (argo-workflows, argo-events, gitea); Argo CD escaped only
+    // because it does not use it. The failure reads "error validating data: apiVersion not set",
+    // which sounds like a broken vendored upstream manifest rather than template whitespace, and
+    // it surfaced in a drill days later rather than at render time.
+    //
+    // Checked on the BUNDLED render (where the bug was) and cheap enough to be unconditional.
+    for (const doc of backendDocs) {
+      assert(
+        typeof doc.apiVersion === "string" && doc.apiVersion.length > 0,
+        `[bundled ${be} render] a document has NO apiVersion (kind=${String(doc.kind)}, ` +
+          `name=${String(doc.metadata?.name)}). kubectl apply rejects the entire stream on this, so ` +
+          `the whole backend fails to install. The usual cause is Go-template whitespace chomping ` +
+          `gluing a document's first line onto a preceding comment — check '{{- end -}}' vs ` +
+          `'{{- end }}' where the emitting helper starts its output.`
+      );
+    }
+    // Suffix match: the bundled chart prefixes its release name (`scp-gitea-http`), while the
+    // vendored Argo CD manifests keep upstream's bare `argocd-server`.
+    const backendSvcSuffix = be === "argocd" ? "argocd-server" : "gitea-http";
+    const backendSvc = backendDocs.find(
+      (d) => d.kind === "Service" && (d.metadata?.name ?? "").endsWith(backendSvcSuffix)
+    );
+    // NOT a silent skip. If the Service cannot be found the check has not run, and a check that
+    // does not run must say so rather than pass — the whole guard would otherwise evaporate the
+    // moment upstream renames a Service, which is exactly when it is most needed.
+    assert(
+      backendSvc !== undefined,
+      `[allow-${be} post-DNAT port] could not find the '${backendSvcSuffix}' Service in the ` +
+        `bundled render, so the post-DNAT port could not be checked at all. Fix the lookup — do ` +
+        `not let this check quietly stop running.`
+    );
+    if (backendSvc) {
+      const svcPorts = ((backendSvc.spec as Record<string, unknown> | undefined)?.ports ?? []) as {
+        port?: number;
+        targetPort?: number | string;
+      }[];
+      // An ABSENT targetPort means "same as port" (Kubernetes' default), so it is resolved here
+      // rather than dropped — dropping it is what made this silently skip Gitea, whose Service
+      // omits targetPort entirely.
+      const targetPorts = svcPorts
+        .map((sp) => (typeof sp.targetPort === "number" ? sp.targetPort : sp.port))
+        .filter((n): n is number => typeof n === "number");
+      const policy = docs.find(
+        (d) => d.kind === "NetworkPolicy" && (d.metadata?.name ?? "").endsWith(`-allow-${be}`)
+      );
+      const allowed = (
+        ((policy?.spec as Record<string, unknown> | undefined)?.egress ?? []) as {
+          ports?: { port?: number }[];
+        }[]
+      )
+        .flatMap((r) => r.ports ?? [])
+        .map((pp) => pp.port)
+        .filter((n): n is number => typeof n === "number");
+      if (policy && targetPorts.length > 0) {
+        const missing = targetPorts.filter((tp) => !allowed.includes(tp));
+        assert(
+          missing.length === 0,
+          `[allow-${be} post-DNAT port] the egress policy must allow the Service's targetPort(s) ` +
+            `${JSON.stringify(targetPorts)} — the destination a NetworkPolicy actually sees after ` +
+            `kube-proxy DNAT — but allows only ${JSON.stringify(allowed)}; missing ` +
+            `${JSON.stringify(missing)}. Allowing only the Service port is silently fine wherever ` +
+            `NetworkPolicy is unenforced (kind's default CNI) and drops every connection where it ` +
+            `IS enforced (Calico, the air-gap drill), surfacing as a connection error with no port ` +
+            `in it.`
+        );
+        if (missing.length === 0) {
+          console.log(
+            `  ${be}: allow-${be} egress permits targetPort(s) ${JSON.stringify(targetPorts)} ` +
+              `(post-DNAT destination) — OK`
+          );
+        }
+      }
+    }
     if (violations.length === 0) {
       console.log(
         `  ${be}-only render: hook pods have an ipBlock egress path covering ` +

@@ -88,7 +88,25 @@ spec:
 {{- end }}
 {{- if .Values.bundledExecutor.argocd.enabled }}
 # Egress: bundled Argo CD (Mode B) — api/worker AND the post-install auto-wire hook reach the
-# in-cluster Argo CD API (http on 80, server.insecure) in its own namespace. In-cluster destination,
+# in-cluster Argo CD API (http, server.insecure) in its own namespace.
+#
+# ⚠️ 8080 IS THE LOAD-BEARING PORT HERE, NOT 80. A NetworkPolicy egress rule matches the POST-DNAT
+# destination: kube-proxy rewrites `argocd-server.<ns>.svc:80` to the backing POD's IP:8080 before
+# the policy is evaluated, so what must be allowed is the CONTAINER port (upstream argocd-server's
+# `containerPort: 8080`, which is exactly what `kubectl get endpoints argocd-server` reports) —
+# not the Service port the client dialled.
+#
+# Listing only 80/443 was silently wrong wherever NetworkPolicy is actually ENFORCED, and it cost
+# the air-gap drill (Calico, default-deny) every single run: the auto-wire hook read Argo CD's
+# admin secret from the kube API fine, then hung on `POST /api/v1/session` until its Job deadline,
+# and Node surfaced it as `TypeError: fetch failed` — an error carrying no status, no address and
+# no port, so the one number that mattered appeared nowhere in the failure. Measured 2026-08-29
+# from `endpoints/argocd-server -> 192.168.234.140:8080` against an allow-list of 80/443.
+#
+# 80/443 are KEPT for installs that front argocd-server with an ingress/Service on the standard web
+# ports. `allow-argo-workflows` below already gets this right for the same reason (2746 is
+# argo-server's own container port); `allow-gitea` is correct by coincidence, Gitea's Service and
+# container port both being 3000. Argo CD is the one bundled backend where the two differ. In-cluster destination,
 # so a precise namespaceSelector (not the RFC1918 ipBlock) is the correct allow. The auto-wire hook's
 # OTHER two egress needs are already covered: DNS by allow-dns above, and the kube API (its
 # cross-namespace read of Argo CD's initial-admin secret) by allow-kube-api-autowire below — which
@@ -110,6 +128,7 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.bundledExecutor.argocd.namespace }}
       ports:
+        - { protocol: TCP, port: 8080 } # argocd-server's CONTAINER port — the post-DNAT destination
         - { protocol: TCP, port: 80 }
         - { protocol: TCP, port: 443 }
 ---
