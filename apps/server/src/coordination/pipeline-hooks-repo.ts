@@ -4,7 +4,10 @@ import type { AlarmStateEvidence, PipelineHookKind, TestRunEvidence } from "@scp
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, pipelineEvidence, pipelineHooks } from "../db/schema.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
-import { computePipelineHookContentHash } from "../graph/content-hash.js";
+import {
+  computePipelineEvidenceContentHash,
+  computePipelineHookContentHash
+} from "../graph/content-hash.js";
 import type { BakeAlarmReport } from "./pipeline-hook-verdicts.js";
 
 /**
@@ -249,7 +252,19 @@ export async function deleteHook(
 
 /** Where an evidence row came from. SERVER-STAMPED at every write door and NEVER read from a request
  *  body — `SubmitPipelineEvidenceRequestSchema` deliberately has no such field. */
-export type PipelineEvidenceSource = "rollout_analysis" | "pushed" | "executor_observed";
+/**
+ * WHO PRODUCED a piece of evidence. Server-side only — it appears nowhere in `openapi.v1.json`
+ * (measured), so adding a member costs no oasdiff exception.
+ *
+ * `peer_reported` is the OUTPOST-RUN PROBE source: evidence a peer produced in its own domain and
+ * journalled upward. It is STAMPED BY THE RECEIVER at import, never read from the entry's payload —
+ * provenance is the authorization boundary, not the payload shape, and a shape-valid payload is
+ * forgeable by anyone who can read the schema. A peer's journal is SIGNED, which proves who sent
+ * it; it does not make the contents true, so the receiver records what it knows (this came from
+ * that peer) rather than what the sender claimed about itself.
+ */
+export type PipelineEvidenceSource =
+  "rollout_analysis" | "pushed" | "executor_observed" | "peer_reported";
 
 /** What a piece of evidence is bound to. Exactly one of the two is required by the consuming hook
  *  (`postMerge` -> commit, the other three -> digest); both may be present on the wire. */
@@ -264,7 +279,8 @@ export interface PipelineEvidenceSubjectRef extends PipelineEvidenceBinding {
   hookId: string;
 }
 
-export interface RecordTestRunEvidenceInput extends PipelineEvidenceSubjectRef {
+export interface RecordTestRunEvidenceInput
+  extends PipelineEvidenceSubjectRef, FederationImportable {
   /** SERVER-STAMPED by the caller from the authenticated request — see `recordTestRunEvidence`. */
   source: PipelineEvidenceSource;
   /** SERVER-STAMPED by the caller from the authenticated subject. `null` for machine-observed rows
@@ -389,7 +405,41 @@ export async function recordTestRunEvidence(
       payload: input.evidence
     })
     .returning();
-  return toEvidenceRow(row!);
+  const evidence = toEvidenceRow(row!);
+  // OUTPOST-RUN PROBES, THE UPWARD HALF. A probe runs in the domain, so its result is produced
+  // HERE and the commander's gate needs it. Journalled on the same seam the hook declaration came
+  // down on, which is what makes the air gap work by construction: the entry rides return media
+  // with everything else, and no outpost ever needs an outbound credential to the commander.
+  //
+  // `federationImport` skips it for the same reason the hook doors do — a commander that
+  // re-journalled a peer's evidence would send it back, and with peers paired both ways, loop.
+  if (input.federationImport !== true)
+    await appendJournalEntry(tx, {
+      orgId,
+      entryKind: "pipeline_evidence_upsert",
+      contentHash: computePipelineEvidenceContentHash({
+        orgId,
+        componentObjectId: evidence.componentObjectId,
+        targetObjectId: evidence.targetObjectId,
+        hookId: evidence.hookId,
+        artifactDigest: evidence.artifactDigest,
+        commitSha: evidence.commitSha,
+        payload: evidence.payload
+      }),
+      // NO `source` AND NO `producerSubjectId` ON THE WIRE, deliberately. Both are provenance the
+      // RECEIVER stamps from what it knows (which peer signed this bundle), and shipping them would
+      // invite a receiver to trust a sender's claim about its own authority — the exact inversion
+      // `recordTestRunEvidence`'s own doc refuses for the pushed door.
+      payload: {
+        componentObjectId: evidence.componentObjectId,
+        targetObjectId: evidence.targetObjectId,
+        hookId: evidence.hookId,
+        artifactDigest: evidence.artifactDigest,
+        commitSha: evidence.commitSha,
+        evidence: evidence.payload
+      }
+    });
+  return evidence;
 }
 
 /**

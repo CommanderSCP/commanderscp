@@ -87,3 +87,27 @@ export function computePipelineHookContentHash(input: {
   });
   return createHash("sha256").update(canonical).digest("hex");
 }
+
+/** A piece of pipeline evidence, canonically. Excludes `source` and `producerSubjectId`: those are
+ *  provenance the RECEIVER stamps, so including them would make the same result hash differently
+ *  either side of a federation hop. */
+export function computePipelineEvidenceContentHash(input: {
+  orgId: string;
+  componentObjectId: string;
+  targetObjectId: string;
+  hookId: string;
+  artifactDigest: string | null;
+  commitSha: string | null;
+  payload: unknown;
+}): string {
+  const canonical = JSON.stringify({
+    orgId: input.orgId,
+    componentObjectId: input.componentObjectId,
+    targetObjectId: input.targetObjectId,
+    hookId: input.hookId,
+    artifactDigest: input.artifactDigest,
+    commitSha: input.commitSha,
+    payload: input.payload
+  });
+  return createHash("sha256").update(canonical).digest("hex");
+}
