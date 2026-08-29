@@ -325,6 +325,54 @@ export const ManifestGovernanceMoveRungSchema = z.object({
 });
 export type ManifestGovernanceMoveRung = z.infer<typeof ManifestGovernanceMoveRungSchema>;
 
+/**
+ * ================================================================================================
+ * ROLE BINDINGS AND CUSTOM ROLES IN A MANIFEST (role-model.md — the IaC rung of principle 3)
+ * ================================================================================================
+ *
+ * WHAT IS DELIBERATELY NOT EXPRESSIBLE: a binding whose subject is a `group` or `team`.
+ *
+ * D7 requires the granter to acknowledge every principal a group binding empowers, compared by SET
+ * EQUALITY at the door. In a manifest that value is a MEMBERSHIP SNAPSHOT and it goes stale the
+ * moment anyone joins or leaves. The failure is not that the snapshot is wrong — it is that a
+ * stale-snapshot refusal TRAINS the author to stop reading it: they paste whatever the last error
+ * said, and a control whose whole purpose is that a human looks at the current set becomes a
+ * checksum updated mechanically. So the construct refuses a group subject at SYNTH, and the
+ * operator uses `scp role-binding grant-preview` + `create`, where the set is read at the moment of
+ * granting.
+ *
+ * WHO APPLIES MATTERS, AND IS NOT SPECIAL-CASED. The no-escalation subset rule
+ * (`authz/role-binding-door.ts`) is evaluated against the APPLYING principal, which for a
+ * config-source sync is the TEAM object (ADR-0046 §1 / D9). A team whose repo declares a binding
+ * must therefore already hold every permission that role carries at that scope — so a team's own
+ * repo cannot bootstrap that team's permissions. That is the rule working, not a gap: authority
+ * must not be conferrable by someone who lacks it, and "the applying identity is a team" does not
+ * change the argument.
+ */
+export const ManifestRoleBindingSchema = z.object({
+  /** The `user` or `service-account` receiving the authority, by URN. */
+  subjectUrn: z.string().min(1).max(512),
+  /** Built-in name (`Owner`, `OrgAdmin`, …) or an org role's name. Resolved at apply. */
+  roleName: z.string().min(1).max(200),
+  /** The object at-or-below which the role grants, by URN. */
+  scopeUrn: z.string().min(1).max(512),
+  /** Mandatory, as on the typed door: handing a principal authority is a governance act, and the
+   *  operator's own words are the one thing the structured Decision cannot reconstruct. */
+  reason: z.string().min(1).max(2000)
+});
+export type ManifestRoleBinding = z.infer<typeof ManifestRoleBindingSchema>;
+
+/** One org-defined role. `permissions` must all be strings this system defines AND ones the
+ *  applying principal holds at the org root (`role-binding-door.ts` §9). */
+export const ManifestRoleSchema = z.object({
+  name: z.string().min(1).max(200),
+  permissions: z.array(z.string()).max(100),
+  /** Object type ids this role may be bound at; absent means ANY scope. */
+  bindableAt: z.array(z.string()).max(50).optional(),
+  reason: z.string().min(1).max(2000)
+});
+export type ManifestRole = z.infer<typeof ManifestRoleSchema>;
+
 export const DesiredStateManifestSchema = z.object({
   /** Deployable-unit label — becomes the row's server-written `managed_by_stack` (drizzle/0068),
    *  which is what scopes pruning. It is ALSO mirrored into `labels` as `scp:stack` for humans; that
@@ -520,6 +568,25 @@ export const DesiredStateManifestSchema = z.object({
    *
    * Identity is `(componentUrn, targetClass)`.
    */
+  /**
+   * ORDINARY RULE (absent = empty = prune), same shape of reasoning as `rollouts` below: a dropped
+   * binding is a REVOCATION — visible on the plan line, and a NARROWING rather than a silent
+   * un-gating. The dangerous direction for a role binding is granting, and a forgotten key cannot
+   * grant anything.
+   *
+   * Identity is `(subjectUrn, roleName, scopeUrn)` — the same triple `role_bindings_grant_key`
+   * (drizzle/0097) makes unique, so a manifest cannot express two bindings the database would
+   * collapse into one.
+   */
+  roleBindings: z.array(ManifestRoleBindingSchema).optional(),
+  /**
+   * ORDINARY RULE. Identity is `name` within the org.
+   *
+   * A DELETE here is refused by the API while any binding still points at the role, so a manifest
+   * dropping a role whose bindings live elsewhere fails loudly at apply rather than performing an
+   * unreviewable mass revoke (`routes/role-bindings.ts`'s delete door).
+   */
+  roles: z.array(ManifestRoleSchema).optional(),
   rollouts: z.array(ManifestRolloutSchema).optional(),
   /**
    * ORDINARY RULE, for a second and simpler reason: D25 has synth write `converge` EXPLICITLY
@@ -777,6 +844,41 @@ export const PlanRolloutDiffEntrySchema = z.object({
 });
 export type PlanRolloutDiffEntry = z.infer<typeof PlanRolloutDiffEntrySchema>;
 
+/**
+ * One role binding's diff entry.
+ *
+ * NO `update` ACTION, deliberately. A binding's identity is the WHOLE of it —
+ * `(subjectUrn, roleName, scopeUrn)` is the same triple `role_bindings_grant_key` makes unique, and
+ * `reason` is not stored on the row. So there is nothing a binding can change INTO; a different
+ * grant is a different binding, and the plan shows a delete beside a create rather than an
+ * "update" that would hide which authority went away.
+ *
+ * ⚠️ A `delete` HERE REVOKES A PERSON'S ACCESS, which is what makes this collection unlike every
+ * other prunable one. The plan line is the review surface for that, so it names the subject and the
+ * role rather than an opaque id.
+ */
+export const PlanRoleBindingDiffEntrySchema = z.object({
+  kind: z.literal("roleBinding"),
+  action: z.enum(["create", "delete", "noop"]),
+  subjectUrn: z.string(),
+  roleName: z.string(),
+  scopeUrn: z.string(),
+  reason: z.string()
+});
+export type PlanRoleBindingDiffEntry = z.infer<typeof PlanRoleBindingDiffEntrySchema>;
+
+/** One org-role diff entry. `update` IS meaningful here — a role's identity is its name and its
+ *  permission set is its value, so widening one is a change in place rather than a delete. */
+export const PlanRoleDiffEntrySchema = z.object({
+  kind: z.literal("role"),
+  action: z.enum(["create", "update", "delete", "noop"]),
+  name: z.string(),
+  /** As declared. `null` on a `delete`, where there is no desired state. */
+  permissions: z.array(z.string()).nullable(),
+  reason: z.string()
+});
+export type PlanRoleDiffEntry = z.infer<typeof PlanRoleDiffEntrySchema>;
+
 /** D25(b) — one convergence declaration's diff entry. Same prune rule as `rollouts`. */
 export const PlanConvergenceDiffEntrySchema = z.object({
   kind: z.literal("convergence"),
@@ -841,6 +943,9 @@ export const PlanDiffSchema = z.object({
    *  computed by a build that predates them carries neither key, and an absent key here means the
    *  stack declared none — which, under the ordinary prune rule these two follow, prunes. */
   rollouts: z.array(PlanRolloutDiffEntrySchema).optional(),
+  /** ⚠️ A `delete` line here REVOKES ACCESS — the plan is the review surface for that. */
+  roleBindings: z.array(PlanRoleBindingDiffEntrySchema).optional(),
+  roles: z.array(PlanRoleDiffEntrySchema).optional(),
   convergence: z.array(PlanConvergenceDiffEntrySchema).optional(),
   summary: PlanDiffSummarySchema
 });

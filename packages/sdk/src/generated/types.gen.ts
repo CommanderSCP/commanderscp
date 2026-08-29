@@ -11998,6 +11998,18 @@ export type CreatePlanData = {
                 quietWindowSeconds: number;
                 stage?: string;
             }>;
+            roleBindings?: Array<{
+                subjectUrn: string;
+                roleName: string;
+                scopeUrn: string;
+                reason: string;
+            }>;
+            roles?: Array<{
+                name: string;
+                permissions: Array<string>;
+                bindableAt?: Array<string>;
+                reason: string;
+            }>;
             rollouts?: Array<{
                 componentUrn: string;
                 targetClass: 'cluster' | 'instanceGroup';
@@ -12190,6 +12202,18 @@ export type CreatePlanResponses = {
                 quietWindowSeconds: number;
                 stage?: string;
             }>;
+            roleBindings?: Array<{
+                subjectUrn: string;
+                roleName: string;
+                scopeUrn: string;
+                reason: string;
+            }>;
+            roles?: Array<{
+                name: string;
+                permissions: Array<string>;
+                bindableAt?: Array<string>;
+                reason: string;
+            }>;
             rollouts?: Array<{
                 componentUrn: string;
                 targetClass: 'cluster' | 'instanceGroup';
@@ -12323,6 +12347,21 @@ export type CreatePlanResponses = {
                 componentUrn: string;
                 targetClass: string;
                 rollout: unknown | null;
+                reason: string;
+            }>;
+            roleBindings?: Array<{
+                kind: 'roleBinding';
+                action: 'create' | 'delete' | 'noop';
+                subjectUrn: string;
+                roleName: string;
+                scopeUrn: string;
+                reason: string;
+            }>;
+            roles?: Array<{
+                kind: 'role';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                name: string;
+                permissions: Array<string> | null;
                 reason: string;
             }>;
             convergence?: Array<{
@@ -12522,6 +12561,18 @@ export type GetPlanResponses = {
                 quietWindowSeconds: number;
                 stage?: string;
             }>;
+            roleBindings?: Array<{
+                subjectUrn: string;
+                roleName: string;
+                scopeUrn: string;
+                reason: string;
+            }>;
+            roles?: Array<{
+                name: string;
+                permissions: Array<string>;
+                bindableAt?: Array<string>;
+                reason: string;
+            }>;
             rollouts?: Array<{
                 componentUrn: string;
                 targetClass: 'cluster' | 'instanceGroup';
@@ -12655,6 +12706,21 @@ export type GetPlanResponses = {
                 componentUrn: string;
                 targetClass: string;
                 rollout: unknown | null;
+                reason: string;
+            }>;
+            roleBindings?: Array<{
+                kind: 'roleBinding';
+                action: 'create' | 'delete' | 'noop';
+                subjectUrn: string;
+                roleName: string;
+                scopeUrn: string;
+                reason: string;
+            }>;
+            roles?: Array<{
+                kind: 'role';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                name: string;
+                permissions: Array<string> | null;
                 reason: string;
             }>;
             convergence?: Array<{
@@ -12866,6 +12932,18 @@ export type ApplyPlanResponses = {
                     quietWindowSeconds: number;
                     stage?: string;
                 }>;
+                roleBindings?: Array<{
+                    subjectUrn: string;
+                    roleName: string;
+                    scopeUrn: string;
+                    reason: string;
+                }>;
+                roles?: Array<{
+                    name: string;
+                    permissions: Array<string>;
+                    bindableAt?: Array<string>;
+                    reason: string;
+                }>;
                 rollouts?: Array<{
                     componentUrn: string;
                     targetClass: 'cluster' | 'instanceGroup';
@@ -12999,6 +13077,21 @@ export type ApplyPlanResponses = {
                     componentUrn: string;
                     targetClass: string;
                     rollout: unknown | null;
+                    reason: string;
+                }>;
+                roleBindings?: Array<{
+                    kind: 'roleBinding';
+                    action: 'create' | 'delete' | 'noop';
+                    subjectUrn: string;
+                    roleName: string;
+                    scopeUrn: string;
+                    reason: string;
+                }>;
+                roles?: Array<{
+                    kind: 'role';
+                    action: 'create' | 'update' | 'delete' | 'noop';
+                    name: string;
+                    permissions: Array<string> | null;
                     reason: string;
                 }>;
                 convergence?: Array<{

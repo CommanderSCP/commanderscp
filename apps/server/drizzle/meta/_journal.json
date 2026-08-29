@@ -757,6 +757,13 @@
       "when": 1788158008001,
       "tag": "0107_pipeline_evidence_peer_reported",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1788158009001,
+      "tag": "0108_role_bindings_managed_by_stack",
+      "breakpoints": true
     }
   ]
 }

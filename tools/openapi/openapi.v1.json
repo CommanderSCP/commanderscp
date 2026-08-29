@@ -47574,6 +47574,79 @@
                           ]
                         }
                       },
+                      "roleBindings": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "subjectUrn": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "roleName": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            },
+                            "scopeUrn": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000
+                            }
+                          },
+                          "required": [
+                            "subjectUrn",
+                            "roleName",
+                            "scopeUrn",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "roles": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            },
+                            "permissions": {
+                              "maxItems": 100,
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "bindableAt": {
+                              "maxItems": 50,
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "permissions",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
                       "rollouts": {
                         "type": "array",
                         "items": {
@@ -48271,6 +48344,79 @@
                                 "additionalProperties": false
                               }
                             ]
+                          }
+                        },
+                        "roleBindings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "subjectUrn": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              },
+                              "roleName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200
+                              },
+                              "scopeUrn": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              }
+                            },
+                            "required": [
+                              "subjectUrn",
+                              "roleName",
+                              "scopeUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "roles": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200
+                              },
+                              "permissions": {
+                                "maxItems": 100,
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "bindableAt": {
+                                "maxItems": 50,
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "permissions",
+                              "reason"
+                            ],
+                            "additionalProperties": false
                           }
                         },
                         "rollouts": {
@@ -49106,6 +49252,95 @@
                               "componentUrn",
                               "targetClass",
                               "rollout",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "roleBindings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "roleBinding"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "subjectUrn": {
+                                "type": "string"
+                              },
+                              "roleName": {
+                                "type": "string"
+                              },
+                              "scopeUrn": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "subjectUrn",
+                              "roleName",
+                              "scopeUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "roles": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "role"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "permissions": {
+                                "anyOf": [
+                                  {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "name",
+                              "permissions",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -49968,6 +50203,79 @@
                             ]
                           }
                         },
+                        "roleBindings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "subjectUrn": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              },
+                              "roleName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200
+                              },
+                              "scopeUrn": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              }
+                            },
+                            "required": [
+                              "subjectUrn",
+                              "roleName",
+                              "scopeUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "roles": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200
+                              },
+                              "permissions": {
+                                "maxItems": 100,
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "bindableAt": {
+                                "maxItems": 50,
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "reason": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "permissions",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
                         "rollouts": {
                           "type": "array",
                           "items": {
@@ -50801,6 +51109,95 @@
                               "componentUrn",
                               "targetClass",
                               "rollout",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "roleBindings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "roleBinding"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "subjectUrn": {
+                                "type": "string"
+                              },
+                              "roleName": {
+                                "type": "string"
+                              },
+                              "scopeUrn": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "subjectUrn",
+                              "roleName",
+                              "scopeUrn",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "roles": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "role"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "permissions": {
+                                "anyOf": [
+                                  {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "name",
+                              "permissions",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -51666,6 +52063,79 @@
                                 ]
                               }
                             },
+                            "roleBindings": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "subjectUrn": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 512
+                                  },
+                                  "roleName": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "scopeUrn": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 512
+                                  },
+                                  "reason": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  }
+                                },
+                                "required": [
+                                  "subjectUrn",
+                                  "roleName",
+                                  "scopeUrn",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "roles": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "permissions": {
+                                    "maxItems": 100,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "bindableAt": {
+                                    "maxItems": 50,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "reason": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "permissions",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
                             "rollouts": {
                               "type": "array",
                               "items": {
@@ -52499,6 +52969,95 @@
                                   "componentUrn",
                                   "targetClass",
                                   "rollout",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "roleBindings": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "roleBinding"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "subjectUrn": {
+                                    "type": "string"
+                                  },
+                                  "roleName": {
+                                    "type": "string"
+                                  },
+                                  "scopeUrn": {
+                                    "type": "string"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "subjectUrn",
+                                  "roleName",
+                                  "scopeUrn",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "roles": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "role"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "update",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "permissions": {
+                                    "anyOf": [
+                                      {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "name",
+                                  "permissions",
                                   "reason"
                                 ],
                                 "additionalProperties": false

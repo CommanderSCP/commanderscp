@@ -12,6 +12,8 @@ import type {
   PlanPipelineHookDiffEntry,
   PlanPlacementDiffEntry,
   PlanRolloutDiffEntry,
+  PlanRoleBindingDiffEntry,
+  PlanRoleDiffEntry,
   PlanRelationshipDiffEntry,
   PlanSourceMappingDiffEntry,
   PipelineClassification,
@@ -319,6 +321,8 @@ export interface ResolvedManifest {
    * strategy that is visible the next time anything deploys.
    */
   rollouts: ResolvedManifestRollout[];
+  roleBindings: ResolvedManifestRoleBinding[];
+  roles: ResolvedManifestRole[];
   convergence: ResolvedManifestConvergence[];
 }
 
@@ -346,6 +350,20 @@ export interface ResolvedManifestRollout {
   rollout: unknown;
 }
 
+export interface ResolvedManifestRoleBinding {
+  subjectUrn: string;
+  roleName: string;
+  scopeUrn: string;
+  reason: string;
+}
+
+export interface ResolvedManifestRole {
+  name: string;
+  permissions: string[];
+  bindableAt?: string[];
+  reason: string;
+}
+
 export interface ResolvedManifestConvergence {
   componentUrn: string;
   targetUrn: string;
@@ -362,6 +380,14 @@ function rolloutKey(r: { componentUrn: string; targetClass: string }): string {
 
 function convergenceKey(c: { componentUrn: string; targetUrn: string }): string {
   return [c.componentUrn, c.targetUrn].join("\u0000");
+}
+
+/** A role binding's identity is the WHOLE grant — the same triple `role_bindings_grant_key`
+ *  (drizzle/0097) makes unique. Nothing is left over to be its "value", which is why the diff has
+ *  no `update`: a different grant is a different binding, and showing it as an update would hide
+ *  which authority went away. */
+function roleBindingKey(b: { subjectUrn: string; roleName: string; scopeUrn: string }): string {
+  return [b.subjectUrn, b.roleName, b.scopeUrn].join("\u0000");
 }
 
 export interface PlanDiffSnapshot {
@@ -454,6 +480,11 @@ export interface PlanDiffSnapshot {
    *  hooks. Always read (unlike the hook pool) because absent means empty here, so a prune is
    *  always in scope. */
   managedRollouts: ResolvedManifestRollout[];
+  /** Bindings carrying THIS stack's `managed_by_stack` (drizzle/0108) — the prune population.
+   *  Hand-granted bindings carry NULL and are invisible here, which is what stops one manifest
+   *  revoking an Owner binding somebody granted through the typed door. */
+  managedRoleBindings: ResolvedManifestRoleBinding[];
+  managedRoles: { name: string; permissions: string[] }[];
   managedConvergence: ResolvedManifestConvergence[];
 }
 
@@ -1340,6 +1371,105 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     deletes++;
   }
 
+  // -----------------------------------------------------------------------------------------
+  // ROLE BINDINGS (drizzle/0108) — CREATE and DELETE only, and a delete REVOKES A PERSON'S ACCESS
+  // -----------------------------------------------------------------------------------------
+  // No `update`: `(subjectUrn, roleName, scopeUrn)` is the whole identity — the same triple
+  // `role_bindings_grant_key` makes unique — so nothing is left over to be a binding's "value".
+  // A different grant is a different binding, and rendering it as an update would hide which
+  // authority went away behind a line that reads like an edit.
+  //
+  // The prune population is `snapshot.managedRoleBindings`, which the repo scopes to this stack's
+  // own `managed_by_stack` rows. A binding granted by hand carries NULL and is therefore invisible
+  // here — that, not any check in this function, is what stops a manifest revoking an Owner
+  // binding somebody granted through the typed door.
+  const roleBindingEntries: PlanRoleBindingDiffEntry[] = [];
+  const existingRoleBindings = new Map(
+    snapshot.managedRoleBindings.map((b) => [roleBindingKey(b), b])
+  );
+  const declaredRoleBindingKeys = new Set<string>();
+  for (const declared of manifest.roleBindings) {
+    const key = roleBindingKey(declared);
+    if (declaredRoleBindingKeys.has(key)) continue;
+    declaredRoleBindingKeys.add(key);
+    const exists = existingRoleBindings.has(key);
+    roleBindingEntries.push({
+      kind: "roleBinding",
+      action: exists ? "noop" : "create",
+      subjectUrn: declared.subjectUrn,
+      roleName: declared.roleName,
+      scopeUrn: declared.scopeUrn,
+      reason: exists
+        ? "matches current state"
+        : "no existing binding for this subject, role and scope"
+    });
+    if (exists) noops++;
+    else creates++;
+  }
+  for (const managed of [...snapshot.managedRoleBindings]
+    .filter((b) => !declaredRoleBindingKeys.has(roleBindingKey(b)))
+    .sort((a, b) => roleBindingKey(a).localeCompare(roleBindingKey(b)))) {
+    roleBindingEntries.push({
+      kind: "roleBinding",
+      action: "delete",
+      subjectUrn: managed.subjectUrn,
+      roleName: managed.roleName,
+      scopeUrn: managed.scopeUrn,
+      // Worded as what it DOES, not as what the manifest omits — this line is the review surface
+      // for someone losing access.
+      reason:
+        "granted by this stack, no longer declared — applying this plan REVOKES this subject's " +
+        `'${managed.roleName}' at this scope`
+    });
+    deletes++;
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // ORG ROLES — create/update/delete. `update` IS meaningful: a role's identity is its NAME and
+  // its permission set is its value, so widening one is a change in place.
+  // -----------------------------------------------------------------------------------------
+  const roleEntries: PlanRoleDiffEntry[] = [];
+  const existingRoles = new Map(snapshot.managedRoles.map((r) => [r.name, r]));
+  const declaredRoleNames = new Set<string>();
+  for (const declared of manifest.roles) {
+    if (declaredRoleNames.has(declared.name)) continue;
+    declaredRoleNames.add(declared.name);
+    const existing = existingRoles.get(declared.name);
+    const same =
+      existing !== undefined &&
+      canonicalJson([...existing.permissions].sort()) ===
+        canonicalJson([...declared.permissions].sort());
+    roleEntries.push({
+      kind: "role",
+      action: existing === undefined ? "create" : same ? "noop" : "update",
+      name: declared.name,
+      permissions: declared.permissions,
+      reason:
+        existing === undefined
+          ? "no existing org role of this name"
+          : same
+            ? "matches current state"
+            : "declared permissions differ from the stored set"
+    });
+    if (existing === undefined) creates++;
+    else if (same) noops++;
+    else updates++;
+  }
+  for (const managed of [...snapshot.managedRoles]
+    .filter((r) => !declaredRoleNames.has(r.name))
+    .sort((a, b) => a.name.localeCompare(b.name))) {
+    roleEntries.push({
+      kind: "role",
+      action: "delete",
+      name: managed.name,
+      permissions: null,
+      // The delete door refuses while any binding still points at the role, so this line can fail
+      // LOUDLY at apply rather than performing an unreviewable mass revoke.
+      reason: "authored by this stack, no longer declared"
+    });
+    deletes++;
+  }
+
   const convergenceEntries: PlanConvergenceDiffEntry[] = [];
   const existingConvergence = new Map(
     snapshot.managedConvergence.map((c) => [convergenceKey(c), c])
@@ -1415,6 +1545,8 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     // omission carries no meaning here (absent and empty are the same), it just keeps a manifest
     // that declares neither byte-identical to one from before they existed.
     ...(rolloutEntries.length > 0 ? { rollouts: rolloutEntries } : {}),
+    ...(roleBindingEntries.length > 0 ? { roleBindings: roleBindingEntries } : {}),
+    ...(roleEntries.length > 0 ? { roles: roleEntries } : {}),
     ...(convergenceEntries.length > 0 ? { convergence: convergenceEntries } : {}),
     summary: { creates, updates, deletes, noops }
   };
