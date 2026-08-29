@@ -12,6 +12,9 @@ import {
   type TestBundleRef
 } from "@scp/schemas";
 import { webhookAdapterForSourceKind } from "./webhook-adapters.js";
+import { listConfigSourceRegistrations } from "../config-source/config-sources-repo.js";
+import { resolveConfigSourceForSync } from "../config-source/registration-match.js";
+import { enqueueConfigSourceSync } from "../config-source/sync-queue-repo.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents } from "../db/schema.js";
 import { badRequest, ProblemError } from "../errors.js";
@@ -594,6 +597,40 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
         .set({ processedAt: new Date(), resultingChangeObjectId: authoredChangeId })
         .where(eq(changeSourceEvents.id, row.id));
       continue;
+    }
+
+    // ADR-0046 §2 — THE CONFIG-SOURCE TRIGGER. A push to a registered config repo enqueues a sync.
+    //
+    // AN ADDITIONAL EFFECT OF THIS EVENT, NOT AN ALTERNATIVE TO CORRELATION: a repo can be both a
+    // team's config source AND a component's release source, so this runs BEFORE the
+    // `matchComponentForSource` branch and does not `continue`. Making it exclusive would mean a
+    // repo that gained a config-source registration silently stopped proposing changes.
+    //
+    // IT ONLY ENQUEUES. Reading the manifest is an out-of-process RPC and applying it writes the
+    // graph; neither belongs in this transaction, whose other work is correlating unrelated events.
+    // A failure here would abort the tx — and a try/catch would not save it, because a caught
+    // Postgres error leaves the tx aborted and the next statement dies somewhere unrelated. So the
+    // only thing done here is the one cheap, safe write. See `config-source/sync-queue-repo.ts`.
+    if (hint.repo && hint.commitSha) {
+      const registry = await listConfigSourceRegistrations(tx, orgId);
+      const resolution = resolveConfigSourceForSync(registry.registrations, hint.repo, "");
+      // `matched` is impossible here (no stack name to match on) — what this asks is the narrower
+      // question the trigger needs: does ANY registration cover this repo? An ambiguous repo is
+      // enqueued against nothing and reported at drain time by the same matcher, so the loud refusal
+      // stays in one place rather than being duplicated here.
+      const covering = registry.registrations.filter((r) => {
+        const single = resolveConfigSourceForSync([r], hint.repo!, "");
+        return single.outcome !== "no_match";
+      });
+      for (const registration of covering) {
+        await enqueueConfigSourceSync(tx, orgId, {
+          configSourceId: registration.id,
+          repo: hint.repo,
+          commitSha: hint.commitSha,
+          paths: hint.paths ?? []
+        });
+      }
+      void resolution;
     }
 
     const match = await matchComponentForSource(tx, orgId, {

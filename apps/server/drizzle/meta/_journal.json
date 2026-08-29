@@ -764,6 +764,13 @@
       "when": 1788158009001,
       "tag": "0108_role_bindings_managed_by_stack",
       "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1788158010001,
+      "tag": "0109_config_source_sync_queue",
+      "breakpoints": true
     }
   ]
 }

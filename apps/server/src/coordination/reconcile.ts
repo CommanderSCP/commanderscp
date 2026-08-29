@@ -111,6 +111,7 @@ import { evaluateRegionalDeployGate } from "./regional-executors.js";
 import { REGIONAL_EXECUTOR_EXPECTED_MODULE } from "@scp/schemas";
 import { processChangeSourceEvents } from "./webhook-processor.js";
 import { reconcileExecutorBindingsForOrg } from "../binding-policy/reconcile-bindings.js";
+import { drainConfigSourceSyncQueue } from "../config-source/drain-sync-queue.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
 import { resolvePolicies } from "../governance/policy-model.js";
 import { prewarmGovernanceForChange } from "../governance/gate-orchestrator.js";
@@ -3073,6 +3074,24 @@ export async function reconcileOrgTick(
     );
   } catch (err) {
     console.error(`[reconcile] org ${orgId} executor-binding reconciliation failed:`, err);
+  }
+  // ADR-0046 §2 — DRAIN THE CONFIG-SOURCE SYNC QUEUE. The webhook pass recorded that a registered
+  // repo moved; this is where the manifest is read and applied, and it is what finally gives
+  // `syncConfigSourceCommit` a production caller.
+  //
+  // ON THIS TICK, but with its own transactions inside: the drain reads manifests over the plugin
+  // RPC with NO transaction open, then opens one per entry to apply. That is why it takes `db`
+  // rather than a `tx` — see `config-source/drain-sync-queue.ts` for the three-phase shape and why
+  // one transaction would be wrong twice over.
+  //
+  // Caught and logged, like the change-source processing above it: a config repo whose manifest
+  // cannot be applied must not stop changes advancing.
+  if (host) {
+    try {
+      await drainConfigSourceSyncQueue(db, orgId, host, masterKey, `config-sync-${orgId}`);
+    } catch (err) {
+      console.error(`[reconcile] org ${orgId} config-source sync drain failed:`, err);
+    }
   }
   await advanceProposedChanges(db, orgId, gateDeps, selfDomainId);
   await advanceEvaluatedChanges(db, orgId, gateDeps, selfDomainId);

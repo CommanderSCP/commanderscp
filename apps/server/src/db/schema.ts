@@ -2917,6 +2917,37 @@ export const configSourceStacks = pgTable(
  * Ordinary prune rule (absent = empty = prune), unlike `pipelineHooks`; ownership derives from
  * `component_object_id`, so there is no `managed_by_stack` column on either.
  */
+/**
+ * The config-source trigger's durable handoff (migration 0109). The webhook pass RECORDS that a
+ * registered repo moved; a separate reconcile step drains it outside that transaction, where an
+ * out-of-process manifest read is legal and a failure is isolated to one row.
+ *
+ * Dedup is a PARTIAL UNIQUE INDEX over pending rows only — see the migration header for why the
+ * same commit may legitimately be enqueued again once the first entry has drained.
+ */
+export const configSourceSyncQueue = pgTable(
+  "config_source_sync_queue",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    configSourceId: uuid("config_source_id").notNull(),
+    /** Carried verbatim from the delivery — the work item is about the repo that ACTUALLY moved,
+     *  not whatever the registration says at drain time. */
+    repo: text("repo").notNull(),
+    commitSha: text("commit_sha").notNull(),
+    /** `ExtractedHint.paths`. Empty is legitimate and means "read every manifest the registration
+     *  selects" — the conservative direction. */
+    paths: jsonb("paths").notNull().default([]),
+    enqueuedAt: timestamp("enqueued_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Set even on a FAILED drain: the repo being ahead of the graph is a DISPLAYED state, never an
+     *  infinite retry. */
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error")
+  },
+  (table) => [index("config_source_sync_queue_pending").on(table.orgId, table.enqueuedAt)]
+);
+
 export const componentRollouts = pgTable(
   "component_rollouts",
   {
