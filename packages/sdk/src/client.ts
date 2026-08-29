@@ -132,6 +132,18 @@ import {
   // flow. Generic OIDC has no SDK surface — it's a browser-redirect flow (routes/oidc.ts).
   createPat as createPatRequest,
   listPats as listPatsRequest,
+  listRoles as listRolesRequest,
+  createRole as createRoleRequest,
+  updateRole as updateRoleRequest,
+  deleteRole as deleteRoleRequest,
+  listRoleBindings as listRoleBindingsRequest,
+  createRoleBinding as createRoleBindingRequest,
+  deleteRoleBinding as deleteRoleBindingRequest,
+  previewRoleBindingGrant as previewRoleBindingGrantRequest,
+  getEffectivePermissions as getEffectivePermissionsRequest,
+  createOperatorCredential as createOperatorCredentialRequest,
+  listOperatorCredentials as listOperatorCredentialsRequest,
+  revokeOperatorCredential as revokeOperatorCredentialRequest,
   revokePat as revokePatRequest,
   startDeviceAuth as startDeviceAuthRequest,
   approveDeviceAuth as approveDeviceAuthRequest,
@@ -470,7 +482,21 @@ import type {
   AcceptDiscoveryResponse,
   BackfillSourceMappingsResponse,
   ServiceBoardResponse,
-  RelayedEvent
+  RelayedEvent,
+  Role,
+  RoleListResponse,
+  CreateRoleRequest,
+  UpdateRoleRequest,
+  DeleteRoleRequest,
+  RoleBinding,
+  RoleBindingListResponse,
+  CreateRoleBindingRequest,
+  DeleteRoleBindingRequest,
+  GrantPreviewResponse,
+  EffectivePermissionsResponse,
+  CreateOperatorCredentialRequest,
+  CreatedOperatorCredential,
+  OperatorCredentialListResponse
 } from "@scp/schemas";
 import { ScpApiError, ScpResponseValidationError } from "./errors.js";
 import { installResponseValidationErrors } from "./response-validation.js";
@@ -1427,6 +1453,138 @@ export class ScpClient {
     revoke: async (id: string): Promise<Pat> => {
       const result = await revokePatRequest({ client: this.client, path: { id } });
       return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // RBAC — roles, role bindings, effective permissions (role-model.md §5 steps 5, 6, 10)
+  //
+  // The generated client carries these operations; this wrapper is what the CLI and the web UI
+  // consume, and until now it did not expose them — so the whole roles milestone was reachable
+  // only by hand-written HTTP. Charter principle 3 is API -> SDK -> CLI -> IaC -> UI, and the SDK
+  // rung is this object, not the generated one.
+  // -----------------------------------------------------------------------------------------
+
+  readonly roles = {
+    /** Built-ins and this org's own, in one bounded list — `GET /roles` is deliberately unpaginated. */
+    list: async (): Promise<RoleListResponse> => {
+      const result = await listRolesRequest({ client: this.client });
+      return unwrap(result);
+    },
+    /** Authors an ORG role. Refused if it names a built-in, carries an unknown permission, or
+     *  carries a permission the caller does not hold at the org root (role-binding-door.ts §9). */
+    create: async (
+      body: CreateRoleRequest,
+      opts: { idempotencyKey?: string } = {}
+    ): Promise<Role> => {
+      const result = await createRoleRequest({
+        client: this.client,
+        body,
+        headers: idempotencyHeaders(opts.idempotencyKey)
+      });
+      return unwrap(result);
+    },
+    /** Partial update. Omitted fields are left alone — a PATCH that dropped `bindableAt` because
+     *  the caller did not mention it would silently widen where the role may be bound. */
+    update: async (id: string, body: UpdateRoleRequest): Promise<Role> => {
+      const result = await updateRoleRequest({ client: this.client, path: { id }, body });
+      return unwrap(result);
+    },
+    /** Refused while any binding still points at the role — see the route's own comment on why a
+     *  cascade would be an unreviewable mass revoke. */
+    delete: async (id: string, body: DeleteRoleRequest): Promise<void> => {
+      const result = await deleteRoleRequest({ client: this.client, path: { id }, body });
+      unwrap(result);
+    }
+  };
+
+  readonly roleBindings = {
+    list: async (
+      query: { subjectId?: string; scopeObjectId?: string; cursor?: string; limit?: number } = {}
+    ): Promise<RoleBindingListResponse> => {
+      const result = await listRoleBindingsRequest({ client: this.client, query });
+      return unwrap(result);
+    },
+    create: async (
+      body: CreateRoleBindingRequest,
+      opts: { idempotencyKey?: string } = {}
+    ): Promise<RoleBinding> => {
+      const result = await createRoleBindingRequest({
+        client: this.client,
+        body,
+        headers: idempotencyHeaders(opts.idempotencyKey)
+      });
+      return unwrap(result);
+    },
+    delete: async (id: string, body: DeleteRoleBindingRequest): Promise<void> => {
+      const result = await deleteRoleBindingRequest({ client: this.client, path: { id }, body });
+      unwrap(result);
+    },
+    /** D7 — what `acknowledgedPrincipalIds` must say for a group/team subject. Also reports
+     *  `subjectExternallySynced`, i.e. whether an identity provider owns that membership. */
+    grantPreview: async (subjectId: string): Promise<GrantPreviewResponse> => {
+      const result = await previewRoleBindingGrantRequest({
+        client: this.client,
+        query: { subjectId }
+      });
+      return unwrap(result);
+    }
+  };
+
+  readonly authz = {
+    /** The CALLER's own permissions at one object, deny-override applied, plus the bindings that
+     *  produced them. Answers about nobody else — see the route's authorization note. */
+    effective: async (scopeObjectId: string): Promise<EffectivePermissionsResponse> => {
+      const result = await getEffectivePermissionsRequest({
+        client: this.client,
+        query: { scopeObjectId }
+      });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // Instance-tier operator credentials (role-model.md §5 step 9)
+  // -----------------------------------------------------------------------------------------
+
+  readonly operatorCredentials = {
+    /**
+     * `token` is returned ONCE and is not retrievable afterwards.
+     *
+     * `operatorToken` is REQUIRED on all three of these, unlike the read half of the other
+     * instance-tier surfaces: minting, listing and revoking are each gated by
+     * `x-scp-operator-token` (an existing credential, or the bootstrap `SCP_OPERATOR_TOKEN`). The
+     * listing is operator-gated too because it discloses how many credentials exist and when each
+     * was last used, which is a fact about the deployment's key material.
+     */
+    create: async (
+      body: CreateOperatorCredentialRequest,
+      operatorToken: string
+    ): Promise<CreatedOperatorCredential> => {
+      const result = await createOperatorCredentialRequest({
+        client: this.client,
+        body,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    /** Never returns secrets. `callerMechanism` reports whether THIS request was admitted by a
+     *  minted credential or the bootstrap env token — the only way to see that a deployment is
+     *  still on the bootstrap path. */
+    list: async (operatorToken: string): Promise<OperatorCredentialListResponse> => {
+      const result = await listOperatorCredentialsRequest({
+        client: this.client,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    revoke: async (id: string, operatorToken: string): Promise<void> => {
+      const result = await revokeOperatorCredentialRequest({
+        client: this.client,
+        path: { id },
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      unwrap(result);
     }
   };
 
