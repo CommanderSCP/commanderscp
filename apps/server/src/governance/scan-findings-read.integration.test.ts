@@ -239,7 +239,7 @@ describe("M22.9: GET /control-runs/{id}/findings, over real HTTP", () => {
     const service = await admin
       .object("service")
       .create({ name: `svc-${label}`, domainId: containmentDomain.id });
-    const component = await createOrphanComponent(admin, `comp-${label}`);
+    const component = await createOrphanComponent(server, org, `comp-${label}`);
     await admin.relationships.create({
       typeId: "contains",
       fromId: service.id,

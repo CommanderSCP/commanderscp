@@ -158,7 +158,7 @@ describe("a component's pipeline is continuous", () => {
   }
 
   it("has stages for a component that has NEVER released — the whole point", async () => {
-    const component = await createOrphanComponent(admin, `never-released-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `never-released-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     await admin.placements.create({ component: component.id, deploymentTarget: prod.id });
 
@@ -177,7 +177,7 @@ describe("a component's pipeline is continuous", () => {
   it("shows a declared stage the component is NOT placed at — the second whole point", async () => {
     // The live shape that reported this: a two-wave topology, ONE placement. Before the fix the
     // response held a single stage and the prod wave appeared nowhere at all.
-    const component = await createOrphanComponent(admin, `unplaced-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `unplaced-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     await attachTopology(component.id, [
       { name: "gamma", target: gamma.id },
@@ -211,7 +211,7 @@ describe("a component's pipeline is continuous", () => {
       name: `staging-${uuidv7()}`,
       properties: { environment: "staging" }
     });
-    const component = await createOrphanComponent(admin, `interleave-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `interleave-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     await attachTopology(component.id, [
       { name: "gamma", target: gamma.id },
@@ -239,7 +239,7 @@ describe("a component's pipeline is continuous", () => {
       name: `extra-${uuidv7().slice(0, 8)}`,
       properties: { environment: "sandbox" }
     });
-    const component = await createOrphanComponent(admin, `off-topology-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `off-topology-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     await admin.placements.create({ component: component.id, deploymentTarget: extra.id });
     await attachTopology(component.id, [{ name: "gamma", target: gamma.id }]);
@@ -261,7 +261,7 @@ describe("a component's pipeline is continuous", () => {
   it("says the journey is UNKNOWN, not complete, when no stage-shaped topology resolves", async () => {
     // A LEGACY-shaped topology: its waves name the change's own targets (components), not places.
     // `plan-service.ts` classifies the same two shapes the same way, from what the ids ARE.
-    const component = await createOrphanComponent(admin, `legacy-shape-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `legacy-shape-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     await attachTopology(component.id, [{ name: "only", target: component.id }]);
 
@@ -277,7 +277,7 @@ describe("a component's pipeline is continuous", () => {
   });
 
   it("names each stage from the target's environment, and leaves it null when there is none", async () => {
-    const component = await createOrphanComponent(admin, `stage-names-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `stage-names-${uuidv7()}`);
     const plain = await admin.deploymentTargets.create({ name: `plain-${uuidv7().slice(0, 8)}` });
     await admin.placements.create({ component: component.id, deploymentTarget: prod.id });
     await admin.placements.create({ component: component.id, deploymentTarget: plain.id });
@@ -298,7 +298,7 @@ describe("a component's pipeline is continuous", () => {
     // Phase 4a's derivation reads `currents[0].observed` — a stage with NO current at all (this
     // placement has never had a wave target) has nothing to derive from, so `version` stays null
     // and the absence is stated, never fabricated. The observed-and-derives case is the next test.
-    const component = await createOrphanComponent(admin, `version-honesty-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `version-honesty-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
 
     const p = await pipelineOf(component.id);
@@ -317,7 +317,7 @@ describe("a component's pipeline is continuous", () => {
     // applies (`@scp/schemas`'s `preferredObservedVersion`, extracted so server and web cannot
     // disagree). Both `images` and `revision` are set here so the assertion pins the PREFERENCE,
     // not just "some string came back".
-    const component = await createOrphanComponent(admin, `version-derived-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `version-derived-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     const topo = await attachTopology(component.id, [{ name: "gamma", target: gamma.id }]);
     const change = await admin.changes.propose({
@@ -356,7 +356,7 @@ describe("a component's pipeline is continuous", () => {
   });
 
   it("shows what executes at a stage, and says so plainly when nothing does", async () => {
-    const component = await createOrphanComponent(admin, `binding-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `binding-${uuidv7()}`);
     const bound = await admin.placements.create({
       component: component.id,
       deploymentTarget: gamma.id
@@ -387,7 +387,7 @@ describe("a component's pipeline is continuous", () => {
     // rendered it alone, so a stage's build pipeline or its infra pipeline simply vanished with no
     // sign it existed — owner-reported ("the component pipeline is missing the infra pipeline / the
     // software pipeline", 2026-08-03).
-    const component = await createOrphanComponent(admin, `multi-pipeline-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `multi-pipeline-${uuidv7()}`);
     const placement = await admin.placements.create({
       component: component.id,
       deploymentTarget: gamma.id
@@ -426,7 +426,7 @@ describe("a component's pipeline is continuous", () => {
     // bound" about a pipeline that would in fact trigger. The projection must answer what the
     // ENGINE would do, and say where the answer came from (resolvedVia, read off the resolver's
     // own provenance — never inferred).
-    const component = await createOrphanComponent(admin, `component-rung-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `component-rung-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     await admin.executors.putBinding(component.id, {
       pluginModule: "fake-executor",
@@ -449,7 +449,7 @@ describe("a component's pipeline is continuous", () => {
   });
 
   it("labels a binding on the stage's own placement as resolvedVia 'placement'", async () => {
-    const component = await createOrphanComponent(admin, `placement-rung-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `placement-rung-${uuidv7()}`);
     const placement = await admin.placements.create({
       component: component.id,
       deploymentTarget: gamma.id
@@ -470,7 +470,7 @@ describe("a component's pipeline is continuous", () => {
     // Owner, 2026-08-03: "Still not seeing any repos." A `source_mappings` row is the durable answer
     // to "does a push there affect this?", so it renders for a component that has never released —
     // the same property the stages have, on the other end of the journey.
-    const component = await createOrphanComponent(admin, `sources-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `sources-${uuidv7()}`);
     await admin.changeSources.createMapping("github", {
       repoPattern: "AgentKitProject/agentkit",
       pathPattern: "services/market/**",
@@ -503,7 +503,7 @@ describe("a component's pipeline is continuous", () => {
   });
 
   it("has NO sources when nothing maps to it, which is a real and worth-saying state", async () => {
-    const component = await createOrphanComponent(admin, `no-sources-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `no-sources-${uuidv7()}`);
     const p = await pipelineOf(component.id);
     expect(
       p.sources,
@@ -516,7 +516,7 @@ describe("a component's pipeline is continuous", () => {
     // most recently to ALL of them, so a pipeline that has never run reads as up to date — the same
     // collapse as `bindings[0]`, one field over. `change_wave_targets.type` is what makes the split
     // a direct read rather than an inference.
-    const component = await createOrphanComponent(admin, `per-pipeline-current-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `per-pipeline-current-${uuidv7()}`);
     const placement = await admin.placements.create({
       component: component.id,
       deploymentTarget: gamma.id
@@ -579,7 +579,7 @@ describe("a component's pipeline is continuous", () => {
     // The live estate's actual gate: 12 `prod-gate` policies, each requiring ONE Owner approval
     // before prod, with **282 approval requests pending** against them — and none of it appeared
     // anywhere in this view, so a release stopped at a gate looked exactly like one nobody started.
-    const component = await createOrphanComponent(admin, `gated-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `gated-${uuidv7()}`);
     const openPlacement = await admin.placements.create({
       component: component.id,
       deploymentTarget: gamma.id
@@ -631,7 +631,7 @@ describe("a component's pipeline is continuous", () => {
       urn: `urn:scp:${org.orgId}:control:${controlSuffix}`,
       properties: { category: "security" }
     });
-    const component = await createOrphanComponent(admin, `checks-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `checks-${uuidv7()}`);
     const placement = await admin.placements.create({
       component: component.id,
       deploymentTarget: gamma.id
@@ -691,7 +691,7 @@ describe("a component's pipeline is continuous", () => {
     // every deploy inside its own domain. Resolved from the TARGET's own `origin_domain_id`, never
     // from this instance's identity — the same rule ADR-0026 D1 applies to stage names, so a
     // replicated target reads the same at the commander and at the outpost.
-    const component = await createOrphanComponent(admin, `maintainer-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `maintainer-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
 
     const p = await pipelineOf(component.id);
@@ -719,7 +719,7 @@ describe("a component's pipeline is continuous", () => {
       name: `aa-late-${uuidv7().slice(0, 8)}`,
       properties: { environment: "prod" }
     });
-    const component = await createOrphanComponent(admin, `ordering-${uuidv7()}`);
+    const component = await createOrphanComponent(server, org, `ordering-${uuidv7()}`);
     await admin.placements.create({ component: component.id, deploymentTarget: second.id });
     await admin.placements.create({ component: component.id, deploymentTarget: first.id });
 

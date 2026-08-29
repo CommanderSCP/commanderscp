@@ -96,7 +96,7 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     label: string,
     opts: { service?: boolean; at?: GraphObject } = {}
   ) {
-    const component = await createOrphanComponent(admin, `${label}-comp`);
+    const component = await createOrphanComponent(server, org, `${label}-comp`);
     let service: GraphObject | null = null;
     if (opts.service) {
       service = await admin.object("service").create({ name: `${label}-svc` });
@@ -274,7 +274,7 @@ describe("governance over a placement wave target (ADR-0026)", () => {
 
   it("does NOT over-reach: a policy scoped at ANOTHER component leaves the placement ungated", async () => {
     const { placement } = await placedComponent("no-reach");
-    const stranger = await createOrphanComponent(admin, "no-reach-stranger");
+    const stranger = await createOrphanComponent(server, org, "no-reach-stranger");
     await gatingPolicy("stranger-gate", stranger.id);
     const change = await admin.changes.propose({
       name: "no-reach-change",

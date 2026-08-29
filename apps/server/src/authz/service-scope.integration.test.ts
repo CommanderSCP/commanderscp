@@ -43,9 +43,9 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
 
     const svc = await admin.object("service").create({ name: "payments" });
     const other = await admin.object("service").create({ name: "identity" });
-    const comp = await createOrphanComponent(admin, "payments-api");
-    const sibling = await createOrphanComponent(admin, "payments-worker");
-    const lone = await createOrphanComponent(admin, "unassigned-import");
+    const comp = await createOrphanComponent(server, org, "payments-api");
+    const sibling = await createOrphanComponent(server, org, "payments-worker");
+    const lone = await createOrphanComponent(server, org, "unassigned-import");
     svcId = svc.id;
     otherSvcId = other.id;
     compId = comp.id;
@@ -114,7 +114,7 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
 
   it("re-assigning a component moves the grant with it", async () => {
     // organize-after: move the component to `identity`, and the payments binding must stop reaching it.
-    const moved = await createOrphanComponent(admin, "roaming-api");
+    const moved = await createOrphanComponent(server, org, "roaming-api");
     const edge = await admin.relationships.create({
       typeId: "contains",
       fromId: svcId,
@@ -143,7 +143,7 @@ describe("RBAC: a service-scoped binding reaches its components (and nothing els
   });
 
   it("a soft-deleted `contains` edge stops conferring the grant", async () => {
-    const comp = await createOrphanComponent(admin, "temp-api");
+    const comp = await createOrphanComponent(server, org, "temp-api");
     const edge = await admin.relationships.create({
       typeId: "contains",
       fromId: svcId,

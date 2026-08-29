@@ -60,7 +60,7 @@ describe("service board arm 1 over stage-shaped (placement) wave targets", () =>
   });
 
   async function componentOfService(name: string) {
-    const component = await createOrphanComponent(admin, name);
+    const component = await createOrphanComponent(server, org, name);
     await admin.relationships.create({
       typeId: "contains",
       fromId: service.id,

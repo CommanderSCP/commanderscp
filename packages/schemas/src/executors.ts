@@ -490,22 +490,54 @@ export const RunDiscoveryRequestSchema = z.object({
 });
 export type RunDiscoveryRequest = z.infer<typeof RunDiscoveryRequestSchema>;
 
-/** `POST /discovery/accept` — the ONLY path that actually commits discovered objects/relationships
- *  into the graph; the caller re-submits (a possibly operator-edited subset of) a proposal it got
- *  back from `/discovery/run`, making acceptance an explicit, auditable, reviewable act rather
- *  than something discovery could ever do on its own. */
-export const AcceptDiscoveryRequestSchema = z.object({
-  domainId: z.string().uuid().optional(),
-  proposal: DiscoveryProposalSchema
+/**
+ * `POST /discovery/scaffold` (ADR-0047) — turn a discovery proposal into IaC SOURCE.
+ *
+ * The replacement for `accept`, and deliberately a different SHAPE rather than the same verb with a
+ * flag: it writes nothing, reads nothing, and returns text. Its whole job is to run the emitter that
+ * `scp iac scaffold` runs, so the wizard and the CLI produce the same code from the same proposal.
+ *
+ * WHY IT IS A SERVER ENDPOINT AND NOT A BROWSER IMPORT. `apps/web` may import only `@scp/sdk` and
+ * `@scp/schemas` — never `@scp/iac`, `@scp/cli` or the server (eslint `no-restricted-imports`, the
+ * API -> SDK -> CLI -> IaC -> UI chain). The UI gets everything through the public API, and the
+ * emitter is no exception.
+ */
+export const ScaffoldDiscoveryRequestSchema = z.object({
+  proposal: DiscoveryProposalSchema,
+  /** component name -> service name. A component absent from this map is UNGROUPED and is reported
+   *  rather than emitted — ADR-0047's rule, applied server-side so the CLI and the wizard cannot
+   *  disagree about what "ungrouped" means. */
+  group: z.record(z.string(), z.string().min(1))
 });
-export type AcceptDiscoveryRequest = z.infer<typeof AcceptDiscoveryRequestSchema>;
+export type ScaffoldDiscoveryRequest = z.infer<typeof ScaffoldDiscoveryRequestSchema>;
 
-export const AcceptDiscoveryResponseSchema = z.object({
-  createdObjectIds: z.array(z.string().uuid()),
-  createdRelationshipIds: z.array(z.string().uuid()),
-  createdBindingIds: z.array(z.string().uuid()),
-  createdSourceMappingIds: z.array(z.string().uuid())
+export const ScaffoldDiscoveryResponseSchema = z.object({
+  stacks: z.array(
+    z.object({
+      stackName: z.string(),
+      serviceName: z.string(),
+      /** The emitted `scp/stack.ts`, ready to commit. */
+      source: z.string(),
+      /** How many `repo` placeholders the author must fill before this will typecheck (D18). */
+      placeholderCount: z.number().int()
+    })
+  ),
+  ungrouped: z.array(z.object({ name: z.string(), typeId: z.string() }))
 });
+export type ScaffoldDiscoveryResponse = z.infer<typeof ScaffoldDiscoveryResponseSchema>;
+
+/*
+ * `POST /discovery/accept` AND ITS TWO SCHEMAS ARE GONE (ADR-0047; team-pipeline-iac D1, section 14
+ * resolution 3). Discovery is a SCAFFOLDER: `discovery/run` still proposes, and its output becomes
+ * IaC construct code a human reviews and commits, never a direct graph write.
+ *
+ * The route was the only observation-driven write path, and it bypassed strict create — the
+ * homelab's ~50 imported components landed as RBAC orphans through it. Its replacement is
+ * `scp iac scaffold` and the /connect wizards, which emit code instead of rows.
+ *
+ * Removed rather than deprecated: dev-stage, no external usage, so no transition window (res 3).
+ * The break is logged in `tools/openapi/OASDIFF-EXCEPTIONS.md`.
+ */
 
 /**
  * `POST /discovery/backfill-source-mappings` (M12 P5 follow-up) — the AUTOMATED backfill for
@@ -525,7 +557,6 @@ export const BackfillSourceMappingsResponseSchema = z.object({
   skipped: z.array(z.object({ objectName: z.string(), reason: z.string() }))
 });
 export type BackfillSourceMappingsResponse = z.infer<typeof BackfillSourceMappingsResponseSchema>;
-export type AcceptDiscoveryResponse = z.infer<typeof AcceptDiscoveryResponseSchema>;
 
 // -------------------------------------------------------------------------------------------
 // `scp change-source report` (DESIGN §12 Mode 1: "a one-line CLI step... reports plan/apply

@@ -207,8 +207,8 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     actorObjectId = adminRow.objectId;
     await setInstanceUnlock(true);
 
-    component = (await createOrphanComponent(admin, `reader-${uuidv7()}`)).id;
-    producerComponent = (await createOrphanComponent(admin, `producer-${uuidv7()}`)).id;
+    component = (await createOrphanComponent(server, org, `reader-${uuidv7()}`)).id;
+    producerComponent = (await createOrphanComponent(server, org, `producer-${uuidv7()}`)).id;
 
     // Two npm lines; the opted-out one is the slug-colliding spelling of the other, so a read
     // surface that normalised would show the wrong subscription on the wrong row.
@@ -279,8 +279,10 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
       const undeclared = await listenTestServer();
       try {
         const uOrg = await createTestOrg(undeclared, "dep-read-undeclared");
-        const uAdmin = new ScpClient({ baseUrl: undeclared.baseUrl, token: uOrg.adminToken });
-        const c = (await createOrphanComponent(uAdmin, `undeclared-${uuidv7()}`)).id;
+        // The component belongs to the OTHER server's org — `undeclared`/`uOrg`, not the outer
+        // `server`/`org`. The mechanical call-site update for the new signature pointed this at the
+        // outer pair, which would have created it in the wrong org and quietly tested nothing.
+        const c = (await createOrphanComponent(undeclared, uOrg, `undeclared-${uuidv7()}`)).id;
         const inv = await undeclared.app.inject({
           method: "GET",
           url: `/api/v1/components/${c}/dependency-inventory`,
@@ -402,7 +404,7 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
 
       // A component with NO enabling policy reads a CLOSED gate with its explanation — the negative
       // control that the equality above is not comparing two "enabled" constants.
-      const bare = (await createOrphanComponent(admin, `bare-${uuidv7()}`)).id;
+      const bare = (await createOrphanComponent(server, org, `bare-${uuidv7()}`)).id;
       const bareRead = await getInventory(bare, org.adminToken);
       expect(bareRead.body.componentGate.enabled).toBe(false);
       expect(bareRead.body.componentGate.reason).toBe("no_enabling_contribution");
@@ -420,7 +422,7 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
       // A real ingestion pass with a fake reader (the way `inventory-ingestion.integration.test.ts`
       // does): the component gets a source mapping so the probe has a prefix, then ingests ONE
       // manifest declaring one line.
-      const ingested = (await createOrphanComponent(admin, `ingested-${uuidv7()}`)).id;
+      const ingested = (await createOrphanComponent(server, org, `ingested-${uuidv7()}`)).id;
       await inOrg((tx) =>
         createSourceMapping(tx, {
           orgId: org.orgId,
@@ -552,7 +554,7 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     it("rows are resolved AS THE CALLER: a group-only enable (imported, acting half) reads `enabled` for a member and `not_enabled` for the org admin, each byte-equal to THEIR resolve()", async () => {
       // A fresh component with ONE declared line and NO objectRef policy, so the only enable in
       // play is the group-scoped one below.
-      const groupComp = (await createOrphanComponent(admin, `group-read-${uuidv7()}`)).id;
+      const groupComp = (await createOrphanComponent(server, org, `group-read-${uuidv7()}`)).id;
       await declare(
         groupComp,
         { ecosystem: "go", coordinate: "golang.org/x/net", major: "0" },
@@ -631,7 +633,7 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     let mergeDecisionId: string;
 
     beforeAll(async () => {
-      bumped = (await createOrphanComponent(admin, `bumped-${uuidv7()}`)).id;
+      bumped = (await createOrphanComponent(server, org, `bumped-${uuidv7()}`)).id;
       const line = await inOrg((tx) =>
         upsertDependencyLine(tx, org.orgId, {
           ecosystem: "npm",

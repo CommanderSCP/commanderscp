@@ -51,8 +51,8 @@ describe("policy resolution: service scope governs the service's components", ()
     actorId = org.orgId; // org root doubles as the actor object in the harness's admin context
 
     const svc = await admin.object("service").create({ name: "ledger" });
-    const comp = await createOrphanComponent(admin, "ledger-api");
-    const lone = await createOrphanComponent(admin, "ledger-unassigned");
+    const comp = await createOrphanComponent(server, org, "ledger-api");
+    const lone = await createOrphanComponent(server, org, "ledger-unassigned");
     svcId = svc.id;
     compId = comp.id;
     loneCompId = lone.id;
@@ -130,7 +130,7 @@ describe("policy resolution: service scope governs the service's components", ()
       name: "svc-in-other-domain",
       domainId: otherDomain.id
     });
-    const comp = await createOrphanComponent(admin, "comp-in-root-domain");
+    const comp = await createOrphanComponent(server, org, "comp-in-root-domain");
     await admin.relationships.create({
       typeId: "contains",
       fromId: svcElsewhere.id,
@@ -158,7 +158,7 @@ describe("policy resolution: service scope governs the service's components", ()
   });
 
   it("a soft-deleted `contains` edge stops the service policy governing the component", async () => {
-    const comp = await createOrphanComponent(admin, "ledger-temp");
+    const comp = await createOrphanComponent(server, org, "ledger-temp");
     const edge = await admin.relationships.create({
       typeId: "contains",
       fromId: svcId,

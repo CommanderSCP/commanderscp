@@ -265,12 +265,12 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     return new ScpClient({ baseUrl: server.baseUrl, token: user.token });
   }
 
-  async function buildChain(admin: ScpClient, label: string) {
+  async function buildChain(org: TestOrg, admin: ScpClient, label: string) {
     const containmentDomain = await admin.object("domain").create({ name: `dom-${label}` });
     const service = await admin
       .object("service")
       .create({ name: `svc-${label}`, domainId: containmentDomain.id });
-    const component = await createOrphanComponent(admin, `comp-${label}`);
+    const component = await createOrphanComponent(server, org, `comp-${label}`);
     await admin.relationships.create({
       typeId: "contains",
       fromId: service.id,
@@ -399,7 +399,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("declared_fact");
     const org = await createTestOrg(server, "decl-pass");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "decl-pass");
+    const { component } = await buildChain(org, admin, "decl-pass");
 
     // THE COMPONENT AUTHORS THE OVERRIDE — through the real component write route, at plain
     // `object:write`, which is exactly D2's accepted seam.
@@ -455,7 +455,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     // except the two instance admission rows.
     const org = await createTestOrg(server, "decl-unadmitted");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "decl-unadmitted");
+    const { component } = await buildChain(org, admin, "decl-unadmitted");
 
     await admin.components.update(component.id, {
       properties: { security: { declarations: { egress: "none" } } }
@@ -493,7 +493,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("declared_fact");
     const org = await createTestOrg(server, "decl-halfclause");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "decl-halfclause");
+    const { component } = await buildChain(org, admin, "decl-halfclause");
 
     await admin.components.update(component.id, {
       properties: { security: { declarations: { egress: "internet" } } }
@@ -527,7 +527,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     // never surfaces as an incident, only as a rule that mysteriously never fires.
     const org = await createTestOrg(server, "decl-strict");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "decl-strict");
+    const { component } = await buildChain(org, admin, "decl-strict");
 
     await expect(
       admin.components.update(component.id, {
@@ -561,7 +561,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-pass");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "grant-pass");
+    const { component } = await buildChain(org, admin, "grant-pass");
 
     await exclusionPolicy(admin, "clause-grant", org.orgId, {
       exclude: { class: "approved_override" }
@@ -644,7 +644,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-expired");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-expired");
+    const { service, component } = await buildChain(org, admin, "grant-expired");
 
     await exclusionPolicy(admin, "clause-expired", org.orgId, {
       exclude: { class: "approved_override" }
@@ -694,7 +694,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-revoked");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-revoked");
+    const { service, component } = await buildChain(org, admin, "grant-revoked");
 
     await exclusionPolicy(admin, "clause-revoked", org.orgId, {
       exclude: { class: "approved_override" }
@@ -735,7 +735,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     // the waiver has become available to the party it was meant to constrain.
     const org = await createTestOrg(server, "grant-authz");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-authz");
+    const { service, component } = await buildChain(org, admin, "grant-authz");
 
     const componentAdmin = await createTestUser(server, org, [
       { role: "Administrator", scope: component.id }
@@ -773,7 +773,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     // is to tolerate a known vulnerability cannot inherit that gap.
     const org = await createTestOrg(server, "grant-audit");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-audit");
+    const { service, component } = await buildChain(org, admin, "grant-audit");
 
     const requested = await (
       await raiserFor(org, component.id)
@@ -833,7 +833,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     // the waiver these routes exist to arbitrate.
     const org = await createTestOrg(server, "grant-generic");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-generic");
+    const { service, component } = await buildChain(org, admin, "grant-generic");
 
     await expect(
       admin.object("scan_override_grant").create({
@@ -891,7 +891,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-below");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-below");
+    const { service, component } = await buildChain(org, admin, "grant-below");
 
     await exclusionPolicy(admin, "clause-below", org.orgId, {
       exclude: { class: "approved_override" }
@@ -945,7 +945,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-at");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "grant-at");
+    const { component } = await buildChain(org, admin, "grant-at");
 
     await exclusionPolicy(admin, "clause-at", org.orgId, {
       exclude: { class: "approved_override" }
@@ -995,7 +995,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-floor");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-floor");
+    const { service, component } = await buildChain(org, admin, "grant-floor");
 
     await exclusionPolicy(admin, "clause-floor", org.orgId, {
       exclude: { class: "approved_override" }
@@ -1046,8 +1046,8 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
   it("O10: RAISING a request whose tierObjectId is not on the component's containment chain is refused, and stores nothing", async () => {
     const org = await createTestOrg(server, "grant-offchain");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const mine = await buildChain(admin, "grant-mine");
-    const theirs = await buildChain(admin, "grant-theirs");
+    const mine = await buildChain(org, admin, "grant-mine");
+    const theirs = await buildChain(org, admin, "grant-theirs");
 
     // A perfectly real service the requester may well hold `policy:write` at — and a total stranger
     // to this component. Resolving the id proved only that the row exists, which was the whole hole.
@@ -1077,7 +1077,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
   it("O11: APPROVING is refused while an instance floor outranks the named tier — and the row stays `requested`", async () => {
     const org = await createTestOrg(server, "grant-floor-door");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-floor-door");
+    const { service, component } = await buildChain(org, admin, "grant-floor-door");
 
     const requested = await admin.scanOverrideGrants.create({
       componentId: component.id,
@@ -1117,7 +1117,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-sod");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-sod");
+    const { service, component } = await buildChain(org, admin, "grant-sod");
 
     // ONE identity that can both raise and approve: Operator at the component supplies the
     // `object:write` the raise route wants, Administrator at the service the `policy:write` the
@@ -1200,7 +1200,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-poison");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "grant-poison");
+    const { component } = await buildChain(org, admin, "grant-poison");
 
     await exclusionPolicy(admin, "clause-poison", org.orgId, {
       exclude: { class: "approved_override" }

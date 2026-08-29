@@ -236,6 +236,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
    *  ONE assembly rung is built because `assembly -> assembly` is refused at write time
    *  (`relationships-repo.ts`; migration 0054's header), so this is the deepest legal ladder. */
   async function buildChain(
+    org: TestOrg,
     admin: ScpClient,
     label: string,
     opts: { withAssembly?: boolean } = {}
@@ -244,7 +245,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const service = await admin
       .object("service")
       .create({ name: `svc-${label}`, domainId: containmentDomain.id });
-    const component = await createOrphanComponent(admin, `comp-${label}`);
+    const component = await createOrphanComponent(server, org, `comp-${label}`);
     const assembly = opts.withAssembly
       ? await admin.assemblies.create({ name: `asm-${label}` })
       : undefined;
@@ -351,7 +352,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
 
     const org = await createTestOrg(server, "six-tier");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { containmentDomain, service, component } = await buildChain(admin, "six-tier");
+    const { containmentDomain, service, component } = await buildChain(org, admin, "six-tier");
 
     await scanFloorPolicy(admin, "floor-org", org.orgId, { maxMedium: 7, maxLow: 70 });
     await scanFloorPolicy(admin, "floor-containment-domain", containmentDomain.id, {
@@ -424,7 +425,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
 
     const org = await createTestOrg(server, "assembly-tier");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, assembly, component } = await buildChain(admin, "assembly-tier", {
+    const { service, assembly, component } = await buildChain(org, admin, "assembly-tier", {
       withAssembly: true
     });
     expect(assembly, "the fixture is meaningless without the assembly rung").toBeDefined();
@@ -482,7 +483,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     // ARM 1 — org floor ONLY (maxHigh: 5). Two HIGHs are inside it: the change ACCEPTS.
     const orgA = await createTestOrg(server, "org-floor-only");
     const adminA = new ScpClient({ baseUrl: server.baseUrl, token: orgA.adminToken });
-    const chainA = await buildChain(adminA, "arm1");
+    const chainA = await buildChain(orgA, adminA, "arm1");
     await scanFloorPolicy(adminA, "floor-org", orgA.orgId, { maxHigh: 5 });
     const controlA = await scanControl(adminA, orgA, {
       suffix: "arm1",
@@ -513,7 +514,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     // verdict, identical everything else: the component tier is the only difference.
     const orgB = await createTestOrg(server, "component-tightens");
     const adminB = new ScpClient({ baseUrl: server.baseUrl, token: orgB.adminToken });
-    const chainB = await buildChain(adminB, "arm2");
+    const chainB = await buildChain(orgB, adminB, "arm2");
     await scanFloorPolicy(adminB, "floor-org", orgB.orgId, { maxHigh: 5 });
     await scanFloorPolicy(adminB, "floor-component", chainB.component.id, { maxHigh: 0 });
     const controlB = await scanControl(adminB, orgB, {
@@ -566,7 +567,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     // fail-closed, but citing a policy whose condition was false (charter principle 6).
     const orgFalse = await createTestOrg(server, "cond-false");
     const adminFalse = new ScpClient({ baseUrl: server.baseUrl, token: orgFalse.adminToken });
-    const chainFalse = await buildChain(adminFalse, "cond-false");
+    const chainFalse = await buildChain(orgFalse, adminFalse, "cond-false");
     await scanFloorPolicy(adminFalse, "floor-org", orgFalse.orgId, { maxHigh: 5 });
     await scanFloorPolicy(
       adminFalse,
@@ -601,7 +602,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     // tightens maxHigh to 0, and the same two HIGHs block.
     const orgTrue = await createTestOrg(server, "cond-true");
     const adminTrue = new ScpClient({ baseUrl: server.baseUrl, token: orgTrue.adminToken });
-    const chainTrue = await buildChain(adminTrue, "cond-true");
+    const chainTrue = await buildChain(orgTrue, adminTrue, "cond-true");
     await scanFloorPolicy(adminTrue, "floor-org", orgTrue.orgId, { maxHigh: 5 });
     await scanFloorPolicy(
       adminTrue,
@@ -637,7 +638,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     // (the fail-open regression this arm pins). `scanFloorPolicy` authors `advisory` by default.
     const orgErr = await createTestOrg(server, "cond-error");
     const adminErr = new ScpClient({ baseUrl: server.baseUrl, token: orgErr.adminToken });
-    const chainErr = await buildChain(adminErr, "cond-error");
+    const chainErr = await buildChain(orgErr, adminErr, "cond-error");
     await scanFloorPolicy(adminErr, "floor-org", orgErr.orgId, { maxHigh: 5 });
     await scanFloorPolicy(
       adminErr,
@@ -684,7 +685,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
   it("(b3) an unevaluable condition supplies ONLY the errored contributor's ceiling — a cleanly-FALSE sibling in the same name-group is still excluded", async () => {
     const org = await createTestOrg(server, "cond-precision");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const chain = await buildChain(admin, "precision");
+    const chain = await buildChain(org, admin, "precision");
     // Org floor: a loose maxHigh: 10 — two HIGHs pass under it alone.
     await scanFloorPolicy(admin, "floor-org", org.orgId, { maxHigh: 10 });
     // ONE name-group ("floor-multi") with TWO contributors on the component:
@@ -748,7 +749,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     for (const label of ["tenant-one", "tenant-two"]) {
       const org = await createTestOrg(server, label);
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-      const chain = await buildChain(admin, label);
+      const chain = await buildChain(org, admin, label);
       const control = await scanControl(admin, org, {
         suffix: label,
         severities: ["HIGH"],
@@ -840,7 +841,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
 
     const org = await createTestOrg(server, "tenant-cannot-loosen");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const chain = await buildChain(admin, "loosen");
+    const chain = await buildChain(org, admin, "loosen");
 
     // The tenant authors the laxest thing it can, at EVERY tier it controls.
     await scanFloorPolicy(admin, "loosen-org", org.orgId, { maxCritical: 999, maxHigh: 999 });
@@ -870,13 +871,13 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
 
     const orgX = await createTestOrg(server, "isolation-x");
     const adminX = new ScpClient({ baseUrl: server.baseUrl, token: orgX.adminToken });
-    const chainX = await buildChain(adminX, "iso-x");
+    const chainX = await buildChain(orgX, adminX, "iso-x");
     // X sets a draconian org-wide ceiling.
     await scanFloorPolicy(adminX, "floor-org", orgX.orgId, { maxHigh: 0, maxMedium: 0, maxLow: 0 });
 
     const orgY = await createTestOrg(server, "isolation-y");
     const adminY = new ScpClient({ baseUrl: server.baseUrl, token: orgY.adminToken });
-    const chainY = await buildChain(adminY, "iso-y");
+    const chainY = await buildChain(orgY, adminY, "iso-y");
     // Y sets nothing at all. If X's policies leaked across, Y's MEDIUM verdict would fail.
     const controlY = await scanControl(adminY, orgY, {
       suffix: "iso-y",
@@ -927,7 +928,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     ] as const) {
       const org = await createTestOrg(server, `order-${label}`);
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-      const chain = await buildChain(admin, `order-${label}`);
+      const chain = await buildChain(org, admin, `order-${label}`);
       const byTier: Record<string, { id: string; threshold: Record<string, number> }> = {
         org: { id: org.orgId, threshold: { maxCritical: 7, maxMedium: 4 } },
         containment_domain: {
@@ -1006,7 +1007,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
 
     const org = await createTestOrg(server, "no-scoped-floor");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const chain = await buildChain(admin, "fallback");
+    const chain = await buildChain(org, admin, "fallback");
     const control = await scanControl(admin, org, {
       suffix: "fallback",
       severities: ["MEDIUM"],

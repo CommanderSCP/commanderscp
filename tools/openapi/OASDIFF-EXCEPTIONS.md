@@ -220,3 +220,48 @@ label and this entry and reports green-with-warning instead of red. Job **3 (cod
 green — `tools/openapi/openapi.v1.json` and `packages/sdk/src/generated/*` are regenerated (`@scp/
 schemas` built first, per CLAUDE.md — `pnpm gen` reads `packages/schemas/dist`, not source) and
 committed in this PR.
+
+### ADR-0047 — `POST /discovery/accept` removed; discovery becomes a scaffolder (2026-08-29)
+
+**Spec:** [docs/adr/0047-discovery-scaffolder-land-through-review.md](../../docs/adr/0047-discovery-scaffolder-land-through-review.md),
+[docs/proposals/team-pipeline-iac.md](../../docs/proposals/team-pipeline-iac.md) §7 (D1, §14 resolution 3).
+
+**What breaks (deliberate, one-time):** the path `POST /api/v1/discovery/accept` is **removed**, along
+with `AcceptDiscoveryRequest` / `AcceptDiscoveryResponse` and the SDK's `discovery.accept`. Removing a
+path is oasdiff-breaking on its face; there is no additive spelling of a deletion.
+
+**Why it is removed rather than deprecated:** it was the only observation-driven graph-write path and
+it bypassed strict create — the homelab's ~50 imported components landed as RBAC orphans through it,
+which is the defect ADR-0047 exists to close. A deprecation window would keep the orphan-making door
+open for the duration of the window, for no user: the platform is pre-release with no external
+consumers (proposal header, owner 2026-08-26), so §14 resolution 3 rules no transition flag.
+
+**What replaces it:** `POST /discovery/run` is unchanged and is now the scaffolder's engine. Its
+output becomes `@scp/iac` construct code — through `scp iac scaffold` or the `/connect` wizards —
+which a human groups into services and commits. The graph write then happens through the ordinary
+`POST /plans` + apply path, with strict create and the same authorization every other IaC write gets.
+
+**Blast radius inside the repo, for the record:** the route and its two schemas; the SDK method;
+`createOrphanComponent` in the server test harness, which used the route's import-permissiveness and
+now writes through `graph/objects-repo.ts` (there is deliberately no HTTP door that produces an
+orphan any more); the `move-enforcement` m9 case and `governance-managed-write-doors` DOOR 2, both of
+which drove the route as a door under test; and the write-door census table, which went from five
+doors to four — the census failing on a **vanished** write site is that mechanism working.
+
+`discovery-relationship-import.integration.test.ts` is **deleted in full**, and that is the one
+removal worth naming individually. Its whole subject was the door: a proposal could declare a
+BATCH-LOCAL `urn` alias, and the file pinned how accept resolved edges against it — an unresolvable
+alias refused rather than silently skipped, a duplicate alias a 409, an alias shadowing a live object
+a 409, and the stored object keyed by its own derived URN rather than the alias. That alias mechanism
+existed only inside accept's transaction; the scaffolder emits code in which a service is a construct
+reference, so there is no alias to resolve and nothing of the behaviour survives to re-test
+elsewhere. Deleting the file is therefore accurate rather than lossy — but it is a real reduction in
+what is covered, so it is recorded here rather than left to a diff.
+
+`relationship-typeid-doors.integration.test.ts` is likewise **deleted in full**, and for the same
+reason: its subject was `POST /discovery/accept` as a relationship write door — the one its own
+census table marked "THE HOLE", because it checked NEITHER endpoint's scope. The door is gone, so
+the hole is gone. Its remaining half compared accept against the generic `/relationships` door
+("the two doors agree"), and that door's both-endpoints rule is covered independently by
+`graph/relationship-authz.integration.test.ts` — verified before deleting, not assumed: that file
+pins from-only, to-only, both-succeed, the `member_of` escalation case and DELETE.

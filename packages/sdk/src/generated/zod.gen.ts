@@ -9249,6 +9249,22 @@ export const zListNotificationBindingsResponse = z.object({
 /**
  * Success
  */
+export const zScaffoldDiscoveryProposalResponse = z.object({
+    stacks: z.array(z.object({
+        stackName: z.string(),
+        serviceName: z.string(),
+        source: z.string(),
+        placeholderCount: z.int().gte(-9007199254740991).lte(9007199254740991)
+    })),
+    ungrouped: z.array(z.object({
+        name: z.string(),
+        typeId: z.string()
+    }))
+});
+
+/**
+ * Success
+ */
 export const zRunDiscoveryResponse = z.object({
     objects: z.array(z.object({
         typeId: z.string(),
@@ -9285,16 +9301,6 @@ export const zRunDiscoveryResponse = z.object({
             'configuration'
         ]).optional()
     })).optional()
-});
-
-/**
- * Success
- */
-export const zAcceptDiscoveryProposalResponse = z.object({
-    createdObjectIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)),
-    createdRelationshipIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)),
-    createdBindingIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)),
-    createdSourceMappingIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/))
 });
 
 /**

@@ -130,7 +130,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
   /** `org root -> domain -> service -> ASSEMBLY -> component` — the full ladder, with the component
    *  hanging off the ASSEMBLY so the service is reachable only by continuing up through it. Only one
    *  assembly rung: `assembly -> assembly` is refused at write time (migration 0054's header). */
-  async function buildChain(admin: ScpClient, label: string): Promise<Chain> {
+  async function buildChain(org: TestOrg, admin: ScpClient, label: string): Promise<Chain> {
     const domain = await admin.object("domain").create({ name: `dom-${label}` });
     const service = await admin
       .object("service")
@@ -141,7 +141,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
       fromId: service.id,
       toId: assembly.id
     });
-    const component = await createOrphanComponent(admin, `comp-${label}`);
+    const component = await createOrphanComponent(server, org, `comp-${label}`);
     await admin.relationships.create({
       typeId: "contains",
       fromId: assembly.id,
@@ -303,7 +303,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
 
   it("A1: an Approver bound at the ASSEMBLY satisfies requireApprovals {scope: 'assembly'} — and the wave proceeds", async () => {
     const { org, admin } = await newOrg("approval-assembly");
-    const chain = await buildChain(admin, "approval-assembly");
+    const chain = await buildChain(org, admin, "approval-assembly");
     await requireApprovalPolicy(admin, org, "assembly", chain.component.id, "assembly");
     const parked = await parkAtWaveGate(org, chain.component.id, "assembly");
 
@@ -362,7 +362,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
 
   it("A2: an UNKNOWN scope keyword still resolves to null — it blocks, and no approval request is materialized", async () => {
     const { org, admin } = await newOrg("approval-unknown");
-    const chain = await buildChain(admin, "approval-unknown");
+    const chain = await buildChain(org, admin, "approval-unknown");
     await requireApprovalPolicy(admin, org, "unknown", chain.component.id, UNKNOWN_SCOPE_KEYWORD);
     const parked = await parkAtWaveGate(org, chain.component.id, "unknown");
 
@@ -406,7 +406,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
 
   it("D1: the gate's Decision carries the resolved ceiling and names EVERY contributing tier", async () => {
     const { org, admin } = await newOrg("decision-rule");
-    const chain = await buildChain(admin, "decision-rule");
+    const chain = await buildChain(org, admin, "decision-rule");
     // The parking brake: something that blocks, so the wave stays pending and there is a gate
     // Decision to read. Its scope is `organization`, which has always resolved.
     await requireApprovalPolicy(admin, org, "rule", chain.component.id, "organization");
@@ -501,7 +501,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
 
   it("D2: re-evaluating the same gate writes ZERO further Decisions, and the persisted contributor list is deterministically ordered", async () => {
     const { org, admin } = await newOrg("determinism");
-    const chain = await buildChain(admin, "determinism");
+    const chain = await buildChain(org, admin, "determinism");
     await requireApprovalPolicy(admin, org, "determinism", chain.component.id, "organization");
 
     // AUTHORING ORDER IS THE POINT. `matchPoliciesForTargets` yields matches in policy-row order, so

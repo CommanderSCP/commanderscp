@@ -166,8 +166,9 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
     if (!adminRow?.objectId) throw new Error("expected the bootstrap admin to have a user object");
     actorObjectId = adminRow.objectId;
 
-    subscribedComponent = (await createOrphanComponent(admin, `subscribed-${uuidv7()}`)).id;
-    unsubscribedComponent = (await createOrphanComponent(admin, `unsubscribed-${uuidv7()}`)).id;
+    subscribedComponent = (await createOrphanComponent(server, org, `subscribed-${uuidv7()}`)).id;
+    unsubscribedComponent = (await createOrphanComponent(server, org, `unsubscribed-${uuidv7()}`))
+      .id;
 
     // Two npm lines under ONE component. Coordinates go in verbatim, and the opted-out one is the
     // slug-colliding spelling of the other (`graph/urn.ts` collapses both to `acme-lib`), so an
@@ -561,7 +562,7 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
       const service = await admin
         .object("service")
         .create({ name: `svc-${uuidv7()}`, domainId: domain.id });
-      chainComponent = (await createOrphanComponent(admin, `chain-${uuidv7()}`)).id;
+      chainComponent = (await createOrphanComponent(server, org, `chain-${uuidv7()}`)).id;
       await admin.relationships.create({
         typeId: "contains",
         fromId: service.id,
@@ -654,7 +655,8 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
     const CONDITION = 'change.properties.environment == "prod"';
 
     beforeAll(async () => {
-      conditionalComponent = (await createOrphanComponent(admin, `conditional-${uuidv7()}`)).id;
+      conditionalComponent = (await createOrphanComponent(server, org, `conditional-${uuidv7()}`))
+        .id;
       conditionalLine = { ecosystem: "go", coordinate: "github.com/acme/conditional", major: "v2" };
       await declare(conditionalComponent, conditionalLine);
       await setInstanceUnlock(true);

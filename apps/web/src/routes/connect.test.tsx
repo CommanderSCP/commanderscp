@@ -1,9 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderToStaticMarkup } from "react-dom/server";
 import type {
-  AcceptDiscoveryResponse,
   CreateObjectRequest,
   DiscoveryProposal,
   GraphObject,
@@ -41,11 +39,9 @@ const {
   runConfigFields,
   groupObjectsByType,
   filterProposal,
-  zipCreatedObjects,
   RegisterStepGeneric,
   EnumerateStepGeneric,
   ReviewStepGeneric,
-  ImportSummaryGeneric,
   ConnectGenericPage
 } = await import("./connect");
 
@@ -103,23 +99,6 @@ const GITHUB_DISCOVERY = manifest("github-discovery", {
 });
 const ALL_MANIFESTS = [ARGOCD_DISCOVERY, GITEA_DISCOVERY, GITLAB_DISCOVERY, GITHUB_DISCOVERY];
 
-function acceptFixture(overrides: Partial<AcceptDiscoveryResponse> = {}): AcceptDiscoveryResponse {
-  return {
-    createdObjectIds: [],
-    createdRelationshipIds: [],
-    createdBindingIds: [],
-    createdSourceMappingIds: [],
-    ...overrides
-  };
-}
-
-function ids(n: number): string[] {
-  return Array.from(
-    { length: n },
-    (_, i) => `019f0000-0000-7000-8000-0000000000${String(i).padStart(2, "0")}`
-  );
-}
-
 function doorsDouble() {
   const calls: string[] = [];
   return {
@@ -147,7 +126,6 @@ function doorsDouble() {
     }),
     listExecutionSystems: vi.fn(async () => [] as GraphObject[]),
     runDiscovery: vi.fn(async () => ({ objects: [], relationships: [] }) as DiscoveryProposal),
-    acceptProposal: vi.fn(async () => acceptFixture()),
     listServices: vi.fn(async () => [] as GraphObject[]),
     setService: vi.fn(async () => ({}))
   };
@@ -230,59 +208,35 @@ describe("groupObjectsByType", () => {
   });
 });
 
-describe("ReviewStepGeneric: target rows appear only when the proposal carries them", () => {
-  it("renders a Deployment targets section only when the proposal has one", async () => {
-    const withTarget: DiscoveryProposal = {
-      objects: [
-        { typeId: "component", name: "api" },
-        { typeId: "deployment-target", name: "prod-us" }
-      ],
-      relationships: []
-    };
-    const doors = doorsDouble();
+describe("ReviewStepGeneric: the step scaffolds instead of importing", () => {
+  // THE THREE CASES THAT WERE HERE DESCRIBED AN AFFORDANCE THAT NO LONGER EXISTS (ADR-0047): a
+  // grouped list of proposed objects with a checkbox per row, so an operator could accept a SUBSET,
+  // plus the rule that the checkboxes withdrew when relationships made a subset unsafe to submit.
+  //
+  // There is no submission now. The step emits IaC, and a proposal is not something you accept part
+  // of — you decide which components belong to which service and commit the result. Keeping the
+  // checkbox cases would have meant keeping a selection UI whose only consumer was the removed
+  // write.
+  //
+  // What replaces them lives in `components/scaffold/scaffold-panel.test.tsx`, which tests the
+  // decision that actually matters now: grouping, and what happens to a component nobody grouped.
+  it("renders the scaffolder, and offers no way to write to the graph", () => {
     const view = render(
       withQueryClient(
-        <ReviewStepGeneric proposal={withTarget} doors={doors} onImported={() => {}} />
+        <ReviewStepGeneric
+          proposal={
+            {
+              objects: [{ typeId: "component", name: "api" }],
+              relationships: []
+            } as DiscoveryProposal
+          }
+        />
       )
     );
-    expect(view.html()).toContain("connect-object-group-deployment-target");
-    expect(view.html()).toContain("prod-us");
-    // Same treatment as components: a checkbox per row (relationships is empty, so skip is offered).
-    expect(view.container.querySelectorAll('[data-testid="connect-object-checkbox"]').length).toBe(
-      2
-    );
-    view.unmount();
-  });
-
-  it("renders NO target section when the discovery result carries none", () => {
-    const noTarget: DiscoveryProposal = {
-      objects: [{ typeId: "component", name: "api" }],
-      relationships: []
-    };
-    const html = renderToStaticMarkup(
-      withQueryClient(
-        <ReviewStepGeneric proposal={noTarget} doors={doorsDouble()} onImported={() => {}} />
-      )
-    );
-    expect(html).not.toContain("connect-object-group-deployment-target");
-    expect(html).toContain("connect-object-group-component");
-  });
-
-  it("withdraws skip (no checkboxes) when the proposal carries relationships", () => {
-    const linked: DiscoveryProposal = {
-      objects: [
-        { typeId: "component", name: "api" },
-        { typeId: "service", name: "svc" }
-      ],
-      relationships: [{ typeId: "part_of", fromUrn: "urn:a", toUrn: "urn:b" }]
-    };
-    const html = renderToStaticMarkup(
-      withQueryClient(
-        <ReviewStepGeneric proposal={linked} doors={doorsDouble()} onImported={() => {}} />
-      )
-    );
-    expect(html).not.toContain('data-testid="connect-object-checkbox"');
-    expect(html).toContain("connect-skip-unavailable");
+    expect(view.html()).toContain("connect-scaffold-panel");
+    // The old step's submit control is gone by NAME as well as by behaviour — a rename would have
+    // left this passing while the write returned under a different label.
+    expect(view.html()).not.toContain("connect-accept-submit");
   });
 });
 
@@ -323,88 +277,17 @@ describe("filterProposal: skipping an object drops only ITS bindings/sourceMappi
 });
 
 // -------------------------------------------------------------------------------------------
-// B3 — the triage list, and its positional correspondence to the accept response
-// -------------------------------------------------------------------------------------------
-
-describe("zipCreatedObjects: positional correspondence to the accept response", () => {
-  it("names each created id off the SUBMITTED proposal, in order", () => {
-    const submitted: DiscoveryProposal["objects"] = [
-      { typeId: "component", name: "api" },
-      { typeId: "deployment-target", name: "prod-us" }
-    ];
-    const result = acceptFixture({ createdObjectIds: ids(2) });
-    expect(zipCreatedObjects(submitted, result)).toEqual([
-      { typeId: "component", name: "api", id: ids(2)[0] },
-      { typeId: "deployment-target", name: "prod-us", id: ids(2)[1] }
-    ]);
-  });
-});
-
-describe("ImportSummaryGeneric / triage: appears exactly when there are orphaned components", () => {
-  it("shows a triage row with an assign Select for each imported COMPONENT, when relationships is empty", () => {
-    const submitted: DiscoveryProposal["objects"] = [
-      { typeId: "component", name: "api" },
-      { typeId: "component", name: "worker" }
-    ];
-    const doors = doorsDouble();
-    const html = renderToStaticMarkup(
-      withQueryClient(
-        <ImportSummaryGeneric
-          kind="gitea"
-          systemName="gitea1"
-          result={acceptFixture({ createdObjectIds: ids(2) })}
-          submitted={submitted}
-          doors={doors}
-        />
-      )
-    );
-    expect(html).toContain("connect-orphan-notice");
-    expect(html).toContain("connect-triage");
-    expect((html.match(/connect-triage-row/g) ?? []).length).toBe(2);
-    expect(html).toContain("connect-triage-select");
-    expect(html).toContain("connect-triage-assign-submit");
-  });
-
-  it("shows no triage list when the accept response created a relationship", () => {
-    const submitted: DiscoveryProposal["objects"] = [{ typeId: "component", name: "api" }];
-    const html = renderToStaticMarkup(
-      withQueryClient(
-        <ImportSummaryGeneric
-          kind="gitea"
-          systemName="gitea1"
-          result={acceptFixture({ createdObjectIds: ids(1), createdRelationshipIds: ids(1) })}
-          submitted={submitted}
-          doors={doorsDouble()}
-        />
-      )
-    );
-    expect(html).not.toContain("connect-orphan-notice");
-    expect(html).not.toContain("connect-triage");
-  });
-
-  it("shows the orphan notice with no triage rows when nothing imported is a component", () => {
-    const submitted: DiscoveryProposal["objects"] = [
-      { typeId: "deployment-target", name: "prod-us" }
-    ];
-    const html = renderToStaticMarkup(
-      withQueryClient(
-        <ImportSummaryGeneric
-          kind="gitea"
-          systemName="gitea1"
-          result={acceptFixture({ createdObjectIds: ids(1) })}
-          submitted={submitted}
-          doors={doorsDouble()}
-        />
-      )
-    );
-    expect(html).toContain("connect-orphan-notice");
-    expect(html).not.toContain("connect-triage");
-  });
-});
-
-// -------------------------------------------------------------------------------------------
-// The credential hazard, generalized to a non-argocd kind
-// -------------------------------------------------------------------------------------------
+// B3 IS GONE, AND SO IS WHAT IT DESCRIBED (ADR-0047).
+//
+// It pinned the POSITIONAL correspondence between the accept response's `createdObjectIds` and the
+// proposal that was submitted — the join that let the triage list name each imported component —
+// and then that the triage screen appeared exactly when components had landed without a service.
+//
+// Both describe a graph write that no longer happens. `discovery.accept` is removed; the wizard
+// emits IaC and a component cannot be emitted without a service, so there is no created-object list
+// to zip against and no orphan to triage. The concern moved one step earlier, to
+// `scaffold-panel.test.tsx`'s ungrouped case, which is where ADR-0047 put it: at authoring time,
+// where a human is present.
 
 describe("RegisterStepGeneric: the secret still reaches putSecret and nowhere else", () => {
   it("stores the token under the derived key and stamps the right execution-system kind", async () => {

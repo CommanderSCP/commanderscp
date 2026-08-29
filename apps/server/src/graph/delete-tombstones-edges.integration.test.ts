@@ -73,7 +73,7 @@ describe("deleting an object tombstones its edges, and a deleted ancestor stops 
 
   /** A service containing one component — the exact shape the live estate had. */
   async function servicedComponent(label: string) {
-    const component = await createOrphanComponent(admin, `${label}-comp`);
+    const component = await createOrphanComponent(server, org, `${label}-comp`);
     const service = await admin.object("service").create({ name: `${label}-svc` });
     await admin.relationships.create({
       typeId: "contains",

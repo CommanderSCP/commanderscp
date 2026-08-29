@@ -83,7 +83,7 @@ describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () 
       name: uniq("gamma"),
       properties: { environment: "gamma" }
     });
-    const component = await createOrphanComponent(admin, uniq("placed-at-gamma"));
+    const component = await createOrphanComponent(server, org, uniq("placed-at-gamma"));
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
 
     // An infrastructure change with NO component in its targets at all — a legitimate shape (a
@@ -116,7 +116,7 @@ describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () 
       name: uniq("gamma"),
       properties: { environment: "gamma" }
     });
-    const component = await createOrphanComponent(admin, uniq("own-infra"));
+    const component = await createOrphanComponent(server, org, uniq("own-infra"));
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
     const topo = await admin.object("release-topology").create({
       name: uniq("topo"),
@@ -150,7 +150,7 @@ describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () 
       name: uniq("gamma"),
       properties: { environment: "gamma" }
     });
-    const component = await createOrphanComponent(admin, uniq("hosted-on-gamma"));
+    const component = await createOrphanComponent(server, org, uniq("hosted-on-gamma"));
     // Deliberately NO placement — `hosted_on` is a component-level fact independent of `placement`.
     await admin.relationships.create({
       typeId: "hosted_on",
@@ -174,8 +174,8 @@ describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () 
   });
 
   it("a COUPLING-only match (no shared place at all) appears with route 'coupling' and the coupled key", async () => {
-    const component = await createOrphanComponent(admin, uniq("requires-feature-a"));
-    const elsewhere = await createOrphanComponent(admin, uniq("unrelated-place"));
+    const component = await createOrphanComponent(server, org, uniq("requires-feature-a"));
+    const elsewhere = await createOrphanComponent(server, org, uniq("unrelated-place"));
 
     // This component's own recent release REQUIRES a key — no place named that would ever put this
     // component in the infra change's key set.
@@ -188,7 +188,7 @@ describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () 
     // An infrastructure change against a wholly unrelated object PROVIDES that same key. It shares
     // no placement, no deployment-target and no `hosted_on` edge with `component` — the coupling
     // arm is the only thing that can find it.
-    const providerComponent = await createOrphanComponent(admin, uniq("provides-feature-a"));
+    const providerComponent = await createOrphanComponent(server, org, uniq("provides-feature-a"));
     const providerChange = await admin.changes.propose({
       name: uniq("infra-provides-feature-a"),
       targets: [providerComponent.id],
@@ -209,7 +209,7 @@ describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () 
       name: uniq("gamma"),
       properties: { environment: "gamma" }
     });
-    const component = await createOrphanComponent(admin, uniq("placed-and-coupled"));
+    const component = await createOrphanComponent(server, org, uniq("placed-and-coupled"));
     await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
 
     // This component's own recent release REQUIRES a key — sets up the coupling arm's key set.
@@ -251,7 +251,7 @@ describe("component pipeline: correlatedInfra (owner decision, 2026-08-24)", () 
   });
 
   it("no correlations at all -> { changes: [] }, never a fabricated entry", async () => {
-    const component = await createOrphanComponent(admin, uniq("no-correlations"));
+    const component = await createOrphanComponent(server, org, uniq("no-correlations"));
     const correlated = await correlatedInfraOf(component.id);
     expect(correlated, "evaluated and empty — never absent for a live server").not.toBeNull();
     expect(correlated).not.toBeUndefined();

@@ -2,7 +2,6 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import type {
-  AcceptDiscoveryResponse,
   CreateObjectRequest,
   DiscoveryProposal,
   GraphObject,
@@ -10,20 +9,12 @@ import type {
 } from "@scp/schemas";
 import { client } from "../lib/client";
 import { Alert } from "../components/ui/alert";
-import { Badge } from "../components/ui/badge";
+import { ScaffoldPanel } from "../components/scaffold/scaffold-panel";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
-import { Notice } from "../components/ui/notice";
 import { PageHeader } from "../components/ui/page-header";
-import { SectionLabel } from "../components/ui/section-label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from "../components/ui/select";
+import {} from "../components/ui/select";
 import { SkeletonRows } from "../components/ui/skeleton";
 import { QueryErrorNotice, queryErrorMessage } from "../components/query-error";
 import { ConnectArgoCdPage, normalizeServerUrl } from "./connect-argocd";
@@ -183,7 +174,6 @@ export interface ConnectKindDoors {
     pluginInstanceId: string,
     config: Record<string, unknown>
   ): Promise<DiscoveryProposal>;
-  acceptProposal(proposal: DiscoveryProposal): Promise<AcceptDiscoveryResponse>;
   listServices(): Promise<GraphObject[]>;
   setService(componentId: string, serviceId: string): Promise<unknown>;
 }
@@ -194,7 +184,6 @@ export const genericSdkDoors: ConnectKindDoors = {
   listExecutionSystems: async () => (await client.object("execution-system").list()).items,
   runDiscovery: (pluginModule, pluginInstanceId, config) =>
     client.discovery.run({ pluginModule, pluginInstanceId, config }),
-  acceptProposal: (proposal) => client.discovery.accept({ proposal }),
   listServices: async () => (await client.services.list({ limit: 100 })).items,
   setService: (componentId, serviceId) => client.components.setService(componentId, serviceId)
 };
@@ -537,16 +526,6 @@ export function groupObjectsByType(objects: ProposalObject[]): Array<[string, nu
   return order.map((typeId) => [typeId, byType.get(typeId)!]);
 }
 
-const SECTION_TITLE: Record<string, string> = {
-  component: "Components",
-  service: "Services",
-  "deployment-target": "Deployment targets"
-};
-
-function sectionTitle(typeId: string): string {
-  return SECTION_TITLE[typeId] ?? `${typeId}s`;
-}
-
 /**
  * Filters a proposal down to the CHECKED objects, dropping any `bindings`/`sourceMappings` that
  * name a skipped object (`objectName` match — exact, the SAME key `POST /discovery/accept` itself
@@ -574,329 +553,47 @@ export function filterProposal(
 }
 
 export function ReviewStepGeneric({
-  proposal,
-  doors,
-  onImported
+  proposal
 }: {
   proposal: DiscoveryProposal;
-  doors: ConnectKindDoors;
-  onImported: (result: AcceptDiscoveryResponse, submitted: ProposalObject[]) => void;
 }): React.JSX.Element {
-  const [uncheckedIndices, setUncheckedIndices] = useState<Set<number>>(new Set());
-  // See `filterProposal`'s doc comment: skip is only offered when nothing else in the proposal
-  // references an object by a URN this client cannot safely re-derive.
-  const canSkip = proposal.relationships.length === 0;
-
-  const accept = useMutation({
-    mutationFn: async (): Promise<{
-      result: AcceptDiscoveryResponse;
-      submitted: ProposalObject[];
-    }> => {
-      const submission = canSkip ? filterProposal(proposal, uncheckedIndices) : proposal;
-      const result = await doors.acceptProposal(submission);
-      return { result, submitted: submission.objects };
-    },
-    onSuccess: ({ result, submitted }) => onImported(result, submitted)
-  });
-
-  function toggle(index: number): void {
-    setUncheckedIndices((prev) => {
-      const next = new Set(prev);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
-      return next;
-    });
-  }
-
-  const keptCount = proposal.objects.length - uncheckedIndices.size;
-
+  // THE STEP THAT USED TO WRITE. It called `discovery.accept`, which committed the proposal
+  // straight into the graph — the path that made the homelab's ~50 imported components RBAC
+  // orphans, because nothing asked which service they belonged to.
+  //
+  // It now emits IaC (ADR-0047). The grouping question is asked HERE, before anything exists, which
+  // is the whole of the fix: "the orphan problem is solved at authoring time, where a human is
+  // present." The post-import orphan-triage screen this wizard used to end on is gone with it —
+  // there are no orphans to triage when a component cannot be emitted without a service.
   return (
-    <Card data-testid="connect-review-card">
+    <Card>
       <CardHeader>
-        <CardTitle>3. Review and import</CardTitle>
+        <CardTitle>Scaffold</CardTitle>
         <CardDescription>
-          Nothing below exists in the graph yet. Accepting creates the objects, their executor
-          bindings and their source mappings in one transaction.
+          {proposal.objects.length} object(s) discovered. Group them into services and commit the
+          code — SCP writes nothing here.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-wrap gap-2" data-testid="connect-proposal-counts">
-          {groupObjectsByType(proposal.objects).map(([typeId, indices]) => (
-            <Badge key={typeId} variant="info">
-              {indices.length} {typeId}
-            </Badge>
-          ))}
-          <Badge variant="neutral">{proposal.bindings?.length ?? 0} executor binding</Badge>
-          <Badge variant="neutral">{proposal.sourceMappings?.length ?? 0} source mapping</Badge>
-          <Badge variant="neutral">{proposal.relationships.length} relationship</Badge>
-        </div>
-
-        {proposal.objects.length === 0 ? (
-          <p className="text-sm text-slate-500" data-testid="connect-proposal-empty">
-            Nothing to import.
-          </p>
-        ) : (
-          groupObjectsByType(proposal.objects).map(([typeId, indices]) => (
-            <div
-              key={typeId}
-              className="flex flex-col gap-1.5"
-              data-testid={`connect-object-group-${typeId}`}
-            >
-              <SectionLabel as="h3">{sectionTitle(typeId)}</SectionLabel>
-              <ul className="divide-y divide-slate-100 overflow-auto rounded border border-slate-200 text-sm">
-                {indices.map((index) => {
-                  const object = proposal.objects[index]!;
-                  return (
-                    <li
-                      key={`${typeId}-${index}`}
-                      className="flex items-center gap-3 px-3 py-1.5"
-                      data-testid="connect-object-row"
-                    >
-                      {canSkip && (
-                        <input
-                          type="checkbox"
-                          data-testid="connect-object-checkbox"
-                          checked={!uncheckedIndices.has(index)}
-                          onChange={() => toggle(index)}
-                        />
-                      )}
-                      <span className="font-mono">{object.name}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          ))
-        )}
-
-        {!canSkip && proposal.objects.length > 0 && (
-          <p className="text-xs text-slate-500" data-testid="connect-skip-unavailable">
-            This proposal links these objects to each other, so importing a subset isn&apos;t
-            offered here — accepting brings in everything above.
-          </p>
-        )}
-
-        {accept.isError && (
-          <Alert tone="danger" role="alert" data-testid="connect-accept-error">
-            {queryErrorMessage(accept.error)}
-          </Alert>
-        )}
-
-        <div>
-          <Button
-            type="button"
-            disabled={accept.isPending || keptCount === 0}
-            onClick={() => accept.mutate()}
-            data-testid="connect-accept-submit"
-          >
-            {accept.isPending ? "Importing…" : "Import and coordinate"}
-          </Button>
-        </div>
+      <CardContent>
+        <ScaffoldPanel proposal={proposal} testIdPrefix="connect-scaffold" />
       </CardContent>
     </Card>
   );
 }
 
-// -----------------------------------------------------------------------------------------------
-// The result — B3: the orphan notice becomes a triage worklist
-// -----------------------------------------------------------------------------------------------
-
-interface ImportedRow {
-  typeId: string;
-  name: string;
-  id: string;
-}
-
-/**
- * `POST /discovery/accept`'s response carries only id ARRAYS (`createdObjectIds: string[]`), no
- * names — but its handler builds `createdObjectIds` with one push per `request.body.proposal
- * .objects` entry, IN THAT ORDER, and never skips one silently (`routes/executors.ts`). So the
- * SUBMITTED proposal's objects and the response's `createdObjectIds` correspond positionally, by
- * construction of that loop — not inferred, read directly off the handler. This is what lets the
- * triage list below name and link each imported component; without it "the accept response names
- * them" (the section G4 instruction) would not be possible at all.
+/*
+ * THE POST-IMPORT ORPHAN TRIAGE IS GONE, AND THAT IS THE POINT (ADR-0047).
+ *
+ * `zipCreatedObjects`, `ImportedRow`, the per-component service picker and `ImportSummaryGeneric`
+ * existed to repair what the accept path produced: components already written to the graph with no
+ * owning service, which the operator then had to find and fix one at a time. The homelab's ~50
+ * imported components are why that screen was built.
+ *
+ * With discovery demoted to a scaffolder there is nothing to repair. Grouping is asked BEFORE
+ * anything exists (`ScaffoldPanel`), and a component with no service is simply not emitted — a
+ * `Component` cannot be constructed without one. A triage screen for a state that can no longer be
+ * reached would be dead code that reads as a safety net.
  */
-export function zipCreatedObjects(
-  submitted: ProposalObject[],
-  result: AcceptDiscoveryResponse
-): ImportedRow[] {
-  return submitted.map((object, index) => ({
-    typeId: object.typeId,
-    name: object.name,
-    id: result.createdObjectIds[index] ?? ""
-  }));
-}
-
-function TriageRow({
-  component,
-  services,
-  doors
-}: {
-  component: ImportedRow;
-  services: GraphObject[];
-  doors: ConnectKindDoors;
-}): React.JSX.Element {
-  const [selected, setSelected] = useState("");
-  const assign = useMutation({
-    mutationFn: (serviceId: string) => doors.setService(component.id, serviceId)
-  });
-
-  return (
-    <li
-      className="flex flex-wrap items-center gap-2 rounded border border-slate-200 px-3 py-2"
-      data-testid="connect-triage-row"
-    >
-      <span className="min-w-0 flex-1 truncate font-mono text-sm">{component.name}</span>
-      {assign.isSuccess ? (
-        <Notice tone="success" data-testid="connect-triage-assigned">
-          Assigned.
-        </Notice>
-      ) : (
-        <>
-          <Select value={selected} onValueChange={setSelected}>
-            <SelectTrigger className="w-48" data-testid="connect-triage-select">
-              <SelectValue placeholder="Assign to service…" />
-            </SelectTrigger>
-            <SelectContent>
-              {services.map((service) => (
-                <SelectItem key={service.id} value={service.id}>
-                  {service.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!selected || assign.isPending}
-            onClick={() => selected && assign.mutate(selected)}
-            data-testid="connect-triage-assign-submit"
-          >
-            {assign.isPending ? "Assigning…" : "Assign"}
-          </Button>
-        </>
-      )}
-      {assign.isError && (
-        <Alert tone="danger" className="w-full" data-testid="connect-triage-assign-error">
-          {queryErrorMessage(assign.error)}
-        </Alert>
-      )}
-    </li>
-  );
-}
-
-function TriageSection({
-  components,
-  doors
-}: {
-  components: ImportedRow[];
-  doors: ConnectKindDoors;
-}): React.JSX.Element {
-  const servicesQuery = useQuery({
-    queryKey: ["connect-triage-services"],
-    queryFn: doors.listServices
-  });
-
-  return (
-    <div className="flex flex-col gap-3" data-testid="connect-triage">
-      {servicesQuery.isError && (
-        <QueryErrorNotice
-          error={servicesQuery.error}
-          what="the services to assign into"
-          testId="connect-triage-services-error"
-        />
-      )}
-      <ul className="flex flex-col gap-2">
-        {components.map((component) => (
-          <TriageRow
-            key={component.id}
-            component={component}
-            services={servicesQuery.data ?? []}
-            doors={doors}
-          />
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-export function ImportSummaryGeneric({
-  systemName,
-  result,
-  submitted,
-  doors
-}: {
-  kind: string;
-  systemName: string;
-  result: AcceptDiscoveryResponse;
-  submitted: ProposalObject[];
-  doors: ConnectKindDoors;
-}): React.JSX.Element {
-  const relationships = result.createdRelationshipIds.length;
-  const rows: Array<[string, number]> = [
-    ["graph objects", result.createdObjectIds.length],
-    ["executor bindings", result.createdBindingIds.length],
-    ["source mappings", result.createdSourceMappingIds.length],
-    ["graph relationships", relationships]
-  ];
-  // Same hazard-3 discipline as `connect-argocd.tsx`'s `ImportSummary`: read off the RESPONSE,
-  // never a belief about what a discovery plugin emits.
-  const orphan = relationships === 0;
-  const components = zipCreatedObjects(submitted, result).filter(
-    (row) => row.typeId === "component"
-  );
-
-  return (
-    <Card data-testid="connect-summary-card">
-      <CardHeader>
-        <CardTitle>Imported from {systemName}</CardTitle>
-        <CardDescription>SCP now observes, triggers and reports on these objects.</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
-          {rows.map(([label, count]) => (
-            <div key={label} data-testid={`connect-created-${label.replace(/\s+/g, "-")}`}>
-              <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
-              <dd className="font-mono text-lg text-slate-900">{count}</dd>
-            </div>
-          ))}
-        </dl>
-
-        {orphan && (
-          <div className="flex flex-col gap-3">
-            <div
-              className="rounded border border-slate-300 bg-slate-50 p-3 text-sm text-slate-800"
-              data-testid="connect-orphan-notice"
-            >
-              <p className="font-medium">These aren&apos;t part of any service yet.</p>
-              <p className="mt-1">
-                The import created no graph relationships, so nothing links the new objects to a
-                service, an owner or a dependency by design — coordination already works through the
-                executor bindings above.{" "}
-                {components.length > 0 && "Assign each component below, or come back to it later."}
-              </p>
-            </div>
-            {components.length > 0 && <TriageSection components={components} doors={doors} />}
-          </div>
-        )}
-
-        <Link
-          to="/$basePath"
-          params={{ basePath: "components" }}
-          className="text-sm text-slate-700 underline underline-offset-4 hover:text-slate-900"
-          data-testid="connect-view-components-link"
-        >
-          View the imported components
-        </Link>
-      </CardContent>
-    </Card>
-  );
-}
-
-// -----------------------------------------------------------------------------------------------
-// The page
-// -----------------------------------------------------------------------------------------------
 
 export function ConnectGenericPage({
   kind,
@@ -907,10 +604,6 @@ export function ConnectGenericPage({
 }): React.JSX.Element {
   const [system, setSystem] = useState<GraphObject | null>(null);
   const [proposal, setProposal] = useState<DiscoveryProposal | null>(null);
-  const [imported, setImported] = useState<{
-    result: AcceptDiscoveryResponse;
-    submitted: ProposalObject[];
-  } | null>(null);
 
   const manifestsQuery = useQuery({
     queryKey: ["plugin-manifests"],
@@ -988,20 +681,8 @@ export function ConnectGenericPage({
         />
       )}
 
-      {imported !== null && system !== null ? (
-        <ImportSummaryGeneric
-          kind={kind}
-          systemName={system.name}
-          result={imported.result}
-          submitted={imported.submitted}
-          doors={doors}
-        />
-      ) : proposal !== null ? (
-        <ReviewStepGeneric
-          proposal={proposal}
-          doors={doors}
-          onImported={(result, submitted) => setImported({ result, submitted })}
-        />
+      {proposal !== null ? (
+        <ReviewStepGeneric proposal={proposal} />
       ) : system !== null ? (
         <EnumerateStepGeneric
           connectable={connectable}

@@ -296,7 +296,7 @@ import {
   deleteSecret as deleteSecretRequest,
   listPluginManifests as listPluginManifestsRequest,
   runDiscovery as runDiscoveryRequest,
-  acceptDiscoveryProposal as acceptDiscoveryProposalRequest,
+  scaffoldDiscoveryProposal as scaffoldDiscoveryProposalRequest,
   backfillSourceMappings as backfillSourceMappingsRequest,
   // The live event stream (`GET /events/stream`) — a generated SSE operation like any other
   // generated operation, `responseValidator` included, since the SSE API-parity work declared it
@@ -477,9 +477,9 @@ import type {
   SecretKeyListResponse,
   PluginManifestListResponse,
   RunDiscoveryRequest,
+  ScaffoldDiscoveryRequest,
+  ScaffoldDiscoveryResponse,
   DiscoveryProposal,
-  AcceptDiscoveryRequest,
-  AcceptDiscoveryResponse,
   BackfillSourceMappingsResponse,
   ServiceBoardResponse,
   RelayedEvent,
@@ -2882,9 +2882,11 @@ export class ScpClient {
       const result = await runDiscoveryRequest({ client: this.client, body: req });
       return unwrap(result);
     },
-    /** The ONLY call that commits a discovery proposal's objects/relationships into the graph. */
-    accept: async (req: AcceptDiscoveryRequest): Promise<AcceptDiscoveryResponse> => {
-      const result = await acceptDiscoveryProposalRequest({ client: this.client, body: req });
+    /** ADR-0047 — a proposal in, IaC SOURCE out. Writes nothing; the caller commits what comes
+     *  back and a normal `scp apply` lands it. This is what replaced `discovery.accept`, and the
+     *  shape difference is the point: accept returned created ids, this returns text. */
+    scaffold: async (req: ScaffoldDiscoveryRequest): Promise<ScaffoldDiscoveryResponse> => {
+      const result = await scaffoldDiscoveryProposalRequest({ client: this.client, body: req });
       return unwrap(result);
     },
     /** Backfill source_mappings onto ALREADY-imported components (M12 P5 follow-up) — matches a fresh

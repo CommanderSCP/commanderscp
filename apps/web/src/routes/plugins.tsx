@@ -378,25 +378,14 @@ function ConfigureDialog({
     onSuccess: (proposal) => setDiscoveryProposal(proposal)
   });
 
-  const acceptMutation = useMutation({
-    mutationFn: async () => {
-      if (!discoveryProposal) throw new Error("no proposal to accept");
-      return client.discovery.accept({ proposal: discoveryProposal });
-    },
-    onSuccess: () => {
-      setDiscoveryProposal(null);
-      onOpenChange(false);
-    }
-  });
-
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
     if (isDiscovery) discoverMutation.mutate();
     else bindMutation.mutate();
   }
 
-  const pending = bindMutation.isPending || discoverMutation.isPending || acceptMutation.isPending;
-  const error = bindMutation.error ?? discoverMutation.error ?? acceptMutation.error;
+  const pending = bindMutation.isPending || discoverMutation.isPending;
+  const error = bindMutation.error ?? discoverMutation.error;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -506,14 +495,19 @@ function ConfigureDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
+            {/* THE "Accept proposal" BUTTON IS GONE (ADR-0047). It called `discovery.accept`,
+                which wrote the proposal straight into the graph. Discovery still RUNS here — the
+                proposal is shown — but turning it into estate happens in the /connect scaffolder,
+                where the grouping question is asked and IaC comes out. A button that wrote rows
+                from this dialog would be the retired path under a new name. */}
             {isDiscovery && discoveryProposal ? (
               <Button
                 type="button"
-                disabled={pending}
-                onClick={() => acceptMutation.mutate()}
-                data-testid="discovery-accept-button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                data-testid="discovery-done-button"
               >
-                {acceptMutation.isPending ? "Accepting…" : "Accept proposal"}
+                Done
               </Button>
             ) : (
               <Button type="submit" disabled={pending} data-testid="plugin-configure-submit">

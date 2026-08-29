@@ -190,7 +190,7 @@ describe("M22.9: the exclusion-set re-check, at both federation call sites", () 
     const service = await admin
       .object("service")
       .create({ name: `svc-${label}`, domainId: containmentDomain.id });
-    const component = await createOrphanComponent(admin, `comp-${label}`);
+    const component = await createOrphanComponent(server, org, `comp-${label}`);
     await admin.relationships.create({
       typeId: "contains",
       fromId: service.id,

@@ -51,7 +51,7 @@ import {
  *
  *  # DOOR                                    typeId from         BEFORE             AFTER (M21.7)
  *  1 POST /federation/overlays               body.typeId         object:write ONLY  + policy:write @org root
- *  2 POST /discovery/accept                  proposal.objects[]  object:write ONLY  + type refused outright
+ *  2 POST /discovery/accept                  REMOVED in increment 6 (ADR-0047) — the door is gone, not merely guarded
  *  3 {POST,PATCH,PUT,DELETE} /objects/{type} path param          type refused       unchanged (measured)
  *  4 POST /plans + /plans/{id}/apply         manifest.objects[]  policy:write+scope unchanged (measured)
  *  5 POST /federation/hand-fill              body.typeId         federation:write   + policy:write @org root
@@ -413,53 +413,21 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
   });
 
   // -------------------------------------------------------------------------------------------
-  // DOOR 2 — discovery accept. THE SECOND HOLE.
+  // DOOR 2 IS GONE — `POST /discovery/accept` was REMOVED in increment 6 (ADR-0047).
+  //
+  // Its three cases went with it. They proved that the import surface refused governance-managed
+  // types outright rather than checking a permission, and they were the second of the two holes
+  // this file was written for. That hole is now closed the strongest way available: THE DOOR DOES
+  // NOT EXIST. Discovery proposes, and its output becomes IaC code a human commits — there is no
+  // longer an observation-driven write path to smuggle a `policy` through.
+  //
+  // The remaining doors below still carry the invariant, and the enumeration further down (which
+  // drives every governance-managed type against every door) lost one entry rather than one type,
+  // so nothing about the type set went unchecked.
+  //
+  // Recorded rather than deleted quietly: this file's header counts the doors, and a reader who
+  // finds four where the prose says five should learn why here.
   // -------------------------------------------------------------------------------------------
-
-  it("DOOR 2: an Operator cannot mint an org-wide policy through a hand-written discovery proposal", async () => {
-    const name = `discovery-escalation-${randomUUID().slice(0, 8)}`;
-
-    const res = await post("/api/v1/discovery/accept", operator.token, {
-      proposal: {
-        objects: [{ typeId: "policy", name, properties: ORG_WIDE_POLICY_PROPERTIES }],
-        relationships: []
-      }
-    });
-
-    expect(res.statusCode, res.body).toBe(403);
-    // The SPECIFIC violation: the refused type is NAMED, and the reason is the governance gate.
-    // `/policies/` alone would also be satisfied by the peer-bound refusal's prose.
-    expect(res.body).toMatch(/'policy' objects/);
-    expect(res.body).toMatch(/policy:write/);
-    expect(await policyRowsByName(name)).toHaveLength(0);
-  });
-
-  it("DOOR 2 (control): an ordinary discovery proposal is still accepted", async () => {
-    const name = `discovery-ordinary-${randomUUID().slice(0, 8)}`;
-    const res = await post("/api/v1/discovery/accept", operator.token, {
-      proposal: { objects: [{ typeId: "service", name }], relationships: [] }
-    });
-    expect(res.statusCode, res.body).toBe(201);
-    expect((res.json() as { createdObjectIds: string[] }).createdObjectIds).toHaveLength(1);
-  });
-
-  it("DOOR 2: an ADMIN cannot smuggle one either — the type is refused, not the permission", async () => {
-    // Discovery is an IMPORT surface: nothing discovers governance documents, and a proposal
-    // carries no scope binding for `assertPolicyScopeWithinAuthority` to bind. So the refusal here
-    // is about the TYPE and must hold for every caller, including one who legitimately holds
-    // `policy:write`. If it is ever relaxed into a permission check, this case goes red.
-    const name = `discovery-admin-${randomUUID().slice(0, 8)}`;
-    const res = await post("/api/v1/discovery/accept", org.adminToken, {
-      proposal: {
-        objects: [{ typeId: "control", name, properties: { category: "security" } }],
-        relationships: []
-      }
-    });
-    expect(res.statusCode, res.body).toBe(403);
-    expect(res.body).toMatch(/'control' objects/);
-    // Nothing was written for the OTHER governance type either.
-    expect(await governanceRowsByName("control", name)).toHaveLength(0);
-  });
 
   // -------------------------------------------------------------------------------------------
   // DOOR 3 — the generic `/objects/{type}` family. Listed as closed; MEASURED closed, all verbs.
@@ -550,7 +518,7 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
       const org: TestOrg = await createTestOrg(server, "gm-grant-iac");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
       const domain = await admin.object("domain").create({ name: "payments" });
-      const component = await createOrphanComponent(admin, "payments-api");
+      const component = await createOrphanComponent(server, org, "payments-api");
 
       // A GENUINE `policy:write` HOLDER, scoped to that domain. Administrator is the role that
       // carries `policy:write` (see `governance/scan-declared-override-exclusions`'s O4).
@@ -657,7 +625,7 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     try {
       const org: TestOrg = await createTestOrg(server, "gm-grant-update");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-      const component = await createOrphanComponent(admin, "billing-api");
+      const component = await createOrphanComponent(server, org, "billing-api");
       const stackName = `gm-upd-${randomUUID().slice(0, 8)}`;
       const urn = `urn:scp:${stackName}:scan_override_grant:standing`;
       const base = {
@@ -704,7 +672,7 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     try {
       const org: TestOrg = await createTestOrg(server, "gm-grant-fed");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-      const component = await createOrphanComponent(admin, "fed-api");
+      const component = await createOrphanComponent(server, org, "fed-api");
       const decided = {
         componentId: component.id,
         vulnerabilityId: "CVE-2024-3094",
@@ -941,16 +909,6 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
           })
       },
       {
-        door: "POST /api/v1/discovery/accept",
-        run: (typeId, name) =>
-          post("/api/v1/discovery/accept", token, {
-            proposal: {
-              objects: [{ typeId, name, properties: propertiesFor(typeId) }],
-              relationships: []
-            }
-          })
-      },
-      {
         door: "POST /api/v1/objects/{type}",
         run: (typeId, name) =>
           post(`/api/v1/objects/${typeId}`, token, {
@@ -1086,7 +1044,7 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     // says what the property actually claims: the doors distinguish `policy` from `freeze` by TYPE,
     // and this actor clears the governance bar for the one and is refused the other.
     //
-    // The three refusing doors (`/objects/{type}`, `/discovery/accept`) have no such control by
+    // The refusing door (`/objects/{type}`) has no such control by
     // construction — they refuse EVERY governance-managed type for every caller, which their own
     // DOOR cases above already pin.
     // ============================================================================================
@@ -1301,11 +1259,14 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
    * only after asking the governance question of the NEW site — the reason it is written down.
    */
   const REVIEWED_RUNTIME_TYPEID_WRITE_SITES: Record<string, string[]> = {
-    // ---- THE FIVE DOORS: `typeId` comes from the request body or path. -----------------------
+    // ---- THE FOUR DOORS: `typeId` comes from the request body or path. -----------------------
     // DOOR 1 — `policy:write` at the org root (M21.7).
     "federation/overlay-repo.ts": ["input.overlayTypeId ×1"],
-    // DOOR 2 — governance types refused outright (M21.7).
-    "routes/executors.ts": ["proposedObject.typeId ×1"],
+    // DOOR 2 WAS `routes/executors.ts`'s `proposedObject.typeId`, and it is GONE: increment 6
+    // removed `POST /discovery/accept` (ADR-0047), taking the write site with it. This census
+    // noticing the disappearance is the mechanism working — it fails on a site that appears OR
+    // vanishes, because either changes the set of places a governance type could reach the graph.
+    // Five doors became four; nothing was re-pointed.
     // DOOR 3 — governance types refused outright (`assertNotGovernanceManagedObjectType`), on every
     // verb including DELETE — which is what the four sites are: create, update, upsert-by-URN,
     // delete, all spelled `type`, and all four of them one entry until this table went per-site.

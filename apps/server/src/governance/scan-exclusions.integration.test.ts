@@ -242,12 +242,12 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
   // Fixtures
   // -----------------------------------------------------------------------------------------
 
-  async function buildChain(admin: ScpClient, label: string) {
+  async function buildChain(org: TestOrg, admin: ScpClient, label: string) {
     const containmentDomain = await admin.object("domain").create({ name: `dom-${label}` });
     const service = await admin
       .object("service")
       .create({ name: `svc-${label}`, domainId: containmentDomain.id });
-    const component = await createOrphanComponent(admin, `comp-${label}`);
+    const component = await createOrphanComponent(server, org, `comp-${label}`);
     await admin.relationships.create({
       typeId: "contains",
       fromId: service.id,
@@ -380,7 +380,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
   it("G1: with NOTHING admitted anywhere, a no-fix HIGH still counts and the gate still BLOCKS — byte-identical to pre-M22.2", async () => {
     const org = await createTestOrg(server, "excl-none");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "none");
+    const { component } = await buildChain(org, admin, "none");
 
     // A clause IS authored — it simply has no admission above it, which is the shipped default.
     await exclusionPolicy(admin, "clause-none", org.orgId, {
@@ -408,7 +408,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
 
     const org = await createTestOrg(server, "excl-admit");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "admit");
+    const { component } = await buildChain(org, admin, "admit");
 
     // The clause sits at the ORG tier, so the tiers it needs above it are exactly the two instance
     // rungs — both admitted above.
@@ -461,7 +461,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
 
     const org = await createTestOrg(server, "excl-prewarm");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "prewarm");
+    const { component } = await buildChain(org, admin, "prewarm");
 
     await exclusionPolicy(admin, "clause-prewarm", org.orgId, {
       exclude: { class: "no_fix_available" }
@@ -518,7 +518,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
 
     const org = await createTestOrg(server, "excl-and");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { containmentDomain, service, component } = await buildChain(admin, "and");
+    const { containmentDomain, service, component } = await buildChain(org, admin, "and");
 
     await exclusionPolicy(admin, "clause-comp", component.id, {
       exclude: { class: "no_fix_available" }
@@ -560,7 +560,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
 
     const org = await createTestOrg(server, "excl-cel");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "cel");
+    const { component } = await buildChain(org, admin, "cel");
 
     const BROKEN = "nosuchroot.nosuchfield == 1";
     await exclusionPolicy(
@@ -607,8 +607,8 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
 
     const org = await createTestOrg(server, "excl-targets");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const a = await buildChain(admin, "targets-a");
-    const b = await buildChain(admin, "targets-b");
+    const a = await buildChain(org, admin, "targets-a");
+    const b = await buildChain(org, admin, "targets-b");
 
     // Anchored in A's containment domain, which is NOT on B's chain at all.
     await exclusionPolicy(admin, "admit-org-t", org.orgId, { admit: ["no_fix_available"] });
@@ -652,7 +652,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
 
     const org = await createTestOrg(server, "excl-retain");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "retain");
+    const { component } = await buildChain(org, admin, "retain");
 
     await exclusionPolicy(admin, "clause-retain", org.orgId, {
       exclude: { class: "no_fix_available", pkgName: "openssl" }
@@ -693,7 +693,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
 
     const org = await createTestOrg(server, "excl-managed");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "managed");
+    const { component } = await buildChain(org, admin, "managed");
 
     // Authored at ORG — invisible to this step until M22.2, because it resolved with
     // `firedPolicies: []` and admitted only the instance floors.
@@ -765,7 +765,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
 
       const org = await createTestOrg(server, "excl-oscap");
       const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-      const { component } = await buildChain(admin, "oscap");
+      const { component } = await buildChain(org, admin, "oscap");
       await exclusionPolicy(admin, "clause-oscap", org.orgId, {
         exclude: { class: "no_fix_available" }
       });
@@ -979,7 +979,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     // `app.ts` and the second half can never happen.
     const org = await createTestOrg(server, "excl-install");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { component } = await buildChain(admin, "install");
+    const { component } = await buildChain(org, admin, "install");
 
     await exclusionPolicy(admin, "clause-install", org.orgId, {
       exclude: { class: "no_fix_available", pkgName: "openssl" }

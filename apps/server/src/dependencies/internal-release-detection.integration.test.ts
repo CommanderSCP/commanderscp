@@ -199,7 +199,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     );
 
     if (options.subscriber !== false) {
-      const consumer = await createOrphanComponent(admin, `consumer-${uuidv7()}`);
+      const consumer = await createOrphanComponent(server, org, `consumer-${uuidv7()}`);
       await inOrg((tx) =>
         upsertComponentDependency(tx, org.orgId, {
           componentObjectId: consumer.id,
@@ -426,7 +426,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("records the head for a FORWARD accept, and records NOTHING for a rollback of it", async () => {
-    const producer = await createOrphanComponent(admin, `producer-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `producer-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/api", major: "1" },
       producer.id
@@ -467,7 +467,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("does NOT record a release to a non-prod deployment-target", async () => {
-    const producer = await createOrphanComponent(admin, `gamma-producer-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `gamma-producer-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/gamma-only", major: "1" },
       producer.id
@@ -494,7 +494,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   });
 
   it("does NOT record a wave target that did not SUCCEED", async () => {
-    const producer = await createOrphanComponent(admin, `failed-producer-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `failed-producer-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/failed", major: "2" },
       producer.id
@@ -513,7 +513,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("is a NO-OP, with no Decision written, for a component that produces no declared line", async () => {
-    const producer = await createOrphanComponent(admin, `no-producer-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `no-producer-${uuidv7()}`);
     const change = await releaseTo(producer.id, prodTarget, {
       observedImages: ["ghcr.io/acme/anonymous:1.0.0"]
     });
@@ -530,7 +530,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   });
 
   it("does not fetch or record for a produced line NOBODY subscribes to", async () => {
-    const producer = await createOrphanComponent(admin, `unsubscribed-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `unsubscribed-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "npm", coordinate: "@acme/unsubscribed", major: "1" },
       producer.id,
@@ -562,7 +562,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("takes the oci version from observed.images — tag AND digest", async () => {
-    const producer = await createOrphanComponent(admin, `oci-producer-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `oci-producer-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/web", major: "3" },
       producer.id
@@ -595,7 +595,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     // statement in an audit record, and one no fresh-line test can see because there is nothing
     // stale to leave behind. `recordDependencyLineHead` distinguishes an omitted key from an
     // explicit null precisely so a caller can choose; this asserts which one this caller chooses.
-    const producer = await createOrphanComponent(admin, `stale-digest-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `stale-digest-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/stale", major: "1" },
       producer.id
@@ -621,7 +621,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   });
 
   it("does NOT move a line's head onto a release from a DIFFERENT major line", async () => {
-    const producer = await createOrphanComponent(admin, `two-line-producer-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `two-line-producer-${uuidv7()}`);
     const two = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/dual", major: "2" },
       producer.id
@@ -652,7 +652,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     // this derivation ignored the column entirely, so an alpine line took `4.1.0` — a glibc image —
     // as its head and every subscriber tracking the alpine flavour would have been bumped across
     // variants. One column, two readings; now one, in `line-head.ts`, used by both writers.
-    const producer = await createOrphanComponent(admin, `variant-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `variant-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/variant", major: "4", tagPattern: "-alpine" },
       producer.id
@@ -684,7 +684,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     // hotfix `1.9.10` ships off the maintenance branch. With no ordering check the second one moved
     // `latest_version` back, and every subscriber already on 1.10.0 was left looking AHEAD of its own
     // line's head — a subscription that then never fires for them again, with nothing to read.
-    const producer = await createOrphanComponent(admin, `hotfix-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `hotfix-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/hotfix", major: "1" },
       producer.id
@@ -723,7 +723,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     // "0 not recorded" and the Decision asserted two contradictory versions for one line. A line has
     // ONE head; two places disagreeing means the org has no single answer, and inventing one is the
     // wrong-version failure the whole module is arranged to avoid.
-    const producer = await createOrphanComponent(admin, `two-regions-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `two-regions-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/regional", major: "5" },
       producer.id
@@ -768,7 +768,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("reads a language version out of the producer's manifest, at the released commit", async () => {
-    const producer = await createOrphanComponent(admin, `npm-producer-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `npm-producer-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "npm", coordinate: "@acme/api", major: "2" },
       producer.id
@@ -806,7 +806,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("records NOTHING and states the reason when the version cannot be determined", async () => {
-    const producer = await createOrphanComponent(admin, `undeterminable-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `undeterminable-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/digest-only", major: "1" },
       producer.id
@@ -836,7 +836,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   });
 
   it("records NOTHING for a language line when no manifest reader is wired, and says so", async () => {
-    const producer = await createOrphanComponent(admin, `no-reader-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `no-reader-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "npm", coordinate: "@acme/no-reader", major: "1" },
       producer.id
@@ -865,7 +865,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("appends NO second Decision when the same accept is delivered twice", async () => {
-    const producer = await createOrphanComponent(admin, `redelivery-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `redelivery-${uuidv7()}`);
     await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/redeliver", major: "1" },
       producer.id
@@ -898,7 +898,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   });
 
   it("is not applicable to a change that is not accepted", async () => {
-    const producer = await createOrphanComponent(admin, `unaccepted-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `unaccepted-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "oci", coordinate: "ghcr.io/acme/unaccepted", major: "1" },
       producer.id
@@ -919,7 +919,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   // -----------------------------------------------------------------------------------------
 
   it("does its manifest reads OUTSIDE any transaction — a one-connection pool still serves the reader", async () => {
-    const producer = await createOrphanComponent(admin, `outside-tx-${uuidv7()}`);
+    const producer = await createOrphanComponent(server, org, `outside-tx-${uuidv7()}`);
     const lineId = await lineProducedBy(
       { ecosystem: "npm", coordinate: "@acme/outside-tx", major: "4" },
       producer.id
@@ -1092,7 +1092,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     }
 
     it("an accepted change delivered on the domain-event queue records the head, reading the manifest through the plugin host", async () => {
-      const producer = await createOrphanComponent(admin, `wired-producer-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `wired-producer-${uuidv7()}`);
       const lineId = await lineProducedBy(
         { ecosystem: "npm", coordinate: "@acme/wired", major: "3" },
         producer.id
@@ -1148,7 +1148,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     }, 60_000);
 
     it("REDELIVERY writes nothing new — the same accept delivered twice leaves ONE Decision", async () => {
-      const producer = await createOrphanComponent(admin, `wired-redeliver-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `wired-redeliver-${uuidv7()}`);
       const lineId = await lineProducedBy(
         { ecosystem: "oci", coordinate: "ghcr.io/acme/wired-redeliver", major: "1" },
         producer.id
@@ -1197,7 +1197,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     }, 60_000);
 
     it("a transition to any OTHER state is not routed at all", async () => {
-      const producer = await createOrphanComponent(admin, `wired-unaccepted-${uuidv7()}`);
+      const producer = await createOrphanComponent(server, org, `wired-unaccepted-${uuidv7()}`);
       const lineId = await lineProducedBy(
         { ecosystem: "oci", coordinate: "ghcr.io/acme/wired-executing", major: "1" },
         producer.id

@@ -135,7 +135,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
     });
     org = await createTestOrg(server, "dep-sub-api");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    componentId = (await createOrphanComponent(admin, `dep-sub-api-${uuidv7()}`)).id;
+    componentId = (await createOrphanComponent(server, org, `dep-sub-api-${uuidv7()}`)).id;
     await clearUnlock();
   });
 
@@ -505,7 +505,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
           { unlocked: true, note: "M21.2 backfill fixture" },
           OPERATOR_TOKEN
         );
-        const component = await createOrphanComponent(admin, `backfill-${uuidv7()}`);
+        const component = await createOrphanComponent(server, org, `backfill-${uuidv7()}`);
         backfillComponent = component.id;
         await withTenantTx(server.deps.db, org.orgId, async (tx) => {
           await createSourceMapping(tx, {
@@ -576,7 +576,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
         // ingestion suite green (measured). A provenance label is only worth having if a mislabel
         // is loud.
         bodies = { "package.json": JSON.stringify({ dependencies: { "@acme/lib": "^1.2.3" } }) };
-        const target = await createOrphanComponent(admin, `backfill-stamp-${uuidv7()}`);
+        const target = await createOrphanComponent(server, org, `backfill-stamp-${uuidv7()}`);
         await withTenantTx(server.deps.db, org.orgId, async (tx) => {
           await createSourceMapping(tx, {
             orgId: org.orgId,
@@ -622,7 +622,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
         // live git reads each — one HTTP request holding an unbounded number of round trips against
         // a user's provider, with a client that timed out long ago.
         bodies = { "package.json": JSON.stringify({ dependencies: { "@acme/lib": "^1.2.3" } }) };
-        const second = await createOrphanComponent(admin, `backfill-2nd-${uuidv7()}`);
+        const second = await createOrphanComponent(server, org, `backfill-2nd-${uuidv7()}`);
         await withTenantTx(server.deps.db, org.orgId, async (tx) => {
           await createSourceMapping(tx, {
             orgId: org.orgId,
@@ -938,8 +938,9 @@ describe("(7) the resolve answer is QUALIFIED by whether dependencies are manage
         target = await listenTestServer({ ...posture.options });
         targetOrg = await createTestOrg(target, `dep-env-${posture.reason}`);
         client = new ScpClient({ baseUrl: target.baseUrl, token: targetOrg.adminToken });
-        component = (await createOrphanComponent(client, `dep-env-${posture.reason}-${uuidv7()}`))
-          .id;
+        component = (
+          await createOrphanComponent(target, targetOrg, `dep-env-${posture.reason}-${uuidv7()}`)
+        ).id;
         // A component-scoped enable, authored the only way a subscription can be — a
         // `dependencySubscription` effect on an ordinary policy (ADR-0032 §3a). With the instance
         // unlocked above, this makes the pair resolve ENABLED on a deployment that will never act

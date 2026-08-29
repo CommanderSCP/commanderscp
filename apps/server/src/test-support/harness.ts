@@ -1050,17 +1050,31 @@ export async function createTestComponent(
 }
 
 /**
- * M12 P5a: create an ORPHAN component (no service) via the IMPORT path (`discovery/accept`), which is
- * permissive by design — the strict `POST /components` route requires a service, but imports never
- * do. Used by the `contains`-model tests that need a service-less component to then assign manually.
+ * M12 P5a: create an ORPHAN component — one with no owning service — for the `contains`-model tests
+ * that need to assign membership manually afterwards.
+ *
+ * WRITES THROUGH THE REPO, NOT A ROUTE, since increment 6 removed `POST /discovery/accept`
+ * (ADR-0047). That route was the permissive import door this helper used to lean on; the strict
+ * `POST /components` requires a service and always did. `graph/objects-repo.ts`'s `createObject` is
+ * the same function every import path calls, so an orphan made here is byte-identical to one that
+ * arrived over the federation journal — which is the state these tests are actually about.
+ *
+ * TAKES THE SERVER rather than a client, because there is no longer an HTTP door that will produce
+ * one. That is the honest signature: the permissiveness lives below the routes now, and a helper
+ * that still looked like an API call would imply a door that does not exist.
  */
-export async function createOrphanComponent(client: ScpClient, name: string): Promise<GraphObject> {
-  const result = await client.discovery.accept({
-    proposal: {
-      objects: [{ typeId: "component", name, properties: {} }],
-      relationships: [],
-      bindings: []
-    }
-  });
-  return client.components.get(result.createdObjectIds[0]!);
+export async function createOrphanComponent(
+  server: TestServer,
+  org: TestOrg,
+  name: string
+): Promise<GraphObject> {
+  return withTenantTx(server.deps.db, org.orgId, (tx) =>
+    createObject(tx, {
+      orgId: org.orgId,
+      typeId: "component",
+      actorObjectId: org.orgId,
+      requestId: `orphan-${name}`,
+      name
+    })
+  );
 }

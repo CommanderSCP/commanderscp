@@ -53,7 +53,7 @@ describe("component pipeline: observedRun (§3 Segment 2 — the upstream build 
     sourceKind: string,
     sourceRef: Record<string, unknown> | undefined
   ): Promise<GraphObject> {
-    const component = await createOrphanComponent(admin, uniq(name));
+    const component = await createOrphanComponent(server, org, uniq(name));
     await admin.changes.propose({
       name: uniq("chg"),
       targets: [component.id],
@@ -130,7 +130,7 @@ describe("component pipeline: observedRun (§3 Segment 2 — the upstream build 
   });
 
   it("a change without run identity -> observedRun is null, not omitted (absent-vs-fabricated)", async () => {
-    const noChange = await createOrphanComponent(admin, uniq("no-change"));
+    const noChange = await createOrphanComponent(server, org, uniq("no-change"));
     expect(await observedRunOf(noChange.id)).toBeNull();
 
     const nonRunChange = await componentWithChange("push-only", "github", {
@@ -148,7 +148,7 @@ describe("component pipeline: observedRun (§3 Segment 2 — the upstream build 
   });
 
   it("picks the MOST RECENT run-carrying change when several exist", async () => {
-    const component = await createOrphanComponent(admin, uniq("newest-wins"));
+    const component = await createOrphanComponent(server, org, uniq("newest-wins"));
     await admin.changes.propose({
       name: uniq("chg-older"),
       targets: [component.id],

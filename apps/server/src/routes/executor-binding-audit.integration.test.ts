@@ -179,37 +179,11 @@ describe("executor-binding lifecycle audit events", () => {
     expect(events).toHaveLength(0);
   });
 
-  it("discovery accept's bindings import writes executor.binding.put too — the fourth door this census found (M12 P3b)", async () => {
-    const org = await createTestOrg(server, "binding-audit-discovery-accept");
-    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    await admin.secrets.put("sys-token", { value: "t" });
-    const sys = await admin.object("execution-system").create({
-      name: `sys-${randomUUID().slice(0, 8)}`,
-      properties: {
-        kind: "fake-executor",
-        serverUrl: "https://argocd.x",
-        tokenSecretKey: "sys-token"
-      }
-    });
-    const appName = `imported-app-${randomUUID().slice(0, 8)}`;
-
-    const result = await admin.discovery.accept({
-      proposal: {
-        objects: [
-          { typeId: "component", name: appName, properties: { argocdApplication: appName } }
-        ],
-        relationships: [],
-        bindings: [{ objectName: appName, executionSystemId: sys.id, externalRef: appName }]
-      }
-    });
-
-    const page = await admin.auditEvents.list({ limit: 200 });
-    const events = page.items.filter(
-      (e) => e.action === "executor.binding.put" && e.subjectId === result.createdObjectIds[0]
-    );
-    expect(events).toHaveLength(1);
-    expect(events[0]!.reason).toContain("fake-executor");
-  });
+  // THE FOURTH-DOOR CASE IS GONE WITH ITS DOOR (ADR-0047). It proved that `discovery/accept`'s
+  // binding import wrote `executor.binding.put` like every other binding-identity write — the point
+  // being that the audit call lives in `executor-bindings-repo.ts`, not at each call site. That
+  // shared implementation is unchanged and still exercised by the route cases here; one fewer
+  // caller does not weaken it.
 
   /** Every `audit_segment` journal row whose payload names `subjectId` AND an `executor.binding.*`
    *  action — the withholding check has to read the PAYLOAD, not just count rows, since an
@@ -302,8 +276,8 @@ describe("executor-binding lifecycle audit events: component merge's repoint (th
     // ORPHAN, not `createTestComponent` — `mergeComponents` requires a binding-only loser with no
     // live relationships, and `createTestComponent` gives it a `contains` edge from a throwaway
     // service (`components.integration.test.ts`'s own merge describe block uses the same helper).
-    const survivor = await createOrphanComponent(admin, `surv-${randomUUID().slice(0, 8)}`);
-    const loser = await createOrphanComponent(admin, `lose-${randomUUID().slice(0, 8)}`);
+    const survivor = await createOrphanComponent(server, org, `surv-${randomUUID().slice(0, 8)}`);
+    const loser = await createOrphanComponent(server, org, `lose-${randomUUID().slice(0, 8)}`);
     await admin.executors.putBinding(loser.id, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`
