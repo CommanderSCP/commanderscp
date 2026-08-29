@@ -1383,6 +1383,15 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
   // own `managed_by_stack` rows. A binding granted by hand carries NULL and is therefore invisible
   // here — that, not any check in this function, is what stops a manifest revoking an Owner
   // binding somebody granted through the typed door.
+  //
+  // PRUNE-ON-ABSENCE IS DELIBERATE HERE AND DELIBERATELY ABSENT ON TWO OTHER COLLECTIONS, so the
+  // asymmetry is a decision on the record rather than an inconsistency to be "fixed" later.
+  // `pipelineHooks` and `producers` do NOT prune on absence: a forgotten manifest key there would
+  // disarm a gate or re-arm dependency confusion, and the symptom of both is an ABSENCE OF
+  // REFUSALS, which nobody notices until it matters. A role binding fails the opposite way — a
+  // forgotten key revokes access and the person says so within minutes. Loud-and-recoverable is
+  // the safe direction to be wrong in, which is why the owner's ruling here was
+  // "Both, with revocation" (2026-08-28).
   const roleBindingEntries: PlanRoleBindingDiffEntry[] = [];
   const existingRoleBindings = new Map(
     snapshot.managedRoleBindings.map((b) => [roleBindingKey(b), b])

@@ -384,6 +384,15 @@ export const roleBindings = pgTable(
      * a capability: an apply that no longer declares a binding DELETES it. NULL is what keeps that
      * safe for hand-granted rows — a manifest can only ever prune bindings carrying its own stack
      * name, so an unrelated stack cannot touch an Owner binding somebody granted by hand.
+     *
+     * WHY THIS TABLE CARRIES THE COLUMN WHEN THE PROJECTIONS DO NOT (asked and answered 2026-08-28):
+     * `pipeline_hooks`, `component_rollouts`, `component_convergence`, `source_mappings` and
+     * `executor_bindings` deliberately have NO `managed_by_stack` — each hangs off a component, so
+     * ownership DERIVES and there is exactly one owner question with one answer. A second column
+     * there could only ever disagree with the parent. A role binding has no such parent: it hangs
+     * off a SUBJECT and a SCOPE, which may be owned by different stacks or by none. `objects` and
+     * `relationships` carry the column for the same reason. The rule is "no natural parent", not
+     * "IaC can write it".
      */
     managedByStack: text("managed_by_stack"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
