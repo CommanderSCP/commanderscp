@@ -19,8 +19,11 @@
 # What this proves, concretely:
 #   1. `helm install` (old image) -> pods Ready -> golden path (login, register a service) over a
 #      real port-forwarded HTTP client.
-#   2. `helm upgrade` (new image, worker scaled up too) while a background poller hits /healthz
-#      every 500ms -- the upgrade must complete with ZERO non-200 responses observed. Old-version
+#   2. `helm upgrade` (new image, worker scaled up too) while an IN-CLUSTER poller pod hits the api
+#      Service's /healthz by DNS every 500ms -- the upgrade must complete with ZERO non-200
+#      responses observed. In-cluster and through the Service on purpose: a `kubectl port-forward`
+#      pins to ONE pod and dies when the rollout replaces it, which reports downtime that the
+#      Service never had. Old-version
 #      pods keep serving throughout the rolling update window (maxUnavailable: 0), which is only
 #      possible if the pre-upgrade migrations Job's schema change is forward-compatible with the
 #      OLD code still running -- the actual expand/contract property, observed, not asserted.
@@ -52,7 +55,6 @@ default_baseline() {
 OLD_BASELINE_REF="${KIND_DRILL_BASELINE_REF:-$(default_baseline)}"
 WORKTREE_DIR=""
 PF_PID=""
-POLL_PID=""
 
 # KUBECONFIG isolation: this drill can run inside an ARC runner POD that itself lives in a
 # Kubernetes cluster (the homelab k3s), whose ambient in-cluster credentials + default namespace
@@ -70,7 +72,9 @@ cleanup() {
   local status=$?
   log "cleanup (exit code $status)"
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
-  [ -n "$POLL_PID" ] && kill "$POLL_PID" 2>/dev/null || true
+  # The zero-downtime witness is an in-cluster POD now, not a background shell job, so it is
+  # deleted rather than killed — a failed run must not leave it polling in the cluster.
+  kubectl delete pod "${WITNESS_POD:-kind-drill-witness}" --ignore-not-found --now >/dev/null 2>&1 || true
   if [ "$status" -ne 0 ]; then
     echo "--- kind-drill.sh FAILED -- dumping cluster state ---"
     kubectl get pods -o wide 2>&1 || true
@@ -225,21 +229,36 @@ CREATE_RESPONSE="$(curl -fsS -X POST "${BASE_URL}/api/v1/services" \
 echo "$CREATE_RESPONSE" | grep -q '"kind-drill-service"' || { echo "FAIL: service registration failed: $CREATE_RESPONSE" >&2; exit 1; }
 log "PASS: golden path -- registered 'kind-drill-service' against the OLD image"
 
-log "starting a background health poller (500ms interval) -- this is the zero-downtime witness"
-(
-  fails=0
-  total=0
-  while true; do
-    total=$((total + 1))
-    code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/healthz" --max-time 2 2>/dev/null || echo 000)"
-    if [ "$code" != "200" ]; then
-      fails=$((fails + 1))
-      echo "$(date +%s.%N) NON-200: $code"
-    fi
-    sleep 0.5
-  done
-) >/tmp/kind-drill-health-poll.log 2>&1 &
-POLL_PID=$!
+# THE WITNESS RUNS INSIDE THE CLUSTER, THROUGH THE SERVICE — it cannot be a port-forward.
+#
+# `kubectl port-forward svc/X` does NOT load-balance: it resolves the Service once, PINS to a
+# single backing pod, and tunnels to that pod. A rolling upgrade replaces exactly that pod, so the
+# tunnel dies BY CONSTRUCTION — whether or not the Service ever stopped serving. The old witness
+# therefore reported "zero-downtime violated" on every run: 35/35 observations were curl code 000
+# (connection failure) and NOT ONE was an HTTP status, which is the signature of a dead tunnel
+# rather than of an unavailable Service.
+#
+# Zero-downtime is a claim about what an in-cluster CONSUMER sees through the Service's load
+# balancing, so that is where it has to be measured. This runs the poller in a pod that curls the
+# api Service by DNS, exactly as any other workload would.
+#
+# The image is the already-loaded OLD scpd tag (Node 22 ⇒ global `fetch`), deliberately: the drill
+# loads exactly one image into kind and pulls nothing else, so introducing a curl/busybox image
+# here would add a registry dependency to a drill whose whole point is running without one.
+log "starting the in-cluster zero-downtime witness (Service DNS, 500ms interval)"
+WITNESS_POD="kind-drill-witness"
+kubectl delete pod "$WITNESS_POD" --ignore-not-found --now >/dev/null 2>&1 || true
+kubectl run "$WITNESS_POD" --restart=Never --image="scp:${OLD_IMAGE_TAG}" \
+  --overrides='{"spec":{"containers":[{"name":"witness","image":"scp:'"${OLD_IMAGE_TAG}"'","imagePullPolicy":"Never","command":["node","-e","const u=process.env.U;let n=0;(async()=>{for(;;){try{const r=await fetch(u,{signal:AbortSignal.timeout(2000)});if(r.status!==200)console.log(`NON-200: ${r.status}`);}catch(e){console.log(`NON-200: 000 ${e.name}`);}await new Promise(r=>setTimeout(r,500));}})();"],"env":[{"name":"U","value":"http://'"${RELEASE_NAME}"'-commanderscp-api/healthz"}]}]}}' \
+  >/dev/null
+# Wait for the witness to be RUNNING before the upgrade starts, or it observes nothing and the
+# drill passes vacuously — a witness that was never watching is worse than no witness.
+for _ in $(seq 1 60); do
+  [ "$(kubectl get pod "$WITNESS_POD" -o jsonpath='{.status.phase}' 2>/dev/null)" = "Running" ] && break
+  sleep 1
+done
+[ "$(kubectl get pod "$WITNESS_POD" -o jsonpath='{.status.phase}' 2>/dev/null)" = "Running" ] \
+  || { echo "FAIL: in-cluster witness never started — cannot observe the upgrade" >&2; exit 1; }
 
 log "helm upgrade -> NEW image (worker scaled 1->3, exercising the rollingUpdate path)"
 helm upgrade "$RELEASE_NAME" deploy/helm \
@@ -252,8 +271,9 @@ helm upgrade "$RELEASE_NAME" deploy/helm \
   --set worker.replicaCount=3 \
   --wait --timeout 240s
 
-kill "$POLL_PID" 2>/dev/null || true
 sleep 1
+kubectl logs "$WITNESS_POD" > /tmp/kind-drill-health-poll.log 2>&1 || true
+kubectl delete pod "$WITNESS_POD" --ignore-not-found --now >/dev/null 2>&1 || true
 NON_200_COUNT="$(grep -c "NON-200" /tmp/kind-drill-health-poll.log || true)"
 POLL_COUNT="$(wc -l < /tmp/kind-drill-health-poll.log | tr -d ' ')"
 log "health poll during upgrade: ${POLL_COUNT} non-200 log lines (0 expected)"
