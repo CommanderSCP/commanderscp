@@ -89,7 +89,10 @@ import type {
   GovernanceMoveEnforcement,
   GovernanceMoveInstanceRung,
   GovernanceMoveRung,
-  GovernanceMoveRungWriteResponse
+  GovernanceMoveRungWriteResponse,
+  Role,
+  RoleBinding,
+  OperatorCredential
 } from "@scp/schemas";
 import {
   DesiredStateManifestSchema,
@@ -236,6 +239,44 @@ function objectRow(o: GraphObject): Record<string, string> {
 
 function relationshipRow(r: Relationship): Record<string, string> {
   return { id: r.id, type: r.typeId, from: r.fromId, to: r.toId };
+}
+
+/** `scp role list` — built-ins first (the catalogue an operator recognises), then org rows. */
+function roleRow(r: Role): Record<string, string> {
+  return {
+    id: r.id,
+    name: r.name,
+    kind: r.orgId === null ? "built-in" : "org",
+    permissions: r.permissions.length === 0 ? "(none)" : r.permissions.sort().join(" "),
+    bindableAt: r.bindableAt === null ? "(any scope)" : r.bindableAt.join(" "),
+    // D5: a deprecated built-in still resolves for EXISTING bindings and accepts no new ones, so
+    // the column says "no new bindings" rather than "deprecated" — the latter reads as inert.
+    status: r.deprecated ? "no new bindings" : "bindable"
+  };
+}
+
+function roleBindingRow(b: RoleBinding): Record<string, string> {
+  return {
+    id: b.id,
+    role: b.roleName,
+    subjectId: b.subjectId,
+    scopeObjectId: b.scopeObjectId,
+    // A deny overrides every allow at any matching scope, so it must never render as a footnote.
+    effect: b.effect,
+    createdAt: b.createdAt
+  };
+}
+
+function operatorCredentialRow(c: OperatorCredential): Record<string, string> {
+  return {
+    id: c.id,
+    name: c.name,
+    createdAt: c.createdAt,
+    expiresAt: c.expiresAt ?? "(never)",
+    revoked: c.revokedAt ? "yes" : "no",
+    lastUsedAt: c.lastUsedAt ?? "(never)",
+    mintedBy: c.createdByUserId ?? "(bootstrap token)"
+  };
 }
 
 function patRow(p: Pat): Record<string, string> {
@@ -2481,6 +2522,370 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const revoked = await client.pats.revoke(id);
       printResult(revoked, opts.output, (item) => patRow(item as Pat));
+    });
+
+  // -------------------------------------------------------------------------------------
+  // RBAC — roles, bindings, effective permissions (role-model.md §5 steps 5, 6, 10)
+  //
+  // Until this existed the whole roles milestone was reachable only by hand-written HTTP: granting
+  // a role, authoring a custom one, mapping a group to an IdP claim. Charter principle 3 is
+  // API -> SDK -> CLI -> IaC -> UI and this is the CLI rung.
+  // -------------------------------------------------------------------------------------
+  const roleCmd = program.command("role").description("Inspect and author roles");
+
+  roleCmd
+    .command("list")
+    .description("List roles — built-in singletons and this org's own")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.roles.list();
+      printResult(page.items, opts.output, (item) => roleRow(item as Role));
+    });
+
+  roleCmd
+    .command("create")
+    .description("Author an organization role")
+    .requiredOption("--name <name>", "role name (may not collide with a built-in)")
+    .requiredOption(
+      "--permission <perm...>",
+      "permission to grant; repeatable. Must be one this system defines AND one you hold at the org root"
+    )
+    .option("--bindable-at <typeId...>", "object type ids this role may be bound at (default: any)")
+    .requiredOption("--reason <reason>", "why — recorded in the audit chain and the Decision")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          name: string;
+          permission: string[];
+          bindableAt?: string[];
+          reason: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const role = await client.roles.create({
+          name: opts.name,
+          permissions: opts.permission,
+          bindableAt: opts.bindableAt ?? null,
+          reason: opts.reason
+        });
+        printResult(role, opts.output, (item) => roleRow(item as Role));
+      }
+    );
+
+  roleCmd
+    .command("update <id>")
+    .description("Edit an organization role (built-ins are immutable)")
+    .option("--name <name>", "new name")
+    .option("--permission <perm...>", "REPLACES the permission set; omit to leave unchanged")
+    .option("--bindable-at <typeId...>", "REPLACES the bindable scopes; omit to leave unchanged")
+    .requiredOption("--reason <reason>", "why — recorded in the audit chain")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        id: string,
+        opts: BaseCliOpts & {
+          name?: string;
+          permission?: string[];
+          bindableAt?: string[];
+          reason: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        // Omitted flags stay `undefined` rather than becoming `[]`: the API treats absent as
+        // "leave alone" and an empty array as "clear", and conflating them would silently widen
+        // where a role may be bound.
+        const role = await client.roles.update(id, {
+          name: opts.name,
+          permissions: opts.permission,
+          bindableAt: opts.bindableAt,
+          reason: opts.reason
+        });
+        printResult(role, opts.output, (item) => roleRow(item as Role));
+      }
+    );
+
+  roleCmd
+    .command("delete <id>")
+    .description("Delete an organization role that no binding points at")
+    .requiredOption("--reason <reason>", "why — recorded in the audit chain")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (id: string, opts: BaseCliOpts & { reason: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      await client.roles.delete(id, { reason: opts.reason });
+      console.log(`Role '${id}' deleted.`);
+    });
+
+  const bindingCmd = program
+    .command("role-binding")
+    .description("Grant and revoke roles at a scope");
+
+  bindingCmd
+    .command("list")
+    .description("List role bindings (requires audit:read)")
+    .option("--subject <id>", "filter to one subject's bindings")
+    .option(
+      "--scope <id>",
+      "bindings written AT this exact object — NOT everything whose authority reaches it (that is `scp authz effective`)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { subject?: string; scope?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.roleBindings.list({
+        subjectId: opts.subject,
+        scopeObjectId: opts.scope
+      });
+      printResult(page.items, opts.output, (item) => roleBindingRow(item as RoleBinding));
+    });
+
+  bindingCmd
+    .command("grant-preview <subjectId>")
+    .description(
+      "Whom binding a role to this subject would empower (D7) — and whether an IdP owns that membership"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (subjectId: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const preview = await client.roleBindings.grantPreview(subjectId);
+      if (opts.output === "json") {
+        console.log(JSON.stringify(preview, null, 2));
+        return;
+      }
+      console.log(`subject:        ${preview.subjectId} (${preview.subjectTypeId})`);
+      console.log(`acknowledgement required: ${preview.acknowledgementRequired ? "yes" : "no"}`);
+      console.log(`acknowledgement complete: ${preview.acknowledgementComplete ? "yes" : "no"}`);
+      if (preview.withheldPrincipalCount > 0) {
+        console.log(
+          `withheld:       ${preview.withheldPrincipalCount} principal(s) you may not read — ` +
+            "the grant will 409 and NAME them, and the retry succeeds"
+        );
+      }
+      if (preview.subjectExternallySynced) {
+        // The honest framing, because the acknowledgement below is a statement about a moment.
+        console.log(
+          "⚠ this subject's membership is managed by an IDENTITY PROVIDER — binding a role here " +
+            "delegates the choice of who holds it to whoever administers the directory"
+        );
+      }
+      console.log(
+        `\n--acknowledge ${preview.acknowledgedPrincipalIds.join(" ") || "(none — pass --acknowledge with no values)"}`
+      );
+      printResult(preview.principals, "table", (item) => item as unknown as Record<string, string>);
+    });
+
+  bindingCmd
+    .command("create")
+    .description("Grant a role to a subject at a scope")
+    .requiredOption("--subject <id>", "user, service-account, group or team object id")
+    .requiredOption("--role <id>", "role id (from `scp role list`)")
+    .requiredOption("--scope <id>", "object at-or-below which the role grants")
+    .requiredOption(
+      "--reason <reason>",
+      "why — mandatory, and the one thing the Decision cannot reconstruct"
+    )
+    .option(
+      "--acknowledge <id...>",
+      "D7: every principal this binding empowers, for a group/team subject. Get them from `scp role-binding grant-preview`"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          subject: string;
+          role: string;
+          scope: string;
+          reason: string;
+          acknowledge?: string[];
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const binding = await client.roleBindings.create({
+          subjectId: opts.subject,
+          roleId: opts.role,
+          scopeObjectId: opts.scope,
+          reason: opts.reason,
+          // `undefined` and `[]` are NOT the same to the door: the first is "I did not look", the
+          // second "I looked and it is empty". Passing the flag with no values must reach the API
+          // as `[]`, so the absent case stays undefined rather than being defaulted here.
+          acknowledgedPrincipalIds: opts.acknowledge
+        });
+        printResult(binding, opts.output, (item) => roleBindingRow(item as RoleBinding));
+      }
+    );
+
+  bindingCmd
+    .command("delete <id>")
+    .description("Revoke a role binding")
+    .requiredOption("--reason <reason>", "why — recorded in the audit chain")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (id: string, opts: BaseCliOpts & { reason: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      await client.roleBindings.delete(id, { reason: opts.reason });
+      console.log(`Role binding '${id}' revoked.`);
+    });
+
+  const authzCmd = program.command("authz").description("Answer what you may do, and why");
+
+  authzCmd
+    .command("effective <scopeObjectId>")
+    .description(
+      "YOUR OWN effective permissions at one object, with the bindings that produced them"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (scopeObjectId: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const effective = await client.authz.effective(scopeObjectId);
+      if (opts.output === "json") {
+        console.log(JSON.stringify(effective, null, 2));
+        return;
+      }
+      console.log(`scope: ${effective.scopeObjectId}`);
+      console.log(
+        `permissions: ${effective.permissions.length === 0 ? "(none — you hold nothing here)" : effective.permissions.join(" ")}`
+      );
+      if (effective.contributingBindings.length === 0) {
+        console.log("no bindings reach this object");
+        return;
+      }
+      console.log("");
+      printResult(
+        effective.contributingBindings,
+        "table",
+        (item) => item as unknown as Record<string, string>
+      );
+    });
+
+  // -------------------------------------------------------------------------------------
+  // Instance-tier operator credentials (role-model.md §5 step 9)
+  //
+  // Named, hashed, individually revocable replacements for the single shared SCP_OPERATOR_TOKEN.
+  // All three verbs carry `x-scp-operator-token` — including the LISTING, which discloses how many
+  // credentials exist and when each was last used.
+  // -------------------------------------------------------------------------------------
+  const operatorCredCmd = program
+    .command("operator-credential")
+    .description("Mint, list and revoke instance-tier operator credentials");
+
+  /** `--operator-token` or `SCP_OPERATOR_TOKEN`, refused loudly rather than sending an empty header. */
+  function requireOperatorToken(opts: { operatorToken?: string }): string {
+    const token = opts.operatorToken ?? process.env.SCP_OPERATOR_TOKEN;
+    if (!token) {
+      throw new Error(
+        "an operator credential is required: pass --operator-token, or set SCP_OPERATOR_TOKEN. " +
+          "On a deployment that has not yet minted one, SCP_OPERATOR_TOKEN is the bootstrap value."
+      );
+    }
+    return token;
+  }
+
+  operatorCredCmd
+    .command("create")
+    .description("Mint a credential — the token is printed ONCE, store it now")
+    .requiredOption("--name <name>", "label a human will recognise at revoke time")
+    .option("--expires-at <iso>", "ISO 8601 expiry (no expiry if omitted)")
+    .option("--operator-token <token>", "defaults to $SCP_OPERATOR_TOKEN")
+    .option("--base-url <url>", "API base URL override")
+    .action(
+      async (opts: BaseCliOpts & { name: string; expiresAt?: string; operatorToken?: string }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const created = await client.operatorCredentials.create(
+          { name: opts.name, expiresAt: opts.expiresAt ?? null },
+          requireOperatorToken(opts)
+        );
+        console.log(
+          `Operator credential '${created.name}' created (id: ${created.id}).\n` +
+            "Shown ONLY ONCE and not retrievable again — store it now:\n" +
+            created.token +
+            "\n\nOnce this works, unset SCP_OPERATOR_TOKEN: the env token is the bootstrap path, " +
+            "and `operator-credential list` reports whether you are still on it."
+        );
+      }
+    );
+
+  operatorCredCmd
+    .command("list")
+    .description("List credentials (never their secrets) and how THIS request was admitted")
+    .option("--operator-token <token>", "defaults to $SCP_OPERATOR_TOKEN")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { operatorToken?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const page = await client.operatorCredentials.list(requireOperatorToken(opts));
+      if (opts.output === "json") {
+        console.log(JSON.stringify(page, null, 2));
+        return;
+      }
+      // Surfaced before the table: migrating off the env token is otherwise invisible — minting
+      // credentials while leaving SCP_OPERATOR_TOKEN set looks exactly like having finished.
+      console.log(
+        page.callerMechanism === "bootstrap-env-token"
+          ? "⚠ this request was admitted by the BOOTSTRAP env token, not a minted credential\n"
+          : "admitted by a minted credential\n"
+      );
+      printResult(page.items, "table", (item) => operatorCredentialRow(item as OperatorCredential));
+    });
+
+  operatorCredCmd
+    .command("revoke <id>")
+    .description("Revoke a credential (stamps revoked_at; the row and its history remain)")
+    .option("--operator-token <token>", "defaults to $SCP_OPERATOR_TOKEN")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (id: string, opts: BaseCliOpts & { operatorToken?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      await client.operatorCredentials.revoke(id, requireOperatorToken(opts));
+      console.log(`Operator credential '${id}' revoked.`);
+    });
+
+  // -------------------------------------------------------------------------------------
+  // IdP group mapping (SSO groups) — the one surface that was a RAW PROPERTIES WRITE
+  //
+  // Tagging a group with `externalIdentity.claimValue` is a `PATCH /groups/{id}` carrying a nested
+  // object. That is not something to ask an administrator to hand-write, and getting the property
+  // name wrong fails silently — an unmapped group is simply never synced. These commands own the
+  // shape so the operator names only the group and the claim.
+  // -------------------------------------------------------------------------------------
+  const idpCmd = program.command("idp").description("Map identity-provider claims to SCP groups");
+
+  idpCmd
+    .command("map <groupIdOrUrn>")
+    .description("Point a group at an IdP claim value (Entra APP ROLE by default)")
+    .requiredOption("--claim-value <value>", "the value your IdP emits, e.g. SCP.OrgAdmin")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (groupIdOrUrn: string, opts: BaseCliOpts & { claimValue: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const group = await client.object("group").update(groupIdOrUrn, {
+        properties: { externalIdentity: { claimValue: opts.claimValue } }
+      });
+      console.log(
+        `Group '${groupIdOrUrn}' now mirrors claim value '${opts.claimValue}'.\n` +
+          "The DIRECTORY is authoritative for this group from now on: members are added and " +
+          "removed at each login, and anyone added by hand is removed at their next one."
+      );
+      printResult(group, opts.output, (item) => item as unknown as Record<string, string>);
+    });
+
+  idpCmd
+    .command("unmap <groupIdOrUrn>")
+    .description("Stop an IdP managing this group's membership (leaves current members in place)")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (groupIdOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      await client.object("group").update(groupIdOrUrn, {
+        properties: { externalIdentity: null }
+      });
+      console.log(
+        `Group '${groupIdOrUrn}' is no longer IdP-managed. Its CURRENT members stay — unmapping ` +
+          "stops future reconciliation, it does not empty the group."
+      );
     });
 
   // -------------------------------------------------------------------------------------

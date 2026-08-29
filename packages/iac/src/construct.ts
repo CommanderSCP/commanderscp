@@ -12,6 +12,8 @@ import {
   type ManifestConvergence,
   type ManifestPipelineHook,
   type ManifestRollout,
+  type ManifestRoleBinding,
+  type ManifestRole,
   type ManifestSourceMapping,
   type RolloutStrategy,
   type RolloutTargetClass,
@@ -294,6 +296,8 @@ export class Stack extends Construct {
   private readonly governanceMoveRungDecls: LocatedDecl<ManifestGovernanceMoveRung>[] = [];
   private readonly pipelineHookDecls: LocatedDecl<ManifestPipelineHook>[] = [];
   private readonly rolloutDecls: LocatedDecl<ManifestRollout>[] = [];
+  private readonly roleBindingDecls: LocatedDecl<ManifestRoleBinding>[] = [];
+  private readonly roleDecls: LocatedDecl<ManifestRole>[] = [];
   private readonly convergenceDecls: LocatedDecl<ManifestConvergence>[] = [];
   /** L1 raw objects (D16(1)) — entries added via `addManifestEntry`, never through a typed
    *  construct. Kept separate from `resources` (which holds typed CONSTRUCTS, not manifest
@@ -692,6 +696,37 @@ export class Stack extends Construct {
    * and "this fleet self-converges" stays a reviewable line rather than a server-side default nobody
    * can see. An L1 caller is authoring the manifest directly, so it says both.
    */
+  /**
+   * L1 ESCAPE HATCH for a role binding — grant `roleName` to `subjectUrn` at `scopeUrn`.
+   *
+   * SUBJECT MUST BE A `user` OR `service-account`, and that is enforced by the L2 construct rather
+   * than here: this door takes URNs it cannot resolve to a type at synth time, so the refusal lives
+   * where the type is known. The reasoning is in `ManifestRoleBindingSchema` — D7's acknowledgement
+   * is a statement about a membership at a moment, and a manifest can only carry a snapshot that
+   * goes stale and trains its author to stop reading the refusal.
+   *
+   * The applying principal, not the author, is who the no-escalation subset rule judges. For a
+   * config-source sync that is the TEAM object, so a team's own repo cannot bootstrap that team's
+   * permissions.
+   */
+  addRoleBinding(binding: ManifestRoleBinding, location?: string): this {
+    this.roleBindingDecls.push({
+      location: location ?? `${binding.subjectUrn}/${binding.roleName}`,
+      entry: binding
+    });
+    return this;
+  }
+
+  /**
+   * L1 ESCAPE HATCH for an org-defined role. `permissions` must be strings this system defines AND
+   * ones the APPLYING principal holds at the org root — authoring a role that advertises authority
+   * its author cannot confer is refused at the door, not here.
+   */
+  addRole(role: ManifestRole, location?: string): this {
+    this.roleDecls.push({ location: location ?? role.name, entry: role });
+    return this;
+  }
+
   addConvergence(
     component: IResourceRef | string,
     target: IResourceRef | string,
@@ -798,6 +833,25 @@ export class Stack extends Construct {
     const rollouts: ManifestRollout[] = sortedRollouts.map((d) => d.entry);
     const rolloutLocations: string[] = sortedRollouts.map((d) => d.location);
 
+    // ROLE BINDINGS, sorted on `(subjectUrn, roleName, scopeUrn)` — the same triple
+    // `role_bindings_grant_key` (drizzle/0097) makes unique, so declaration order in code never
+    // changes the synthesized bytes and a manifest cannot express two bindings the database would
+    // collapse into one.
+    const sortedRoleBindings = [...this.roleBindingDecls].sort((a, b) =>
+      `${a.entry.subjectUrn}\u0000${a.entry.roleName}\u0000${a.entry.scopeUrn}`.localeCompare(
+        `${b.entry.subjectUrn}\u0000${b.entry.roleName}\u0000${b.entry.scopeUrn}`
+      )
+    );
+    const roleBindings: ManifestRoleBinding[] = sortedRoleBindings.map((d) => d.entry);
+    const roleBindingLocations: string[] = sortedRoleBindings.map((d) => d.location);
+
+    // ROLES, sorted on `name` — the identity within an org (`roles_org_name_key`, drizzle/0103).
+    const sortedRoles = [...this.roleDecls].sort((a, b) =>
+      a.entry.name.localeCompare(b.entry.name)
+    );
+    const roles: ManifestRole[] = sortedRoles.map((d) => d.entry);
+    const roleLocations: string[] = sortedRoles.map((d) => d.location);
+
     // CONVERGENCE (D25), sorted on `(componentUrn, targetUrn)` — the pair is the identity.
     const sortedConvergence = [...this.convergenceDecls].sort((a, b) =>
       `${a.entry.componentUrn}\u0000${a.entry.targetUrn}`.localeCompare(
@@ -826,6 +880,15 @@ export class Stack extends Construct {
       // rung. This is the more dangerous of the two omissions to get wrong: pruning here would turn
       // OFF a governance bar, and the symptom would be an absence of refusals.
       ...(governanceMoveRungs.length > 0 ? { governanceMoveRungs } : {}),
+      // OMITTED WHEN EMPTY, and here that omission means the ORDINARY thing (absent = empty =
+      // prune), unlike the three above. Dropping a binding is a REVOCATION: visible on the plan
+      // line, and a narrowing rather than a silent un-gating. The dangerous direction for a role
+      // binding is granting, and a forgotten key cannot grant anything.
+      ...(roleBindings.length > 0 ? { roleBindings } : {}),
+      // ORDINARY RULE too. A dropped role whose bindings still exist fails LOUDLY at apply — the
+      // delete door refuses while any binding points at it — rather than performing an
+      // unreviewable mass revoke.
+      ...(roles.length > 0 ? { roles } : {}),
       // OMITTED WHEN EMPTY, and `pipelineHooks` is the THIRD collection whose omission means
       // UNMANAGED rather than "manages none" — the contract says so explicitly and for the same
       // reason `producers` does: dropping the last declaration would silently DISARM a gate, and
@@ -897,6 +960,8 @@ export class Stack extends Construct {
       governanceMoveRungs: governanceMoveRungLocations,
       pipelineHooks: pipelineHookLocations,
       rollouts: rolloutLocations,
+      roleBindings: roleBindingLocations,
+      roles: roleLocations,
       convergence: convergenceLocations
     };
     const lines = parsed.error.issues.map((issue) => {

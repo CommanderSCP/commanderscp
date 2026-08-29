@@ -63,6 +63,14 @@ export {
   CanaryRollout,
   RollingRollout
 } from "./behaviors.js";
+
+// RBAC (role-model.md — the IaC rung). `RoleBinding` refuses a group/team subject at synth: D7's
+// acknowledgement is a statement about a membership at a moment, and a manifest can only carry a
+// snapshot that goes stale and trains its author to stop reading the refusal. Groups are granted
+// through `scp role-binding grant-preview` + `create`. The L1 doors (`Stack.addRoleBinding`,
+// `addRole`) stay available for a subject referenced by URN from outside the program.
+export { RoleBinding, OrgRole } from "./rbac.js";
+export type { RoleBindingProps, OrgRoleProps } from "./rbac.js";
 export type {
   WorkflowProps,
   PostDeployTestProps,

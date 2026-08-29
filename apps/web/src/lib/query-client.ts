@@ -161,3 +161,31 @@ export function governanceMoveRungsKey(): unknown[] {
 export function governanceMoveInstanceKey(): unknown[] {
   return ["governance-move", "instance"];
 }
+
+/** The role catalogue — built-in singletons plus this org's own (`GET /roles`, deliberately
+ *  unpaged: it is a bounded list). Invalidated after authoring, editing or deleting an org role. */
+export function rolesKey(): unknown[] {
+  return ["rbac", "roles"];
+}
+
+/** Role bindings, optionally filtered. `scopeObjectId` here is an EXACT match on where a binding
+ *  is written — NOT everything whose authority reaches that object, which is `authzEffectiveKey`.
+ *  The two answer different questions and the second is the more dangerous to get wrong. */
+export function roleBindingsKey(
+  filter: { subjectId?: string; scopeObjectId?: string } = {}
+): unknown[] {
+  return ["rbac", "role-bindings", filter.subjectId ?? null, filter.scopeObjectId ?? null];
+}
+
+/** D7's grant preview for one subject — whom a binding would empower, and whether an identity
+ *  provider owns that membership. Never cached across subjects. */
+export function grantPreviewKey(subjectId: string): unknown[] {
+  return ["rbac", "grant-preview", subjectId];
+}
+
+/** The CALLER's own effective permissions at one object (`GET /authz/effective`). Keyed by scope
+ *  because the answer is per-object — there is no org-wide answer, which is the whole reason this
+ *  endpoint exists. */
+export function authzEffectiveKey(scopeObjectId: string): unknown[] {
+  return ["rbac", "effective", scopeObjectId];
+}

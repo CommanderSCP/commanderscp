@@ -3984,6 +3984,18 @@ export const zCreatePlanResponse = z.object({
                 stage: z.string().min(1).optional()
             })
         ])).optional(),
+        roleBindings: z.array(z.object({
+            subjectUrn: z.string().min(1).max(512),
+            roleName: z.string().min(1).max(200),
+            scopeUrn: z.string().min(1).max(512),
+            reason: z.string().min(1).max(2000)
+        })).optional(),
+        roles: z.array(z.object({
+            name: z.string().min(1).max(200),
+            permissions: z.array(z.string()).max(100),
+            bindableAt: z.array(z.string()).max(50).optional(),
+            reason: z.string().min(1).max(2000)
+        })).optional(),
         rollouts: z.array(z.object({
             componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             targetClass: z.enum(['cluster', 'instanceGroup']),
@@ -4188,6 +4200,30 @@ export const zCreatePlanResponse = z.object({
             componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             targetClass: z.string(),
             rollout: z.unknown().nullable(),
+            reason: z.string()
+        })).optional(),
+        roleBindings: z.array(z.object({
+            kind: z.literal('roleBinding'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            subjectUrn: z.string(),
+            roleName: z.string(),
+            scopeUrn: z.string(),
+            reason: z.string()
+        })).optional(),
+        roles: z.array(z.object({
+            kind: z.literal('role'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            name: z.string(),
+            permissions: z.array(z.string()).nullable(),
             reason: z.string()
         })).optional(),
         convergence: z.array(z.object({
@@ -4355,6 +4391,18 @@ export const zGetPlanResponse = z.object({
                 stage: z.string().min(1).optional()
             })
         ])).optional(),
+        roleBindings: z.array(z.object({
+            subjectUrn: z.string().min(1).max(512),
+            roleName: z.string().min(1).max(200),
+            scopeUrn: z.string().min(1).max(512),
+            reason: z.string().min(1).max(2000)
+        })).optional(),
+        roles: z.array(z.object({
+            name: z.string().min(1).max(200),
+            permissions: z.array(z.string()).max(100),
+            bindableAt: z.array(z.string()).max(50).optional(),
+            reason: z.string().min(1).max(2000)
+        })).optional(),
         rollouts: z.array(z.object({
             componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             targetClass: z.enum(['cluster', 'instanceGroup']),
@@ -4559,6 +4607,30 @@ export const zGetPlanResponse = z.object({
             componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             targetClass: z.string(),
             rollout: z.unknown().nullable(),
+            reason: z.string()
+        })).optional(),
+        roleBindings: z.array(z.object({
+            kind: z.literal('roleBinding'),
+            action: z.enum([
+                'create',
+                'delete',
+                'noop'
+            ]),
+            subjectUrn: z.string(),
+            roleName: z.string(),
+            scopeUrn: z.string(),
+            reason: z.string()
+        })).optional(),
+        roles: z.array(z.object({
+            kind: z.literal('role'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            name: z.string(),
+            permissions: z.array(z.string()).nullable(),
             reason: z.string()
         })).optional(),
         convergence: z.array(z.object({
@@ -4727,6 +4799,18 @@ export const zApplyPlanResponse = z.object({
                     stage: z.string().min(1).optional()
                 })
             ])).optional(),
+            roleBindings: z.array(z.object({
+                subjectUrn: z.string().min(1).max(512),
+                roleName: z.string().min(1).max(200),
+                scopeUrn: z.string().min(1).max(512),
+                reason: z.string().min(1).max(2000)
+            })).optional(),
+            roles: z.array(z.object({
+                name: z.string().min(1).max(200),
+                permissions: z.array(z.string()).max(100),
+                bindableAt: z.array(z.string()).max(50).optional(),
+                reason: z.string().min(1).max(2000)
+            })).optional(),
             rollouts: z.array(z.object({
                 componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
                 targetClass: z.enum(['cluster', 'instanceGroup']),
@@ -4931,6 +5015,30 @@ export const zApplyPlanResponse = z.object({
                 componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
                 targetClass: z.string(),
                 rollout: z.unknown().nullable(),
+                reason: z.string()
+            })).optional(),
+            roleBindings: z.array(z.object({
+                kind: z.literal('roleBinding'),
+                action: z.enum([
+                    'create',
+                    'delete',
+                    'noop'
+                ]),
+                subjectUrn: z.string(),
+                roleName: z.string(),
+                scopeUrn: z.string(),
+                reason: z.string()
+            })).optional(),
+            roles: z.array(z.object({
+                kind: z.literal('role'),
+                action: z.enum([
+                    'create',
+                    'update',
+                    'delete',
+                    'noop'
+                ]),
+                name: z.string(),
+                permissions: z.array(z.string()).nullable(),
                 reason: z.string()
             })).optional(),
             convergence: z.array(z.object({

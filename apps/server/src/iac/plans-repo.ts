@@ -13,7 +13,13 @@ import type {
 } from "@scp/schemas";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { objects, plans, relationships } from "../db/schema.js";
+import { objects, plans, relationships, roleBindings, roles } from "../db/schema.js";
+import {
+  createStackManagedRoleBinding,
+  deleteStackManagedRole,
+  deleteStackManagedRoleBinding,
+  upsertStackManagedRole
+} from "./iac-rbac-apply.js";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import type { Permission } from "../authz/resolve.js";
 import {
@@ -69,6 +75,7 @@ import {
   type ResolvedManifestConvergence,
   type ResolvedManifestPipelineHook,
   type ResolvedManifestRollout,
+  type ResolvedManifestRoleBinding,
   type ResolvedManifestPlacement,
   type ResolvedManifestSourceMapping
 } from "./plan-diff.js";
@@ -386,6 +393,40 @@ async function fetchManagedObjects(tx: TenantTx, orgId: string, stackName: strin
 }
 
 /** Live relationships this stack owns — the relationship prune pool. Same column, same reason. */
+/**
+ * Bindings THIS stack owns (drizzle/0108). The `managed_by_stack` predicate is the whole safety
+ * property of IaC-managed authority: a binding granted through `POST /role-bindings` carries NULL,
+ * never matches, and therefore cannot be revoked by any manifest.
+ *
+ * Joined to `roles` for the NAME, because a manifest declares a role by name and the diff has to
+ * key on the same thing the author wrote.
+ */
+async function listStackManagedRoleBindings(tx: TenantTx, orgId: string, stackName: string) {
+  return tx
+    .select({
+      subjectId: roleBindings.subjectId,
+      scopeObjectId: roleBindings.scopeObjectId,
+      roleName: roles.name
+    })
+    .from(roleBindings)
+    .innerJoin(roles, eq(roles.id, roleBindings.roleId))
+    .where(
+      and(
+        eq(roleBindings.orgId, orgId),
+        eq(roleBindings.managedByStack, stackName),
+        eq(roleBindings.effect, "allow")
+      )
+    );
+}
+
+/** Org roles THIS stack authored. Built-ins carry `org_id IS NULL` and can never match. */
+async function listStackManagedRoles(tx: TenantTx, orgId: string, stackName: string) {
+  return tx
+    .select({ name: roles.name, permissions: roles.permissions })
+    .from(roles)
+    .where(and(eq(roles.orgId, orgId), eq(roles.managedByStack, stackName)));
+}
+
 async function fetchManagedRelationships(tx: TenantTx, orgId: string, stackName: string) {
   return tx
     .select()
@@ -510,6 +551,15 @@ export async function computeDiffForManifest(
   // A hook's owning object is its COMPONENT — the row hangs off it and inherits its ownership, the
   // same rule a source mapping's component and a producer's component get.
   for (const hook of manifest.pipelineHooks ?? []) referencedUrns.add(hook.componentUrn);
+  // A role binding names TWO objects and OWNS NEITHER. Unlike every collection above — where the
+  // referenced object is the row's owner and the stack declares it — a binding points at a subject
+  // and a scope that almost always live outside this stack (a user, an org root, somebody else's
+  // service). They are added here so `endpointId` can resolve them at apply; ownership is
+  // unaffected, and `computePlanDiff` never treats them as objects this stack manages.
+  for (const binding of manifest.roleBindings ?? []) {
+    referencedUrns.add(binding.subjectUrn);
+    referencedUrns.add(binding.scopeUrn);
+  }
   for (const binding of manifest.executorBindings ?? []) {
     referencedUrns.add(binding.targetUrn);
     // A placement-targeted binding resolves BOTH halves at apply, never the placement itself —
@@ -828,6 +878,35 @@ export async function computeDiffForManifest(
       rollout: row.rollout
     });
   }
+  // ROLE BINDINGS AND ORG ROLES (drizzle/0108). Read UNCONDITIONALLY for the reason the rollout
+  // pool gives: absent means empty for both, so a prune is always in scope and a pool we skipped
+  // reading would make every prune a silent no-op.
+  //
+  // SCOPED TO THIS STACK'S OWN ROWS. `managed_by_stack = :stackName` is the whole safety property:
+  // a binding granted through `POST /role-bindings` carries NULL, is invisible here, and therefore
+  // cannot be revoked by any manifest.
+  const managedRoleBindings: ResolvedManifestRoleBinding[] = [];
+  for (const row of await listStackManagedRoleBindings(tx, orgId, manifest.stackName)) {
+    const subjectUrn = (
+      await getObjectByIdOrUrnAnyType(tx, orgId, row.subjectId).catch(() => undefined)
+    )?.urn;
+    const scopeUrn = (
+      await getObjectByIdOrUrnAnyType(tx, orgId, row.scopeObjectId).catch(() => undefined)
+    )?.urn;
+    // A row whose endpoints cannot be named is skipped rather than half-reported: it would appear
+    // as a phantom delete line naming nothing an author could act on.
+    if (!subjectUrn || !scopeUrn) continue;
+    managedRoleBindings.push({
+      subjectUrn,
+      roleName: row.roleName,
+      scopeUrn,
+      // `reason` is not stored on the row; the DESIRED side supplies it and the ACTUAL side has
+      // none, which is fine because `reason` is deliberately not part of the identity.
+      reason: ""
+    });
+  }
+  const managedRoles = await listStackManagedRoles(tx, orgId, manifest.stackName);
+
   const managedConvergence: ResolvedManifestConvergence[] = [];
   for (const row of await listConvergenceForComponents(tx, orgId, ownedIdList)) {
     const componentUrn = urnOfOwnedId(row.componentObjectId);
@@ -873,6 +952,13 @@ export async function computeDiffForManifest(
 
   const resolvedManifest: ResolvedManifest = {
     stackName: manifest.stackName,
+    roleBindings: manifest.roleBindings ?? [],
+    roles: (manifest.roles ?? []).map((r) => ({
+      name: r.name,
+      permissions: r.permissions,
+      ...(r.bindableAt ? { bindableAt: r.bindableAt } : {}),
+      reason: r.reason
+    })),
     objects: resolvedObjects,
     relationships: manifest.relationships.map((r) => ({
       typeId: r.typeId,
@@ -973,6 +1059,8 @@ export async function computeDiffForManifest(
     managedGovernanceMoveRungs,
     managedPipelineHooks,
     managedRollouts,
+    managedRoleBindings,
+    managedRoles,
     managedConvergence
   });
   // Strict create-in-service, IaC path (M12 P5a): reject at plan-compute so the invalid manifest
@@ -1423,6 +1511,21 @@ export async function prepareApplyChecks(
     const resolution: ObjectResolution = { id: found.id, scopeObjectId: found.id };
     objectResolutions.set(urn, resolution);
     return resolution;
+  }
+
+  // ROLE BINDING ENDPOINTS. A binding names two objects and OWNS NEITHER — the subject and the
+  // scope almost always live outside this stack — so they are resolved here rather than falling
+  // out of the object loop above, which only walks objects the manifest DECLARES. Without this
+  // `endpointId` throws at apply and the whole plan 500s, which is exactly what it did.
+  //
+  // No authorization check is attached: writing a binding is not writing the subject or the scope,
+  // and demanding `object:write` on them would refuse every legitimate grant to a user this stack
+  // does not manage. The authority question is the subset rule, which
+  // `createStackManagedRoleBinding` asks at the moment of the write.
+  for (const entry of diff.roleBindings ?? []) {
+    if (entry.action === "noop") continue;
+    await resolveEndpoint(entry.subjectUrn);
+    await resolveEndpoint(entry.scopeUrn);
   }
 
   for (const entry of diff.relationships) {
@@ -2095,6 +2198,69 @@ export async function executePlanDiff(
       rollout: entry.rollout
     });
   }
+  // -----------------------------------------------------------------------------------------
+  // ROLE BINDINGS AND ORG ROLES (drizzle/0108) — through the REAL doors, never around them
+  // -----------------------------------------------------------------------------------------
+  // Every refusal the typed route enforces applies here unchanged, because this calls the same
+  // functions: the no-escalation subset rule, `bindable_at`, D5's Administrator deprecation, the
+  // administrative floor on delete, and the org advisory lock. That is deliberate and is the whole
+  // reason this is not a direct insert — an IaC path that wrote `role_bindings` itself would be a
+  // second door with its own drift, and the guard census this milestone paid for would be wrong.
+  //
+  // THE APPLYING PRINCIPAL IS `actorObjectId`, which for a config-source sync is the TEAM object
+  // (ADR-0046 §1 / D9). So a team's own repo cannot grant that team authority it does not already
+  // hold — the subset rule refuses it. Stated because the symptom (an apply refusing a line the
+  // author believes correct) is otherwise hard to attribute.
+  //
+  // ROLES BEFORE BINDINGS on the create side: a binding may name a role this same manifest
+  // authors, and `getRoleByName` has to find it. Deletes run in the opposite order for the mirror
+  // reason — the role delete door refuses while a binding still points at the role.
+  for (const entry of diff.roleBindings ?? []) {
+    if (entry.action !== "delete") continue;
+    await deleteStackManagedRoleBinding(tx, {
+      orgId,
+      actorObjectId,
+      requestId,
+      stackName,
+      subjectObjectId: endpointId(entry.subjectUrn),
+      roleName: entry.roleName,
+      scopeObjectId: endpointId(entry.scopeUrn)
+    });
+  }
+  for (const entry of diff.roles ?? []) {
+    if (entry.action !== "delete") continue;
+    await deleteStackManagedRole(tx, {
+      orgId,
+      actorObjectId,
+      requestId,
+      stackName,
+      name: entry.name
+    });
+  }
+  for (const entry of diff.roles ?? []) {
+    if (entry.action !== "create" && entry.action !== "update") continue;
+    await upsertStackManagedRole(tx, {
+      orgId,
+      actorObjectId,
+      requestId,
+      stackName,
+      name: entry.name,
+      permissions: entry.permissions ?? []
+    });
+  }
+  for (const entry of diff.roleBindings ?? []) {
+    if (entry.action !== "create") continue;
+    await createStackManagedRoleBinding(tx, {
+      orgId,
+      actorObjectId,
+      requestId,
+      stackName,
+      subjectObjectId: endpointId(entry.subjectUrn),
+      roleName: entry.roleName,
+      scopeObjectId: endpointId(entry.scopeUrn)
+    });
+  }
+
   for (const entry of diff.convergence ?? []) {
     if (entry.action !== "delete") continue;
     await deleteComponentConvergence(
