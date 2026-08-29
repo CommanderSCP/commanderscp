@@ -8386,7 +8386,10 @@ export const zExportSyncBundleResponse = z.object({
             'policy_upsert',
             'approval_evidence',
             'audit_segment',
-            'key_rotation'
+            'key_rotation',
+            'pipeline_hook_upsert',
+            'pipeline_hook_tombstone',
+            'pipeline_evidence_upsert'
         ]),
         payload: z.record(z.string(), z.unknown()),
         contentHash: z.string(),
@@ -8434,7 +8437,10 @@ export const zFederationResyncAuthorizeResponse = z.object({
                 'policy_upsert',
                 'approval_evidence',
                 'audit_segment',
-                'key_rotation'
+                'key_rotation',
+                'pipeline_hook_upsert',
+                'pipeline_hook_tombstone',
+                'pipeline_evidence_upsert'
             ]),
             payload: z.record(z.string(), z.unknown()),
             contentHash: z.string(),

@@ -6,7 +6,8 @@ import {
   type SyncBundle,
   type SyncJournalEntry,
   type SyncScope,
-  type TrustDomainId
+  type TrustDomainId,
+  PipelineHookKindSchema
 } from "@scp/schemas";
 import {
   computeBundleChecksum,
@@ -28,6 +29,7 @@ import {
 import { recordBundleTransfer, type BundleTransport } from "./bundle-transfers-repo.js";
 import { recordAuditWitness } from "./audit-witness-repo.js";
 import { entryMatchesScope } from "./scope-filter.js";
+import { deleteHook, upsertHook } from "../coordination/pipeline-hooks-repo.js";
 import {
   clearUnattachedChangeStatus,
   recordUnattachedChangeStatus
@@ -471,6 +473,93 @@ async function applyEntry(
       }
       return;
     }
+    case "pipeline_hook_upsert": {
+      // OUTPOST-RUN PROBES — the commander's declaration of WHAT to probe, applied locally so this
+      // domain can run it. `federationImport: true` skips the journal append, or a receiver would
+      // echo the entry back to its sender and, with two peers paired both ways, loop.
+      //
+      // TOLERANT LIKE `change_status`, and for the same stated reason: a throw mid-bundle wedges a
+      // peer's ENTIRE signed journal. A hook naming a component this domain has not replicated yet
+      // is the ordinary out-of-order case, not corruption — it is dropped and re-sent on the next
+      // sync, exactly as an unattached `change_status` is.
+      try {
+        const p = entry.payload as {
+          componentObjectId?: unknown;
+          kind?: unknown;
+          hookId?: unknown;
+          workflow?: unknown;
+          stage?: unknown;
+          everySeconds?: unknown;
+          maxAgeSeconds?: unknown;
+          quietWindowSeconds?: unknown;
+        };
+        const parsed = PipelineHookKindSchema.safeParse(p.kind);
+        if (
+          typeof p.componentObjectId !== "string" ||
+          typeof p.hookId !== "string" ||
+          !parsed.success
+        ) {
+          console.error("[federation] pipeline_hook_upsert: malformed payload — dropped");
+          return;
+        }
+        await upsertHook(tx, orgId, {
+          federationImport: true,
+          componentObjectId: p.componentObjectId,
+          kind: parsed.data,
+          hookId: p.hookId,
+          workflow: p.workflow,
+          stage: typeof p.stage === "string" ? p.stage : null,
+          everySeconds: typeof p.everySeconds === "number" ? p.everySeconds : null,
+          maxAgeSeconds: typeof p.maxAgeSeconds === "number" ? p.maxAgeSeconds : null,
+          quietWindowSeconds: typeof p.quietWindowSeconds === "number" ? p.quietWindowSeconds : null
+        });
+        return;
+      } catch (err) {
+        console.error(
+          `[federation] pipeline_hook_upsert dropped:`,
+          err instanceof Error ? err.message : String(err)
+        );
+        return;
+      }
+    }
+
+    case "pipeline_hook_tombstone": {
+      // The commander RETRACTED a probe. "Until they hear otherwise" is this entry: the outpost
+      // stops running it because the declaration is gone, not because a schedule expired.
+      try {
+        const p = entry.payload as {
+          componentObjectId?: unknown;
+          kind?: unknown;
+          hookId?: unknown;
+        };
+        const parsed = PipelineHookKindSchema.safeParse(p.kind);
+        if (
+          typeof p.componentObjectId !== "string" ||
+          typeof p.hookId !== "string" ||
+          !parsed.success
+        ) {
+          console.error("[federation] pipeline_hook_tombstone: malformed payload — dropped");
+          return;
+        }
+        // A no-op delete is NOT an error — the same rule `deleteHook` itself states. A tombstone
+        // for a hook this domain never received (dropped out-of-order, or filtered by scope) is
+        // ordinary, and treating it as failure would re-deliver forever.
+        await deleteHook(
+          tx,
+          orgId,
+          { componentObjectId: p.componentObjectId, kind: parsed.data, hookId: p.hookId },
+          true
+        );
+        return;
+      } catch (err) {
+        console.error(
+          `[federation] pipeline_hook_tombstone dropped:`,
+          err instanceof Error ? err.message : String(err)
+        );
+        return;
+      }
+    }
+
     case "change_status": {
       // Best-effort enrichment ONLY: mirrors the lifecycle state into the change's already-
       // replicated graph object (from a corresponding object_upsert entry) for cross-domain

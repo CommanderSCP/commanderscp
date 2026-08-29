@@ -9,6 +9,46 @@ durable record of each such exception so the label is never a mystery in the git
 
 ## Log
 
+### Outpost-run probes — three `JournalEntryKind` values (2026-08-28)
+
+**Spec:** team-pipeline-iac D11/D23 ("SCP triggers locally at the outpost; results flow upward as
+gate evidence through the existing status/journal path"). Owner decisions, 2026-08-28: hooks travel
+by new journal kinds; the outpost maintains the CronWorkflow; evidence returns by journal.
+
+**What breaks (deliberate, one-time):** three values are ADDED to `JournalEntryKindSchema` —
+`pipeline_hook_upsert`, `pipeline_hook_tombstone`, `pipeline_evidence_upsert`. `entryKind` appears
+in two RESPONSE positions, so this is oasdiff-breaking even though it is purely additive:
+
+- `POST /federation/exports` → `200.entries[].entryKind`
+- `POST /federation/resync` → `200.bundle.entries[].entryKind`
+
+(The third occurrence, `POST /federation/imports` request body, is a REQUEST position and additive
+there.) Measured rather than assumed — response enum-value additions are breaking under
+`tools/openapi/check.sh`, while response `oneOf` member additions are not.
+
+**Why not avoid the break.** Two alternatives were considered and rejected:
+
+- _Restructure `entryKind` as a discriminated union_, which would make this and every future kind
+  free. Converting a shipped enum response into a union is itself a break, so it costs an exception
+  AND a refactor to buy what later kinds get anyway once someone does it deliberately.
+- _Make `pipeline_hooks` graph objects_ so they ride `object_upsert`. This reverses migration
+  0096's stated design — a side table whose ownership DERIVES from `component_object_id`, with no
+  `managed_by_stack` column — to dodge a process step.
+
+**Why one entry for three values.** They are one decision and one wire change. Splitting them across
+PRs would spend three exceptions on the same break and leave the journal half-able to express the
+round trip in between.
+
+**Scope of the risk:** none to existing peers. A consumer that does not understand a kind already
+has to tolerate one — `import-repo.ts` switches on `entryKind` and an unknown kind is not fatal — and
+the platform is pre-release with no external usage (charter dev-stage note: the ledger is process
+hygiene, not user protection).
+
+**How the gate is satisfied:** the PR carries the **`api-v2-exception`** label; job 3b reads the
+label and this entry and reports green-with-warning instead of red. Job **3 (codegen drift)** stays
+green — `tools/openapi/openapi.v1.json` and `packages/sdk/src/generated/*` are regenerated
+(`@scp/schemas` built first, per CLAUDE.md) and committed in this PR.
+
 ### ADR-0007 — executor binding `purpose` → Type taxonomy (2026-07-17)
 
 **Spec:** [docs/adr/0007-executor-binding-type-taxonomy.md](../../docs/adr/0007-executor-binding-type-taxonomy.md),
