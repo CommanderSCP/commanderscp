@@ -118,6 +118,7 @@ import { reconcileCampaignsOrgTick } from "./campaign-reconcile.js";
 import { runPreDeployArtifactGate } from "./pre-deploy-gate.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { ensureHookRunTriggered, pollNonTerminalHookRuns } from "./pipeline-hook-runs.js";
+import { ensureContinuousProbesScheduled } from "./continuous-probe-driver.js";
 
 /**
  * The resumable reconciliation loop (DESIGN.md §9.3/§9.4, BUILD_AND_TEST.md §8 M3): "pg-boss
@@ -3094,6 +3095,18 @@ export async function reconcileOrgTick(
     await pollNonTerminalHookRuns(db, { orgId, host, masterKey });
   } catch (err) {
     console.error(`[reconcile] org ${orgId} pipeline hook run poll failed:`, err);
+  }
+  // OUTPOST-RUN CONTINUOUS PROBES — declare every `continuous` hook's schedule to the executor
+  // that will run it, and re-declare on every tick so a schedule deleted out-of-band is restored.
+  // SCP never fires the probe: it hands the executor a cadence and the executor's own scheduler
+  // runs it (`everySeconds` is descriptive in three places, all unchanged by this).
+  //
+  // Beside the poll rather than on a loop of its own, for the reason stated above it: a second
+  // `boss.work()` would be a competing consumer on the reconcile queue.
+  try {
+    await ensureContinuousProbesScheduled(db, { orgId, host, masterKey });
+  } catch (err) {
+    console.error(`[reconcile] org ${orgId} continuous probe scheduling failed:`, err);
   }
   // M5 (DESIGN §9.5): campaigns fan out into real M3 Changes above already progress through the
   // exact same steps this tick just ran — this only sequences WHICH wave's member changes get

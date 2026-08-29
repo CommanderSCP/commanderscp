@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  ScheduleSpec,
   AbortResult,
   Cursor,
   ExecutionPhase,
@@ -240,7 +241,7 @@ export interface ArgoCronWorkflowList {
 async function apiRequest(
   ctx: PluginContext,
   config: ArgoWorkflowsConfig,
-  method: "GET" | "POST" | "PUT",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body?: unknown
 ): Promise<{ status: number; body: unknown }> {
@@ -525,8 +526,95 @@ function describeCapabilities(): ExecutorCapabilities {
     supportsObserve: true,
     supportsTrigger: true,
     supportsAbort: true,
+    // Declared TRUE because both verbs are implemented below. Absent would read as "no schedule
+    // capability", which is what every other executor correctly says.
+    supportsSchedules: true,
     triggerKinds: ["workflow_dispatch"]
   };
+}
+
+/**
+ * ASSUMPTION #10 — CronWorkflow WRITE. `POST /api/v1/cron-workflows/{namespace}` creates and
+ * `PUT /api/v1/cron-workflows/{namespace}/{name}` updates, body `{ cronWorkflow: {...} }`;
+ * `DELETE .../{name}` removes. Cadence is a cron EXPRESSION (`spec.schedule`), so a seconds
+ * cadence is rendered to the coarsest expression that fits.
+ *
+ * WIRED AGAINST AN ASSUMED SHAPE, KNOWINGLY. Assumption #9 above says not to wire the cron
+ * endpoints without re-confirming against a live instance; that check has not been possible here
+ * (this suite never touches the network) and the owner accepted the risk deliberately, so it is
+ * recorded rather than implied. The mitigation is that the assumed request shape is PINNED BY
+ * TESTS: a real API drift fails them loudly instead of silently declaring a probe nobody runs.
+ * Re-confirm against a live instance before trusting this in an estate that matters.
+ */
+function cronExpressionFor(cadenceSeconds: number): string {
+  // Coarsest expression that fits, and never finer than a minute — Argo's cron has no seconds
+  // field, so a sub-minute cadence cannot be expressed and is rounded UP to one minute rather
+  // than silently becoming "every second" or failing at the server.
+  const minutes = Math.max(1, Math.round(cadenceSeconds / 60));
+  if (minutes < 60) return `*/${minutes} * * * *`;
+  const hours = Math.max(1, Math.round(minutes / 60));
+  if (hours < 24) return `0 */${hours} * * *`;
+  return `0 0 */${Math.max(1, Math.round(hours / 24))} * *`;
+}
+
+async function ensureSchedule(ctx: PluginContext, spec: ScheduleSpec): Promise<void> {
+  const config = asConfig(ctx.config);
+  const body = {
+    cronWorkflow: {
+      metadata: {
+        name: spec.scheduleId,
+        // The correlation labels the caller asked for, so runs this schedule spawns carry the
+        // hook identity back through `observe()`. Never invented here.
+        ...(spec.labels ? { labels: spec.labels } : {})
+      },
+      spec: {
+        schedule: cronExpressionFor(spec.cadenceSeconds),
+        workflowSpec: { workflowTemplateRef: { name: spec.targetRef } }
+      }
+    }
+  };
+  // UPDATE-THEN-CREATE, not create-then-update: `ensureSchedule` is re-declared every tick by the
+  // driver, so the steady state is "it already exists" and trying PUT first makes the common path
+  // one call instead of two. A 404 means it is not there yet, which is the only case that needs a
+  // POST.
+  const put = await apiRequest(
+    ctx,
+    config,
+    "PUT",
+    `/api/v1/cron-workflows/${config.namespace}/${encodeURIComponent(spec.scheduleId)}`,
+    body
+  );
+  if (put.status >= 200 && put.status < 300) return;
+  if (put.status !== 404) {
+    throw new Error(`argo-workflows ensureSchedule: server returned HTTP ${put.status}`);
+  }
+  const post = await apiRequest(
+    ctx,
+    config,
+    "POST",
+    `/api/v1/cron-workflows/${config.namespace}`,
+    body
+  );
+  if (post.status < 200 || post.status >= 300) {
+    throw new Error(`argo-workflows ensureSchedule: server returned HTTP ${post.status}`);
+  }
+}
+
+async function removeSchedule(ctx: PluginContext, scheduleId: string): Promise<void> {
+  const config = asConfig(ctx.config);
+  const { status: httpStatus } = await apiRequest(
+    ctx,
+    config,
+    "DELETE",
+    `/api/v1/cron-workflows/${config.namespace}/${encodeURIComponent(scheduleId)}`
+  );
+  // 404 IS SUCCESS. A retraction for a schedule already gone is ordinary — the commander retracts
+  // once and the driver may re-issue it — and treating it as failure would make a clean removal
+  // look like a broken executor forever.
+  if (httpStatus === 404) return;
+  if (httpStatus < 200 || httpStatus >= 300) {
+    throw new Error(`argo-workflows removeSchedule: server returned HTTP ${httpStatus}`);
+  }
 }
 
 export const argoWorkflowsExecutorPlugin: ExecutorPlugin = {
@@ -534,7 +622,9 @@ export const argoWorkflowsExecutorPlugin: ExecutorPlugin = {
   trigger,
   status,
   abort,
-  describeCapabilities
+  describeCapabilities,
+  ensureSchedule,
+  removeSchedule
 };
 
 export function createArgoWorkflowsExecutorPlugin(): ExecutorPlugin {

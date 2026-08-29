@@ -348,6 +348,29 @@ export interface ExecutorCapabilities {
    *  and every plugin that predates this field keeps its existing meaning — which is "declares no
    *  rollout authority", NOT "authoritative by default". Absent must never read as a claim. */
   rollout?: RolloutCapability;
+  /** Whether this executor can hold a RECURRING declaration (`ensureSchedule`/`removeSchedule`).
+   *  OPTIONAL and additive, exactly like `rollout` above: absent means "declares no schedule
+   *  capability", never "capable by default". Absent must not read as a claim. */
+  supportsSchedules?: boolean;
+}
+
+/**
+ * A recurring probe the executor should hold until told otherwise (team-pipeline-iac D11, owner
+ * decision 2026-08-28: outposts run the probes).
+ *
+ * `cadenceSeconds` is the SCHEDULE THE EXECUTOR OWNS. SCP does not tick it — the three places that
+ * say so (`ManifestContinuousHookSchema`, `pipelineHooks.everySeconds`, migration 0096) are
+ * unchanged by this: SCP declares the cadence once and the executor's own scheduler runs it. That
+ * is the difference between this and `trigger`, which invokes exactly one run.
+ */
+export interface ScheduleSpec {
+  /** Stable identity for the schedule, so a re-declaration UPDATES rather than duplicates. */
+  scheduleId: string;
+  /** The automation to run — the executor's own, named. Never a command SCP composes. */
+  targetRef: string;
+  cadenceSeconds: number;
+  /** Correlation the executor should stamp on runs it spawns, so results map back to the hook. */
+  labels?: Record<string, string>;
 }
 
 export interface ExecutorPlugin {
@@ -358,6 +381,24 @@ export interface ExecutorPlugin {
   status(ctx: PluginContext, ref: ExternalRunRef): Promise<ExecutionStatus>;
   abort(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResult>;
   describeCapabilities(): ExecutorCapabilities;
+  /**
+   * Declare a RECURRING automation the executor holds until retracted. OPTIONAL — the four verbs
+   * above stay the closed set every executor implements (ADR-0032 §9); this is additive, so every
+   * existing plugin is unchanged and simply declares no schedule capability.
+   *
+   * STILL COORDINATION, NOT EXECUTION. It hands the executor a declaration naming the executor's
+   * OWN automation and the cadence to run it at — the same shape `trigger` uses, differing only in
+   * "once" versus "until told otherwise". It composes no command, supplies no script, and cannot
+   * make the executor do anything it was not already able to do.
+   *
+   * IDEMPOTENT BY `scheduleId`: re-declaring the same id updates in place. The driver re-declares
+   * every tick, so a schedule an operator deleted out-of-band is restored rather than silently
+   * absent — which is what "until they hear otherwise" has to mean to be worth anything.
+   */
+  ensureSchedule?(ctx: PluginContext, spec: ScheduleSpec): Promise<void>;
+  /** Retract a schedule declared by `ensureSchedule`. A no-op for an id that is not there — a
+   *  retraction for a schedule already gone is ordinary, not an error. */
+  removeSchedule?(ctx: PluginContext, scheduleId: string): Promise<void>;
 }
 
 // -------------------------------------------------------------------------------------------
