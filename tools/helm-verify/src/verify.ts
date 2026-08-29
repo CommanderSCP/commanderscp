@@ -2212,6 +2212,29 @@ function main(): void {
     // container port are both 3000); this check is what stops that coincidence being mistaken for
     // a rule.
     const backendDocs = renderBundledChart([`--set`, `bundledExecutor.${be}.enabled=true`]);
+
+    // EVERY RENDERED DOC MUST CARRY AN apiVersion — `kubectl apply` refuses the WHOLE stream
+    // otherwise, so one malformed document takes the entire backend down with it.
+    //
+    // Measured 2026-08-29: the shared `commanderscp.renderVendoredBackend` helper emitted its
+    // Namespace with the leading newline chomped, so `apiVersion: v1` was appended onto the
+    // caller's last comment line and swallowed by it — the document then began at `kind:`. It hit
+    // ALL THREE callers of that helper (argo-workflows, argo-events, gitea); Argo CD escaped only
+    // because it does not use it. The failure reads "error validating data: apiVersion not set",
+    // which sounds like a broken vendored upstream manifest rather than template whitespace, and
+    // it surfaced in a drill days later rather than at render time.
+    //
+    // Checked on the BUNDLED render (where the bug was) and cheap enough to be unconditional.
+    for (const doc of backendDocs) {
+      assert(
+        typeof doc.apiVersion === "string" && doc.apiVersion.length > 0,
+        `[bundled ${be} render] a document has NO apiVersion (kind=${String(doc.kind)}, ` +
+          `name=${String(doc.metadata?.name)}). kubectl apply rejects the entire stream on this, so ` +
+          `the whole backend fails to install. The usual cause is Go-template whitespace chomping ` +
+          `gluing a document's first line onto a preceding comment — check '{{- end -}}' vs ` +
+          `'{{- end }}' where the emitting helper starts its output.`
+      );
+    }
     // Suffix match: the bundled chart prefixes its release name (`scp-gitea-http`), while the
     // vendored Argo CD manifests keep upstream's bare `argocd-server`.
     const backendSvcSuffix = be === "argocd" ? "argocd-server" : "gitea-http";
