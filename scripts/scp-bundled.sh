@@ -154,6 +154,31 @@ dump_autowire_diagnostics() {
     echo "--- logs ${pod} ---" >&2
     kubectl logs -n "$SCP_NAMESPACE" "$pod" --tail=-1 >&2 2>&1 || true
   done
+  # THE BACKEND SIDE OF THE CONNECTION — added 2026-08-29 after an auto-wire failure that the
+  # diagnostics above could not explain. The hook's only symptom is Node's `TypeError: fetch
+  # failed`, which is a CONNECTION-level error carrying no HTTP status, no address and no DNS
+  # detail. Everything printed above describes the CLIENT; a connection has two ends, and the
+  # evidence that decides between "nothing is listening", "the Service has no endpoints", "DNS
+  # does not resolve" and "the request was refused" is all on the other one.
+  #
+  # Without this, diagnosing costs a full CI round-trip per hypothesis — and each of
+  # NetworkPolicy, the Service port, `server.insecure` and apply ordering had to be eliminated
+  # that way, none of which this dump could have confirmed or denied.
+  echo "--- backend service/endpoints in $NS ---" >&2
+  kubectl get svc,endpoints -n "$NS" >&2 2>&1 || true
+  echo "--- backend pods ---" >&2
+  kubectl get pods -n "$NS" -o wide >&2 2>&1 || true
+  # Whether the flag the chart sets is actually IN EFFECT in the running container, which is a
+  # different claim from "the ConfigMap contains it" — the env ref is `optional: true`, so a key
+  # that lands late leaves the server on TLS and every plain-HTTP client failing at the socket.
+  echo "--- argocd-server effective env (insecure flag) ---" >&2
+  local srvpod
+  srvpod="$(kubectl get pod -n "$NS" -l app.kubernetes.io/name=argocd-server \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [ -n "$srvpod" ]; then
+    kubectl exec -n "$NS" "$srvpod" -- env 2>/dev/null | grep -i insecure >&2 || \
+      echo "    ARGOCD_SERVER_INSECURE not set in the container" >&2
+  fi
   echo "--- end auto-wire hook diagnostics ---" >&2
 }
 
