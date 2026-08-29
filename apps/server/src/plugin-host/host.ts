@@ -39,6 +39,7 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  ScheduleSpec,
   AbortResult,
   BundleRef,
   ControlOutcome,
@@ -409,7 +410,9 @@ export class SubprocessPluginHost implements PluginHost {
       trigger: (intent: TriggerIntent) => call<ExternalRunRef>("trigger", { intent }),
       status: (ref: ExternalRunRef) => call<ExecutionStatus>("status", { ref }),
       abort: (ref: ExternalRunRef) => call<AbortResult>("abort", { ref }),
-      describeCapabilities: () => call<ExecutorCapabilities>("describeCapabilities")
+      describeCapabilities: () => call<ExecutorCapabilities>("describeCapabilities"),
+      ensureSchedule: (spec: ScheduleSpec) => call<void>("ensureSchedule", { spec }),
+      removeSchedule: (scheduleId: string) => call<void>("removeSchedule", { scheduleId })
     };
   }
 

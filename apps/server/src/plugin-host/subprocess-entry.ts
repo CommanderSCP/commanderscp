@@ -32,6 +32,7 @@ import { readFileSync } from "node:fs";
 import { rootCertificates } from "node:tls";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import type {
+  ScheduleSpec,
   BundleRef,
   ControlPlugin,
   ControlRequest,
@@ -628,6 +629,23 @@ async function dispatch(
     }
     case "describeCapabilities":
       return plugin.describeCapabilities();
+    case "ensureSchedule": {
+      // REFUSES rather than no-ops when the plugin does not implement it. A silent success here
+      // would tell the driver a probe is scheduled in an executor that has no idea it exists —
+      // the failure shape this whole increment has been closing, one layer lower.
+      if (!plugin.ensureSchedule) {
+        throw new Error("this ExecutorPlugin does not implement ensureSchedule");
+      }
+      const p = params as { spec: ScheduleSpec };
+      return plugin.ensureSchedule(ctx, p.spec);
+    }
+    case "removeSchedule": {
+      if (!plugin.removeSchedule) {
+        throw new Error("this ExecutorPlugin does not implement removeSchedule");
+      }
+      const p = params as { scheduleId: string };
+      return plugin.removeSchedule(ctx, p.scheduleId);
+    }
     default:
       throw new Error(`unknown method "${method}" for an ExecutorPlugin instance`);
   }

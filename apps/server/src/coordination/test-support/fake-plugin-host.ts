@@ -1,4 +1,4 @@
-import type { PluginContext, TriggerIntent } from "@scp/plugin-api";
+import type { ScheduleSpec, PluginContext, TriggerIntent } from "@scp/plugin-api";
 import { createFakeExecutorPlugin } from "@scp/plugin-fake-executor";
 import type {
   ControlPluginClient,
@@ -20,7 +20,13 @@ import type {
  * trigger/status/rollback/idempotency-dedup semantics are identical; only the process-boundary
  * transport is skipped.
  */
+/** What the probe driver declared to this fixture, in order. Reset per fixture instance. */
+export const declaredSchedules: ScheduleSpec[] = [];
+export const removedSchedules: string[] = [];
+
 export function createInMemoryFakeHost(config?: unknown): PluginHost {
+  declaredSchedules.length = 0;
+  removedSchedules.length = 0;
   const plugin = createFakeExecutorPlugin();
   const ctx: PluginContext = {
     orgId: "test",
@@ -39,7 +45,16 @@ export function createInMemoryFakeHost(config?: unknown): PluginHost {
     trigger: (intent) => plugin.trigger(ctx, intent),
     status: (ref) => plugin.status(ctx, ref),
     abort: (ref) => plugin.abort(ctx, ref),
-    describeCapabilities: async () => plugin.describeCapabilities()
+    describeCapabilities: async () => plugin.describeCapabilities(),
+    // Records what the driver DECLARED, so a test can assert the schedule rather than only that
+    // the call did not throw. The fixture deliberately implements both verbs: a fake that omitted
+    // them would make the driver's capability gate skip silently and every assertion vacuous.
+    ensureSchedule: async (spec) => {
+      declaredSchedules.push(spec);
+    },
+    removeSchedule: async (scheduleId) => {
+      removedSchedules.push(scheduleId);
+    }
   };
   return {
     async start() {

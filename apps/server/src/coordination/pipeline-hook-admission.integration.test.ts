@@ -16,7 +16,11 @@ import type { PluginHost } from "../plugin-host/contract.js";
 import { getLatestPlanForChange } from "./plan-service.js";
 import { upsertExecutorBinding } from "./executor-bindings-repo.js";
 import { reconcileOrgTick } from "./reconcile.js";
-import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake-plugin-host.js";
+import {
+  createInMemoryFakeHost,
+  declaredSchedules,
+  withRefusingTrigger
+} from "./test-support/fake-plugin-host.js";
 import {
   recordAlarmEvidence,
   recordTestRunEvidence,
@@ -617,6 +621,65 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
       after,
       "re-emitting an awaiting tuple must be a no-op claim, not a second dispatch"
     ).toHaveLength(1);
+  });
+
+  it("property 5c: a CONTINUOUS hook's schedule is DECLARED to the executor that will run it", async () => {
+    // OUTPOST-RUN PROBES. The commander declares WHAT to probe and the domain holds the schedule;
+    // this is the domain half — the tick hands the executor a cadence and the executor's own
+    // scheduler runs it. SCP never fires the probe, which is why this asserts a DECLARATION and not
+    // a run: `everySeconds` is descriptive in three places, all unchanged.
+    //
+    // Asserted on the recorded spec, not on "the call did not throw": the driver gates on the
+    // optional `ensureSchedule` being present, so an executor without it is skipped silently — and
+    // a test that only checked for absence of an error would pass against a driver that skipped
+    // everything.
+    const subject = await componentAt("probe-scheduled", [gamma]);
+    // The probe resolves its executor from the TARGET (the placement), exactly as a hook run does,
+    // so this needs a binding for the same reason property 5b did — it asserts a dispatch, not a
+    // verdict. Without one `resolveExecutorPluginInstance` returns undefined and the driver skips
+    // silently, which is how this case first failed.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      upsertExecutorBinding(tx, {
+        orgId: org.orgId,
+        targetObjectId: subject.at(gamma),
+        pluginModule: "fake-executor",
+        pluginInstanceId: `fake-probe-${randomUUID().slice(0, 8)}`,
+        externalRef: subject.at(gamma),
+        config: {},
+        actorObjectId: org.orgId,
+        requestId: "probe-scheduled-binding"
+      })
+    );
+    await declareHook({
+      componentObjectId: subject.id,
+      kind: "continuous",
+      hookId: "canary",
+      workflow: { repo: "acme/pipelines", branch: "main", path: "probes/canary.yaml" },
+      everySeconds: 300,
+      maxAgeSeconds: 900
+    });
+
+    await tick(1);
+
+    const spec = declaredSchedules.find((d) => d.labels?.["commanderscp.io/hook-id"] === "canary");
+    expect(spec, "the domain was never told what to run").toBeTruthy();
+    // The cadence the hook declared reaches the executor as a cadence, not a fired run.
+    expect(spec!.cadenceSeconds).toBe(300);
+    expect(spec!.targetRef).toBe("probes/canary.yaml");
+    // CORRELATION LABELS, so a run this schedule spawns maps back to the hook that asked for it.
+    // Without them a result is an orphan workflow and the hold can never clear.
+    expect(spec!.labels?.["commanderscp.io/component"]).toBe(subject.id);
+    expect(spec!.labels?.["commanderscp.io/target"]).toBeTruthy();
+
+    // IDEMPOTENT ID across ticks — a re-declaration must UPDATE the schedule, not create a second
+    // one beside it. Same id on every tick is what makes `ensureSchedule` safe to call forever.
+    const before = spec!.scheduleId;
+    await tick(1);
+    const again = declaredSchedules.filter(
+      (d) => d.labels?.["commanderscp.io/hook-id"] === "canary"
+    );
+    expect(again.length).toBeGreaterThan(1);
+    expect(new Set(again.map((d) => d.scheduleId))).toEqual(new Set([before]));
   });
 
   it("property 6: a bake gate with NO reporting source blocks with `no_source`, distinct from `window_not_covered`", async () => {

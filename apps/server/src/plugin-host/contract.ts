@@ -1,4 +1,5 @@
 import type {
+  ScheduleSpec,
   AbortResult,
   BundleRef,
   ControlOutcome,
@@ -42,6 +43,12 @@ export interface ExecutorPluginClient {
   status(ref: ExternalRunRef): Promise<ExecutionStatus>;
   abort(ref: ExternalRunRef): Promise<AbortResult>;
   describeCapabilities(): Promise<ExecutorCapabilities>;
+  /** OPTIONAL, mirroring `ExecutorPlugin.ensureSchedule` — present on the client for every
+   *  instance, but a plugin that does not implement it answers with a refusal rather than
+   *  silently succeeding, so a caller must still gate on `describeCapabilities().supportsSchedules`
+   *  (or on the method's own absence) before assuming a schedule was declared. */
+  ensureSchedule?(spec: ScheduleSpec): Promise<void>;
+  removeSchedule?(scheduleId: string): Promise<void>;
 }
 
 /**
