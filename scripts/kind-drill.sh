@@ -90,6 +90,31 @@ log "building the OLD image (${OLD_BASELINE_REF}) in a temporary worktree"
 WORKTREE_DIR="$(mktemp -d)"
 git fetch origin main --quiet 2>/dev/null || true
 git worktree add --detach "$WORKTREE_DIR" "$OLD_BASELINE_REF" --quiet
+
+# THE BASELINE'S APP CODE, BUT *TODAY'S* BUILD PLUMBING (Dockerfile + vendored-tool pins).
+#
+# What this drill is about is the APP: install an old version, upgrade to HEAD while a real
+# migration applies under serving pods, roll back. The Dockerfile and the digest-pinned skopeo/
+# cosign images are how the app gets built, not behaviour under test.
+#
+# Without this, the drill is unrunnable the moment a pinned digest stops resolving -- and a digest
+# pin is immutable, not immortal: upstream re-pushes a tag, the registry garbage-collects the
+# digests the old push pointed at, and EVERY historical commit becomes unbuildable at once. That
+# is not a hypothetical. `quay.io/skopeo/stable@sha256:8b23fe43...` was GC'd and this drill failed
+# every night from 2026-08-18 to 2026-08-29. Repinning HEAD alone does NOT fix it: the baseline is
+# a HISTORICAL commit, which still carries the dead pin, so the old-image build keeps failing --
+# and it never self-heals, because the baseline is chosen relative to the newest migration and so
+# stays behind the repair indefinitely.
+#
+# Copying the plumbing forward keeps the drill testing what it claims to test. The old image is
+# "the baseline's application, built the way we build today" -- which is what an upgrade drill
+# wants anyway; it was never a byte-reproduction of a past release (it builds from source, not
+# from a published artifact).
+cp Dockerfile "$WORKTREE_DIR/Dockerfile"
+rm -rf "$WORKTREE_DIR/tools/skopeo" "$WORKTREE_DIR/tools/cosign"
+mkdir -p "$WORKTREE_DIR/tools"
+cp -R tools/skopeo tools/cosign "$WORKTREE_DIR/tools/"
+
 docker build -t "scp:${OLD_IMAGE_TAG}" "$WORKTREE_DIR"
 
 log "creating kind cluster '${CLUSTER_NAME}'"
