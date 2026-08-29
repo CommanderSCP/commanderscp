@@ -5,8 +5,9 @@
 # end against the real compose-deployed image — webhook HMAC signature verification (fail-closed:
 # a bad signature is REJECTED, a correctly-signed one is accepted and correlates into a real
 # Change), executor/notification binding CRUD, the plugin-manifest catalog, and discovery's
-# "never auto-commits — only /discovery/accept writes to the graph" guarantee (proven directly:
-# the graph is asserted empty of the proposed objects before accept, present after). It does NOT
+# "never commits" guarantee in its post-ADR-0047 form (proven directly: `/discovery/scaffold`
+# renders source for a proposed component, the graph is asserted unchanged across the call, and
+# the retired `/discovery/accept` write door answers 404 in the shipped image). It does NOT
 # include an ArgoCD-in-kind (or fake-ArgoCD-stand-in) wave-EXECUTION variant — DEFERRED, FLAGGED
 # HERE rather than silently skipped (same posture as federation-https's M6 "DEFERRED, FLAGGED IN
 # THE M6 PR BODY" precedent): actually exercising a real ExecutorPlugin (github/argocd/terraform/
@@ -232,41 +233,77 @@ fi
 echo "PASS: secret store put/list/delete round-trip (value itself never echoed back by any endpoint)"
 
 # -----------------------------------------------------------------------------------------
-# 3. Discovery — NEVER auto-commits (DESIGN §11), proven directly: the proposed object does not
-#    exist anywhere in the graph before accept, and resolves by id immediately after.
+# 3. Discovery is a SCAFFOLDER and writes NOTHING (ADR-0047, team-pipeline-iac D1).
+#
+#    This section used to prove "only `POST /discovery/accept` writes to the graph". That route is
+#    GONE, and the guarantee it guarded got STRONGER rather than disappearing: no discovery path
+#    reaches the graph at all any more. Its output is construct source a human reviews and commits,
+#    so the write happens later, through `scp iac apply`, under strict create.
+#
+#    Proven here against the real compose-deployed image, using the same hand-built proposal fixture
+#    the accept test used:
+#      a. the object the proposal names does not exist beforehand;
+#      b. `POST /discovery/scaffold` returns rendered SOURCE for it;
+#      c. it STILL does not exist afterwards, and the service list is byte-identical — the scaffolder
+#         wrote no rows;
+#      d. `POST /discovery/accept` is 404 in the shipped image — the write door is actually removed,
+#         not merely hidden from the CLI. (b) is the known-positive control for (d): same base URL,
+#         same token, same method, so a 404 there is about the ROUTE, not about a bad request.
 # -----------------------------------------------------------------------------------------
 
-DISCOVERED_NAME="m7-discovered-repo-$$"
-echo "==> discovery: asserting a hand-built proposal's object ('$DISCOVERED_NAME') does NOT exist before accept"
-PRE_ACCEPT_SERVICES_JSON="$("${CLI_BIN[@]}" service list --output json)"
-PRE_ACCEPT_FOUND="$(node -e '
+DISCOVERED_NAME="m7-discovered-comp-$$"
+SCAFFOLD_SVC="m7-scaffolded-svc-$$"
+PROPOSAL_JSON="{\"objects\":[{\"typeId\":\"component\",\"name\":\"$DISCOVERED_NAME\"}],\"relationships\":[]}"
+
+echo "==> discovery: asserting the proposal's service ('$SCAFFOLD_SVC') does NOT exist before scaffolding"
+PRE_SERVICES_JSON="$("${CLI_BIN[@]}" service list --output json)"
+PRE_FOUND="$(node -e '
   const items = JSON.parse(require("fs").readFileSync(0, "utf8"));
   console.log(items.some((s) => s.name === process.argv[1]) ? "yes" : "no");
-' <<<"$PRE_ACCEPT_SERVICES_JSON" "$DISCOVERED_NAME")"
-if [ "$PRE_ACCEPT_FOUND" != "no" ]; then
-  echo "FAIL: the discovery fixture's object already exists before accept was ever called" >&2
+' <<<"$PRE_SERVICES_JSON" "$SCAFFOLD_SVC")"
+if [ "$PRE_FOUND" != "no" ]; then
+  echo "FAIL: the discovery fixture's service already exists before scaffolding" >&2
   exit 1
 fi
-echo "PASS: discovered object does not exist pre-accept (nothing auto-committed)"
+echo "PASS: scaffolded service does not exist pre-scaffold"
 
-echo "==> scp discovery accept (the ONLY path that commits)"
-PROPOSAL_JSON="{\"objects\":[{\"typeId\":\"service\",\"name\":\"$DISCOVERED_NAME\"}],\"relationships\":[]}"
-ACCEPT_JSON="$("${CLI_BIN[@]}" discovery accept --proposal "$PROPOSAL_JSON" --output json)"
-CREATED_OBJECT_ID="$(echo "$ACCEPT_JSON" | node -e '
+echo "==> POST /discovery/scaffold (emits code, never rows)"
+SCAFFOLD_REQ="{\"proposal\":$PROPOSAL_JSON,\"group\":{\"$DISCOVERED_NAME\":\"$SCAFFOLD_SVC\"}}"
+SCAFFOLD_JSON="$(curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "$SCAFFOLD_REQ" "$API_URL/discovery/scaffold")"
+node -e '
   const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
-  if (data.createdObjectIds.length !== 1) process.exit(1);
-  console.log(data.createdObjectIds[0]);
-')"
-echo "PASS: discovery accept committed 1 object ($CREATED_OBJECT_ID) — explicit acceptance is the only write path"
+  const [component, service] = process.argv.slice(1);
+  if (!Array.isArray(data.stacks) || data.stacks.length !== 1) {
+    console.error("FAIL: expected exactly 1 scaffolded stack, got " + JSON.stringify(data));
+    process.exit(1);
+  }
+  const [stack] = data.stacks;
+  // Assert the RENDERED SOURCE really contains the proposed component, not merely that the call
+  // returned 200 with an empty program — an emitter that dropped its input would pass a length check.
+  if (!stack.source.includes(component) || stack.serviceName !== service) {
+    console.error("FAIL: rendered source does not mention " + component + " under " + service);
+    process.exit(1);
+  }
+  console.log("PASS: scaffold rendered " + stack.source.length + " bytes of source for " + stack.stackName);
+' <<<"$SCAFFOLD_JSON" "$DISCOVERED_NAME" "$SCAFFOLD_SVC"
 
-echo "==> confirming the accepted object is immediately resolvable (a real graph write, not a no-op)"
-POST_ACCEPT_GET_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
-  -H "Authorization: Bearer $TOKEN" "$API_URL/objects/service/$CREATED_OBJECT_ID")"
-if [ "$POST_ACCEPT_GET_CODE" != "200" ]; then
-  echo "FAIL: expected the accepted object to resolve with HTTP 200, got $POST_ACCEPT_GET_CODE" >&2
+echo "==> confirming the scaffolder committed NOTHING"
+POST_SERVICES_JSON="$("${CLI_BIN[@]}" service list --output json)"
+if [ "$POST_SERVICES_JSON" != "$PRE_SERVICES_JSON" ]; then
+  echo "FAIL: the service list changed across a scaffold call — discovery wrote to the graph" >&2
   exit 1
 fi
-echo "PASS: accepted object resolves by id"
+echo "PASS: service list unchanged across scaffold — discovery proposes, it does not commit"
+
+echo "==> confirming POST /discovery/accept is gone from the shipped image (ADR-0047)"
+ACCEPT_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "{\"proposal\":$PROPOSAL_JSON}" "$API_URL/discovery/accept")"
+if [ "$ACCEPT_CODE" != "404" ]; then
+  echo "FAIL: expected POST /discovery/accept to be 404 (route removed), got $ACCEPT_CODE" >&2
+  exit 1
+fi
+echo "PASS: /discovery/accept answers 404 while /discovery/scaffold on the same base URL and token answers 200 — the write door is removed, not just unrouted by the CLI"
 
 echo "==> scp audit verify"
 "${CLI_BIN[@]}" audit verify
