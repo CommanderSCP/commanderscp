@@ -37,10 +37,22 @@
 # nightly air-gap drill on every scheduled run from 2026-07-13: the chart's own default-deny blocked
 # the auto-wire hook's `https://kubernetes.default.svc` Secret read. The chart now renders
 # `-allow-kube-api-autowire` for the hook pods (deploy/helm/templates/networkpolicy.yaml).
-# HONEST CAVEAT: kind's DEFAULT CNI does not enforce NetworkPolicy, so this drill proves the chart
-# still INSTALLS and auto-wires with the shipped policy set, NOT that the policies are enforced —
-# enforcement is proven only by scripts/airgap-drill.sh, which installs Calico for exactly that
-# reason. What this drill does buy is that the drill no longer diverges from the shipped default.
+# THE "kind DOES NOT ENFORCE NetworkPolicy" CAVEAT THAT USED TO BE HERE WAS STALE — AND MISLEADING.
+# kindnet gained NetworkPolicy support; MEASURED 2026-08-29 on `kindest/node:v1.32.2` (the image
+# this workflow pins) with kindnetd v20250214-acbabc1a: a pod reached the API server (200), a
+# deny-all-egress policy was applied, and the same request was then DROPPED (curl exit 28). So this
+# drill DOES enforce the shipped policy set, and is a real second enforcement gate beside
+# scripts/airgap-drill.sh's Calico — not merely a "the chart still installs" check.
+#
+# That stale sentence had teeth. It was read as evidence that this drill could not be failing for a
+# NetworkPolicy reason, which is precisely why the argocd auto-wire failure was misdiagnosed for
+# several rounds: the same egress-policy bug was breaking BOTH this drill and the air-gap drill, and
+# a comment asserting "policy is not enforced here" made one root cause look like two unrelated
+# ones. The bug was `allow-argocd` permitting the Service port (80) instead of the POST-DNAT
+# container port (8080) — see deploy/helm/templates/networkpolicy.yaml.
+#
+# If kindnet's behaviour changes again, re-measure rather than trusting this paragraph: apply a
+# deny-all-egress policy to a probe pod and check that a known-good request stops working.
 # Requires docker, kind, helm, kubectl. Pulls quay.io/argoproj/argocd + valkey once (drills allow
 # egress; this is not the air-gap drill).
 
