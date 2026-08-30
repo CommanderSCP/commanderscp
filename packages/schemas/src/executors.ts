@@ -539,24 +539,21 @@ export type ScaffoldDiscoveryResponse = z.infer<typeof ScaffoldDiscoveryResponse
  * The break is logged in `tools/openapi/OASDIFF-EXCEPTIONS.md`.
  */
 
-/**
- * `POST /discovery/backfill-source-mappings` (M12 P5 follow-up) — the AUTOMATED backfill for
- * already-imported components (e.g. the homelab's 50 argocd orphans imported before discovery emitted
- * mappings). Feed it a fresh `discovery run` proposal; it uses only the proposal's `sourceMappings`,
- * matching each to an EXISTING component by name and creating the mapping (creating NO objects).
- * Idempotent — re-running skips duplicates and reports every skip.
+/*
+ * `POST /discovery/backfill-source-mappings` AND ITS TWO SCHEMAS ARE GONE, following `accept` the
+ * same way ADR-0047 said they would (team-pipeline-iac section 13: it "survives until the estate
+ * migration completes, then is removed the same way").
+ *
+ * It repaired components imported BEFORE discovery emitted mappings. That population is CLOSED:
+ * `discovery/accept` was the door that created mapping-less components and it no longer exists, so
+ * nothing can add to the set. The repair path for a component that predates the change is to adopt
+ * it into a stack (`scp iac export` carries any mappings it already has) and declare the source in
+ * the manifest — the ordinary `sourceMappings` collection, reconciled on apply, which is where
+ * mappings are authored now.
+ *
+ * Removed rather than deprecated, on the same dev-stage ground as accept. Logged in
+ * `tools/openapi/OASDIFF-EXCEPTIONS.md`.
  */
-export const BackfillSourceMappingsRequestSchema = z.object({
-  proposal: DiscoveryProposalSchema
-});
-export type BackfillSourceMappingsRequest = z.infer<typeof BackfillSourceMappingsRequestSchema>;
-
-export const BackfillSourceMappingsResponseSchema = z.object({
-  createdSourceMappingIds: z.array(z.string().uuid()),
-  /** Every mapping NOT created, with why (no matching component / ambiguous name / already mapped). */
-  skipped: z.array(z.object({ objectName: z.string(), reason: z.string() }))
-});
-export type BackfillSourceMappingsResponse = z.infer<typeof BackfillSourceMappingsResponseSchema>;
 
 // -------------------------------------------------------------------------------------------
 // `scp change-source report` (DESIGN §12 Mode 1: "a one-line CLI step... reports plan/apply

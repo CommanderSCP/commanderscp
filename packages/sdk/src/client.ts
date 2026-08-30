@@ -297,7 +297,6 @@ import {
   listPluginManifests as listPluginManifestsRequest,
   runDiscovery as runDiscoveryRequest,
   scaffoldDiscoveryProposal as scaffoldDiscoveryProposalRequest,
-  backfillSourceMappings as backfillSourceMappingsRequest,
   // The live event stream (`GET /events/stream`) — a generated SSE operation like any other
   // generated operation, `responseValidator` included, since the SSE API-parity work declared it
   // in the contract.
@@ -480,7 +479,6 @@ import type {
   ScaffoldDiscoveryRequest,
   ScaffoldDiscoveryResponse,
   DiscoveryProposal,
-  BackfillSourceMappingsResponse,
   ServiceBoardResponse,
   RelayedEvent,
   Role,
@@ -2887,18 +2885,6 @@ export class ScpClient {
      *  shape difference is the point: accept returned created ids, this returns text. */
     scaffold: async (req: ScaffoldDiscoveryRequest): Promise<ScaffoldDiscoveryResponse> => {
       const result = await scaffoldDiscoveryProposalRequest({ client: this.client, body: req });
-      return unwrap(result);
-    },
-    /** Backfill source_mappings onto ALREADY-imported components (M12 P5 follow-up) — matches a fresh
-     *  proposal's `sourceMappings` to existing components by name and creates them; creates no objects.
-     *  Idempotent; returns created ids + every skip with a reason. The automated path for the 50 orphans. */
-    backfillSourceMappings: async (
-      proposal: DiscoveryProposal
-    ): Promise<BackfillSourceMappingsResponse> => {
-      const result = await backfillSourceMappingsRequest({
-        client: this.client,
-        body: { proposal }
-      });
       return unwrap(result);
     }
   };

@@ -7128,8 +7128,8 @@ export function buildProgram(): Command {
             Record<string, string> | undefined,
           allowedHosts: parseList(opts.allowedHosts)
         });
-        // Always JSON — a proposal is meant to be reviewed, edited, and re-submitted to
-        // `discovery accept --proposal`, not rendered as a table.
+        // Always JSON — a proposal is meant to be reviewed, edited, and fed to `scp iac scaffold`,
+        // not rendered as a table.
         console.log(JSON.stringify(proposal, null, 2));
       }
     );
@@ -7139,36 +7139,20 @@ export function buildProgram(): Command {
   // is `scp iac scaffold`, which turns the same proposal into IaC code a human commits; the graph
   // write then goes through `scp apply` with strict create and ordinary authorization.
 
-  // M12 P5 follow-up: automated backfill of source_mappings onto ALREADY-imported components (the 50
-  // argocd orphans imported before discovery emitted mappings). Feed a fresh `discovery run` proposal;
-  // creates NO objects — matches its sourceMappings to existing components by name. Idempotent.
-  discoveryCmd
-    .command("backfill-mappings")
-    .description(
-      "Backfill source_mappings onto already-imported components from a discovery proposal"
-    )
-    .requiredOption(
-      "--proposal <path-or-json>",
-      "a file path to (or literal JSON of) a proposal from `discovery run` (its sourceMappings are used)"
-    )
-    .option("--base-url <url>", "API base URL override")
-    .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts & { proposal: string }) => {
-      const client = await clientFromStoredCredentials(opts);
-      const raw = opts.proposal.trim().startsWith("{")
-        ? opts.proposal
-        : await readFile(opts.proposal, "utf8");
-      const proposal = JSON.parse(raw) as never;
-      const result = await client.discovery.backfillSourceMappings(proposal);
-      printResult(result, opts.output, (item) => item as Record<string, unknown>);
-    });
+  // `scp discovery backfill-mappings` IS GONE with the route it called. It repaired the ~50 argocd
+  // components imported through `discovery/accept` before discovery emitted source mappings. That
+  // population is CLOSED — accept is gone (ADR-0047), so no door can create a mapping-less component
+  // any more — and the repair path for one that predates the change is now to adopt it into a stack
+  // (`scp iac export` carries existing mappings) and declare the source in the manifest, which the
+  // ordinary `sourceMappings` collection reconciles on apply.
 
   const changeSourceCmd = program
     .command("change-source")
     .description("Change-source webhook config (DESIGN §8/§9.2/§12)");
 
   // M12 P5 (owner Q3): source_mapping CRUD — the CLI parity gap (SDK + route existed). This is the
-  // manual/backfill path for existing imports; new argocd imports get a mapping auto-created at accept.
+  // manual path for a component whose mapping is not declared in IaC; a component under a stack gets
+  // its mappings from the manifest instead (ADR-0047 — there is no import door left to create one).
   changeSourceCmd
     .command("create-mapping <sourceKind>")
     .description("Map a source (repo/path globs) to a component so its releases correlate")

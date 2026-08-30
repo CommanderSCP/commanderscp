@@ -1190,7 +1190,7 @@ A mechanical rewrite of every `object:write` + `auth.orgId` pair is wrong. Expli
 | Door | Why |
 |---|---|
 | `PUT`/`DELETE /secrets/:key`, `PUT /change-sources/:kind/webhook-secret` | §1.3d wants these **split into `secret:write`**, not widened. A sweep hands every future ComponentAdmin the org's execution-system credentials. |
-| `POST /discovery/run`, `/accept`, `/backfill-source-mappings` | Discovery makes SCP dial an execution system with stored credentials. |
+| `POST /discovery/run`, `/scaffold` | Discovery makes SCP dial an execution system with stored credentials, and the scaffolder renders what such a dial returned. (`/accept` and `/backfill-source-mappings` were on this row until they were removed — ADR-0047 and the increment-7 tail.) |
 | `POST /change-sources/:kind/webhook`, `/report` | CI ingress is org-root **deliberately** — the principal is a robot with no per-object standing, and an existing test rests its whole argument on that. |
 | `policy-scope-authz.ts:111`, `governance-labels.ts:163`, `handfill-repo.ts:208,322`, `overlay-repo.ts:197` | Four **deliberate** org-root escalation bars, two of them added by this very branch. |
 | `POST /plans` | Re-scoping downward **widens**: the manifest is caller-supplied and the persisted `diff` reports each named object's current state. |

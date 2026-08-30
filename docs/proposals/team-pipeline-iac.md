@@ -106,7 +106,7 @@ Failure honesty: a manifest that fails validation or an apply that is refused (a
 ## 7. Scaffolder and discovery retirement (D1)
 
 - `scp iac scaffold --from <execution-system-urn> [--repo-pr]` runs the existing `discover()` and renders the proposal as construct code + synthesized manifest — grouped into services interactively/by flag (the orphan problem is solved at authoring time, where a human is present), optionally opening a PR against the config repo.
-- `POST /discovery/accept` is **removed in this same increment** (§14 res 3 — dev-stage, no transition flag; `api-v2-exception` on the ledger). `discovery/run` stays (it is the scaffolder's engine). `backfill-source-mappings` survives until the estate migration (§9, increment 7) completes, then is removed the same way.
+- `POST /discovery/accept` is **removed in this same increment** (§14 res 3 — dev-stage, no transition flag; `api-v2-exception` on the ledger). `discovery/run` stays (it is the scaffolder's engine). `backfill-source-mappings` survives until the estate migration (§9, increment 7) completes, then is removed the same way. **Both are now done** — the backfill route was removed 2026-08-29, once increment 7 shipped; the operative reason was that removing `accept` closed the population it repaired, not that any particular estate had converted.
 - ADR-0005's "import surfaces stay permissive" is rewritten at ADR time: **scaffold permissively, land through review.** The spirit (never block a user from bringing their estate in) survives; the graph write is what moves behind review.
 
 ## 8. Wave-organization guidance (D6 vocabulary)

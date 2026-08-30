@@ -254,7 +254,8 @@ this" is not the same claim as "this happens".
    until each team happens to commit, and a component that never pushes again never acquires one.
    `POST /api/v1/dependencies/inventory/backfill` follows the shipped
    `POST /discovery/backfill-source-mappings` precedent exactly: operator-triggered, idempotent, and
-   it reports every skip. It resolves the repo from the component's OWN `source_mappings` and
+   it reports every skip. (That route was retired on 2026-08-29 — its population closed when
+   `discovery/accept` was removed. The precedent it set stands; only the example is gone.) It resolves the repo from the component's OWN `source_mappings` and
    refuses (rather than guesses) where they name a glob or two different repos, and it cannot weaken
    the gate — there is no flag that skips it. Two properties of the RECEIPT are normative, because a
    backfill is the one caller a human reads the output of: it reports the DESTRUCTIVE half

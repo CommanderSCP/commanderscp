@@ -557,8 +557,9 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
   // release from now on — so on an existing estate the inventory stays EMPTY until each team happens
   // to commit, and every capability above it (the enablement work-list, the version poll, internal
   // detection's manifest-path lookup) resolves over nothing in the meantime. The precedent is
-  // `POST /discovery/backfill-source-mappings`, which exists for exactly this class of problem and
-  // is operator-triggered, idempotent, and reports every skip.
+  // `POST /discovery/backfill-source-mappings` — operator-triggered, idempotent, reporting every
+  // skip. That route has since been retired (its population closed); the shape it set is what is
+  // being followed here, where the population is still open.
   //
   // THE GATE IS NOT WEAKER HERE. `ingestComponentManifests` resolves enablement itself, before it
   // touches a repo, so a backfill over the whole org reads nothing for an unsubscribed component —
@@ -655,8 +656,8 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
       // §7c clause 2).
       const targets = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         // Ingestion WRITES the org's inventory, so it is authorized as a write at the org scope —
-        // the same permission and scope `POST /discovery/backfill-source-mappings` requires for the
-        // same "create rows onto existing components" shape.
+        // the same permission and scope `POST /discovery/backfill-source-mappings` required for the
+        // same "create rows onto existing components" shape, before that route was retired.
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
