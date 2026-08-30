@@ -165,7 +165,6 @@ CAPTURE_LOG="/tmp/kind-drill-api-capture.log"
 : > "$CAPTURE_LOG"
 ADMIN_PASSWORD=""
 for _ in $(seq 1 90); do
-  API_POD="$(kubectl get pods -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
   # ALSO POLL THE WORKER. `main.ts` now creates the bootstrap admin only in the HTTP-serving role
   # (`createsBootstrapAdmin`), so on any CURRENT build the password is in the api's log by
   # construction. This drill, however, installs a HISTORICAL baseline first — and every baseline
@@ -175,15 +174,19 @@ for _ in $(seq 1 90); do
   # The baseline is chosen relative to the newest migration, so it stays behind the product fix for
   # as long as no new migration lands; reading both logs is what makes the drill work on both sides
   # of that fix instead of only on the near side.
-  WORKER_POD="$(kubectl get pods -l app.kubernetes.io/component=worker -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-  for POD in "$API_POD" "$WORKER_POD"; do
+  # ALL matching pods, not one each: `api.replicaCount` defaults to 2 in the chart, and although
+  # this drill pins it to 1, a capture that samples `.items[0]` is one values change away from
+  # silently missing the password — which is exactly how scripts/airgap-drill.sh failed.
+  for POD in $(kubectl get pods \
+                 -l 'app.kubernetes.io/component in (api,worker)' \
+                 -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
     [ -n "$POD" ] || continue
     kubectl logs "$POD" --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
     kubectl logs "$POD" --previous --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
   done
   # Extraction is NOT gated on the api pod existing: the accumulated log may hold the line from the
-  # worker (a pre-fix baseline where the worker won the race), and gating on $API_POD would collect
-  # that line and then decline to read it.
+  # worker (a pre-fix baseline where the worker won the race), or from an api replica other than
+  # the first, so gating on any single pod would collect the line and then decline to read it.
   LINE="$(grep -i "one-time password" "$CAPTURE_LOG" | tail -n1 || true)"
   if [ -n "$LINE" ]; then
     ADMIN_PASSWORD="$(printf '%s' "$LINE" | sed -n 's/.*shown once): \([^"]*\).*/\1/p')"

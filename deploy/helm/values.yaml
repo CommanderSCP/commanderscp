@@ -76,6 +76,16 @@ serviceAccount:
 # -------------------------------------------------------------------------------------------
 api:
   replicaCount: 2
+
+  # Seconds the api pod keeps serving AFTER Kubernetes decides to delete it, before SIGTERM.
+  # This is what makes a rolling upgrade actually zero-downtime: endpoint removal and SIGTERM
+  # happen concurrently, so without this delay a new connection can still be routed to a pod
+  # whose listener has already closed, and the client gets a connection error rather than a
+  # graceful response. The app's own SIGTERM drain (main.ts) handles in-flight requests; this
+  # handles the ones that have not arrived yet.
+  preStopSleepSeconds: 5
+  # Must exceed preStopSleepSeconds plus the drain, or the kubelet SIGKILLs mid-drain.
+  terminationGracePeriodSeconds: 30
   # SCP_ROLE for the api pods: "api" (default — pure request server) or "all".
   #
   # WHY "all" IS OFFERED. A handful of capabilities run INLINE on the request path and need the

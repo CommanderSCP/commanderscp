@@ -220,15 +220,28 @@ log "install.sh: cosign-verify -> retarget-push into the local registry -> helm 
 # The api pod can restart once during startup on a loaded kind cluster, and the password is printed
 # ONCE and never stored (apps/server/src/auth/local-auth.ts) — see scripts/kind-drill.sh. Captured
 # here (right after install) and reused in the golden path below.
-log "capturing the bootstrap admin one-time password by polling api logs"
+log "capturing the bootstrap admin one-time password by polling ALL api+worker pods"
 CAPTURE_LOG="${SCRATCH}/airgap-api-capture.log"
 : > "$CAPTURE_LOG"
 PW=""
 for _ in $(seq 1 90); do
-  API_POD="$(kubectl get pods -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-  if [ -n "$API_POD" ]; then
-    kubectl logs "$API_POD" --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
-    kubectl logs "$API_POD" --previous --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+  # EVERY api pod, not `.items[0]` — the chart's DEFAULT is `api.replicaCount: 2`, and this drill
+  # installs the shipped defaults. All replicas run bootstrap; exactly ONE wins and prints the
+  # one-time password, the losers log "already exists, skipping". Reading a single arbitrary pod
+  # therefore misses the password roughly half the time, and fails with a message about the
+  # password rather than about the sampling. (kind-drill.sh pins `api.replicaCount=1` "for a
+  # deterministic bootstrap log", which is why the same code passed there and failed here.)
+  #
+  # The worker is included for the same reason kind-drill.sh includes it: baselines predating
+  # `createsBootstrapAdmin` ran bootstrap in every process, so on those the worker can hold the
+  # only copy.
+  for POD in $(kubectl get pods \
+                 -l 'app.kubernetes.io/component in (api,worker)' \
+                 -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+    kubectl logs "$POD" --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+    kubectl logs "$POD" --previous --tail=-1 2>/dev/null >> "$CAPTURE_LOG" || true
+  done
+  if true; then
     LINE="$(grep -i "one-time password" "$CAPTURE_LOG" | tail -n1 || true)"
     if [ -n "$LINE" ]; then
       PW="$(printf '%s' "$LINE" | sed -n 's/.*shown once): \([^"]*\).*/\1/p')"
@@ -237,7 +250,7 @@ for _ in $(seq 1 90); do
   fi
   sleep 2
 done
-[ -n "$PW" ] || { echo "FAIL: could not capture the bootstrap one-time password after polling api logs" >&2; tail -60 "$CAPTURE_LOG" >&2 || true; exit 1; }
+[ -n "$PW" ] || { echo "FAIL: could not capture the bootstrap one-time password after polling ALL api+worker pods" >&2; tail -60 "$CAPTURE_LOG" >&2 || true; exit 1; }
 log "captured bootstrap admin one-time password"
 
 log "waiting for all pods Ready under the enforced default-deny egress policy"
