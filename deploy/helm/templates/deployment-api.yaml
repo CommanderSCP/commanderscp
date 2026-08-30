@@ -58,6 +58,8 @@ spec:
       {{- include "commanderscp.topologySpreadConstraints" (dict "constraints" .Values.api.topologySpreadConstraints "selectorLabels" (include "commanderscp.apiSelectorLabels" .)) | nindent 6 }}
       initContainers:
         {{- include "commanderscp.waitForPostgresInitContainer" (dict "root" . "dbEnvVar" "SCP_RUNTIME_DATABASE_URL") | nindent 8 }}
+      # Pod-level (see the api container's preStop note): must outlast preStop + the SIGTERM drain.
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds | default 30 }}
       containers:
         - name: api
           image: {{ include "commanderscp.image" . }}
@@ -69,6 +71,33 @@ spec:
               value: {{ include "commanderscp.apiRole" . | quote }}
             {{- include "commanderscp.commonEnv" . | nindent 12 }}
             {{- include "commanderscp.runtimeDbEnv" . | nindent 12 }}
+          # PRE-STOP DELAY — the difference between "graceful shutdown" and "zero downtime".
+          #
+          # main.ts already handles SIGTERM with `app.close()`, which drains in-flight requests. That
+          # is NOT sufficient on its own, because on pod deletion Kubernetes does two things
+          # CONCURRENTLY and in no guaranteed order: it sends SIGTERM, and it removes the pod from
+          # the Service's endpoints. If the listener closes before every kube-proxy has caught up, a
+          # NEW connection is still routed to this pod and is refused — the client sees a
+          # connection-level error, not a graceful 503.
+          #
+          # Sleeping here keeps the listener up while that propagation finishes; SIGTERM is delivered
+          # only AFTER preStop returns, so the drain still happens, just late enough to be safe. This
+          # is the standard remedy and it costs nothing on a healthy rollout.
+          #
+          # MEASURED 2026-08-29: without it the kind drill's in-cluster zero-downtime witness saw a
+          # single `000` connection failure during `helm upgrade` (runs went 0, 0, 1 non-200 — the
+          # intermittency is the tell for an endpoint-propagation race rather than a broken deploy).
+          # The witness only became able to observe this at all once it stopped measuring its own
+          # port-forward; the property was never verified before.
+          #
+          # The pod-level `terminationGracePeriodSeconds` (set on the pod spec below, NOT here —
+          # it is a POD field and Kubernetes rejects it on a container) must exceed this delay plus
+          # the drain, or the kubelet SIGKILLs mid-drain and reintroduces the very failure this
+          # prevents.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.api.preStopSleepSeconds | default 5 }}"]
           ports:
             - name: http
               containerPort: 8080
