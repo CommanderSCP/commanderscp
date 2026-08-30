@@ -302,6 +302,14 @@ exercise `matchComponentForSource`/`resultingChangeObjectId`, including the whol
 `source-mapping-{enabled,precedence,path-routing,scope,mirror-of-shared,deleted-component}` family.
 
 **A near-miss worth recording, because the reasoning was wrong in a way that would have shipped.**
+**And a census miss, recorded because the pattern is the lesson.** The first census ran on the ROUTE
+name (`backfill-source-mappings`) and the function name, and came back complete. It was not: the CLI
+verb is `backfill-mappings` — no `source` — so `typed-registries-cli.integration.test.ts`, which
+drives it as a string array, matched none of those patterns and only surfaced as a red integration
+shard. When a capability's names DIVERGE across layers (route path vs CLI verb vs function), a census
+on any one of them is a census on one layer. Take the shortest common substring — here `backfill` —
+and read the noise.
+
 `change-source-mapping-authz.integration.test.ts` pinned the backfill door's org-root bar, and its
 header warns that nothing else in the tree pins the discovery doors' org-root requirement. Removing
 the case looked like it would leave `/discovery/run` — the last discovery door — unpinned, so a
