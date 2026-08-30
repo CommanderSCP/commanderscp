@@ -3,8 +3,6 @@ import { groupDiscoveryProposal, renderEstateProgram } from "@scp/iac";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import {
-  BackfillSourceMappingsRequestSchema,
-  BackfillSourceMappingsResponseSchema,
   CreateExecutorBindingRequestSchema,
   CreateNotificationBindingRequestSchema,
   DiscoveryProposalSchema,
@@ -63,7 +61,6 @@ import {
   listSecretKeys,
   resolveSecretRefs
 } from "../secrets/secrets-repo.js";
-import { backfillSourceMappings } from "../coordination/source-mappings-repo.js";
 
 /** The `DiscoveryPlugin` modules (`github-discovery`, `gitea-discovery`, `gitlab-discovery`,
  *  `argocd-discovery`) — same allowlist discipline as `executor-bindings-repo.ts`'s
@@ -951,72 +948,18 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
-  // POST /discovery/backfill-source-mappings — the AUTOMATED backfill (M12 P5 follow-up): create
-  // source_mappings onto ALREADY-imported components (the 50 argocd orphans imported before discovery
-  // emitted mappings). Feed a fresh `discovery run` proposal; matches its sourceMappings to existing
-  // components BY NAME and creates them, creating NO objects. Idempotent — reports every skip.
-  typed.route({
-    method: "POST",
-    url: "/api/v1/discovery/backfill-source-mappings",
-    schema: {
-      body: BackfillSourceMappingsRequestSchema,
-      response: {
-        200: BackfillSourceMappingsResponseSchema,
-        401: ProblemSchema,
-        403: ProblemSchema
-      }
-    },
-    config: {
-      openapi: {
-        operationId: "backfillSourceMappings",
-        summary:
-          "Backfill source_mappings onto already-imported components (matches a discovery proposal's mappings to existing components by name)",
-        tags: ["discovery"]
-      }
-    },
-    handler: async (request, reply) => {
-      const auth = await requireAuth(deps, request);
-      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        // ORG-ROOT, DELIBERATELY — role-model.md §8.6 lists this door beside `/discovery/run` and
-        // `/discovery/accept` as one that must NOT be swept by increment 2.5a's re-scope. It was
-        // briefly replaced by a per-component `hasPermission` inside `backfillSourceMappings`; that
-        // was reverted, and both halves of the reversal are worth recording.
-        //
-        // The narrow observation behind the replacement was TRUE and stays true: unlike its two
-        // siblings, THIS door holds no credential and makes no outbound call — it reads a
-        // caller-supplied proposal and writes correlation rows. It is simply not what decides the
-        // question, because:
-        //
-        //   1. A PER-ENTRY CHECK CANNOT BE A DOOR. That check ran once per MATCHED component. A
-        //      proposal with no `sourceMappings`, or one whose every name matched no live
-        //      component, therefore authorized NOTHING AT ALL, and any authenticated principal
-        //      reached the handler and got a 200. Where a name DID match, the refusal skip reported
-        //      the matched component's uuid — to a principal holding no binding anywhere. A second
-        //      bar may be ADDED inside a loop; a door's own bar may never be SUBSTITUTED by one.
-        //   2. The proposal this door consumes is the OUTPUT of `/discovery/run` — of a dial that
-        //      did use the org's stored credentials — and every row it writes decides what a future
-        //      push correlates to. Both of those are org-wide surfaces, which is the shape §8.6 is
-        //      protecting even where the outbound call itself has already happened.
-        //
-        // No second per-component bar was kept either. With this check restored, every principal
-        // reaching the loop already holds org-root `object:write`, which `hasPermission` satisfies
-        // at any component whose containment chain reaches the org root — so an inner check could
-        // only ever CHANGE the answer in two ways, and 2.5a is a widening: it would newly honour a
-        // `deny` bound below the org root (a narrowing nobody decided), and it would refuse the
-        // org-root Owner outright whenever the component's chain is cut by a tombstoned ancestor
-        // (`routes/change-sources.ts`'s `assertSourceMappingWritable` documents that cut).
-        await authorize(tx, {
-          orgId: auth.orgId,
-          subjectObjectId: auth.subjectObjectId,
-          permission: "object:write",
-          scopeObjectId: auth.orgId
-        });
-        return backfillSourceMappings(tx, {
-          orgId: auth.orgId,
-          mappings: request.body.proposal.sourceMappings ?? []
-        });
-      });
-      reply.status(200).send(result);
-    }
-  });
+  /* `POST /discovery/backfill-source-mappings` IS GONE, following `accept` exactly as
+   * team-pipeline-iac section 13 said it would ("survives until the estate migration completes, then
+   * is removed the same way"). Increment 7 shipped that migration.
+   *
+   * It created source_mappings onto components imported BEFORE discovery emitted them. Nothing can
+   * add to that population any more — `discovery/accept` was the only door that made a mapping-less
+   * component, and ADR-0047 removed it. A component that predates the change is repaired by adopting
+   * it into a stack and declaring the source in the manifest, which apply reconciles through the
+   * ordinary `sourceMappings` collection.
+   *
+   * The org-root reasoning this door carried is not lost: it was about a door consuming the output of
+   * a credentialed dial, and `POST /discovery/run` — which still exists — is where that argument now
+   * lives in full (`org-root-scope-census.test.ts` keeps its entry).
+   */
 }

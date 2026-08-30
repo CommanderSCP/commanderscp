@@ -265,3 +265,50 @@ the hole is gone. Its remaining half compared accept against the generic `/relat
 ("the two doors agree"), and that door's both-endpoints rule is covered independently by
 `graph/relationship-authz.integration.test.ts` — verified before deleting, not assumed: that file
 pins from-only, to-only, both-succeed, the `member_of` escalation case and DELETE.
+
+### team-pipeline-IaC increment 7 tail — `POST /discovery/backfill-source-mappings` removed (2026-08-29)
+
+**Breaking change:** `api-path-removed` for `POST /api/v1/discovery/backfill-source-mappings`, plus
+the removal of `BackfillSourceMappingsRequest`/`BackfillSourceMappingsResponse` from the components.
+
+**Why now, and why this was always the plan:** team-pipeline-iac.md §13 wrote the condition down when
+`accept` was retired — the backfill route "survives until the estate migration (§9, increment 7)
+completes, then is removed the same way". Increment 7 merged (#337), so the condition is met.
+
+**Why waiting for a specific estate to convert was not the real gate.** The route repaired components
+imported BEFORE discovery emitted source mappings. That population is **closed**: `POST
+/discovery/accept` was the only door that could create a mapping-less component, and ADR-0047 removed
+it, so nothing can add to the set. The homelab's own gap had already been closed by an earlier run
+(source_mappings measured 0 → 47 → 148 on 2026-08-03).
+
+**What replaces it:** authoring the mapping in IaC. `scp iac export` carries a component's existing
+mappings into the emitted program, and a component under a stack gets its mappings from the manifest
+through the ordinary `sourceMappings` collection, reconciled on apply. For a one-off outside IaC,
+`scp change-source create-mapping` is unchanged. Both are ordinary authorized writes, which the
+removed route deliberately was not — it took one org-root bar and then wrote a row per proposal entry.
+
+**Blast radius inside the repo, for the record:** the route and its two schemas; the SDK method;
+`scp discovery backfill-mappings`; `backfillSourceMappings` and its two interfaces in
+`coordination/source-mappings-repo.ts`; and the org-root write-door census entry, which drops with
+its door. Four prose citations of the route as a design precedent (ADR-0032, `schemas/dependencies.ts`,
+`routes/dependency-subscriptions.ts`) were reworded rather than deleted — the pattern they cite is
+still the pattern, but a comment pointing at a route that no longer exists misleads the next reader.
+
+`source-mappings-on-import.integration.test.ts` is **deleted in full**. Its three `accept`-based cases
+had already gone with ADR-0047, leaving only the backfill describe block, so the file's remaining
+subject was entirely the removed door. Its incidental coverage — that a mapped component self-reports
+a release — was verified to be covered elsewhere before deleting rather than assumed: 21 other files
+exercise `matchComponentForSource`/`resultingChangeObjectId`, including the whole
+`source-mapping-{enabled,precedence,path-routing,scope,mirror-of-shared,deleted-component}` family.
+
+**A near-miss worth recording, because the reasoning was wrong in a way that would have shipped.**
+`change-source-mapping-authz.integration.test.ts` pinned the backfill door's org-root bar, and its
+header warns that nothing else in the tree pins the discovery doors' org-root requirement. Removing
+the case looked like it would leave `/discovery/run` — the last discovery door — unpinned, so a
+replacement case was written for it. It was **redundant**: the credential-doors case in the same file
+already probes `/discovery/run` directly (component-bound admin → 403, org root → 400), which the
+mutation run surfaced by failing BOTH cases. The replacement was dropped and only the prose corrected.
+Two things came out of measuring instead of asserting: a first attempt at the replacement used a
+made-up `pluginModule` and got 400 for _every_ principal, including an unbound one, because the
+handler's unknown-module check runs BEFORE the transaction that authorizes — which reads exactly like
+a missing bar until the statement order is checked.

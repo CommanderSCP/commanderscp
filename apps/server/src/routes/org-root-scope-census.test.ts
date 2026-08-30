@@ -266,11 +266,6 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     cls: "escalation-bar",
     why: "replaces the removed /discovery/accept entry (ADR-0047). It writes NOTHING — it renders a proposal as @scp/iac source — but the proposal and the emitted code name the org's services, repos and targets, so the bar stays where /discovery/run's is: role-model.md §8.6's rule is about what the DOOR exposes, not about whether it mutates, and a narrower binding must not satisfy either"
   },
-  {
-    site: "routes/executors.ts :: POST /api/v1/discovery/backfill-source-mappings :: object:write",
-    cls: "escalation-bar",
-    why: "role-model.md §8.6 names this door beside /discovery/run and /accept as one that must NOT be swept; it was briefly replaced by a per-component check inside backfillSourceMappings, which authorized NOTHING for an empty or fully-skipped proposal — a door's bar cannot live in a per-entry loop"
-  },
 
   // ---- federation: identity and link operation are instance-level acts ---------------------------
   {

@@ -37,29 +37,31 @@ import {
  * AND WHY IT ALSO TESTS DOORS THAT WERE DELIBERATELY LEFT ALONE
  * ============================================================================================
  * The re-scope above is an `object:write`-plus-`auth.orgId` pattern, and the same two files hold
- * five more instances of that pattern that MUST NOT be re-scoped (role-model.md §8.6): the
- * encrypted-secret doors, the webhook-secret door, and the THREE discovery doors — `/discovery/run`
- * and `/accept`, which make SCP dial an execution system with stored credentials, and
- * `/discovery/backfill-source-mappings`, which consumes what such a dial returned. Sweeping them
- * mechanically would hand a component-scoped administrator the org's execution-system credentials.
- * Nothing in the tree pinned their org-root requirement — all 334 `403` assertions in `apps/server`
- * were enumerated and ZERO covered any of these doors — so the next person running this census
- * could sweep them and ship green. The last two cases below are that pin.
+ * three more instances of that pattern that MUST NOT be re-scoped (role-model.md §8.6): the
+ * encrypted-secret doors, the webhook-secret door, and `/discovery/run`, which makes SCP dial an
+ * execution system with stored credentials. Sweeping them mechanically would hand a component-scoped
+ * administrator the org's execution-system credentials. Nothing in the tree pinned their org-root
+ * requirement — all 334 `403` assertions in `apps/server` were enumerated and ZERO covered any of
+ * these doors — so the next person running this census could sweep them and ship green. The last two
+ * cases below are that pin.
  *
- * The backfill door is the sharpest instance and the reason it is asserted separately from the
- * others: 2.5a briefly SUBSTITUTED its org-root check with a per-component `hasPermission` inside
- * `backfillSourceMappings`, which authorizes once per MATCHED component — so an empty proposal, or
- * one whose every name resolved to nothing, authorized nothing whatsoever and any authenticated
- * principal reached the handler. The empty-proposal case below is what holds that closed.
+ * IT WAS THREE DISCOVERY DOORS AND IS NOW ONE. `/discovery/accept` went with ADR-0047 and
+ * `/discovery/backfill-source-mappings` followed it; each took its own case with it, and the pin for
+ * the survivor lives in the credential-doors case below, which probes `/discovery/run` directly.
+ *
+ * The backfill door was the sharpest instance while it existed, and its lesson is worth keeping
+ * after it: 2.5a briefly SUBSTITUTED its org-root check with a per-component `hasPermission`, which
+ * authorized once per MATCHED component — so an empty proposal authorized nothing whatsoever and any
+ * authenticated principal reached the handler. A door's own bar may be ADDED to from inside a loop,
+ * never SUBSTITUTED by one.
  *
  * ============================================================================================
  * MUTATION LOG (each applied ALONE against a passing suite, then reverted)
  * ============================================================================================
  * | Mutation | Result |
  * |---|---|
- * | drop `assertSourceMappingWritable`'s COMPONENT arm (check the org root only, i.e. today's pin) | ALL THREE widening cases FAIL — pause switch, scope label and delete-by-tuple each stop at their FIRST assertion, the component-bound admin acting on their own row, with `403 ... lacks 'object:write' at the org root and at source-mapping component '<id>'` where 200 was expected. The tombstoned-ancestor and backfill cases stay green, so this mutation isolates the widening and nothing else |
+ * | drop `assertSourceMappingWritable`'s COMPONENT arm (check the org root only, i.e. today's pin) | ALL THREE widening cases FAIL — pause switch, scope label and delete-by-tuple each stop at their FIRST assertion, the component-bound admin acting on their own row, with `403 ... lacks 'object:write' at the org root and at source-mapping component '<id>'` where 200 was expected. The tombstoned-ancestor case stays green, so this mutation isolates the widening and nothing else |
  * | drop `assertSourceMappingWritable`'s ORG-ROOT arm (check the component only) | the tombstoned-ancestor case FAILS at its first door, the pause switch: `403 ... lacks 'object:write' at the org root and at source-mapping component '<id>'` where 200 was expected. Nothing else in the file moves — which is exactly why this case had to be written: the ordinary org-root assertions elsewhere all sit on components with LIVE ancestors |
- * | delete the `authorize` at `POST /discovery/backfill-source-mappings` | the backfill case FAILS: the component-bound admin gets `200 {"createdSourceMappingIds":[2 ids],"skipped":[]}` where 403 was expected. Re-run with that first expectation relaxed and the EMPTY proposal from the unbound principal ALSO returns `200 {"createdSourceMappingIds":[],"skipped":[]}` — the case no per-entry bar can catch. The org-root-scope census fails in the same run with `STALE routes/executors.ts :: POST /api/v1/discovery/backfill-source-mappings :: object:write` |
  * | delete the `authorize` at `PUT /secrets/{key}` (a credential door has no object to re-scope TO, so a sweep can only weaken it) | the credential-door case FAILS: 200 where 403 was expected |
  */
 describe("source-mapping write doors are scoped at the component, credential doors are not", () => {
@@ -389,78 +391,6 @@ describe("source-mapping write doors are scoped at the component, credential doo
   // The doors §8.6 excludes — org-root `object:write`/`object:read`, deliberately
   // -------------------------------------------------------------------------------------------
 
-  it("POST /discovery/backfill-source-mappings keeps its org-root bar AT THE DOOR — an empty proposal is refused too", async () => {
-    const kind = `backfill-${randomUUID().slice(0, 8)}`;
-    const proposal = {
-      objects: [],
-      relationships: [],
-      sourceMappings: [
-        { objectName: mineName, sourceKind: kind, repoPattern: "acme/mine", type: "configuration" },
-        {
-          objectName: theirsName,
-          sourceKind: kind,
-          repoPattern: "acme/theirs",
-          type: "configuration"
-        }
-      ]
-    };
-
-    // A component-bound Administrator holds `object:write` at `mineId` and nowhere else. The door
-    // is org-root by §8.6, so it refuses — and refuses the WHOLE call, writing nothing at all,
-    // rather than partially applying the half it has standing for.
-    const narrow = await call("POST", mineToken, "/api/v1/discovery/backfill-source-mappings", {
-      proposal
-    });
-    expect(narrow.status, narrow.body).toBe(403);
-    expect((await admin.changeSources.listMappings(kind)).items).toHaveLength(0);
-
-    // THE CASE A PER-ENTRY CHECK CANNOT CATCH, and the reason this bar has to be at the door: an
-    // EMPTY proposal from a principal with no bindings whatsoever. A check that runs once per
-    // MATCHED component runs zero times here, so the handler would be reached, and its per-name
-    // report is a component-existence oracle. Both of these must be a flat 403.
-    for (const body of [
-      { proposal: { objects: [], relationships: [], sourceMappings: [] } },
-      {
-        proposal: {
-          objects: [],
-          relationships: [],
-          sourceMappings: [
-            {
-              objectName: `absent-${randomUUID().slice(0, 8)}`,
-              sourceKind: kind,
-              repoPattern: "acme/nowhere",
-              type: "configuration"
-            }
-          ]
-        }
-      }
-    ]) {
-      const res = await call(
-        "POST",
-        unboundToken,
-        "/api/v1/discovery/backfill-source-mappings",
-        body
-      );
-      expect(res.status, res.body).toBe(403);
-    }
-
-    // The org-root Owner is the principal this door is for, and it still backfills everything.
-    const asOwner = await call(
-      "POST",
-      org.adminToken,
-      "/api/v1/discovery/backfill-source-mappings",
-      { proposal }
-    );
-    expect(asOwner.status, asOwner.body).toBe(200);
-    const ownerBody = asOwner.json() as {
-      createdSourceMappingIds: string[];
-      skipped: Array<{ objectName: string; reason: string }>;
-    };
-    expect(ownerBody.createdSourceMappingIds).toHaveLength(2);
-    expect(ownerBody.skipped).toEqual([]);
-    expect((await admin.changeSources.listMappings(kind)).items).toHaveLength(2);
-  });
-
   it("the credential doors still demand org-root authority: a component-bound admin is refused at every one", async () => {
     const key = `cred-${randomUUID().slice(0, 8)}`;
     const kind = `cred-${randomUUID().slice(0, 8)}`;
@@ -471,8 +401,8 @@ describe("source-mapping write doors are scoped at the component, credential doo
     //
     // `PUT`/`DELETE /secrets/{key}` and `PUT .../webhook-secret` write the org's encrypted
     // credential material; role-model.md §1.3d splits these into their own `secret:write`
-    // permission rather than widening them. `POST /discovery/run` and `/accept` are the doors that
-    // make SCP dial an execution system with a stored token, or commit what such a dial returned.
+    // permission rather than widening them. `POST /discovery/run` is the door that makes SCP dial an
+    // execution system with a stored token.
     const put = await call("PUT", mineToken, `/api/v1/secrets/${key}`, { value: "v" });
     expect(put.status, put.body).toBe(403);
     const putAsOwner = await call("PUT", org.adminToken, `/api/v1/secrets/${key}`, { value: "v" });

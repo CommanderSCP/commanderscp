@@ -756,9 +756,12 @@ export type ObserveDependencyLineHeadInput = z.infer<typeof ObserveDependencyLin
 // so on an existing estate the inventory would stay empty until each team happened to commit, and a
 // component that never pushes again would never acquire one at all.
 //
-// The precedent is `POST /discovery/backfill-source-mappings`, which exists for exactly this class
-// of problem ("create rows onto already-imported components"): operator-triggered, idempotent, and
-// it reports every skip rather than only a count.
+// The precedent was `POST /discovery/backfill-source-mappings`, which existed for exactly this
+// class of problem ("create rows onto already-imported components"): operator-triggered, idempotent,
+// and it reported every skip rather than only a count. That route has since been RETIRED — not
+// because the shape was wrong, but because its population closed when `discovery/accept` was removed
+// (see `packages/schemas/src/executors.ts`). The shape is still the right one here, where the
+// population is open.
 // ===========================================================================================
 
 export const BackfillDependencyInventoryRequestSchema = z.object({

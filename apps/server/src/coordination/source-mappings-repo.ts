@@ -10,7 +10,7 @@ import {
   type PipelineClassification
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { objects, sourceMappings } from "../db/schema.js";
+import { sourceMappings } from "../db/schema.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { notFound } from "../errors.js";
@@ -190,127 +190,8 @@ export async function listSourceMappingsForSource(
   return rows.map(toSourceMapping);
 }
 
-export interface BackfillSourceMappingInput {
-  objectName: string;
-  sourceKind: string;
-  repoPattern?: string;
-  pathPattern?: string;
-  refPattern?: string;
-  type?: ExecutorType;
-  classification?: PipelineClassification;
-  /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a); omitted = domain-specific. */
-  mirrorOfShared?: boolean;
-  /** The pause switch (migration 0063); omitted = enabled. */
-  enabled?: boolean;
-  /** Declared reach (migration 0066, §10.6); omitted = not declared. */
-  scope?: SourceMappingScope | null;
-}
-
-export interface BackfillSourceMappingsResult {
-  createdSourceMappingIds: string[];
-  skipped: Array<{ objectName: string; reason: string }>;
-}
-
-/**
- * Backfills source_mappings onto ALREADY-imported components (M12 P5 follow-up) — the automated path
- * for the homelab's 50 argocd orphans that were imported BEFORE discovery emitted mappings. Feed it a
- * fresh `discovery run` proposal's `sourceMappings` (which now carry each app's repoURL); for each it
- * MATCHES an existing live component BY NAME (== `objectName`, which the argocd import used) and
- * creates the mapping. Unlike `accept`, it creates NO objects — it only wires mappings onto components
- * that already exist. Idempotent and safe to re-run: it SKIPS when there is no such component, the name
- * is ambiguous (>1 live component), or an identical mapping already exists — reporting each skip with a
- * reason so the operator can see exactly what was and wasn't backfilled (no silent drops).
- *
- * AUTHORIZATION IS THE CALLER'S, AND IT IS NOT DUPLICATED HERE. The only caller is
- * `POST /api/v1/discovery/backfill-source-mappings`, whose door holds one org-root `object:write`
- * check — role-model.md §8.6 lists that door among those increment 2.5a must NOT re-scope, and the
- * comment at that call site records why a per-component check inside this loop was tried, reverted,
- * and not re-added as a second bar. This function therefore takes no actor: adding one back would
- * put the only bar somewhere a proposal with zero matched components never reaches.
- *
- * A CONSEQUENCE WORTH NAMING, because it is the reason to think twice before adding one later: no
- * permission check runs inside the loop, so ADR-0037's truncation probe cannot fire mid-batch.
- * `hasPermission` THROWS `walkDepthExceeded` rather than returning false when a refusal cannot be
- * trusted, so a per-entry check would let ONE deeply-nested component abort a 50-entry backfill
- * after some rows were already created — a per-entry outcome escalating to a whole-batch failure,
- * which is the opposite of the skip-and-report contract above. The door's single check runs before
- * any row is written, so the same throw there is a clean refusal with nothing half-applied.
- */
-export async function backfillSourceMappings(
-  tx: TenantTx,
-  input: {
-    orgId: string;
-    mappings: BackfillSourceMappingInput[];
-  }
-): Promise<BackfillSourceMappingsResult> {
-  const createdSourceMappingIds: string[] = [];
-  const skipped: Array<{ objectName: string; reason: string }> = [];
-
-  for (const m of input.mappings) {
-    const matches = await tx
-      .select({ id: objects.id })
-      .from(objects)
-      .where(
-        and(
-          eq(objects.orgId, input.orgId),
-          eq(objects.typeId, "component"),
-          eq(objects.name, m.objectName),
-          isNull(objects.deletedAt)
-        )
-      )
-      .limit(2);
-    if (matches.length === 0) {
-      skipped.push({
-        objectName: m.objectName,
-        reason: `no live component named '${m.objectName}'`
-      });
-      continue;
-    }
-    if (matches.length > 1) {
-      skipped.push({
-        objectName: m.objectName,
-        reason: `ambiguous — more than one live component named '${m.objectName}'`
-      });
-      continue;
-    }
-    const componentId = matches[0]!.id;
-
-    // Idempotent: skip an identical (component, sourceKind, repo, path, ref) mapping — re-running is
-    // a no-op. `refPattern` is part of the comparison because it is a ROUTING discriminator: without
-    // it, a backfill declaring the `dev`-branch mapping would be swallowed as a duplicate of the
-    // ref-agnostic one already on the row, and the dev pipeline would silently never be created.
-    const existing = await listSourceMappingsForSource(tx, input.orgId, m.sourceKind);
-    const dup = existing.some(
-      (e) =>
-        e.componentObjectId === componentId &&
-        (e.repoPattern ?? null) === (m.repoPattern ?? null) &&
-        (e.pathPattern ?? null) === (m.pathPattern ?? null) &&
-        (e.refPattern ?? null) === (m.refPattern ?? null)
-    );
-    if (dup) {
-      skipped.push({ objectName: m.objectName, reason: "already mapped" });
-      continue;
-    }
-
-    const created = await createSourceMapping(tx, {
-      orgId: input.orgId,
-      sourceKind: m.sourceKind,
-      repoPattern: m.repoPattern,
-      pathPattern: m.pathPattern,
-      refPattern: m.refPattern,
-      componentIdOrUrn: componentId,
-      type: m.type,
-      classification: m.classification,
-      mirrorOfShared: m.mirrorOfShared,
-      enabled: m.enabled,
-      scope: m.scope
-    });
-    createdSourceMappingIds.push(created.id);
-  }
-
-  return { createdSourceMappingIds, skipped };
-}
-
+/* `backfillSourceMappings` was removed with `POST /discovery/backfill-source-mappings` (see
+ * `packages/schemas/src/executors.ts` for why the population it served is closed). */
 export interface DeleteSourceMappingsMatchingInput {
   orgId: string;
   componentObjectId: string;

@@ -9306,17 +9306,6 @@ export const zRunDiscoveryResponse = z.object({
 /**
  * Success
  */
-export const zBackfillSourceMappingsResponse = z.object({
-    createdSourceMappingIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)),
-    skipped: z.array(z.object({
-        objectName: z.string(),
-        reason: z.string()
-    }))
-});
-
-/**
- * Success
- */
 export const zGetObjectHealthResponse = z.object({
     objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     status: z.enum([
