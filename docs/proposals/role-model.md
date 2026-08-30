@@ -1,22 +1,25 @@
 # Proposal — Purpose-shaped roles, and the permission review behind them
 
-**Status:** Draft — proposed, pending owner review.
-**Built and merged — the read surface is closed:** step 0 (§5) as **PR #286**; **2.5a** (the 23
-get-by-id re-scopes plus `authz/org-root-arm.ts`) as **PR #288**; **2.5b** (LIST-door filtering, the
-`readable-scope` → `list-door-scope` → `list-scope` stack, and the inverse-walk drift detector) as
-**PR #291**.
-**Built, not yet merged:** **step 1** (DDL hardening, `drizzle/0097_rbac_role_preconditions.sql`) and
-**step 2** (the mutation-proven RBAC-across-assembly test), on branch `rbac-role-preconditions`.
-Neither adds a role or a permission — they make the tables able to hold them safely, and pin the
-`service → assembly → component` chaining the shared ComponentAdmin role depends on.
-**Step 3** (the three permission splits, the deletion of `org:admin`, and the five role seeds —
-`drizzle/0099_rbac_permission_splits_and_purpose_roles.sql`) is built on the stacked branch
-`rbac-roles-and-write-door`, with `routes/rbac-permission-splits.integration.test.ts` pinning both
-breaking changes and all five seeded permission sets, seven mutations proven. **Step 5** (the
-role-binding write door) is the next round on that same branch and ships in the same PR.
-**Not started:** steps 4 and 6–10. Per **D5** the role seed (step 3) and the role-binding write door
-(step 5) are **one shippable unit**, since deprecating `Administrator` before any purpose-role
-binding exists would 403 the obvious migration target from day one.
+**Status: SHIPPED AND MERGED TO `main`.** Every step 0–10 in §5 is merged, and so is the
+API → SDK → CLI → IaC → UI parity chain charter principle 3 requires (**PR #341**). Verified against
+`main` on 2026-08-29 by artifact, not by assertion: the five purpose roles seeded
+(`drizzle/0099_rbac_permission_splits_and_purpose_roles.sql`), `authz/role-binding-door.ts`,
+`routes/authz.ts`, `auth/operator-auth.ts`, `auth/identity-sync.ts`,
+`authz/identity-mapping-door.ts`, `iac/iac-rbac-apply.ts`, `packages/iac/src/rbac.ts`,
+`apps/web/src/routes/admin-access.tsx`, and all four `ScpClient` facades (`roles`, `roleBindings`,
+`authz`, `operatorCredentials`).
+
+**⚠️ READ THE ANALYSIS SECTIONS BELOW AS A DATED RECORD, NOT AS CURRENT STATE.** §1–§4 describe the
+estate as the permission review found it on **2026-08-25**, in the present tense. Several of those
+present-tense claims are now false BY DESIGN — they are what the build fixed. In particular:
+`role_binding:write` HAS a write API now (step 5), so the three in-tree "an Administrator cannot
+mint themselves Owner" safety arguments the review flagged as load-bearing-on-an-unbuilt-feature
+have been voided as intended; and the instance-tier credential redesign (step 9) SHIPPED rather than
+being deferred. A dated analysis is worth keeping — a stale status header is not, which is why this
+block was rewritten and those are not.
+
+**Still open, and NOT closable from this repo:** the SSO-groups path has never run against a real
+Entra tenant. See the caveat in §5, which is current.
 **Date:** 2026-08-25, last revised 2026-08-27
 **Prompted by:** owner ask — *"review the permissions and create the proper roles for each. Generally
 we'll want some for security/compliance (global scans and overrides), commander-wide admin, org
@@ -280,7 +283,13 @@ Org-root-only is **mechanical, not conventional**: all 14 federation doors in `r
 pass `scopeObjectId: auth.orgId`, so a narrower binding holds every permission and fails the scope
 check on every door — a trap.
 
-### B (instance half) — **no role.** `SCP_OPERATOR_TOKEN` stands, pending credential redesign.
+### B (instance half) — **no role.** Deployment-wide authority is not a role binding.
+
+> **SHIPPED (step 9, migration 0104):** the credential redesign this line called "pending" is done.
+> `SCP_OPERATOR_TOKEN` is no longer the standing credential — it is the BOOTSTRAP credential only,
+> kept so an upgrade cannot lock an operator out and the first real credential can be minted. Live
+> credentials are named, argon2-hashed, individually revocable and optionally expiring
+> (`auth/operator-auth.ts`). The "no role" conclusion below is unchanged and still correct.
 
 Deployment-wide authority across all tenant orgs is not expressible as a role binding (§1.5). This is
 owner decision #2.
@@ -784,7 +793,8 @@ work, before any role increment.** They are exploitable now and independent of t
 
 All of step 0 is built, mutation-proven and pushed on branch
 `permission-review-security-fixes` — 9 commits, `pnpm check` green, 199 tests passing across the 11
-affected suites. Steps 1–10 below are the role work proper and are **not** started.
+affected suites. (Steps 1–10 below were the role work proper; they are ALL MERGED now — see the
+STATUS line at the top of this section. This sentence recorded the state on 2026-08-25.)
 | 1 ✅ | **DDL hardening** — partial unique index `roles(name) WHERE org_id IS NULL`; UNIQUE on `role_bindings`; `CHECK (effect IN ('allow','deny'))`; `GRANT DELETE ON role_bindings TO scp_app`; add `roles.bindable_at`. | Must handle pre-existing duplicates — see §4.4 |
 | 2 ✅ | **Mutation-proven RBAC-across-assembly test** — a SERVICE binding reaches a component under an assembly. Prove it by deleting route 2's `contains` join and watching it fail. | Passes today; pure addition |
 | 2.5 ✅ | **Re-scope the read surface** (§4.2) | **New — blocker fix** |
