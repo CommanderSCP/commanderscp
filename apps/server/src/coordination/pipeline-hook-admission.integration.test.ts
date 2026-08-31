@@ -19,9 +19,11 @@ import { reconcileOrgTick } from "./reconcile.js";
 import {
   createInMemoryFakeHost,
   declaredSchedules,
+  removedSchedules,
   withRefusingTrigger
 } from "./test-support/fake-plugin-host.js";
 import {
+  deleteHook,
   recordAlarmEvidence,
   recordTestRunEvidence,
   upsertHook,
@@ -680,6 +682,78 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     );
     expect(again.length).toBeGreaterThan(1);
     expect(new Set(again.map((d) => d.scheduleId))).toEqual(new Set([before]));
+  });
+
+  it("property 5d: DELETING the hook RETRACTS the schedule from the executor", async () => {
+    // THE OTHER HALF OF 5c, and it did not exist. The module doc claimed "the schedule is removed by
+    // the retraction sweep below"; there was no sweep, and `removeSchedule` — implemented on the
+    // contract, routed by the plugin-host RPC, implemented by the Argo plugin and by this very
+    // fixture — had NO application caller anywhere. So a hook retracted by an IaC prune or a
+    // federation tombstone stopped being declared and its cron kept firing on the executor forever.
+    //
+    // Asserted on the fixture's `removedSchedules` log rather than on a row disappearing: the
+    // failure this closes is entirely on the executor's side of the boundary, so a DB-shaped
+    // assertion would have passed against the broken code.
+    const subject = await componentAt("probe-retracted", [gamma]);
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      upsertExecutorBinding(tx, {
+        orgId: org.orgId,
+        targetObjectId: subject.at(gamma),
+        pluginModule: "fake-executor",
+        pluginInstanceId: `fake-retract-${randomUUID().slice(0, 8)}`,
+        externalRef: subject.at(gamma),
+        config: {},
+        actorObjectId: org.orgId,
+        requestId: "probe-retracted-binding"
+      })
+    );
+    await declareHook({
+      componentObjectId: subject.id,
+      kind: "continuous",
+      hookId: "retractable",
+      workflow: { repo: "acme/pipelines", branch: "main", path: "probes/retractable.yaml" },
+      everySeconds: 300,
+      maxAgeSeconds: 900
+    });
+    await tick(1);
+    const declaredSpec = declaredSchedules.find(
+      (d) => d.labels?.["commanderscp.io/hook-id"] === "retractable"
+    );
+    // Known-positive control: without this the retraction assertion below could pass against a
+    // driver that declared nothing at all.
+    expect(
+      declaredSpec,
+      "the schedule was never declared, so retracting it proves nothing"
+    ).toBeTruthy();
+    expect(removedSchedules).not.toContain(declaredSpec!.scheduleId);
+
+    // The delete goes through `deleteHook`, which is the function BOTH production callers use (the
+    // IaC prune and the federation tombstone import) — entering at either route would exercise one
+    // of the two and leave the other unmeasured.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      deleteHook(tx, org.orgId, {
+        componentObjectId: subject.id,
+        kind: "continuous",
+        hookId: "retractable"
+      })
+    );
+
+    await tick(1);
+
+    // THE SAME id the declaration used. A retraction naming a different id would leave the real
+    // schedule running and still make a `removedSchedules.length > 0` assertion pass.
+    expect(removedSchedules).toContain(declaredSpec!.scheduleId);
+    // And it is not re-declared afterwards — the sweep runs BEFORE the declarations, so a tick that
+    // retracted and then re-declared the same id would be worse than doing nothing.
+    const afterDelete = declaredSchedules.filter(
+      (d) => d.labels?.["commanderscp.io/hook-id"] === "retractable"
+    ).length;
+    await tick(1);
+    expect(
+      declaredSchedules.filter((d) => d.labels?.["commanderscp.io/hook-id"] === "retractable")
+        .length,
+      "a deleted hook must never be declared again"
+    ).toBe(afterDelete);
   });
 
   it("property 6: a bake gate with NO reporting source blocks with `no_source`, distinct from `window_not_covered`", async () => {

@@ -3114,6 +3114,39 @@ export const pipelineHooks = pgTable(
 );
 
 /**
+ * Schedules a deleted `continuous` hook still owes its executor a `removeSchedule` for
+ * (migration 0111). `deleteHook` enqueues inside its own transaction; the probe driver drains it on
+ * the next tick, where an out-of-process RPC is legal and one unreachable executor cannot abort the
+ * apply or import that removed the row. See the migration header.
+ */
+export const continuousProbeRetractions = pgTable(
+  "continuous_probe_retractions",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** Deliberately NOT `REFERENCES objects(id)` — the retraction must outlive the component, which
+     *  the same apply may have deleted. */
+    componentObjectId: uuid("component_object_id").notNull(),
+    hookId: text("hook_id").notNull(),
+    /** Frozen at delete time, never re-derived: the retraction must name the id that was actually
+     *  declared, even if `probeScheduleId`'s derivation later changes. */
+    scheduleId: text("schedule_id").notNull(),
+    enqueuedAt: timestamp("enqueued_at", { withTimezone: true }).notNull().defaultNow(),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error")
+  },
+  (table) => [
+    /** drizzle/0111 — one outstanding retraction per (component, hook); also the drain's per-org
+     *  read path. Rows are DELETED on success, so this is a plain UNIQUE rather than a partial. */
+    uniqueIndex("continuous_probe_retractions_identity").on(
+      table.orgId,
+      table.componentObjectId,
+      table.hookId
+    )
+  ]
+);
+
+/**
  * Concluded test runs and asserted alarm-state windows (D21(b)/D23).
  *
  * ===========================================================================================
