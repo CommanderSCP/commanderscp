@@ -12,6 +12,10 @@
  * that keep signing off the public Rekor log; Fulcio/Rekor are NEVER contacted.
  */
 
+// Thin child_process wrapper (argv-array execFileSync, no shell) shared by cosign.ts/skopeo-bin.ts
+// and, since this consolidation, `deploy/airgap`'s skopeo/build-bundle/verify-bundle callers too.
+export { run, which, CommandError, type RunResult, type RunOptions } from "./exec.js";
+
 // Binary resolution + provenance assertion (E1 pinned-vs-probe).
 export {
   PINNED_COSIGN_VERSION,

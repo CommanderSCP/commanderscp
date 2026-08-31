@@ -1701,6 +1701,17 @@ describe("M23.1 conformance: secretEnv never reaches the command line, and never
     expect(calls).toStrictEqual([]);
   });
 
+  it("AN `env` ENTRY WITH NO `=` IS REFUSED — a bare `-e KEY` inherits the SERVER's variable", async () => {
+    // `docker run -e KEY` (no value) means "take KEY from the calling process's environment". An
+    // unvalidated caller-shaped entry therefore imports whatever the server has under that name
+    // into the runner — silently, and with `delivered`-looking success. `secretEnv` has been
+    // refused on this shape since M23.1; `env` was the sibling nobody checked.
+    await expect(
+      createDockerRunnerLauncher("docker").run(spec({ env: ["SCP_TOKEN"] }))
+    ).rejects.toThrow(/env entry 'SCP_TOKEN=…' is not a KEY=VALUE pair/);
+    expect(calls).toStrictEqual([]);
+  });
+
   it("A NEWLINE IN A secretEnv VALUE IS REFUSED — one entry must never become two variables", async () => {
     // An env-file line is `KEY=VALUE` to end of line, unquoted. A `\n` inside a value silently
     // DEFINES ANOTHER VARIABLE in the runner's environment, which is an injection from whatever

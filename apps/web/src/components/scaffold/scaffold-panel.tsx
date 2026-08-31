@@ -71,6 +71,11 @@ export function ScaffoldPanel({
   });
   const rendered = scaffoldQuery.data?.stacks ?? [];
   const ungrouped = scaffoldQuery.data?.ungrouped ?? [];
+  // Real pluralization (copy rule 6) — "component(s)" is banned.
+  const ungroupedSummary =
+    ungrouped.length === 1
+      ? "1 component has no service and is NOT in the code below:"
+      : `${ungrouped.length} components have no service and are NOT in the code below:`;
 
   const [copied, setCopied] = useState(false);
   const allSource = rendered.map((r) => r.source).join("\n\n");
@@ -131,11 +136,9 @@ export function ScaffoldPanel({
 
       {ungrouped.length > 0 && (
         <Alert tone="warning" data-testid={`${testIdPrefix}-ungrouped`}>
-          <strong>
-            {ungrouped.length} component(s) have no service and are NOT in the code below:
-          </strong>{" "}
-          {ungrouped.map((u) => u.name).join(", ")}. Name a service for each, or they are left
-          behind — deliberately, because a component without one is an orphan.
+          <strong>{ungroupedSummary}</strong> {ungrouped.map((u) => u.name).join(", ")}. Name a
+          service for each, or they are left behind — deliberately, because a component without one
+          is an orphan.
         </Alert>
       )}
 

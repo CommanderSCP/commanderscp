@@ -4,7 +4,12 @@ import type { PluginContext } from "@scp/plugin-api";
 // These SMTP-PROTOCOL tests reach a loopback fake server (127.0.0.1), which the real internal-IP
 // egress guard (egress.ts, MAJOR #6) would block — so bypass the guard HERE. The guard itself is
 // tested directly in egress.test.ts, and its wiring into send() in index.egress.test.ts (no mock).
-vi.mock("./egress.js", () => ({ assertHostNotInternal: async (): Promise<void> => undefined }));
+// The stand-in returns the address send() must dial: the guard's answer is the ONLY thing that
+// chooses the socket's peer now (DNS-rebinding pin — see egress.ts), which the pinning test below
+// exercises with a hostname no resolver can answer.
+vi.mock("./egress.js", () => ({
+  assertHostNotInternal: async (): Promise<string[]> => ["127.0.0.1"]
+}));
 
 import { smtpNotifyPlugin } from "./index.js";
 import { startFakeSmtpServer, type FakeSmtpServerHandle } from "./test-support/fake-smtp-server.js";
@@ -93,7 +98,10 @@ describe("@scp/plugin-smtp-notify", () => {
           from: "scp@example.com",
           to: ["ops@example.com"],
           username: "scp-relay-user",
-          passwordSecretKey: "smtp-password"
+          passwordSecretKey: "smtp-password",
+          // The fixture speaks no TLS (see its HONEST GAP note), so these AUTH-protocol cases
+          // take the explicit plaintext opt-in; the refusal it opts out of has its own test below.
+          allowPlaintextAuth: true
         },
         "the-real-password"
       ),
@@ -115,7 +123,10 @@ describe("@scp/plugin-smtp-notify", () => {
           from: "scp@example.com",
           to: ["ops@example.com"],
           username: "scp-relay-user",
-          passwordSecretKey: "smtp-password"
+          passwordSecretKey: "smtp-password",
+          // The fixture speaks no TLS (see its HONEST GAP note), so these AUTH-protocol cases
+          // take the explicit plaintext opt-in; the refusal it opts out of has its own test below.
+          allowPlaintextAuth: true
         },
         "wrong-password"
       ),
@@ -134,7 +145,8 @@ describe("@scp/plugin-smtp-notify", () => {
         from: "scp@example.com",
         to: ["ops@example.com"],
         username: "scp-relay-user",
-        passwordSecretKey: "smtp-password" // no secret value provided to testCtx -> resolves undefined
+        passwordSecretKey: "smtp-password", // no secret value provided to testCtx -> resolves undefined
+        allowPlaintextAuth: true
       }),
       { subject: "s", body: "b", severity: "info" }
     );
@@ -159,6 +171,53 @@ describe("@scp/plugin-smtp-notify", () => {
 
     expect(result.delivered).toBe(true);
     expect(activeServer.receivedLines.some((l) => l === "STARTTLS")).toBe(false);
+  });
+
+  it("REFUSES to authenticate when the server strips STARTTLS — the credentials never leave this process", async () => {
+    // The STARTTLS-stripping attack, verbatim: the server advertises AUTH but not STARTTLS, so the
+    // opportunistic upgrade is skipped and the socket stays cleartext. Anything that reaches this
+    // fixture reached an on-path attacker in the real world.
+    activeServer = await startFakeSmtpServer({ capabilities: ["AUTH LOGIN"] });
+    const result = await smtpNotifyPlugin.send(
+      testCtx(
+        {
+          host: "127.0.0.1",
+          port: activeServer.port,
+          from: "scp@example.com",
+          to: ["ops@example.com"],
+          username: "scp-relay-user",
+          passwordSecretKey: "smtp-password"
+        },
+        "the-real-password"
+      ),
+      { subject: "s", body: "b", severity: "info" }
+    );
+
+    expect(result.delivered).toBe(false);
+    expect(result.detail).toContain("unencrypted");
+    expect(activeServer.receivedLines.some((l) => l.startsWith("AUTH"))).toBe(false);
+    expect(activeServer.receivedLines.some((l) => l.includes("the-real-password"))).toBe(false);
+    // And nothing was delivered unauthenticated as a consolation prize either.
+    expect(activeServer.receivedLines.some((l) => l.startsWith("MAIL FROM"))).toBe(false);
+  });
+
+  it("dials the address the egress guard verified, not the configured NAME (DNS-rebinding pin)", async () => {
+    // `.invalid` can never be resolved by a real resolver (RFC 6761), and the guard stand-in above
+    // hands back 127.0.0.1 — so a message that ARRIVES proves the socket took its peer from the
+    // guard's answer instead of re-resolving the name on its own.
+    activeServer = await startFakeSmtpServer();
+    const result = await smtpNotifyPlugin.send(
+      testCtx({
+        host: "relay.invalid",
+        port: activeServer.port,
+        from: "scp@example.com",
+        to: ["ops@example.com"]
+      }),
+      { subject: "s", body: "b", severity: "info" }
+    );
+
+    expect(result).toEqual({ delivered: true });
+    expect(activeServer.receivedLines).toContain("MAIL FROM:<scp@example.com>");
   });
 
   it("reports delivered:false (never throws) on a non-2xx MAIL FROM response", async () => {

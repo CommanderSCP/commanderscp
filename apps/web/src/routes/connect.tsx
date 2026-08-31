@@ -14,7 +14,6 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { PageHeader } from "../components/ui/page-header";
-import {} from "../components/ui/select";
 import { SkeletonRows } from "../components/ui/skeleton";
 import { QueryErrorNotice, queryErrorMessage } from "../components/query-error";
 import { ConnectArgoCdPage, normalizeServerUrl } from "./connect-argocd";

@@ -1,6 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { createFileBackedJsonCache } from "@scp/plugin-api";
 import type {
   AbortResult,
   Cursor,
@@ -163,37 +162,24 @@ export interface DedupState {
   keys: Record<string, DedupRecord>;
 }
 
-let inMemoryState: DedupState = { keys: {} };
+const dedupCacheImpl = createFileBackedJsonCache<DedupState>(() => ({ keys: {} }));
 
 export async function loadDedupState(statePath: string | undefined): Promise<DedupState> {
-  if (!statePath) return inMemoryState;
-  try {
-    return JSON.parse(await readFile(statePath, "utf8")) as DedupState;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { keys: {} };
-    throw err;
-  }
+  return dedupCacheImpl.load(statePath);
 }
 
 export async function saveDedupState(
   statePath: string | undefined,
   state: DedupState
 ): Promise<void> {
-  if (!statePath) {
-    inMemoryState = state;
-    return;
-  }
-  await mkdir(dirname(statePath), { recursive: true });
-  const tmpPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(state), "utf8");
-  await rename(tmpPath, statePath);
+  return dedupCacheImpl.save(statePath, state);
 }
 
 /** Test-only: reset the process-wide in-memory dedup map so a unit test never sees another test's
  *  cached keys. The GitHub plugin's own suite never needs this (it uses fresh idempotencyKeys /
  *  file-backed state per test); it exists for the core's own unit tests. */
 export function __resetInMemoryDedupState(): void {
-  inMemoryState = { keys: {} };
+  dedupCacheImpl.reset();
 }
 
 export function dedupCacheKey(intent: TriggerIntent): string {

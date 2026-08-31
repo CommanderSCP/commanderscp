@@ -451,10 +451,12 @@ describe("observe() polling — commits and pipelines", () => {
     nock(base)
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/repository/commits`)
+      .query(true)
       .reply(200, [{ id: commitSha, created_at: "2026-07-01T00:00:00Z" }]);
     nock(base)
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/pipelines`)
+      .query(true)
       .reply(200, [
         { id: 55, status: "success", sha: pipelineSha, updated_at: "2026-07-01T00:05:00Z" }
       ]);
@@ -473,21 +475,91 @@ describe("observe() polling — commits and pipelines", () => {
     expect(run?.correlation.correlationKey).toBe("pipeline-55");
   });
 
+  it("walks commit PAGES until a page's oldest entry predates the watermark (one default page dropped the rest)", async () => {
+    const { ctx, token, base, pid } = setup();
+    const watermark = "2026-07-01T00:00:00.000Z";
+    const page = (label: string, count: number, createdAt: string): unknown[] =>
+      Array.from({ length: count }, (_, i) => ({
+        id: `${label}${String(i).padStart(38, "0")}`,
+        created_at: createdAt
+      }));
+    const scope = nock(base).matchHeader("private-token", token);
+    scope
+      .get(`/projects/${pid}/repository/commits`)
+      .query((q) => q.page === "1" && q.per_page === "100" && q.since === watermark)
+      .reply(200, page("a", 100, "2026-07-02T00:00:00Z"));
+    scope
+      .get(`/projects/${pid}/repository/commits`)
+      .query((q) => q.page === "2")
+      .reply(200, [
+        { id: "b".repeat(40), created_at: "2026-07-01T12:00:00Z" },
+        { id: "c".repeat(40), created_at: "2026-06-30T00:00:00Z" } // pre-watermark: ends the walk
+      ]);
+    scope.get(`/projects/${pid}/pipelines`).query(true).reply(200, []);
+
+    const events = await plugin.observe(ctx, {
+      token: JSON.stringify({ push: watermark, workflow_run: watermark })
+    });
+
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(101); // 100 + the one after it
+    scope.done();
+  });
+
+  it("keeps walking when the instance CLAMPS the page size below the requested per_page", async () => {
+    // GitLab clamps every list to the instance's `max_page_size` setting, so `per_page=100` can be
+    // answered with fewer rows and still have more to give. Ending the walk on "shorter than what
+    // we ASKED for" would stop on page 1 there — the silent drop pagination exists to close.
+    const { ctx, token, base, pid } = setup();
+    const watermark = "2026-07-01T00:00:00.000Z";
+    const page = (label: string, count: number, createdAt: string): unknown[] =>
+      Array.from({ length: count }, (_, i) => ({
+        id: `${label}${String(i).padStart(38, "0")}`,
+        created_at: createdAt
+      }));
+    const scope = nock(base).matchHeader("private-token", token);
+    scope
+      .get(`/projects/${pid}/repository/commits`)
+      .query((q) => q.page === "1" && q.per_page === "100")
+      .reply(200, page("a", 20, "2026-07-02T00:00:00Z")); // clamped to 20, not short.
+    scope
+      .get(`/projects/${pid}/repository/commits`)
+      .query((q) => q.page === "2")
+      .reply(200, [{ id: "c".repeat(40), created_at: "2026-06-30T00:00:00Z" }]); // pre-watermark: ends the walk
+    scope.get(`/projects/${pid}/pipelines`).query(true).reply(200, []);
+
+    const events = await plugin.observe(ctx, {
+      token: JSON.stringify({ push: watermark, workflow_run: watermark })
+    });
+
+    // 20, not 21: page 2's commit predates the watermark, so it is read and filtered out. The
+    // point is that page 2 was REQUESTED — an unread interceptor is caught by the afterEach.
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(20);
+    scope.done();
+  });
+
   it("passes the cursor watermark as ?since / ?updated_after and filters older events client-side", async () => {
     const { ctx, token, base, pid } = setup();
     const since = "2026-07-01T00:00:00Z";
     nock(base)
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/repository/commits`)
-      .query({ since })
+      .query((q) => q.since === since && q.page === "1" && q.per_page === "100")
       .reply(200, [
         { id: "old".padEnd(40, "0"), created_at: "2026-06-01T00:00:00Z" }, // older -> filtered
         { id: "new".padEnd(40, "0"), created_at: "2026-07-02T00:00:00Z" }
       ]);
+    // This fixture puts the NEWEST commit last (a real GitLab lists newest-first), so the
+    // oldest-entry-predates-the-watermark stop cannot trip, and a 2-row page 1 is the whole
+    // SERVED page size as far as the walk can tell — so it asks for one more page and gets none.
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/commits`)
+      .query((q) => q.page === "2")
+      .reply(200, []);
     nock(base)
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/pipelines`)
-      .query({ updated_after: since })
+      .query((q) => q.updated_after === since && q.page === "1")
       .reply(200, []);
 
     const events = await plugin.observe(ctx, { token: since });
@@ -507,8 +579,13 @@ describe("observe() polling — commits and pipelines", () => {
     nock(base)
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/repository/commits`)
+      .query(true)
       .reply(200, [{ id: commitSha, created_at: "2026-07-01T00:00:00Z" }]);
-    nock(base).matchHeader("private-token", token).get(`/projects/${pid}/pipelines`).reply(200, []);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/pipelines`)
+      .query(true)
+      .reply(200, []);
 
     const events = await plugin.observe(ctx);
     const polledPush = events.find((e) => e.kind === "push");
@@ -521,8 +598,13 @@ describe("observe() polling — commits and pipelines", () => {
     nock(base)
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/repository/commits`)
+      .query(true)
       .reply(429, { message: "rate limited" });
-    nock(base).matchHeader("private-token", token).get(`/projects/${pid}/pipelines`).reply(200, []);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/pipelines`)
+      .query(true)
+      .reply(200, []);
 
     await expect(plugin.observe(ctx)).resolves.toEqual([]);
   });
@@ -543,8 +625,13 @@ describe("base URL resolution (baseUrl → serverUrl; required, no default)", ()
     nock(base)
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/repository/commits`)
+      .query(true)
       .reply(200, [{ id: commitSha, created_at: "2026-07-01T00:00:00Z" }]);
-    nock(base).matchHeader("private-token", token).get(`/projects/${pid}/pipelines`).reply(200, []);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/pipelines`)
+      .query(true)
+      .reply(200, []);
 
     const events = await plugin.observe(ctx);
     expect(events.find((e) => e.kind === "push")?.correlation.commitSha).toBe(commitSha);
@@ -558,8 +645,13 @@ describe("base URL resolution (baseUrl → serverUrl; required, no default)", ()
     nock(base)
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/repository/commits`)
+      .query(true)
       .reply(200, []);
-    nock(base).matchHeader("private-token", token).get(`/projects/${pid}/pipelines`).reply(200, []);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/pipelines`)
+      .query(true)
+      .reply(200, []);
 
     await expect(plugin.observe(ctx)).resolves.toEqual([]);
   });

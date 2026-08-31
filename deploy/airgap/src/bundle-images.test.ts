@@ -12,7 +12,7 @@ import {
 } from "./bundle-images.js";
 import { buildManifest, renderManifestSh } from "./manifest.js";
 import { renderOfflineInstallDoc } from "./offline-install-doc.js";
-import { run } from "./exec.js";
+import { run } from "@scp/cosign";
 import type { BundleImage } from "./types.js";
 
 /**

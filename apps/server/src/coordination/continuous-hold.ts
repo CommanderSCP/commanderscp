@@ -243,8 +243,8 @@ export interface ContinuousHeldTargetRecord {
  * write a differently-shaped version of the same fact.
  *
  * SORTED BY `targetObjectId`, AND THE SORT IS THE POINT, for exactly the reason
- * `describeHeldTargets` states beside it: the input order is `loadWavesWithTargets`'s
- * `ORDER BY created_at` with NO TIEBREAK over rows that all carry the same transaction timestamp,
+ * `describeHeldTargets` states beside it: the input order is `getLatestPlanForChange`'s target
+ * query, which carries NO `ORDER BY` AT ALL,
  * on a table those rows are UPDATEd in every tick. An unstable `held` array is one new Decision row
  * per second for the length of the hold.
  *

@@ -37,31 +37,6 @@ import {
 export type WaveRow = typeof changeWaves.$inferSelect;
 export type WaveTargetRow = typeof changeWaveTargets.$inferSelect;
 
-/** The waves of a change's active plan, in index order, each with its targets — the shape
- *  `reconcileChangeOnce` walks one wave at a time. */
-export async function loadWavesWithTargets(
-  tx: TenantTx,
-  orgId: string,
-  planId: string
-): Promise<{ wave: WaveRow; targets: WaveTargetRow[] }[]> {
-  const waves = await tx
-    .select()
-    .from(changeWaves)
-    .where(and(eq(changeWaves.orgId, orgId), eq(changeWaves.planId, planId)))
-    .orderBy(changeWaves.waveIndex);
-
-  const out: { wave: WaveRow; targets: WaveTargetRow[] }[] = [];
-  for (const wave of waves) {
-    const targets = await tx
-      .select()
-      .from(changeWaveTargets)
-      .where(and(eq(changeWaveTargets.orgId, orgId), eq(changeWaveTargets.waveId, wave.id)))
-      .orderBy(changeWaveTargets.createdAt);
-    out.push({ wave, targets });
-  }
-  return out;
-}
-
 /** The current `status` column of one wave, fresh — used by `reconcile.ts`'s pending-wave-gate
  *  branch (M8 hardening MINOR #5) to re-check, INSIDE the per-change advisory lock, whether a
  *  racing tick already evaluated this wave's gate before this one acquired the lock. */

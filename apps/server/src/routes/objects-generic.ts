@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
   CreateObjectRequestSchema,
@@ -21,7 +21,7 @@ import { authorizeListAndScope } from "../authz/list-scope.js";
 import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 import { publishDomainLocalObject } from "../federation/publish-domain-local.js";
 import { forbidden } from "../errors.js";
-import { withIdempotency } from "../idempotency.js";
+import { idempotencyKeyOf, withIdempotency } from "../idempotency.js";
 import {
   createObject,
   deleteObject,
@@ -37,11 +37,6 @@ import { isCoordinationTargetScopedObjectType } from "../coordination/campaign-s
 import { isServiceMemberObjectType } from "../graph/service-member-types.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
-
-function idempotencyKey(request: FastifyRequest): string | undefined {
-  const header = request.headers["idempotency-key"];
-  return typeof header === "string" ? header : undefined;
-}
 
 /**
  * THE MESSAGE NAMES THE TYPED DOOR PER TYPE, NOT `/policies` FOR EVERYTHING. The set is now four
@@ -240,7 +235,7 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
           tx,
           {
             orgId: auth.orgId,
-            idempotencyKey: idempotencyKey(request),
+            idempotencyKey: idempotencyKeyOf(request),
             route: `POST /objects/${type}`,
             requestBody: request.body
           },

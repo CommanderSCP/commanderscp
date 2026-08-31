@@ -568,10 +568,12 @@ describe("base URL resolution (apiBaseUrl → serverUrl → github.com default)"
     nock(enterprise)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
     nock(enterprise)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
 
     const events = await plugin.observe(ctx);
@@ -586,10 +588,12 @@ describe("base URL resolution (apiBaseUrl → serverUrl → github.com default)"
     nock("https://api.github.com")
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
     nock("https://api.github.com")
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
 
     const events = await plugin.observe(ctx);
@@ -606,10 +610,12 @@ describe("base URL resolution (apiBaseUrl → serverUrl → github.com default)"
     nock(explicit)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
     nock(explicit)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
 
     const events = await plugin.observe(ctx);
@@ -772,12 +778,14 @@ describe("observe() polling fallback", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
     const runId = 5551;
     const runSha = "b2".repeat(20);
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, {
         workflow_runs: [
           {
@@ -829,10 +837,12 @@ describe("observe() polling fallback", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
 
     const events = await plugin.observe(ctx);
@@ -844,36 +854,165 @@ describe("observe() polling fallback", () => {
   });
 });
 
-describe("observe() pagination (current, documented behavior)", () => {
-  // TODO(M7 follow-up): GitHub's /commits and /actions/runs list endpoints paginate via `Link`
-  // response headers (rel="next") / `page` query params for large repos/histories. Reading
-  // observe()'s implementation in index.ts: it issues exactly ONE GET per resource with no
-  // Link-header parsing and no `page` query param — i.e. it reads page 1 only, silently. That's a
-  // real gap (a busy repo's commits/runs beyond page 1 are invisible to the polling fallback) but
-  // NOT something this test suite invents a fix for — see the M7 task's own guidance not to add
-  // pagination unless it's a small, clearly-correct, non-trigger()/status()-touching change; basic
-  // Link-header-following for two call sites plus tests is more than a trivial addition, so it's
-  // flagged here as follow-up work instead. This test documents the CURRENT single-page behavior
-  // precisely so a future pagination fix has a test to deliberately change, not one it silently
-  // breaks.
-  it('reads only page 1 of /commits even when the response advertises a Link: rel="next" page 2 (no page-2 interceptor is registered — an accidental follow-up request would fail this test via disableNetConnect)', async () => {
+describe("observe() pagination", () => {
+  // The polling fallback used to read GitHub's DEFAULT page (30, newest-first) and stop, on both
+  // list resources. Everything older than that page was not deferred to the next tick — the cursor
+  // advances past it, so those commits/runs were never correlated at all. These tests fixture a
+  // multi-page window and assert the pages are actually walked, with a ceiling.
+  const cursorFor = (pushIso: string, runIso: string): { token: string } => ({
+    token: JSON.stringify({ push: pushIso, workflow_run: runIso })
+  });
+  const commitPage = (label: string, count: number, dateIso: string): unknown[] =>
+    Array.from({ length: count }, (_, i) => ({
+      sha: `${label}${String(i).padStart(38, "0")}`,
+      commit: { author: { date: dateIso } }
+    }));
+  const runPage = (firstId: number, count: number, createdAt: string): unknown[] =>
+    Array.from({ length: count }, (_, i) => ({
+      id: firstId + i,
+      status: "completed",
+      conclusion: "success",
+      html_url: "https://github.com/x",
+      head_sha: "e".repeat(40),
+      created_at: createdAt
+    }));
+
+  it("walks /commits pages until a page's OLDEST entry predates the watermark", async () => {
     const { config, ctx, authHeader, base } = setup();
-    const page1Sha = "d4".repeat(20);
-    nock(base)
-      .matchHeader("authorization", authHeader)
+    const watermark = "2026-07-01T00:00:00.000Z";
+    const scope = nock(base).matchHeader("authorization", authHeader);
+    // Page 1 is FULL and entirely newer than the watermark -> there is more window to read.
+    scope
       .get(`/repos/${config.owner}/${config.repo}/commits`)
-      .reply(200, [{ sha: page1Sha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }], {
-        link: `<https://api.github.com/repos/${config.owner}/${config.repo}/commits?page=2>; rel="next", <https://api.github.com/repos/${config.owner}/${config.repo}/commits?page=5>; rel="last"`
-      });
-    nock(base)
-      .matchHeader("authorization", authHeader)
+      .query((q) => q.page === "1" && q.per_page === "100" && q.since === watermark)
+      .reply(200, commitPage("a", 100, "2026-07-02T00:00:00Z"));
+    // Page 2 straddles the watermark (its oldest entry is at/behind it) -> stop after it.
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query((q) => q.page === "2")
+      .reply(200, [
+        { sha: "b".repeat(40), commit: { author: { date: "2026-07-01T12:00:00Z" } } },
+        { sha: "c".repeat(40), commit: { author: { date: "2026-06-30T00:00:00Z" } } }
+      ]);
+    scope
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
 
+    const events = await plugin.observe(ctx, cursorFor(watermark, watermark));
+
+    // 102 = both pages. Page 3 has no interceptor: requesting it would reject, not pass silently.
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(102);
+    expect(events.some((e) => e.correlation.commitSha === "b".repeat(40))).toBe(true);
+    scope.done();
+  });
+
+  it("keeps walking when the host CLAMPS the page size below the requested per_page", async () => {
+    // github.com honours per_page=100, but a self-hosted/proxied host need not (Gitea's
+    // MAX_RESPONSE_ITEMS clamp is the concrete case). Ending the walk on "shorter than what we
+    // ASKED for" stops on page 1 against such a host — the silent drop pagination exists to close.
+    const { config, ctx, authHeader, base } = setup();
+    const watermark = "2026-07-01T00:00:00.000Z";
+    const scope = nock(base).matchHeader("authorization", authHeader);
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query((q) => q.page === "1" && q.per_page === "100")
+      .reply(200, commitPage("a", 30, "2026-07-02T00:00:00Z")); // clamped to 30, not short.
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query((q) => q.page === "2")
+      .reply(200, [{ sha: "c".repeat(40), commit: { author: { date: "2026-06-30T00:00:00Z" } } }]);
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query((q) => q.page === "1")
+      .reply(200, { workflow_runs: runPage(4000, 30, "2026-07-02T00:00:00Z") });
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query((q) => q.page === "2")
+      .reply(200, { workflow_runs: runPage(4100, 1, "2026-06-30T00:00:00Z") });
+
+    const events = await plugin.observe(ctx, cursorFor(watermark, watermark));
+
+    // 31 pushes: /commits filters server-side by `since`, so page 2's pre-watermark commit is
+    // still emitted (it ends the walk, it is not dropped). Runs ARE filtered client-side -> 30.
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(31);
+    expect(events.filter((e) => e.kind === "workflow_run")).toHaveLength(30);
+    scope.done();
+  });
+
+  it("stops at the page BUDGET rather than following an endless backlog", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const watermark = "2026-07-01T00:00:00.000Z";
+    const scope = nock(base).matchHeader("authorization", authHeader);
+    // Six full pages of always-newer commits are available; only five may be read.
+    for (const page of [1, 2, 3, 4, 5, 6]) {
+      scope
+        .get(`/repos/${config.owner}/${config.repo}/commits`)
+        .query((q) => q.page === String(page))
+        .reply(200, commitPage(String(page), 100, "2026-07-02T00:00:00Z"));
+    }
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
+      .reply(200, { workflow_runs: [] });
+
+    const events = await plugin.observe(ctx, cursorFor(watermark, watermark));
+
+    // Captured BEFORE the file's afterEach cleans up: the sixth page must be left unread.
+    const unread = nock.pendingMocks();
+    nock.cleanAll();
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(500); // 5 pages, not 6.
+    expect(unread).toHaveLength(1);
+  });
+
+  it("walks /actions/runs pages too — the same window, filtered client-side", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const watermark = "2026-07-01T00:00:00.000Z";
+    const scope = nock(base).matchHeader("authorization", authHeader);
+    scope.get(`/repos/${config.owner}/${config.repo}/commits`).query(true).reply(200, []);
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query((q) => q.page === "1" && q.per_page === "100")
+      .reply(200, { workflow_runs: runPage(1000, 100, "2026-07-02T00:00:00Z") });
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query((q) => q.page === "2")
+      .reply(200, {
+        workflow_runs: [
+          ...runPage(2001, 1, "2026-07-01T12:00:00Z"),
+          // Older than the watermark: read, filtered out, and it ends the walk.
+          ...runPage(2002, 1, "2026-06-30T00:00:00Z")
+        ]
+      });
+
+    const events = await plugin.observe(ctx, cursorFor(watermark, watermark));
+
+    const runEvents = events.filter((e) => e.kind === "workflow_run");
+    expect(runEvents).toHaveLength(101);
+    expect(runEvents.some((e) => e.correlation.correlationKey === "run-2001")).toBe(true);
+    expect(runEvents.some((e) => e.correlation.correlationKey === "run-2002")).toBe(false);
+    scope.done();
+  });
+
+  it("a COLD START (no watermark) reads exactly one page of each resource", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const scope = nock(base).matchHeader("authorization", authHeader);
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query((q) => q.page === "1")
+      .reply(200, commitPage("d", 100, "2026-07-02T00:00:00Z"));
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query((q) => q.page === "1")
+      .reply(200, { workflow_runs: runPage(3000, 100, "2026-07-02T00:00:00Z") });
+
+    // Both pages are full, so only the cold-start rule stops the walk; a page-2 request has no
+    // interceptor and would reject under disableNetConnect.
     const events = await plugin.observe(ctx);
-    const pushEvents = events.filter((e) => e.kind === "push");
-    expect(pushEvents).toHaveLength(1);
-    expect(pushEvents[0]?.correlation.commitSha).toBe(page1Sha);
+
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(100);
+    expect(events.filter((e) => e.kind === "workflow_run")).toHaveLength(100);
+    scope.done();
   });
 });
 
@@ -932,10 +1071,12 @@ describe("rate-limit / non-2xx error handling", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(403, { message: "API rate limit exceeded." }, { "x-ratelimit-remaining": "0" });
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
 
     await expect(plugin.observe(ctx)).resolves.toEqual([]);
@@ -1142,6 +1283,7 @@ describe("correlation.paths: the changed-file set", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-08-01T00:00:00Z" } } }]);
     nock(base)
       .matchHeader("authorization", authHeader)
@@ -1150,6 +1292,7 @@ describe("correlation.paths: the changed-file set", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
 
     const events = await plugin.observe(ctx);
@@ -1169,6 +1312,7 @@ describe("correlation.paths: the changed-file set", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-08-01T00:00:00Z" } } }]);
     nock(base)
       .matchHeader("authorization", authHeader)
@@ -1177,6 +1321,7 @@ describe("correlation.paths: the changed-file set", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
 
     const events = await plugin.observe(ctx);

@@ -14,7 +14,7 @@
  * care about dedup uses a UNIQUE (or absent) `idempotencyKey` to avoid cross-test contamination
  * via that shared cache; only the tests that explicitly exercise dedup reuse a key on purpose.
  */
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -221,6 +221,37 @@ describe("trigger()", () => {
         expect(scope.isDone()).toBe(true);
         expect(nock.pendingMocks()).toEqual([]);
       } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("the file-backed ledger is BOUNDED — reconcile's per-wave-target keys would grow it forever", async () => {
+      // `reconcile.ts` sets `idempotencyKey = waveTargetId`, a fresh value per (change x wave
+      // target). Unpruned, every target ever triggered stayed in this file — re-parsed whole on
+      // every poll. The bound keeps the RECENT keys, which are the only ones a retry can ask for.
+      const dir = await mkdtemp(join(tmpdir(), "scp-pipeline-generic-bound-"));
+      try {
+        const statePath = join(dir, "state.json");
+        const plugin = createPipelineGenericExecutorPlugin();
+        const ctx = realHttpPluginContext({ triggerUrl: `${BASE_URL}/trigger`, statePath });
+        const total = 210;
+        nock(BASE_URL).post("/trigger").times(total).reply(200, { id: "run-bound" });
+        for (let i = 0; i < total; i += 1) {
+          await plugin.trigger(ctx, {
+            kind: "sync",
+            targetRef: "svc-bound",
+            idempotencyKey: `wave-target-${String(i).padStart(4, "0")}`
+          });
+        }
+
+        const persisted = JSON.parse(await readFile(statePath, "utf8")) as {
+          keys: Record<string, unknown>;
+        };
+        expect(Object.keys(persisted.keys)).toHaveLength(200);
+        expect(persisted.keys["wave-target-0000"]).toBeUndefined(); // the oldest went first
+        expect(persisted.keys["wave-target-0209"]).toBeDefined(); // the newest is still dedupable
+      } finally {
+        nock.cleanAll();
         await rm(dir, { recursive: true, force: true });
       }
     });

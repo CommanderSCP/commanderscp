@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { createFileBackedJsonCache } from "@scp/plugin-api";
 import type {
   AbortResult,
   Cursor,
@@ -102,28 +101,37 @@ interface DedupState {
   keys: Record<string, { externalId: string; url?: string }>;
 }
 
-let inMemoryState: DedupState = { keys: {} };
+/**
+ * THE LEDGER IS BOUNDED. `state.keys` is keyed by `idempotencyKey`, and `reconcile.ts` sets that to
+ * the wave-target id — a fresh value per (change x wave target) — so with a persistent `statePath`
+ * this map grew by one permanent entry per target ever triggered, forever. That is not only disk:
+ * `loadState` `JSON.parse`s the WHOLE file on every `trigger()`/`status()`, so the cost is
+ * O(total history ever) paid on every poll. `@scp/plugin-managed-iac` found and fixed exactly this
+ * in its own structurally identical cache (measured there at 500 keys: 2 MB); the fix never
+ * travelled to this package, which `@scp/plugin-terraform` is a preset of and so inherits.
+ *
+ * Oldest-first eviction, keeping the most recent {@link DEDUP_CACHE_MAX_KEYS}. What an entry must
+ * outlive is the reconcile poll that follows its own `trigger()` plus a crash-and-retry window in
+ * which the same key is re-issued; dropping an entry a retry then asks for re-triggers a pipeline
+ * that already ran, so the bound is set far above anything that can be in flight.
+ *
+ * REPLICATED, NOT IMPORTED: `@scp/runner-launcher`'s `pruneOutcomeRecord` is the same six lines,
+ * but a plugin package depends only on `@scp/plugin-api` — pulling in the container-launching
+ * package for a helper would be a far worse trade. Noted as a candidate for a shared extraction.
+ */
+const DEDUP_CACHE_MAX_KEYS = 200;
 
-async function loadState(statePath: string | undefined): Promise<DedupState> {
-  if (!statePath) return inMemoryState;
-  try {
-    return JSON.parse(await readFile(statePath, "utf8")) as DedupState;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { keys: {} };
-    throw err;
-  }
+function pruneDedupState(state: DedupState): void {
+  const keys = Object.keys(state.keys);
+  if (keys.length <= DEDUP_CACHE_MAX_KEYS) return;
+  // Insertion order, which for these keys (UUID-shaped, never integer-like) is what
+  // `Object.keys` returns — so the oldest entries are the ones dropped.
+  for (const key of keys.slice(0, keys.length - DEDUP_CACHE_MAX_KEYS)) delete state.keys[key];
 }
 
-async function saveState(statePath: string | undefined, state: DedupState): Promise<void> {
-  if (!statePath) {
-    inMemoryState = state;
-    return;
-  }
-  await mkdir(dirname(statePath), { recursive: true });
-  const tmpPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(state), "utf8");
-  await rename(tmpPath, statePath);
-}
+const dedupCache = createFileBackedJsonCache<DedupState>(() => ({ keys: {} }));
+const loadState = dedupCache.load;
+const saveState = dedupCache.save;
 
 async function observe(_ctx: PluginContext, _since?: Cursor): Promise<ExecutorEvent[]> {
   return []; // see module doc — this executor's observe path is inbound (webhook/CLI report), not polled.
@@ -158,6 +166,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
   const url = typeof body.url === "string" ? body.url : undefined;
 
   state.keys[cacheKey] = { externalId, url };
+  pruneDedupState(state);
   await saveState(config.statePath, state);
   ctx.logger.info("pipeline-generic: pipeline triggered", { kind: intent.kind, externalId });
   return { externalId, url };

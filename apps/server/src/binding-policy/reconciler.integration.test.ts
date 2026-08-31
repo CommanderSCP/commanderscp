@@ -284,3 +284,131 @@ describe("binding reconciler (ADR-0046 section 4)", () => {
     expect(rows[0]?.executionSystemId).toBe(e.systemId);
   });
 });
+
+/**
+ * b5-perf: `gatherContributions` batched to ONE `matchPoliciesForTargets` call per org-tick instead
+ * of one per target (`governance/policy-resolve.ts`'s `matchPoliciesForTargetsByTarget`).
+ *
+ * A dedicated org and describe block, not a case tacked onto the suite above: an ORG-WIDE
+ * (unscoped) policy is declared here on purpose, and every existing target in a shared org would
+ * pick up a second contribution from it — this isolates that blast radius from the suite whose
+ * assertions above depend on a target having EXACTLY the contribution its own test declared.
+ */
+describe("binding reconciler — per-target attribution survives batching (b5-perf)", () => {
+  let server: ListeningTestServer;
+  let org: TestOrg;
+
+  beforeAll(async () => {
+    server = await listenTestServer();
+    org = await createTestOrg(server, "reconciler-attr");
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  /** A bare component+target+placement+`releases_via` — no policy of its own. */
+  async function bareTarget(label: string) {
+    return withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const base = { orgId: org.orgId, actorObjectId: org.orgId, requestId: `attr-${label}` };
+      const service = await createObject(tx, { ...base, typeId: "service", name: `svc-${label}` });
+      const component = await createObject(tx, {
+        ...base,
+        typeId: "component",
+        name: `cmp-${label}`
+      });
+      await createRelationship(tx, {
+        ...base,
+        typeId: "contains",
+        fromId: service.id,
+        toId: component.id
+      });
+      const target = await createObject(tx, {
+        ...base,
+        typeId: "deployment-target",
+        name: `dt-${label}`
+      });
+      await createObject(tx, {
+        ...base,
+        typeId: "placement",
+        name: `pl-${label}`,
+        properties: { componentId: component.id, deploymentTargetId: target.id }
+      });
+      const topology = await createObject(tx, {
+        ...base,
+        typeId: "release-topology",
+        name: `topo-${label}`,
+        properties: { waves: [] }
+      });
+      await createRelationship(tx, {
+        ...base,
+        typeId: "releases_via",
+        fromId: component.id,
+        toId: topology.id,
+        properties: { type: "configuration" }
+      });
+      return { componentId: component.id, targetId: target.id };
+    });
+  }
+
+  it("two targets that share the org root both bind from ONE unscoped policy in a single pass", async () => {
+    const t1 = await bareTarget("attr1");
+    const t2 = await bareTarget("attr2");
+    const system = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      createObject(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "attr-system",
+        typeId: "execution-system",
+        name: "es-attr",
+        properties: { kind: "argocd", pluginModule: "argocd" }
+      })
+    );
+
+    // UNSCOPED — matches at every target's org root, so t1's and t2's chains resolve to the SAME
+    // matched-ancestor object id (the org root). A shared, cross-target dedup key
+    // (`${policyId}::${matchedAncestorObjectId}`) would keep only ONE of the two contributions,
+    // silently unbinding whichever target lost the race — this is the exact hazard
+    // `matchPoliciesForTargetsByTarget`'s per-target dedup exists to close.
+    const policy = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      createObject(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "attr-policy",
+        typeId: "policy",
+        name: "org-wide-configuration-binding",
+        properties: {
+          enforcement: "required",
+          effects: [{ executorBinding: { executionSystemUrn: system.id, type: "configuration" } }]
+        }
+      })
+    );
+
+    const report = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      reconcileExecutorBindingsForOrg(tx, org.orgId, `attr-${randomUUID().slice(0, 8)}`)
+    );
+    expect(report.gaps).toEqual([]);
+
+    const rowsFor = (targetId: string) =>
+      withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx
+          .select()
+          .from(executorBindings)
+          .where(
+            and(
+              eq(executorBindings.orgId, org.orgId),
+              eq(executorBindings.targetObjectId, targetId)
+            )
+          )
+      );
+
+    for (const t of [t1, t2]) {
+      const rows = await rowsFor(t.targetId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        executionSystemId: system.id,
+        managedByPolicyId: policy.id
+      });
+    }
+  });
+});

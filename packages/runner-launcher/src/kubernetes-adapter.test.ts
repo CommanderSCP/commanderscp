@@ -701,6 +701,17 @@ describe("M23.2: identity, attribution and the value that cannot be honoured", (
     expect(list.path).not.toContain("job-name");
   });
 
+  it("AN `env` ENTRY WITH NO `=` IS REFUSED AT `spec` — the split would name the variable wrong", async () => {
+    // `env` reaches the container through `indexOf("=")`, so an entry with no `=` became
+    // `{ name: entry.slice(0, -1), value: entry }`: a variable named after the entry minus its last
+    // character, carrying the whole string. `labels` and `secretEnv` have always been refused on a
+    // shape this adapter cannot express; `env` is the same class of caller-controlled field.
+    const c = cluster();
+    const result = c.launcher().run(spec({ env: ["SCP_TOKEN"] }));
+    await expect(result).rejects.toThrow(/env entry 'SCP_TOKEN=…' is not a KEY=VALUE pair/);
+    expect(c.ops.filter((o) => o.method !== "GET")).toStrictEqual([]);
+  });
+
   it("A LABEL VALUE KUBERNETES WOULD REJECT IS REFUSED AT `spec`, before anything exists", async () => {
     const c = cluster();
     const result = c.launcher().run(spec({ labels: { "scp.run-id": "not a label value" } }));

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { computeChecksums, formatChecksums } from "./checksums.js";
 import { assertPinnedCosignVersion, resolveCosign } from "./cosign-bin.js";
 import { signBlobDetached, type SigningKey } from "./cosign.js";
-import { CommandError, run, which } from "./exec.js";
+import { CommandError, run, which } from "@scp/cosign";
 
 /**
  * install.sh checks for `skopeo`/`cosign`/(`helm`|`docker`) on PATH unconditionally, even under

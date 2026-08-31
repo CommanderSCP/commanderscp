@@ -255,12 +255,15 @@ it can be fixed quickly mid-incident:
 5. **Peers-witness comparison.** Compare your restored instance's local audit-chain head against what
    every peer has recorded as your journal's attested tail — each importer persists your exported
    `audit_segment` entries' content hash as a passive witness of your audit-chain head. Do this
-   explicitly: `scp audit verify` alone is structurally unable to see truncation, because **any prefix
-   of a valid hash chain verifies as valid**. A green `scp audit verify` after a restore is not
-   evidence of anything; the peers-witness comparison is what actually detects a truncated or forked
-   chain. Peers are witnesses here, never a restoration source (proposal §10 — federation is not
-   backup); if the comparison finds a mismatch, that is forensic evidence for §8's restore procedure,
-   not a signal to pull state from a peer.
+   explicitly, **on each peer**: `scp audit witnesses --origin <this-domain-id>` (run against the
+   PEER, not the restored instance — it reads that peer's own witnessed view of you) and compare its
+   `sequence`/`contentHash` entries against your restored `scp audit verify` head. `scp audit verify`
+   alone is structurally unable to see truncation, because **any prefix of a valid hash chain
+   verifies as valid**. A green `scp audit verify` after a restore is not evidence of anything; the
+   peers-witness comparison is what actually detects a truncated or forked chain. Peers are witnesses
+   here, never a restoration source (proposal §10 — federation is not backup); if the comparison
+   finds a mismatch, that is forensic evidence for §8's restore procedure, not a signal to pull state
+   from a peer.
 6. **Run `scp federation doctor`.** Have it re-run the divergence rails proactively against every
    peer, rather than waiting for the next scheduled pull to surface a problem passively.
 7. **Bump and record the generation stamp.** The promotion itself bumps the per-org generation stamp

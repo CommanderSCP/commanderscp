@@ -31,7 +31,7 @@ export interface StackDelivery {
 }
 
 export type RecordDeliveryResult =
-  | { outcome: "recorded"; created: boolean }
+  | { outcome: "recorded" }
   /** The stack is already delivered by a DIFFERENT config source. Never overwritten. */
   | { outcome: "owned_by_other_source"; ownerConfigSourceId: string };
 
@@ -61,11 +61,12 @@ export async function recordStackDelivery(
         lastDeliveredAt: sql`now()`
       }
     })
-    .returning({
-      configSourceId: configSourceStacks.configSourceId,
-      firstDeliveredAt: configSourceStacks.firstDeliveredAt,
-      lastDeliveredAt: configSourceStacks.lastDeliveredAt
-    });
+    // ROW PRESENCE IS THE WHOLE ANSWER — see the zero-row branch below. There is deliberately no
+    // insert-vs-update flag: `first_delivered_at` and `last_delivered_at` both default to `now()`,
+    // which Postgres fixes for the WHOLE transaction, and `syncConfigSourceCommit` loops every
+    // matched manifest inside ONE tx — so comparing them would call the second delivery of a stack
+    // "created" too. Deriving it honestly needs `RETURNING (xmax = 0)`, and no caller wants it.
+    .returning({ configSourceId: configSourceStacks.configSourceId });
 
   const row = rows[0];
   if (!row) {
@@ -91,10 +92,7 @@ export async function recordStackDelivery(
     }
     return { outcome: "owned_by_other_source", ownerConfigSourceId: owner.configSourceId };
   }
-  return {
-    outcome: "recorded",
-    created: row.firstDeliveredAt.getTime() === row.lastDeliveredAt.getTime()
-  };
+  return { outcome: "recorded" };
 }
 
 /** The config source delivering this stack, or `null`. The delivered half of D7's predicate. */

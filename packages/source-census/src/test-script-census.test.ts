@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
  *
  * THE RULE, IN TWO PARTS.
  *  1. NO `test` SCRIPT MAY CARRY THE FLAG. The allowlist is EMPTY and is meant to stay empty —
- *     a package with nothing to run gets a test that says what it is (see `@scp/plugin-oidc`'s
+ *     a package with nothing to run gets a test that says what it is (see `@scp/plugin-local-auth`'s
  *     `stub.test.ts`), not a flag that hides it.
  *  2. EVERY VITEST `test` SCRIPT MUST HAVE A FILE TO RUN. Part 1 alone is not enough: without this,
  *     deleting a package's last test file turns `pnpm test` red for a package but the reviewer sees

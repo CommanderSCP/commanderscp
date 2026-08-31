@@ -8718,6 +8718,19 @@ export const zListFederationRelayBuildsResponse = z.object({
 /**
  * Success
  */
+export const zListFederationAuditWitnessesResponse = z.object({
+    items: z.array(z.object({
+        originDomainId: z.string(),
+        sequence: z.int().gte(-9007199254740991).lte(9007199254740991),
+        auditEventId: z.string(),
+        contentHash: z.string(),
+        witnessedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+    }))
+});
+
+/**
+ * Success
+ */
 export const zFederationPokeResponse = z.object({
     accepted: z.literal(true),
     woken: z.boolean(),

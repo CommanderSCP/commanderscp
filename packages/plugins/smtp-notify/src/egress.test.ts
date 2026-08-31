@@ -46,6 +46,6 @@ describe("smtp-notify assertHostNotInternal", () => {
   });
 
   it("permits a public IP", async () => {
-    await expect(assertHostNotInternal("8.8.8.8")).resolves.toBeUndefined();
+    await expect(assertHostNotInternal("8.8.8.8")).resolves.toEqual(["8.8.8.8"]);
   });
 });

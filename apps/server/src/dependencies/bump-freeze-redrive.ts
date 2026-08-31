@@ -6,7 +6,7 @@ import { orgs } from "../db/schema.js";
 import { latestDecisionForSubjectKind } from "../coordination/decisions-repo.js";
 import { bumpDispatchRoleGuard } from "./bump-dispatch.js";
 import { listOpenBumpAuthorshipsAwaitingMerge } from "./bump-authorship-repo.js";
-import { checkBumpMergeFreeze } from "./bump-merge-freeze.js";
+import { freezesByTarget } from "../governance/freeze-scope.js";
 import {
   DEPENDENCY_BUMP_GATE_QUEUE,
   DEPENDENCY_BUMP_MERGE_DECISION_KIND,
@@ -140,7 +140,9 @@ export async function redriveOrgBumpFreezes(
 ): Promise<BumpFreezeRedriveOutcome> {
   const { candidates, ready } = await withTenantTx(db, orgId, async (tx) => {
     const candidates: string[] = [];
-    const ready: string[] = [];
+    // Frozen candidates, kept paired with their component so the batched freeze check below can
+    // report back per bump.
+    const frozenBumps: { changeObjectId: string; componentObjectId: string }[] = [];
     for (const bump of await listOpenBumpAuthorshipsAwaitingMerge(tx, orgId)) {
       // THE LATEST verdict, not "any `frozen` verdict in this bump's history". A bump refused
       // `frozen` in March and refused `merge_refused` yesterday is not waiting on a calendar, and
@@ -153,11 +155,31 @@ export async function redriveOrgBumpFreezes(
       );
       if (latest?.inputContext.refusal !== "frozen") continue;
       candidates.push(bump.changeObjectId);
-      // THE SHIPPED RESOLVER, ON THE COMPONENT THE GATE ITSELF RESOLVES AGAINST. `null` is the only
-      // admitting answer and it means precisely "nothing covers this any more" — expired, lifted or
-      // shortened, indistinguishably, which is why one mechanism covers all three release paths.
-      const frozen = await checkBumpMergeFreeze(tx, orgId, bump.componentObjectId);
-      if (frozen === null) ready.push(bump.changeObjectId);
+      frozenBumps.push({
+        changeObjectId: bump.changeObjectId,
+        componentObjectId: bump.componentObjectId
+      });
+    }
+
+    // THE SHIPPED RESOLVER, ON THE COMPONENT THE GATE ITSELF RESOLVES AGAINST — called ONCE for
+    // every frozen candidate in this org's tick rather than once per bump, so `freezesByTarget`'s
+    // two guard reads (its own doc: "two indexed queries are what make a change with nothing frozen
+    // cost nothing") run once instead of N times whenever a freeze withholds several bumps at once,
+    // the realistic case. An empty `freezes` list is the only admitting answer, meaning precisely
+    // "nothing covers this any more" — expired, lifted or shortened, indistinguishably, which is why
+    // one mechanism covers all three release paths. `freezesByTarget` returns one entry per input id
+    // in order, so the result zips back onto `frozenBumps` by index.
+    const ready: string[] = [];
+    if (frozenBumps.length > 0) {
+      const covering = await freezesByTarget(
+        tx,
+        orgId,
+        frozenBumps.map((b) => b.componentObjectId),
+        new Date()
+      );
+      for (const [index, entry] of covering.entries()) {
+        if (entry.freezes.length === 0) ready.push(frozenBumps[index]!.changeObjectId);
+      }
     }
     return { candidates, ready };
   });

@@ -15,7 +15,7 @@
  * (verified empirically against this machine's Colima context — see the package README).
  */
 import { execFileSync } from "node:child_process";
-import { run, which } from "./exec.js";
+import { run, which } from "@scp/cosign";
 
 export function skopeoAvailable(): boolean {
   return which("skopeo");

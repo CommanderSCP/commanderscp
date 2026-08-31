@@ -878,7 +878,10 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
             `docker://${bound.ref}`,
             `oci:${ociDir}:scan`
           ],
-          { timeout: settings.runnerImage ? 180_000 : 60_000, maxBuffer: 64 * 1024 * 1024 }
+          // `settings.runnerImage` is always truthy here — the guard at this function's top
+          // already returned when it wasn't, and `settings` is captured once at factory creation,
+          // so there is no "no runner" mode left to size a shorter timeout for.
+          { timeout: 180_000, maxBuffer: 64 * 1024 * 1024 }
         );
         // Digest-bind what actually landed (content-addressed, fail-closed) before scanning it.
         const landed = await airgapOciLayout.readOciManifestDigest(ociDir);

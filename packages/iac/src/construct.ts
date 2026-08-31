@@ -977,13 +977,25 @@ export class Stack extends Construct {
 }
 
 /** Sorts on the mapping's full identity tuple — the same tuple the server diffs on, so declaration
- *  order in code never changes the synthesized manifest, only content does. */
+ *  order in code never changes the synthesized manifest, only content does.
+ *
+ *  `refPattern` IS IN THE TUPLE and was missing here (ADR-0030 §1): a manifest legitimately declares
+ *  `refs/heads/dev` → dev and `refs/heads/main` → production as two rows differing in NOTHING else,
+ *  which is exactly what `PipelineBase` synthesizes for two same-repo pipelines. Without it the two
+ *  tie, `Array.prototype.sort` is stable, and the tie falls back to DECLARATION order — the one
+ *  thing this function exists to keep out of the bytes.
+ *
+ *  `scope` is deliberately NOT here, matching `ManifestSourceMappingSchema`, which places it outside
+ *  the identity tuple beside `classification`/`mirrorOfShared`/`enabled`. Two mappings differing
+ *  only in `scope` are one declaration made twice and are rejected as a duplicate, so there is no
+ *  tie for it to break — adding it would make this key stop being the identity it claims to be. */
 function sourceMappingSortKey(m: ManifestSourceMapping): string {
   return [
     m.componentUrn,
     m.sourceKind,
     m.repoPattern ?? "",
     m.pathPattern ?? "",
+    m.refPattern ?? "",
     m.type ?? ""
   ].join(" ");
 }

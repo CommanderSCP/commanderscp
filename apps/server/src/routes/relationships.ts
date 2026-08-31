@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
   CreateRelationshipRequestSchema,
@@ -13,7 +13,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { forbidden } from "../errors.js";
-import { withIdempotency } from "../idempotency.js";
+import { idempotencyKeyOf, withIdempotency } from "../idempotency.js";
 import {
   createRelationship,
   deleteRelationship,
@@ -22,11 +22,6 @@ import {
 } from "../graph/relationships-repo.js";
 import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
 import { assertGovernanceMoveAdmits } from "../governance/move-enforcement.js";
-
-function idempotencyKey(request: FastifyRequest): string | undefined {
-  const header = request.headers["idempotency-key"];
-  return typeof header === "string" ? header : undefined;
-}
 
 /**
  * The generic `/relationships` write endpoints must never let a client create or delete an
@@ -114,7 +109,7 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
           tx,
           {
             orgId: auth.orgId,
-            idempotencyKey: idempotencyKey(request),
+            idempotencyKey: idempotencyKeyOf(request),
             route: "POST /relationships",
             requestBody: request.body
           },

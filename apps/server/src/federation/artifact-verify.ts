@@ -39,7 +39,12 @@ import { createHash } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { makeScratchDir, verifyBlobDetached, verifyImageSignature } from "@scp/cosign";
-import { assertEgressAllowed } from "../plugin-host/egress-guard.js";
+import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
+import {
+  assertEgressAllowed,
+  createEgressPinRegistry,
+  type VerifiedEgressTarget
+} from "../plugin-host/egress-guard.js";
 
 /**
  * ## Digest binding (substitution/replay defense)
@@ -367,15 +372,15 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
     // client at deploy time. Both URLs must fall under an operator-CONFIGURED blob base URL
     // (SCP_ARTIFACT_BLOB_BASE_URLS), and even then may never target link-local (cloud metadata) or
     // the unspecified address. Throwing here surfaces as a `verification error (fail-closed)`.
-    await this.assertBlobUrlAllowed(location);
-    const bytes = await fetchBytes(location);
+    const locationTarget = await this.assertBlobUrlAllowed(location);
+    const bytes = await fetchBytes(location, locationTarget);
     if (bytes === null) return null; // absent (404) → fail-closed missing.
     // The origin detached signature must itself be fetchable; an unfetchable/absent signature means
     // we cannot prove authenticity → surface as an EMPTY signature, which fails verification closed.
     let signature = "";
     if (sigRef && isHttpUrl(sigRef)) {
-      await this.assertBlobUrlAllowed(sigRef);
-      signature = (await fetchBytes(sigRef))?.toString("utf8") ?? "";
+      const sigTarget = await this.assertBlobUrlAllowed(sigRef);
+      signature = (await fetchBytes(sigRef, sigTarget))?.toString("utf8") ?? "";
     }
     return { bytes, signature };
   }
@@ -385,7 +390,7 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
    *  egress guard afterwards for the always-blocked classes (link-local/cloud-metadata,
    *  unspecified), DNS-resolved; loopback/private are permitted because the operator explicitly
    *  configured this base (the outpost-local registry is commonly in-cluster/private). */
-  private async assertBlobUrlAllowed(url: string): Promise<void> {
+  private async assertBlobUrlAllowed(url: string): Promise<VerifiedEgressTarget> {
     if (this.allowedBlobBaseUrls.length === 0) {
       throw new Error(
         `blob location '${url}' rejected: no operator-configured blob base URLs ` +
@@ -407,7 +412,11 @@ export class LocationRegistryReader implements ArtifactRegistryReader {
     // Defense in depth via the EXISTING plugin egress guard: link-local (169.254/16 incl. cloud
     // metadata, fe80::/10) and unspecified are blocked unconditionally, after DNS resolution.
     // Empty allowlist + allowInternalPrivate=true → only those always-blocked classes apply here.
-    await assertEgressAllowed(url, [], true);
+    // The verified ADDRESSES are returned so `fetchBytes` can dial one of them rather than letting
+    // `fetch` resolve the name a second time — the classification is worth nothing if the socket
+    // asks DNS again (see `createEgressPinRegistry`). An operator-allowlisted base URL whose DNS an
+    // attacker controls is a narrow case, but it is the exact case this guard is here for.
+    return assertEgressAllowed(url, [], true);
   }
 
   /** Throws unless the OCI ref's registry `host[:port]` matches an operator-configured allowlist
@@ -496,8 +505,31 @@ const MAX_BLOB_BYTES = 64 * 1024 * 1024;
 /** GET a URL's bytes; `null` on a 404 (absent), throw on any other transport/HTTP fault (infra).
  *  Redirects are NOT followed (a redirect could re-point an allowed URL at a forbidden target) and
  *  the response is size-capped — both throw, surfacing as fail-closed verification errors. */
-async function fetchBytes(url: string): Promise<Buffer | null> {
-  const res = await fetch(url, { redirect: "error" });
+async function fetchBytes(url: string, target: VerifiedEgressTarget): Promise<Buffer | null> {
+  // Pinned to the address the guard classified, via a short-lived Agent whose `connect.lookup`
+  // answers only from that pin (undici's own `fetch`, because Node's global one is powered by a
+  // separately-bundled undici and rejects a dispatcher built from this install).
+  const pins = createEgressPinRegistry();
+  const dispatcher = new UndiciAgent({ connect: { lookup: pins.lookup } });
+  const release = pins.pin(target);
+  try {
+    return await readBoundedBlob(url, dispatcher);
+  } finally {
+    release();
+    // `destroy()`, NOT `close()`. `close()` waits for every in-flight request to finish, and a
+    // response whose body was never read never finishes: on undici 7.29.0 an unread body >= 64 KiB
+    // leaves `close()` pending until the abandoned body is garbage-collected — measured here as
+    // still pending after 5s on 10/10 runs with a 1 MiB body. Every exit that does NOT read the
+    // body (a non-2xx, an over-cap `content-length`, a 404 that carries one) would hang the caller
+    // instead of failing closed, and the caller is a pre-deploy gate with no timeout of its own —
+    // an attacker-visible registry response would decide how long verification stalls. `destroy()`
+    // tears the socket down unconditionally, which is what "short-lived, never pooled" meant.
+    await dispatcher.destroy();
+  }
+}
+
+async function readBoundedBlob(url: string, dispatcher: UndiciAgent): Promise<Buffer | null> {
+  const res = await undiciFetch(url, { redirect: "error", dispatcher });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`registry read ${url} -> HTTP ${res.status}`);
   const declared = Number(res.headers.get("content-length") ?? "0");

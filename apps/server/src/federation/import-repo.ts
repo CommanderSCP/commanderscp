@@ -1188,10 +1188,17 @@ export async function importSyncBundle(
       }
     }
     lastSequence = entry.sequence;
-    // Full scope: advance per applied entry, carrying the rowHash for next sync's continuity check.
-    if (isFullScope) {
-      await advanceCursor(tx, orgId, peer.id, exporterDomainId, entry.sequence, entry.rowHash);
-    }
+  }
+
+  // Full scope: advance ONCE to the last applied entry, carrying its rowHash for next sync's
+  // continuity check. Equivalent to advancing per entry inside the loop above — the whole import
+  // runs in one atomic transaction (the caller's `withTenantTx`), so no intermediate cursor state
+  // is ever observable, and advances are monotonic within the loop — but pays one `advanceCursor`
+  // (3 statements) per import instead of one per entry (a 5000-entry bundle otherwise costs ~15,000
+  // extra statements for no durability benefit).
+  if (isFullScope && toApply.length > 0) {
+    const last = toApply[toApply.length - 1]!;
+    await advanceCursor(tx, orgId, peer.id, exporterDomainId, last.sequence, last.rowHash);
   }
 
   // Scoped: advance ONCE to the FULL range's tail (header.throughSequence), so out-of-scope entries

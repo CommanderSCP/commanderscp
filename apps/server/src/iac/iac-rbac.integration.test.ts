@@ -4,6 +4,7 @@ import { ScpClient } from "@scp/sdk";
 import { OrgRole, RoleBinding, Stack } from "@scp/iac";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { hasPermission } from "../authz/resolve.js";
+import { createStackManagedRoleBinding } from "./iac-rbac-apply.js";
 import {
   buildTestServer,
   createTestOrg,
@@ -242,5 +243,29 @@ describe("IaC: the RBAC doors are not bypassed by the apply path", () => {
     } else {
       expect(res.statusCode).toBeGreaterThanOrEqual(400);
     }
+  });
+
+  it("names WHICH HALF of a binding it could not resolve — the guard is live, not dead code", async () => {
+    // Entered at the writer rather than the route deliberately: `prepareApplyChecks` resolves both
+    // endpoints first and 404s there, so the plan path cannot reach this guard — which is precisely
+    // how it came to be written against `getObjectByIdOrUrnAnyType`, a function that THROWS its own
+    // generic 404 and never returns a falsy value. Both refusals below were therefore unreachable
+    // from every caller, including this one, and "does not exist" was a string nothing could print.
+    const orgAdmin = await createTestUser(server, org, [
+      { role: "Administrator", scope: org.orgId }
+    ]);
+    await expect(
+      withTenantTx(server.deps.db, org.orgId, (tx) =>
+        createStackManagedRoleBinding(tx, {
+          orgId: org.orgId,
+          actorObjectId: orgAdmin.objectId,
+          requestId: randomUUID(),
+          stackName: `missing-subject-${Date.now()}`,
+          subjectObjectId: randomUUID(),
+          roleName: "Viewer",
+          scopeObjectId: org.orgId
+        })
+      )
+    ).rejects.toMatchObject({ status: 400, detail: expect.stringContaining("subject") });
   });
 });

@@ -14,6 +14,8 @@
  * per configured plugin instance, JSON-RPC 2.0 over stdio.
  */
 
+export * from "./dedup-cache.js";
+
 // -------------------------------------------------------------------------------------------
 // Shared: PluginContext and its injected accessors
 // -------------------------------------------------------------------------------------------

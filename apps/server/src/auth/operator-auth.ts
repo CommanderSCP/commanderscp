@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import * as argon2 from "argon2";
 import { v7 as uuidv7 } from "uuid";
 import { eq } from "drizzle-orm";
@@ -9,6 +9,12 @@ import { instanceOperatorCredentials } from "../db/schema.js";
 import { forbidden } from "../errors.js";
 import { withOperatorDb } from "../routes/operator-db.js";
 import type { AppDeps } from "../types.js";
+import {
+  generateTokenId,
+  generateTokenSecret,
+  mintPrefixedToken,
+  verifyPrefixedToken
+} from "./prefixed-token.js";
 
 /**
  * ================================================================================================
@@ -70,14 +76,6 @@ export interface OperatorAuthResult {
   credentialName: string | null;
 }
 
-function generateTokenId(): string {
-  return randomBytes(12).toString("base64url");
-}
-
-function generateSecret(): string {
-  return randomBytes(32).toString("base64url");
-}
-
 /**
  * Constant-time comparison for the bootstrap env token.
  *
@@ -118,7 +116,7 @@ export async function createOperatorCredential(
   input: { name: string; createdByUserId: string | null; expiresAt: Date | null }
 ): Promise<CreatedOperatorCredential> {
   const tokenId = generateTokenId();
-  const secret = generateSecret();
+  const secret = generateTokenSecret();
   const tokenHash = await argon2.hash(secret);
   const id = uuidv7();
 
@@ -136,7 +134,7 @@ export async function createOperatorCredential(
   return {
     id,
     name: input.name,
-    token: `${OPERATOR_PREFIX}${tokenId}.${secret}`,
+    token: mintPrefixedToken(OPERATOR_PREFIX, tokenId, secret),
     createdAt: row.created_at,
     expiresAt: row.expires_at
   };
@@ -199,31 +197,20 @@ export async function verifyOperatorCredential(
   db: Db,
   presented: string
 ): Promise<OperatorAuthResult | null> {
-  if (!presented.startsWith(OPERATOR_PREFIX)) return null;
-  const rest = presented.slice(OPERATOR_PREFIX.length);
-  const dot = rest.indexOf(".");
-  if (dot === -1) return null;
-  const tokenId = rest.slice(0, dot);
-  const secret = rest.slice(dot + 1);
-  if (!tokenId || !secret) return null;
-
-  const row = await db.query.instanceOperatorCredentials.findFirst({
-    where: eq(instanceOperatorCredentials.tokenId, tokenId)
+  const row = await verifyPrefixedToken({
+    prefix: OPERATOR_PREFIX,
+    presented,
+    findByTokenId: (tokenId) =>
+      db.query.instanceOperatorCredentials.findFirst({
+        where: eq(instanceOperatorCredentials.tokenId, tokenId)
+      }),
+    touchLastUsed: (id) =>
+      db
+        .update(instanceOperatorCredentials)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(instanceOperatorCredentials.id, id))
   });
   if (!row) return null;
-  if (row.revokedAt) return null;
-  if (row.expiresAt && row.expiresAt.getTime() < Date.now()) return null;
-
-  const valid = await argon2.verify(row.tokenHash, secret).catch(() => false);
-  if (!valid) return null;
-
-  // Best-effort, exactly as `verifyPat` does: a transient failure stamping "last used" must never
-  // refuse an otherwise-valid operator request.
-  void db
-    .update(instanceOperatorCredentials)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(instanceOperatorCredentials.id, row.id))
-    .catch(() => undefined);
 
   return { mechanism: "credential", credentialId: row.id, credentialName: row.name };
 }

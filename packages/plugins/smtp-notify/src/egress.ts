@@ -46,8 +46,17 @@ export function classifyIp(rawIp: string): IpClass {
   return "public";
 }
 
-/** Throws if `host` (a literal IP or a name that DNS-resolves) reaches any non-public address. */
-export async function assertHostNotInternal(host: string): Promise<void> {
+/**
+ * Throws if `host` (a literal IP or a name that DNS-resolves) reaches any non-public address;
+ * returns the EXACT addresses it verified.
+ *
+ * The caller MUST dial one of the returned addresses. Handing the NAME back to `net.connect` makes
+ * this check worthless: that call performs its own `getaddrinfo`, so a hostname whose DNS an
+ * attacker controls answers here with a public IP and answers the connect, milliseconds later, with
+ * `127.0.0.1` / `10.x` / `169.254.169.254` — classic DNS rebinding, straight through the deny-list
+ * above. See `index.ts`'s `connectSocket`, which keeps the name only for TLS SNI/identity.
+ */
+export async function assertHostNotInternal(host: string): Promise<string[]> {
   const stripped = host.replace(/^\[|\]$/g, "");
   const ips =
     isIP(stripped) !== 0
@@ -61,4 +70,5 @@ export async function assertHostNotInternal(host: string): Promise<void> {
       );
     }
   }
+  return ips;
 }

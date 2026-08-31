@@ -1499,8 +1499,8 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     //
     //   * TARGETS. Placements are created govcloud -> emea -> apac -> amer, so their uuidv7 ids
     //     ascend in that order — while the topology's wave lists them amer, apac, emea, govcloud.
-    //     `loadWavesWithTargets` orders by `created_at` with no tiebreak and every target of a wave
-    //     carries the same transaction timestamp, so the order reconcile sees is the wave's. Sorted
+    //     `getLatestPlanForChange`'s target query carries no `ORDER BY` at all, so the order
+    //     reconcile sees is the insertion order of the wave's targets — the wave's. Sorted
     //     ascending is therefore the exact REVERSE of it.
     //   * FREEZES. The atomic freeze is created FIRST (lowest id) and the plain one SECOND, and the
     //     covering set for `apac` is built as [its own] ++ [the atomic ones] — i.e. highest id

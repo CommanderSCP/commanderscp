@@ -314,19 +314,27 @@ interface GiteaActionRun {
 async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]> {
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
-  // Gitea's /commits does not accept github's `since` param; we fetch the default page and filter
-  // client-side by the commit's own author date against the watermark.
-  const { status, body } = await api(
-    ctx,
-    config,
-    "GET",
-    `/repos/${config.owner}/${config.repo}/commits`
-  );
-  if (status >= 200 && status < 300) {
+  const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  // Gitea's /commits does not accept github's `since` param, so the WHOLE window is filtered
+  // client-side — which makes reading only the first page worse here than on github, not better:
+  // every commit past the page boundary is dropped and the cursor moves on regardless. Paginated
+  // (Gitea spells it `page`/`limit`) under the same budget — see MAX_POLL_PAGES.
+  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
+    const query = new URLSearchParams({ limit: String(POLL_PAGE_SIZE), page: String(page) });
+    const { status, body } = await api(
+      ctx,
+      config,
+      "GET",
+      `/repos/${config.owner}/${config.repo}/commits?${query.toString()}`
+    );
+    if (status < 200 || status >= 300) break;
     const commits = (body as Array<{ sha: string; commit?: { author?: { date?: string } } }>) ?? [];
+    if (commits.length === 0) break;
+    servedPageSize ??= commits.length;
     for (const commit of commits) {
       const occurredAt = commit.commit?.author?.date ?? new Date().toISOString();
-      if (sinceIso && new Date(occurredAt).getTime() <= new Date(sinceIso).getTime()) continue;
+      if (sinceMs !== undefined && new Date(occurredAt).getTime() <= sinceMs) continue;
       events.push({
         kind: "push",
         occurredAt,
@@ -338,9 +346,28 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
         raw: commit
       });
     }
+    if (commits.length < servedPageSize) break; // shorter than the SERVED page — the last page.
+    if (sinceMs === undefined) break; // cold start reads one page — see MAX_POLL_PAGES.
+    const oldest = commits[commits.length - 1]?.commit?.author?.date;
+    if (oldest && new Date(oldest).getTime() <= sinceMs) break;
   }
   return events;
 }
+
+/**
+ * Page size and per-poll page ceiling for the list resources `observe()` polls, mirroring the
+ * github adapter's constants of the same name (the defect and its bound are identical; each adapter
+ * keeps its own copy because the query parameter NAMES differ per provider).
+ *
+ * POLL_PAGE_SIZE is what we ASK for, never what we get: Gitea clamps every list to `[api]
+ * MAX_RESPONSE_ITEMS` (default 50) in `ListOptions.SetDefaultValues`, so a stock server answers
+ * `limit=100` with 50. Ending the walk on a page shorter than the REQUESTED size therefore stops on
+ * page 1 against every default install — the exact defect pagination was added to close — so each
+ * loop learns the SERVED page size from page 1 and ends on a page shorter than that (or empty, or
+ * at the budget). Same reasoning for any instance-configured ceiling on the sibling adapters.
+ */
+const POLL_PAGE_SIZE = 100;
+const MAX_POLL_PAGES = 5;
 
 /** Adapter `pollRuns` hook: recent Gitea Actions runs (approximates a `workflow_run` webhook).
  *  ASSUMED (Gitea Actions): the runs-list endpoint + `workflow_runs[]` response shape — see the
@@ -348,20 +375,22 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
 async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]> {
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
-  const { status, body } = await api(
-    ctx,
-    config,
-    "GET",
-    `/repos/${config.owner}/${config.repo}/actions/runs`
-  );
-  if (status >= 200 && status < 300) {
+  const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
+    const query = new URLSearchParams({ limit: String(POLL_PAGE_SIZE), page: String(page) });
+    const { status, body } = await api(
+      ctx,
+      config,
+      "GET",
+      `/repos/${config.owner}/${config.repo}/actions/runs?${query.toString()}`
+    );
+    if (status < 200 || status >= 300) break;
     const runs = (body as { workflow_runs?: GiteaActionRun[] }).workflow_runs ?? [];
+    if (runs.length === 0) break;
+    servedPageSize ??= runs.length;
     for (const run of runs) {
-      if (
-        sinceIso &&
-        run.created_at &&
-        new Date(run.created_at).getTime() <= new Date(sinceIso).getTime()
-      )
+      if (sinceMs !== undefined && run.created_at && new Date(run.created_at).getTime() <= sinceMs)
         continue;
       events.push({
         kind: "workflow_run",
@@ -374,6 +403,10 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
         raw: run
       });
     }
+    if (runs.length < servedPageSize) break; // shorter than the SERVED page — the last page.
+    if (sinceMs === undefined) break;
+    const oldest = runs[runs.length - 1]?.created_at;
+    if (oldest && new Date(oldest).getTime() <= sinceMs) break;
   }
   return events;
 }

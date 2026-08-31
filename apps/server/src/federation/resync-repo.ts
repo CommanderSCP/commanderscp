@@ -11,7 +11,7 @@ import {
   verifyBundleSignature
 } from "@scp/schemas/federation-journal";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { conflict, forbidden } from "../errors.js";
+import { forbidden } from "../errors.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
@@ -175,14 +175,4 @@ export async function applyResyncBundle(
     generation,
     decisionId: decision.id
   };
-}
-
-/** Convenience: a resync bundle that fails these is refused (mostly a re-statement of import's own
- *  checks, kept here so the resync route can give a clear message before applying). */
-export function assertResyncBundleAddressedTo(bundle: SyncBundle, selfDomainId: string): void {
-  if (bundle.header.peerDomainId !== selfDomainId) {
-    throw conflict(
-      `resync bundle is addressed to domain '${bundle.header.peerDomainId}', not this domain ('${selfDomainId}')`
-    );
-  }
 }

@@ -14,7 +14,7 @@ import { Command } from "commander";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { run } from "./exec.js";
+import { run } from "@scp/cosign";
 import * as cosignMod from "./cosign.js";
 import { readOciManifestDigest, verifyOciLayoutIntegrity } from "./oci-layout.js";
 import { parseManifestJson } from "./manifest.js";

@@ -9,6 +9,7 @@ import {
   computePipelineHookContentHash
 } from "../graph/content-hash.js";
 import type { BakeAlarmReport } from "./pipeline-hook-verdicts.js";
+import { enqueueProbeScheduleRetraction } from "./continuous-probe-retractions-repo.js";
 
 /**
  * STORAGE for the pipeline test hooks and their evidence (team-pipeline-iac increment 8,
@@ -217,6 +218,16 @@ export async function deleteHook(
     .returning();
   if (!row) return undefined;
   const hook = toHookRow(row);
+  // A `continuous` hook OWNS A SCHEDULE ON ITS EXECUTOR, and deleting the row does not remove it —
+  // the driver simply stops re-declaring it, and the cron keeps firing forever. Enqueued HERE, in
+  // `deleteHook` itself rather than at its callers, for the reason every "one door" in this repo
+  // exists: the IaC prune and the federation tombstone import are two callers today and a third
+  // would silently reopen the leak.
+  //
+  // FOR BOTH PATHS, including `federationImport` — an outpost that imported a hook declared its
+  // schedule locally, so retracting it is exactly as necessary there. The journal below is the
+  // thing that is import-conditional, not this.
+  if (hook.kind === "continuous") await enqueueProbeScheduleRetraction(tx, orgId, hook);
   // The tombstone carries the SAME content hash the upsert did, so a receiver can tell which
   // declaration is being removed rather than only which identity — the discipline
   // `relationship_tombstone` follows (it passes `existing.contentHash`). A no-op delete journals

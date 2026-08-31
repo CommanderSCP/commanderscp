@@ -1,6 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createFileBackedJsonCache } from "@scp/plugin-api";
 import type {
   ScheduleSpec,
   AbortResult,
@@ -161,32 +159,19 @@ async function resolveToken(
 // -----------------------------------------------------------------------------------------
 // Dedup + abort-tracking cache — see module doc assumptions #4/#7. Same write-to-temp+rename
 // persistence shape as `@scp/plugin-argocd`/`@scp/plugin-fake-executor`, for the identical reason:
-// a subprocess-host restart mid-wave must not lose the mapping.
+// a subprocess-host restart mid-wave must not lose the mapping. `normalize` backfills
+// `abortedNames` for a state file written before that field existed.
 // -----------------------------------------------------------------------------------------
 
-let inMemoryState: DedupState = { targets: {}, abortedNames: {} };
-
-async function loadState(statePath: string | undefined): Promise<DedupState> {
-  if (!statePath) return inMemoryState;
-  try {
-    const parsed = JSON.parse(await readFile(statePath, "utf8")) as Partial<DedupState>;
-    return { targets: parsed.targets ?? {}, abortedNames: parsed.abortedNames ?? {} };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { targets: {}, abortedNames: {} };
-    throw err;
+const dedupCache = createFileBackedJsonCache<DedupState>(
+  () => ({ targets: {}, abortedNames: {} }),
+  (parsed) => {
+    const p = parsed as Partial<DedupState>;
+    return { targets: p.targets ?? {}, abortedNames: p.abortedNames ?? {} };
   }
-}
-
-async function saveState(statePath: string | undefined, state: DedupState): Promise<void> {
-  if (!statePath) {
-    inMemoryState = state;
-    return;
-  }
-  await mkdir(dirname(statePath), { recursive: true });
-  const tmpPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(state), "utf8");
-  await rename(tmpPath, statePath);
-}
+);
+const loadState = dedupCache.load;
+const saveState = dedupCache.save;
 
 function mintExternalId(name: string, uid: string): string {
   return `${name}${REF_DELIMITER}${uid}`;

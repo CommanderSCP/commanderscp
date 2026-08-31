@@ -1,4 +1,4 @@
-import { connect as netConnect, type Socket } from "node:net";
+import { connect as netConnect, isIP, type Socket } from "node:net";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import type {
   DeliveryResult,
@@ -53,6 +53,10 @@ export interface SmtpNotifyConfig {
    *  disables the check (matches `PluginHostInstanceConfig.allowedHosts`'s own "empty = unscoped"
    *  default) but every real binding is expected to set this to `[host]`. */
   allowedHosts?: string[];
+  /** Opt-in to sending AUTH credentials over an unencrypted connection. Default (unset/false)
+   *  REFUSES — see `send()`: without it, a relay that simply omits STARTTLS from its EHLO reply
+   *  harvests the password in cleartext. */
+  allowPlaintextAuth?: boolean;
   connectTimeoutMs?: number; // default 10_000
 }
 
@@ -75,6 +79,7 @@ function asConfig(config: unknown): SmtpNotifyConfig {
     username: c.username,
     passwordSecretKey: c.passwordSecretKey,
     allowedHosts: c.allowedHosts,
+    allowPlaintextAuth: c.allowPlaintextAuth,
     connectTimeoutMs: c.connectTimeoutMs
   };
 }
@@ -157,17 +162,29 @@ function buildMessage(config: SmtpNotifyConfig, msg: NotificationMessage): strin
   return [...headers, "", ...body, "."].join("\r\n");
 }
 
-async function connectSocket(config: SmtpNotifyConfig): Promise<Socket | TLSSocket> {
+/**
+ * Dials `address` — which MUST be an address `assertHostNotInternal` just verified — rather than
+ * `config.host`. Passing the name would let this connect re-resolve it independently of the guard,
+ * which is the DNS-rebinding window described in `egress.ts`. The name is still what TLS checks:
+ * `servername` carries SNI and drives the certificate identity check (Node uses
+ * `servername || host`), so pinning the address weakens no part of the handshake. It is omitted for
+ * an IP-literal `config.host`, where an SNI value would be meaningless (RFC 6066).
+ */
+async function connectSocket(
+  config: SmtpNotifyConfig,
+  address: string
+): Promise<Socket | TLSSocket> {
   const port = config.port ?? DEFAULT_PORT;
   const timeoutMs = config.connectTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const servername = isIP(config.host.replace(/^\[|\]$/g, "")) === 0 ? config.host : undefined;
   return new Promise((resolve, reject) => {
     const onError = (err: Error): void => reject(err);
     const socket = config.implicitTls
-      ? tlsConnect({ host: config.host, port, timeout: timeoutMs }, () => {
+      ? tlsConnect({ host: address, servername, port, timeout: timeoutMs }, () => {
           socket.off("error", onError);
           resolve(socket);
         })
-      : netConnect({ host: config.host, port, timeout: timeoutMs }, () => {
+      : netConnect({ host: address, port, timeout: timeoutMs }, () => {
           socket.off("error", onError);
           resolve(socket);
         });
@@ -189,6 +206,12 @@ function upgradeToTls(socket: Socket, host: string): Promise<TLSSocket> {
   });
 }
 
+/** Whether this socket is ACTUALLY a completed TLS session — `TLSSocket.encrypted` is set by the
+ *  transport itself, so it cannot report an upgrade that did not happen. */
+function isEncrypted(socket: Socket | TLSSocket): boolean {
+  return (socket as TLSSocket).encrypted === true;
+}
+
 async function authenticate(
   socket: Socket | TLSSocket,
   username: string,
@@ -206,8 +229,14 @@ async function send(ctx: PluginContext, msg: NotificationMessage): Promise<Deliv
   let socket: Socket | TLSSocket | undefined;
   try {
     checkAllowlist(config.host, config.allowedHosts);
-    await assertHostNotInternal(config.host); // MAJOR #6 — SSRF internal-range deny-list (egress.ts)
-    socket = await connectSocket(config);
+    // MAJOR #6 — SSRF internal-range deny-list (egress.ts). The addresses it returns are the ONLY
+    // ones this plugin may dial; connecting to the name instead would re-resolve it (rebinding).
+    const verified = await assertHostNotInternal(config.host);
+    const address = verified[0];
+    if (!address) {
+      throw new Error(`smtp-notify: no verified address for host '${config.host}'`);
+    }
+    socket = await connectSocket(config, address);
     await readReply(socket); // server greeting (220)
     let ehlo = await expect(socket, `EHLO scp-notify`, [250]);
     const capabilities = ehlo.lines.join(" ").toUpperCase();
@@ -219,6 +248,22 @@ async function send(ctx: PluginContext, msg: NotificationMessage): Promise<Deliv
     }
 
     if (config.username && config.passwordSecretKey) {
+      // Read the ENCRYPTION STATE OFF THE SOCKET, never off our intent to upgrade. The STARTTLS
+      // branch above is opportunistic and driven by an EHLO capability list the server sent before
+      // any encryption exists: an on-path attacker (or a hostile relay) that withholds the word
+      // STARTTLS silently skips the upgrade, and `authenticate()` used to run anyway — base64 AUTH
+      // LOGIN credentials over cleartext TCP, with no error and `delivered: true`. That is
+      // STARTTLS stripping, and refusing is the only correct answer to it.
+      if (!isEncrypted(socket) && config.allowPlaintextAuth !== true) {
+        return {
+          delivered: false,
+          detail:
+            `smtp-notify: refusing to send AUTH credentials to '${config.host}' over an ` +
+            `unencrypted connection — the server did not offer STARTTLS (or the upgrade did not ` +
+            `happen). Set implicitTls, use a relay that offers STARTTLS, or set ` +
+            `allowPlaintextAuth if this hop is genuinely trusted.`
+        };
+      }
       const password = await ctx.secrets.get(config.passwordSecretKey);
       if (!password) {
         return {
@@ -269,6 +314,7 @@ export const manifest: PluginManifest = {
       username: { type: "string" },
       passwordSecretKey: { type: "string" },
       allowedHosts: { type: "array", items: { type: "string" } },
+      allowPlaintextAuth: { type: "boolean", default: false },
       connectTimeoutMs: { type: "integer", minimum: 100, default: 10_000 }
     }
   }

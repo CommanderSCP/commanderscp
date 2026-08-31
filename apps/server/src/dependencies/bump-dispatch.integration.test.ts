@@ -2414,6 +2414,58 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     ).toHaveLength(0);
   }, 120_000);
 
+  it("REFUSES a component whose due declarations were observed on DIFFERENT branches", async () => {
+    // THE BUG THIS PINS. `baseBranch` came from `dueDeclarations[0].observedRef` and was then
+    // applied to EVERY due declaration, so the second manifest here was edited on `main` although
+    // it was only ever read at `dev`. The module's own comment states the invariant it broke — "a
+    // bump composed against `main` but observed on another ref would be built on a file this
+    // component may not have there" — and enforced it for one declaration out of two.
+    //
+    // A REFUSAL RATHER THAN A PER-BRANCH DISPATCH, deliberately: the `dependency_delegation`
+    // verdict is keyed on the COMPONENT, so probing two sources in one run would write two verdicts
+    // under one subject and let an `allow` earned by one stand as the answer for the other.
+    const fixture = await subscribedComponent({ manifestPaths: ["package.json"] });
+    await inOrg((tx) =>
+      upsertComponentDependency(tx, org.orgId, {
+        componentObjectId: fixture.componentObjectId,
+        lineId: fixture.lineId,
+        manifestPath: "services/api/package.json",
+        declaredVersion: "^1.2.3",
+        resolvedVersion: "1.2.3",
+        // The whole difference. Same repo, same line, same component — read at another ref.
+        observedRef: "refs/heads/dev"
+      })
+    );
+    await advanceHead(fixture.lineId, "1.4.0");
+
+    const outcome = await runBumpDispatchJob(jobDeps(), {
+      orgId: org.orgId,
+      lineId: fixture.lineId
+    });
+
+    expect(outcome.dispatched).toHaveLength(0);
+    const refused = outcome.skipped.filter(
+      (s) => s.reason === "declarations_disagree_on_source" && s.manifestPath !== undefined
+    );
+    // BOTH are named, not just the one that would have been edited wrongly — an operator has to see
+    // which two things disagree to fix either of them.
+    expect(refused.map((s) => s.manifestPath).sort()).toEqual([
+      "package.json",
+      "services/api/package.json"
+    ]);
+    expect(refused[0]?.detail).toContain("refs/heads/dev");
+    expect(refused[0]?.detail).toContain("refs/heads/main");
+
+    // NOTHING WAS AUTHORED. The `main` declaration was legitimate on its own, so a fix that merely
+    // dropped the disagreeing one would still pass an assertion about the `dev` manifest alone.
+    expect(
+      triggers.filter(
+        (t) => (t.intent.parameters as { repo?: string } | undefined)?.repo === fixture.repo
+      )
+    ).toHaveLength(0);
+    expect(await bumpChangesFor(fixture.repo)).toHaveLength(0);
+  }, 120_000);
+
   it("REFUSES to resolve a hand-created managed-dep BINDING while the class is off — the other door to the same class", async () => {
     // `startManagedDepInstance` is not the only way a `managed-dep` plugin instance can come into
     // being: an operator can create an `executor_bindings` row for it by hand, and that path goes

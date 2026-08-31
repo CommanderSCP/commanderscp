@@ -1,9 +1,11 @@
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { GraphObject, Relationship } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { badRequest, forbidden } from "../errors.js";
 import { hasPermission } from "../authz/resolve.js";
-import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { createObject, getObjectByIdOrUrnAnyType, toGraphObject } from "../graph/objects-repo.js";
 import { createRelationship, listRelationships } from "../graph/relationships-repo.js";
+import { objects } from "../db/schema.js";
 import {
   isGovernanceManagedObjectType,
   isProjectionBoundObjectType,
@@ -257,14 +259,31 @@ export async function getMergedOverlayView(
     typeId: "annotates",
     limit: 100
   });
+  // One batched read for every overlay object instead of one `getObjectByIdOrUrnAnyType` per edge.
+  // `edge.fromId` is always an object id (never a URN — edges never store one), so a plain
+  // `inArray` id lookup is equivalent to the per-edge id-or-urn lookup it replaces.
+  const overlayIds = edges.items.map((edge) => edge.fromId);
+  const overlayRows =
+    overlayIds.length === 0
+      ? []
+      : await tx
+          .select()
+          .from(objects)
+          .where(
+            and(
+              eq(objects.orgId, orgId),
+              inArray(objects.id, overlayIds),
+              isNull(objects.deletedAt)
+            )
+          );
+  const overlayById = new Map(overlayRows.map((row) => [row.id, toGraphObject(row)]));
+  // Rebuilt in EDGE (creation) order, not query order — `inArray` makes no ordering guarantee, and
+  // the merge below is order-sensitive. An overlay missing from the map (deleted after the edge was
+  // created) is tolerated exactly as the per-edge try/catch it replaces did: skipped, not failed.
   const overlays: GraphObject[] = [];
   for (const edge of edges.items) {
-    try {
-      const overlay = await getObjectByIdOrUrnAnyType(tx, orgId, edge.fromId);
-      overlays.push(overlay);
-    } catch {
-      // overlay object was deleted after the edge was created — skip rather than fail the read
-    }
+    const overlay = overlayById.get(edge.fromId);
+    if (overlay) overlays.push(overlay);
   }
 
   let merged: Record<string, unknown> = { ...base.properties };

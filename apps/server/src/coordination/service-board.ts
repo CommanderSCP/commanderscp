@@ -364,37 +364,22 @@ async function pipelinesForComponents(
   tx: TenantTx,
   orgId: string,
   serviceObjectId: string,
-  componentIds: string[]
+  componentIds: string[],
+  placements: { componentObjectId: string; placementId: string }[]
 ): Promise<{
   byComponent: Map<string, ServiceBoardPipeline[]>;
   forService: ServiceBoardPipeline[];
 }> {
   const byComponent = new Map<string, ServiceBoardPipeline[]>();
 
-  const placementRows =
-    componentIds.length === 0
-      ? []
-      : await tx
-          .select({ id: objectsTable.id, properties: objectsTable.properties })
-          .from(objectsTable)
-          .where(
-            and(
-              eq(objectsTable.orgId, orgId),
-              eq(objectsTable.typeId, "placement"),
-              isNull(objectsTable.deletedAt)
-            )
-          );
-  const componentSet = new Set(componentIds);
   const placementsByComponent = new Map<string, string[]>();
   const placementToComponent = new Map<string, string>();
-  for (const row of placementRows) {
-    const props = row.properties as { componentId?: unknown };
-    if (typeof props.componentId !== "string" || !componentSet.has(props.componentId)) continue;
-    placementsByComponent.set(props.componentId, [
-      ...(placementsByComponent.get(props.componentId) ?? []),
-      row.id
+  for (const p of placements) {
+    placementsByComponent.set(p.componentObjectId, [
+      ...(placementsByComponent.get(p.componentObjectId) ?? []),
+      p.placementId
     ]);
-    placementToComponent.set(row.id, props.componentId);
+    placementToComponent.set(p.placementId, p.componentObjectId);
   }
   const placementIds = [...placementToComponent.keys()];
 
@@ -715,7 +700,13 @@ export async function buildServiceBoard(
   let notDrivenHere = 0;
   // PER-PIPELINE STATE for every row, batched before the loop (three queries for the board, not
   // three per row — a service with dozens of microservices is exactly the case this view is for).
-  const pipelineSummary = await pipelinesForComponents(tx, orgId, service.id, componentIds);
+  const pipelineSummary = await pipelinesForComponents(
+    tx,
+    orgId,
+    service.id,
+    componentIds,
+    placements
+  );
   const pipelinesFor = (componentId: string): ServiceBoardPipeline[] =>
     pipelineSummary.byComponent.get(componentId) ?? [];
 

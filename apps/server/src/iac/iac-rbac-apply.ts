@@ -13,7 +13,7 @@ import {
   lockOrgRoleAuthority
 } from "../authz/role-binding-door.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
-import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { findObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
 /**
  * ================================================================================================
@@ -71,8 +71,11 @@ export async function createStackManagedRoleBinding(
   await lockOrgRoleAuthority(tx, input.orgId);
 
   const role = await roleByName(tx, input.orgId, input.roleName);
-  const subject = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.subjectObjectId);
-  const scope = await getObjectByIdOrUrnAnyType(tx, input.orgId, input.scopeObjectId);
+  // `find`, NOT `get`: the `get` twin throws its own generic 404 on a miss, which would make the
+  // two refusals below unreachable and answer a manifest that names a nonexistent urn with
+  // "object not found" instead of naming which HALF of the binding it could not resolve.
+  const subject = await findObjectByIdOrUrnAnyType(tx, input.orgId, input.subjectObjectId);
+  const scope = await findObjectByIdOrUrnAnyType(tx, input.orgId, input.scopeObjectId);
   if (!subject) throw badRequest(`role binding subject '${input.subjectObjectId}' does not exist`);
   if (!scope) throw badRequest(`role binding scope '${input.scopeObjectId}' does not exist`);
 

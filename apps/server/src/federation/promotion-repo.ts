@@ -1066,6 +1066,9 @@ async function applyPromotionImport(
   //    outcome (rejected ones are visible/auditable AS rejected, not silently dropped).
   let accepted = 0;
   let rejected = 0;
+  // Fetched ONCE for the whole loop: `peerId` is fixed for this import, so the registered key
+  // cannot change between approvals — hoisted out to avoid an identical SELECT per approval.
+  const registeredKey = await currentPeerPublicKey(tx, orgId, peerId);
   for (const evidence of bundle.approvals) {
     // Validate against the peer's CURRENT registered key — never the attestation's own embedded
     // `publicKey` (self-consistent by construction, so trusting it would let an attacker sign an
@@ -1073,7 +1076,6 @@ async function applyPromotionImport(
     // signer-chosen `evidence.record.timestamp` (the backdating vector — M6 review fix, CRITICAL).
     // An approval signed by a since-rotated key is marked verified:false (non-fatal — the local
     // change must earn its OWN approvals regardless), preserving compromise recovery.
-    const registeredKey = await currentPeerPublicKey(tx, orgId, peerId);
     const selfConsistent = verifyAttestation(evidence);
     const signedByRegisteredKey = registeredKey !== null && registeredKey === evidence.publicKey;
     const bindsThisChange = evidence.record.approvedObjectUrn === bundle.change.urn;

@@ -261,7 +261,32 @@ export const objects = pgTable(
     // and the query never asks for the rows that are not.
     index("obj_managed_stack")
       .on(table.orgId, table.managedByStack)
-      .where(sql`${table.managedByStack} IS NOT NULL AND ${table.deletedAt} IS NULL`)
+      .where(sql`${table.managedByStack} IS NOT NULL AND ${table.deletedAt} IS NULL`),
+    // drizzle/0059 — the domain-local set, which is a small minority of any estate's rows.
+    index("obj_domain_local")
+      .on(table.orgId)
+      .where(sql`${table.domainLocal}`),
+    // drizzle/0051 — ONE placement per (component, deployment target). Functional and partial: the
+    // pair lives in `properties`, and only live `placement` rows are constrained. This is a
+    // DATABASE guard because the application's check-then-insert was proven racy — two concurrent
+    // creates both read "no placement yet" and both wrote one.
+    uniqueIndex("objects_placement_one_per_component_target")
+      .on(
+        table.orgId,
+        sql`((${table.properties} ->> 'componentId'))`,
+        sql`((${table.properties} ->> 'deploymentTargetId'))`
+      )
+      .where(sql`${table.typeId} = 'placement' AND ${table.deletedAt} IS NULL`),
+    // drizzle/0095 — ONE artifact per (digest, artifact type). Same shape and same reason as the
+    // placement index above: minting an artifact is a check-then-insert, and a digest that arrives
+    // twice concurrently must collapse to one row rather than fork the registry projection.
+    uniqueIndex("objects_artifact_one_per_digest_type")
+      .on(
+        table.orgId,
+        sql`((${table.properties} ->> 'digest'))`,
+        sql`((${table.properties} ->> 'artifactType'))`
+      )
+      .where(sql`${table.typeId} = 'artifact' AND ${table.deletedAt} IS NULL`)
   ]
 );
 
@@ -310,7 +335,18 @@ export const relationships = pgTable(
     // drizzle/0068 — see `obj_managed_stack`.
     index("rel_managed_stack")
       .on(table.orgId, table.managedByStack)
-      .where(sql`${table.managedByStack} IS NOT NULL AND ${table.deletedAt} IS NULL`)
+      .where(sql`${table.managedByStack} IS NOT NULL AND ${table.deletedAt} IS NULL`),
+    // drizzle/0022 — a component is contained by AT MOST ONE service. Keyed on `to_id` (the
+    // contained end) and partial on live `contains` rows. A database guard because the route's
+    // check-then-insert was proven racy: two concurrent attaches both saw no parent.
+    uniqueIndex("relationships_contains_one_service_per_component")
+      .on(table.orgId, table.toId)
+      .where(sql`${table.typeId} = 'contains' AND ${table.deletedAt} IS NULL`),
+    // drizzle/0049 — a component releases via AT MOST ONE pipeline. Keyed on `from_id` (the
+    // component end); same racy check-then-insert, same database-level answer.
+    uniqueIndex("relationships_releases_via_one_pipeline_per_component")
+      .on(table.orgId, table.fromId)
+      .where(sql`${table.typeId} = 'releases_via' AND ${table.deletedAt} IS NULL`)
   ]
 );
 
@@ -359,7 +395,22 @@ export const roles = pgTable(
      */
     uniqueIndex("roles_builtin_name_key")
       .on(table.name)
-      .where(sql`${table.orgId} IS NULL`)
+      .where(sql`${table.orgId} IS NULL`),
+    /**
+     * drizzle/0103 — the org-scoped counterpart 0097 deliberately did not cover. Without it an org
+     * can hold two roles both named 'Release Captain' with different permission arrays: nothing
+     * MISRESOLVES (bindings take a role by id), but the catalogue becomes unreadable and a revoke
+     * names one of two rows an operator cannot tell apart. A built-in's name stays creatable here
+     * on purpose — that collision is refused at the authoring and binding doors, not in the DDL.
+     */
+    uniqueIndex("roles_org_name_key")
+      .on(table.orgId, table.name)
+      .where(sql`${table.orgId} IS NOT NULL`),
+    /** drizzle/0108 — the IaC prune-pool scan, partial on the non-NULL half because the
+     *  overwhelming majority of rows are hand-authored and never selected by it. */
+    index("roles_managed_stack")
+      .on(table.orgId, table.managedByStack)
+      .where(sql`${table.managedByStack} IS NOT NULL`)
   ]
 );
 
@@ -420,7 +471,12 @@ export const roleBindings = pgTable(
      * reads as authority. Deleting this CHECK re-opens that; the database is the only layer that
      * sees every writer.
      */
-    check("role_bindings_effect_check", sql`${table.effect} IN ('allow', 'deny')`)
+    check("role_bindings_effect_check", sql`${table.effect} IN ('allow', 'deny')`),
+    /** drizzle/0108 — the IaC prune-pool scan; see `roles_managed_stack`. Partial for the same
+     *  reason: the overwhelming majority of grants are hand-authored. */
+    index("role_bindings_managed_stack")
+      .on(table.orgId, table.managedByStack)
+      .where(sql`${table.managedByStack} IS NOT NULL`)
   ]
 );
 
@@ -1420,7 +1476,13 @@ export const federationSelf = pgTable("federation_self", {
   orgId: uuid("org_id").primaryKey(),
   // TRUST sense (ADR-0021 D4) — this security domain's own stable identity (UUIDv7, generated
   // once, never reused). NOT a containment `domain` object id.
-  domainId: uuid("domain_id").notNull().unique().$type<TrustDomainId>(),
+  //
+  // Named explicitly because drizzle/0012 calls it `..._key`, not the `..._unique` this sugar
+  // defaults to.
+  domainId: uuid("domain_id")
+    .notNull()
+    .unique("federation_self_domain_id_key")
+    .$type<TrustDomainId>(),
   name: text("name").notNull(),
   role: text("role").notNull().default("unset"), // 'unset' | 'commander' | 'outpost' | 'retrans'
   /** §7.2.6 (drizzle/0092) — a per-org monotonic counter bumped by the resync operation (and the
@@ -1986,7 +2048,12 @@ export const executorBindings = pgTable(
       table.type,
       table.lane
     ),
-    index("executor_bindings_org").on(table.orgId)
+    index("executor_bindings_org").on(table.orgId),
+    /** drizzle/0105 — the reconciler's own sweep: every row it manages, for one policy or across
+     *  the domain. Partial, because a hand-bound row is never a candidate for it. */
+    index("executor_bindings_managed_by_policy")
+      .on(table.orgId, table.managedByPolicyId)
+      .where(sql`${table.managedByPolicyId} IS NOT NULL`)
   ]
 );
 
@@ -2715,8 +2782,9 @@ export const instanceFreezes = pgTable(
      *  synthetic `platform:<key>` identity would either violate that shipped response contract or
      *  force widening it. Stable across a `PUT` upsert of the same key. */
     id: uuid("id").primaryKey(),
-    /** The operator slug: the `PUT`/`DELETE` path segment. UNIQUE, not the PK. */
-    key: text("key").notNull().unique(),
+    /** The operator slug: the `PUT`/`DELETE` path segment. UNIQUE, not the PK. Named explicitly
+     *  because drizzle/0086 calls the constraint `_uq`, not the `_unique` this sugar defaults to. */
+    key: text("key").notNull().unique("instance_freezes_key_uq"),
     name: text("name"),
     startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
     endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
@@ -2945,7 +3013,19 @@ export const configSourceSyncQueue = pgTable(
     attempts: integer("attempts").notNull().default(0),
     lastError: text("last_error")
   },
-  (table) => [index("config_source_sync_queue_pending").on(table.orgId, table.enqueuedAt)]
+  (table) => [
+    /** drizzle/0109 — ONE PENDING entry per (source, commit). This is what makes the table a QUEUE
+     *  rather than a log: without it a webhook redelivery, or two ingests racing on the same push,
+     *  enqueue the same commit twice and it is synced twice. `processed_at IS NULL` is in the
+     *  PREDICATE rather than the key so a re-push of an already-processed commit still enqueues. */
+    uniqueIndex("config_source_sync_queue_pending_identity")
+      .on(table.orgId, table.configSourceId, table.commitSha)
+      .where(sql`${table.processedAt} IS NULL`),
+    /** drizzle/0109 — the drain's claim query: oldest pending first, per org. */
+    index("config_source_sync_queue_pending")
+      .on(table.orgId, table.enqueuedAt)
+      .where(sql`${table.processedAt} IS NULL`)
+  ]
 );
 
 export const componentRollouts = pgTable(
@@ -3028,6 +3108,39 @@ export const pipelineHooks = pgTable(
       table.orgId,
       table.componentObjectId,
       table.kind,
+      table.hookId
+    )
+  ]
+);
+
+/**
+ * Schedules a deleted `continuous` hook still owes its executor a `removeSchedule` for
+ * (migration 0111). `deleteHook` enqueues inside its own transaction; the probe driver drains it on
+ * the next tick, where an out-of-process RPC is legal and one unreachable executor cannot abort the
+ * apply or import that removed the row. See the migration header.
+ */
+export const continuousProbeRetractions = pgTable(
+  "continuous_probe_retractions",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** Deliberately NOT `REFERENCES objects(id)` — the retraction must outlive the component, which
+     *  the same apply may have deleted. */
+    componentObjectId: uuid("component_object_id").notNull(),
+    hookId: text("hook_id").notNull(),
+    /** Frozen at delete time, never re-derived: the retraction must name the id that was actually
+     *  declared, even if `probeScheduleId`'s derivation later changes. */
+    scheduleId: text("schedule_id").notNull(),
+    enqueuedAt: timestamp("enqueued_at", { withTimezone: true }).notNull().defaultNow(),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error")
+  },
+  (table) => [
+    /** drizzle/0111 — one outstanding retraction per (component, hook); also the drain's per-org
+     *  read path. Rows are DELETED on success, so this is a plain UNIQUE rather than a partial. */
+    uniqueIndex("continuous_probe_retractions_identity").on(
+      table.orgId,
+      table.componentObjectId,
       table.hookId
     )
   ]
@@ -3244,18 +3357,29 @@ export const pipelineHookRuns = pgTable(
  * exception `instance_freezes` takes. Modelled on {@link personalAccessTokens} rather than invented:
  * same `<prefix><tokenId>.<secret>` shape, same argon2-at-rest, same cleartext indexed lookup id.
  */
-export const instanceOperatorCredentials = pgTable("instance_operator_credentials", {
-  id: uuid("id").primaryKey(),
-  name: text("name").notNull(),
-  /** CLEARTEXT lookup key — argon2 output is salted and non-comparable, so a presented credential
-   *  cannot be found by hashing it and matching a row. */
-  tokenId: text("token_id").notNull(),
-  tokenHash: text("token_hash").notNull(),
-  /** The minter's graph object. NULL = minted with the bootstrap env token. Deliberately not an FK:
-   *  an instance-tier row must not couple to an org-scoped one. */
-  createdByUserId: uuid("created_by_user_id"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  expiresAt: timestamp("expires_at", { withTimezone: true }),
-  revokedAt: timestamp("revoked_at", { withTimezone: true }),
-  lastUsedAt: timestamp("last_used_at", { withTimezone: true })
-});
+export const instanceOperatorCredentials = pgTable(
+  "instance_operator_credentials",
+  {
+    id: uuid("id").primaryKey(),
+    name: text("name").notNull(),
+    /** CLEARTEXT lookup key — argon2 output is salted and non-comparable, so a presented credential
+     *  cannot be found by hashing it and matching a row. UNIQUE (drizzle/0104, declared below):
+     *  `verifyOperatorCredential` resolves a presented credential with a single `findFirst` on this
+     *  column, which only names the right row if no second row can share the value. */
+    tokenId: text("token_id").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    /** The minter's graph object. NULL = minted with the bootstrap env token. Deliberately not an FK:
+     *  an instance-tier row must not couple to an org-scoped one. */
+    createdByUserId: uuid("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true })
+  },
+  (table) => [
+    /** drizzle/0104 — what makes the `token_id` lookup in `verifyOperatorCredential` resolve one
+     *  row. A `uniqueIndex` rather than `.unique()` sugar because 0104 creates an INDEX named
+     *  `..._key`, which the sugar's default `..._unique` constraint name would not match. */
+    uniqueIndex("instance_operator_credentials_token_id_key").on(table.tokenId)
+  ]
+);

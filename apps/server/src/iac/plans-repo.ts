@@ -886,13 +886,20 @@ export async function computeDiffForManifest(
   // a binding granted through `POST /role-bindings` carries NULL, is invisible here, and therefore
   // cannot be revoked by any manifest.
   const managedRoleBindings: ResolvedManifestRoleBinding[] = [];
-  for (const row of await listStackManagedRoleBindings(tx, orgId, manifest.stackName)) {
-    const subjectUrn = (
-      await getObjectByIdOrUrnAnyType(tx, orgId, row.subjectId).catch(() => undefined)
-    )?.urn;
-    const scopeUrn = (
-      await getObjectByIdOrUrnAnyType(tx, orgId, row.scopeObjectId).catch(() => undefined)
-    )?.urn;
+  const roleBindingRows = await listStackManagedRoleBindings(tx, orgId, manifest.stackName);
+  // Both endpoints are raw object-id foreign-key columns, never URNs, so the id-or-urn ambiguity
+  // `getObjectByIdOrUrnAnyType` exists for never applies — a batched `fetchObjectsByIds` (same
+  // primitive `unresolvedProducerIds` above uses) resolves the whole set in one read instead of
+  // two `findFirst`-equivalent lookups per row.
+  const roleBindingEndpointIds = [
+    ...new Set(roleBindingRows.flatMap((row) => [row.subjectId, row.scopeObjectId]))
+  ];
+  const roleBindingUrnById = new Map(
+    (await fetchObjectsByIds(tx, orgId, roleBindingEndpointIds)).map((r) => [r.id, r.urn])
+  );
+  for (const row of roleBindingRows) {
+    const subjectUrn = roleBindingUrnById.get(row.subjectId);
+    const scopeUrn = roleBindingUrnById.get(row.scopeObjectId);
     // A row whose endpoints cannot be named is skipped rather than half-reported: it would appear
     // as a phantom delete line naming nothing an author could act on.
     if (!subjectUrn || !scopeUrn) continue;
@@ -908,14 +915,20 @@ export async function computeDiffForManifest(
   const managedRoles = await listStackManagedRoles(tx, orgId, manifest.stackName);
 
   const managedConvergence: ResolvedManifestConvergence[] = [];
-  for (const row of await listConvergenceForComponents(tx, orgId, ownedIdList)) {
+  const convergenceRows = await listConvergenceForComponents(tx, orgId, ownedIdList);
+  // The PRODUCT is not in `objectsById` — that map holds this stack's owned objects and their
+  // placements, and a convergence row points at an infrastructure product another stack may own.
+  // Batched: one read for every target across the whole set instead of one per row.
+  const convergenceTargetUrnById = new Map(
+    (
+      await fetchObjectsByIds(tx, orgId, [
+        ...new Set(convergenceRows.map((row) => row.targetObjectId))
+      ])
+    ).map((r) => [r.id, r.urn])
+  );
+  for (const row of convergenceRows) {
     const componentUrn = urnOfOwnedId(row.componentObjectId);
-    // The PRODUCT is not in `objectsById` — that map holds this stack's owned objects and their
-    // placements, and a convergence row points at an infrastructure product another stack may own.
-    // Resolved individually; the row count is per component, not per estate.
-    const targetUrn = (
-      await getObjectByIdOrUrnAnyType(tx, orgId, row.targetObjectId).catch(() => undefined)
-    )?.urn;
+    const targetUrn = convergenceTargetUrnById.get(row.targetObjectId);
     // Both endpoints must be nameable, for the reason the hook pool gives for one: a row whose
     // component or product cannot be named is invisible to matching AND pruning, so this plan
     // neither duplicates it nor deletes it.

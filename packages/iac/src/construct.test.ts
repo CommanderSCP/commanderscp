@@ -499,6 +499,37 @@ describe("@scp/iac constructs: sourceMappings / executorBindings (C1)", () => {
     expect(build("forward")).toBe(build("reverse"));
   });
 
+  it("declaration ORDER never changes it for mappings differing ONLY by refPattern", () => {
+    // THE GAP THE CASE ABOVE LEAVES, and it is not a corner: the two mappings there differ by
+    // `repoPattern`, which the sort key carried, so the whole case passed with `refPattern` missing
+    // from the key entirely. Two mappings that differ in nothing else tied, `Array.prototype.sort`
+    // is stable, and the tie fell through to declaration order.
+    //
+    // This is the shape `PipelineBase` synthesizes for every multi-branch component — one repo,
+    // `refs/heads/dev` → dev and `refs/heads/main` → production (ADR-0030 §1) — so it is the common
+    // case, not a constructed one.
+    function build(order: "forward" | "reverse") {
+      const { stack, component } = stackWithComponent("determinism-refpattern");
+      const decls: Array<() => void> = [
+        () =>
+          component.mapsSource({
+            sourceKind: "github",
+            repoPattern: "acme/api",
+            refPattern: "refs/heads/main"
+          }),
+        () =>
+          component.mapsSource({
+            sourceKind: "github",
+            repoPattern: "acme/api",
+            refPattern: "refs/heads/dev"
+          })
+      ];
+      for (const declare of order === "forward" ? decls : [...decls].reverse()) declare();
+      return canonicalJson(stack.synth());
+    }
+    expect(build("forward")).toBe(build("reverse"));
+  });
+
   it("stack.addSourceMapping / addExecutorBinding accept a bare URN for a component outside this program", () => {
     const stack = new Stack("external-refs");
     const external = "urn:scp:other-program:component:legacy";

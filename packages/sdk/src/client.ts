@@ -205,6 +205,7 @@ import {
   listCampaigns as listCampaignsRequest,
   getCampaign as getCampaignRequest,
   explainCampaign as explainCampaignRequest,
+  campaignAdoption as campaignAdoptionRequest,
   rollbackCampaign as rollbackCampaignRequest,
   // M25.6a (owner decision D4) — the deadline's set/move/CLEAR verb.
   setCampaignDeadline as setCampaignDeadlineRequest,
@@ -277,6 +278,9 @@ import {
   importRelayTarball as importRelayTarballRequest,
   // M13.1b — the auto-relay build ledger's operator read surface (owner ask).
   listFederationRelayBuilds as listFederationRelayBuildsRequest,
+  // Federation audit witness (multi-region-instance-resilience.md §7.2.7) — the post-failover
+  // peers-witness comparison's read surface (resilience runbook §7.2 step 5).
+  listFederationAuditWitnesses as listFederationAuditWitnessesRequest,
   createOverlay as createOverlayRequest,
   getMergedOverlayView as getMergedOverlayViewRequest,
   handFillObject as handFillObjectRequest,
@@ -386,6 +390,7 @@ import type {
   CampaignListQuery,
   CampaignListResponse,
   CampaignExplainResponse,
+  CampaignAdoptionResponse,
   CampaignDeadlineInput,
   OverrideCampaignDeadlineRequest,
   CreateCampaignRequest,
@@ -461,6 +466,9 @@ import type {
   // M13.1b — the auto-relay build ledger's operator read surface (owner ask).
   RelayBuild,
   RelayBuildStatus,
+  // Federation audit witness (multi-region-instance-resilience.md §7.2.7) — the post-failover
+  // peers-witness comparison's read surface (resilience runbook §7.2 step 5).
+  AuditWitness,
   // M7: Real Executor Integrations (BUILD_AND_TEST.md §8 M7, DESIGN §11/§12).
   CreateWebhookSecretRequest,
   WebhookSecretConfiguredResponse,
@@ -2005,6 +2013,12 @@ export class ScpClient {
       const result = await explainCampaignRequest({ client: this.client, path: { id } });
       return unwrap(result);
     },
+    /** M25.5 — "has each of this campaign's components migrated yet?", derived live from the
+     *  evidence source the recipe names. Same `object:read`-at-the-campaign scope as `explain`. */
+    adoption: async (id: string): Promise<CampaignAdoptionResponse> => {
+      const result = await campaignAdoptionRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
     /**
      * M25.6a (owner decision D4) — SET, MOVE or CLEAR this campaign's deadline. `deadline: null`
      * CLEARS it, which releases every target the deadline was withholding fan-out from on the next
@@ -2722,6 +2736,18 @@ export class ScpClient {
       const result = await listFederationRelayBuildsRequest({
         client: this.client,
         ...(Object.keys(query).length > 0 ? { query } : {})
+      });
+      return unwrap(result).items;
+    },
+    /** Federation audit witness (multi-region-instance-resilience.md §7.2.7) — what this domain
+     *  has passively witnessed of `originDomainId`'s audit-chain head, in chain order. This is the
+     *  post-failover peers-witness comparison's read surface (resilience runbook §7.2 step 5):
+     *  `scp audit verify` alone is structurally unable to see a truncated chain, since any prefix
+     *  of a valid hash chain still verifies. */
+    listAuditWitnesses: async (originDomainId: string): Promise<AuditWitness[]> => {
+      const result = await listFederationAuditWitnessesRequest({
+        client: this.client,
+        query: { originDomainId }
       });
       return unwrap(result).items;
     },

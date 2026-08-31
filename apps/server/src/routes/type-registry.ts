@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
   CreateObjectTypeRequestSchema,
@@ -20,12 +20,7 @@ import {
   listObjectTypes,
   listRelationshipTypes
 } from "../graph/type-registry-repo.js";
-import { withIdempotency } from "../idempotency.js";
-
-function idempotencyKey(request: FastifyRequest): string | undefined {
-  const header = request.headers["idempotency-key"];
-  return typeof header === "string" ? header : undefined;
-}
+import { idempotencyKeyOf, withIdempotency } from "../idempotency.js";
 
 /**
  * Runtime type registry (DESIGN.md §4.1): org-scoped custom object/relationship types as data
@@ -67,7 +62,7 @@ export function registerTypeRegistryRoutes(app: FastifyInstance, deps: AppDeps):
           tx,
           {
             orgId: auth.orgId,
-            idempotencyKey: idempotencyKey(request),
+            idempotencyKey: idempotencyKeyOf(request),
             route: "POST /type-registry/object-types",
             requestBody: request.body
           },
@@ -139,7 +134,7 @@ export function registerTypeRegistryRoutes(app: FastifyInstance, deps: AppDeps):
           tx,
           {
             orgId: auth.orgId,
-            idempotencyKey: idempotencyKey(request),
+            idempotencyKey: idempotencyKeyOf(request),
             route: "POST /type-registry/relationship-types",
             requestBody: request.body
           },

@@ -8,6 +8,7 @@ import type {
   ApprovalRequest,
   ApprovalVote,
   Campaign,
+  CampaignAdoptionResponse,
   CampaignExplainResponse,
   CampaignStatus,
   Change,
@@ -50,6 +51,9 @@ import type {
   // M13.1b — the auto-relay build ledger's operator read surface (owner ask).
   RelayBuild,
   RelayBuildStatus,
+  // Federation audit witness (multi-region-instance-resilience.md §7.2.7) — the post-failover
+  // peers-witness comparison's read surface (resilience runbook §7.2 step 5).
+  AuditWitness,
   // M13.2/M13.3b — the two scan surfaces whose table rows are now exported formatters (Y2).
   InstanceScanFloor,
   InstanceScanExclusionAdmission,
@@ -592,6 +596,22 @@ export function relayBuildRow(row: RelayBuild): Record<string, string> {
     claimedUntil: isAbsent(row.claimedUntil) ? "-" : row.claimedUntil,
     lastReason: isAbsent(row.lastReason) ? "-" : row.lastReason,
     decisionId: isAbsent(row.lastDecisionId) ? "-" : row.lastDecisionId
+  };
+}
+
+/**
+ * One federation audit-witness row as a table row (`scp audit witnesses --origin <domainId>`) —
+ * the post-failover peers-witness comparison's read surface (resilience runbook §7.2 step 5,
+ * multi-region-instance-resilience.md §7.2.7). Exported for the same reason as `relayBuildRow`: a
+ * guard no test can invoke is a guard nothing holds in place.
+ */
+export function auditWitnessRow(row: AuditWitness): Record<string, string> {
+  return {
+    origin: row.originDomainId,
+    sequence: String(row.sequence),
+    auditEventId: row.auditEventId,
+    contentHash: row.contentHash,
+    witnessedAt: row.witnessedAt
   };
 }
 
@@ -2009,6 +2029,36 @@ function printCampaignExplainResult(result: CampaignExplainResponse, output: Out
         ? (decision.reasonTree["summary"] as string)
         : JSON.stringify(decision.reasonTree);
     console.log(`  [${decision.createdAt}] ${decision.kind} -> ${decision.verdict}: ${summary}`);
+  }
+}
+
+/**
+ * Prints a Campaign's per-target adoption verdicts (M25.5, `scp campaign adoption <id>`) — the
+ * campaign-scoped answer to "has each of this campaign's components migrated yet?", derived live
+ * at read time. Same shape deviation from `printResult`/`printTable` as `printCampaignExplainResult`
+ * above, and for the same reason: this is one object with array fields, not a list of rows.
+ */
+function printCampaignAdoptionResult(result: CampaignAdoptionResponse, output: OutputFormat): void {
+  if (output === "json") {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(`Campaign ${result.campaignObjectId}`);
+  console.log(`Evidence: ${result.evidence === null ? "(none declared)" : result.evidence.kind}`);
+
+  console.log(`\nTargets (${result.targets.length}):`);
+  for (const target of result.targets) {
+    const ref = target.targetUrn ?? target.targetName ?? target.targetObjectId;
+    console.log(`  - ${ref}: ${target.verdict} — ${target.summary}`);
+    for (const observation of target.observations) {
+      console.log(`      ${observation}`);
+    }
+  }
+
+  if (result.unresolvedTargets.length > 0) {
+    console.log(`\nUnresolved targets (${result.unresolvedTargets.length}):`);
+    for (const ref of result.unresolvedTargets) console.log(`  - ${ref}`);
   }
 }
 
@@ -4225,6 +4275,25 @@ export function buildProgram(): Command {
       process.exitCode = 1;
     });
 
+  // Federation audit witness (multi-region-instance-resilience.md §7.2.7) — the post-failover
+  // runbook's peers-witness comparison (resilience.md §7.2 step 5): `scp audit verify` alone
+  // cannot see a truncated chain (any prefix of a valid hash chain still verifies), so this reads
+  // what THIS domain earlier witnessed of an origin peer's audit-chain head, for comparison
+  // against that origin's restored `scp audit verify` head after a failover.
+  auditCmd
+    .command("witnesses")
+    .description(
+      "What this domain has witnessed of one origin peer's audit-chain head — the post-failover peers-witness comparison (resilience runbook §7.2 step 5); peers are witnesses, never a restoration source"
+    )
+    .requiredOption("--origin <domainId>", "the origin domain whose chain you're checking")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { origin: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const rows = await client.federation.listAuditWitnesses(opts.origin);
+      printResult(rows, opts.output, (raw) => auditWitnessRow(raw as AuditWitness));
+    });
+
   // -------------------------------------------------------------------------------------
   // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, DESIGN.md §10): policy/control documents
   // (typed-registry resources — same CRUD family as domains/services/etc.), approvals (N-of-M
@@ -4574,6 +4643,19 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.campaigns.explain(id);
       printCampaignExplainResult(result, opts.output);
+    });
+
+  campaignCmd
+    .command("adoption <id>")
+    .description(
+      "Per-target adoption evidence for a Campaign — whether each component has migrated, derived live from the evidence source the recipe names (M25.5)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.campaigns.adoption(id);
+      printCampaignAdoptionResult(result, opts.output);
     });
 
   /**
@@ -6830,15 +6912,11 @@ export function buildProgram(): Command {
               `See docs/federation-topologies.md.`
           );
         }
-        console.log(
-          `Next: scp discovery run --module argocd-discovery --instance-id ${opts.name} \\`
-        );
-        console.log(
-          `        --config '{"serverUrl":"${serverUrl}","tokenSecretKey":"${tokenKey}","executionSystemId":"${created.id}"}' \\`
-        );
-        console.log(
-          `        --secret-refs '{"${tokenKey}":"${tokenKey}"}'   # then: scp discovery accept <proposalId>`
-        );
+        // `scp discovery accept` IS GONE (ADR-0047); `scp iac scaffold` is its replacement, and it
+        // derives the module/config/secret-refs discovery needs from the execution-system object
+        // itself (`iac-scaffold-reader.ts`'s `discoveryRequestForExecutionSystem`), so the hint
+        // needs no more than `--from`.
+        console.log(`Next: scp iac scaffold --from ${created.id}`);
         printResult(created, opts.output, (item) => objectRow(item as GraphObject));
       }
     );
@@ -7093,7 +7171,9 @@ export function buildProgram(): Command {
 
   const discoveryCmd = program
     .command("discovery")
-    .description("DiscoveryPlugin run/accept — NEVER auto-commits (DESIGN §11)");
+    .description(
+      "DiscoveryPlugin run — prints a PROPOSAL only, NEVER auto-commits (DESIGN §11); feed it to `scp iac scaffold` (ADR-0047 — `discovery accept` is gone)"
+    );
 
   discoveryCmd
     .command("run")
