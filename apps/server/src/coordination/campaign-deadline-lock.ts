@@ -407,8 +407,8 @@ export interface LockedTargetRecord {
  * `(subject_id, kind)`, and `restatesDecision` canonicalizes object KEYS while deliberately
  * preserving array ORDER ("a reordered array is a genuinely different input set and MUST write a new
  * row"). The order this receives is the order the reconciler's per-target loop pushed, which comes
- * from `loadWavesWithTargets`'s `ORDER BY created_at` with NO TIEBREAK over rows that all carry the
- * same transaction timestamp on a table those rows are UPDATEd in every tick. So the input order is
+ * from `plan-service.ts`'s `getLatestPlanForChange` — whose target query carries NO `ORDER BY` AT
+ * ALL, on a table those rows are UPDATEd in every tick. So the input order is
  * genuinely not stable, and an unstable `locked[]` is one new Decision row per second for the whole
  * life of the campaign — ADR-0024's measured 1.44 GB/day rebuilt from parts.
  *

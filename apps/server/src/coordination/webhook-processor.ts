@@ -613,7 +613,6 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
     // only thing done here is the one cheap, safe write. See `config-source/sync-queue-repo.ts`.
     if (hint.repo && hint.commitSha) {
       const registry = await listConfigSourceRegistrations(tx, orgId);
-      const resolution = resolveConfigSourceForSync(registry.registrations, hint.repo, "");
       // `matched` is impossible here (no stack name to match on) — what this asks is the narrower
       // question the trigger needs: does ANY registration cover this repo? An ambiguous repo is
       // enqueued against nothing and reported at drain time by the same matcher, so the loud refusal
@@ -630,7 +629,6 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
           paths: hint.paths ?? []
         });
       }
-      void resolution;
     }
 
     const match = await matchComponentForSource(tx, orgId, {

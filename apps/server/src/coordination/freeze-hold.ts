@@ -192,9 +192,9 @@ export interface HeldTargetRecord {
  * SORTED BY `targetObjectId`, AND THE SORT IS THE POINT. `insertDecisionIfChanged` compares a
  * candidate against the latest row of the same `(subject_id, kind)` and `restatesDecision`
  * canonicalizes object KEYS only — array element ORDER is significant. The order this receives is
- * the order reconcile's per-target loop pushed, which comes from `loadWavesWithTargets`'s
- * `ORDER BY created_at` with NO TIEBREAK over rows that all carry the same transaction timestamp,
- * on a table those rows are UPDATEd in every tick. So the input order is genuinely not stable, and
+ * the order reconcile's per-target loop pushed, which comes from `plan-service.ts`'s
+ * `getLatestPlanForChange` — whose target query carries NO `ORDER BY` AT ALL, on a table those rows
+ * are UPDATEd in every tick. So the input order is genuinely not stable, and
  * an unstable `held` array is one new Decision row per second for the length of the freeze window —
  * ADR-0024's measured 1.44 GB/day rebuilt from parts.
  *
