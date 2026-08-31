@@ -468,10 +468,8 @@ export async function pullFromCommanderPeer(
   orgId: string,
   selfDomainId: string,
   peer: FederationPeerRow,
-  ctx: { bearer?: string; mtls?: FederationClientMtls },
-  now: number = Date.now()
+  ctx: { bearer?: string; mtls?: FederationClientMtls }
 ): Promise<FederationSyncOutcome> {
-  void now;
   if (!peer.baseUrl) {
     return {
       peerDomainId: peer.id,

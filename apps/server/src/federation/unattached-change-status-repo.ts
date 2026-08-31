@@ -68,8 +68,14 @@ export interface UnattachedChangeStatusRow {
  *
  * `urn`/`name` are COALESCEd, never overwritten with null — they ride only the propose payload, so
  * a later transition entry for the same change must not erase the naming the propose gave us.
- * `lastState` and `dropReason` DO overwrite: they are the current reading, and a change that moved
- * from `proposed` to `accepted` must not keep claiming it is in flight.
+ * `lastState` is COALESCEd for the same reason and NOT, as this said before, an overwrite: a
+ * malformed entry whose payload carries no parseable state (`import-repo.ts`'s
+ * `reportedChangeState` returns null whenever `toState`/`state` is not a string) must not blank a
+ * state we already read correctly. A real transition always carries one, so the ordinary
+ * `proposed -> accepted` reading still lands.
+ *
+ * `dropReason` alone DOES overwrite: it is not nullable and it describes THIS entry's drop, so the
+ * latest reading is the only correct one.
  */
 export async function recordUnattachedChangeStatus(
   tx: TenantTx,
