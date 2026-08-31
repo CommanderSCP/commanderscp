@@ -59,7 +59,7 @@ import type {
 import { scopedHttpResponseTooLargeError } from "@scp/plugin-api";
 import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
 import { encodeMessage, parseMessage, type RpcRequest } from "./rpc-protocol.js";
-import { assertEgressAllowed } from "./egress-guard.js";
+import { assertEgressAllowed, createEgressPinRegistry } from "./egress-guard.js";
 
 /**
  * M21.4 (ADR-0032 §7a) — the file-read hook that rides ALONGSIDE an executor plugin, never ON it.
@@ -418,8 +418,12 @@ function scopedFetchHttpClient(
 ): ScopedHttpClient {
   // A dedicated undici Agent presenting the client certificate on every TLS handshake this
   // dispatcher makes — constructed once and reused (undici pools connections per-origin
-  // internally), not per-request. `undefined` when `mtls` is unset: every request falls back to
-  // Node's global `fetch()`, preserving the exact pre-M8 (no client cert) behavior byte-for-byte.
+  // internally), not per-request. It is now built UNCONDITIONALLY, where it used to be `undefined`
+  // without mTLS/CA material and every request fell through to Node's global `fetch()`: the
+  // dispatcher is what carries `connect.lookup`, and address pinning is not optional. Node's global
+  // `fetch` re-resolves the hostname itself at connect time, which is precisely the DNS-rebinding
+  // window `createEgressPinRegistry` exists to close (egress-guard.ts) — there is no longer a
+  // request path out of this process that resolves a name twice.
   //
   // MUST use the explicitly-imported `undici` package's OWN `fetch` (`undiciFetch`) with this
   // Agent, never Node's global `fetch` — Node's global `fetch` is powered by its OWN internal,
@@ -438,58 +442,54 @@ function scopedFetchHttpClient(
   // bundled-backend test and break every BYO executor behind a public CA — a regression that would
   // look like an unrelated outage.
   const cas = [mtls?.ca, executorTlsCa].filter((c): c is string => c !== undefined);
-  const dispatcher =
-    mtls || executorTlsCa
-      ? new UndiciAgent({
-          connect: {
-            ...(mtls ? { cert: mtls.cert, key: mtls.key } : {}),
-            ...(cas.length > 0 ? { ca: [...rootCertificates, ...cas] } : {})
-          }
-        })
-      : undefined;
+  // The pin registry and the dispatcher are ONE unit: the registry answers this Agent's connect-time
+  // resolution, and only this Agent's. Both live for the life of the subprocess.
+  const pins = createEgressPinRegistry();
+  const dispatcher = new UndiciAgent({
+    connect: {
+      lookup: pins.lookup,
+      ...(mtls ? { cert: mtls.cert, key: mtls.key } : {}),
+      ...(cas.length > 0 ? { ca: [...rootCertificates, ...cas] } : {})
+    }
+  });
   return {
     async request(req): Promise<ScopedHttpResponse> {
       // MAJOR #6 — allowlist AND internal-IP deny-list (post-DNS-resolution). See egress-guard.ts.
       // `allowInternalPrivate` comes from module identity (OPERATOR_PLANE_MODULES), never config.
-      await assertEgressAllowed(req.url, allowedHosts, allowInternalPrivate);
-      const requestBody = req.body === undefined ? undefined : JSON.stringify(req.body);
-      // Two near-identical branches rather than one call through a unified variable: undici's own
-      // `fetch` and Node's global `fetch` declare incompatible `RequestInit`/`Headers` TypeScript
-      // types (two separately-vendored copies of the same underlying shape) even though both
-      // accept the exact same plain object at runtime — this keeps each call fully type-checked
-      // against its OWN fetch's real signature instead of casting the options object away.
-      const res = dispatcher
-        ? await undiciFetch(req.url, {
-            method: req.method,
-            headers: req.headers,
-            body: requestBody,
-            redirect: "error",
-            dispatcher
-          })
-        : await fetch(req.url, {
-            method: req.method,
-            headers: req.headers,
-            body: requestBody,
-            // MAJOR #6 — never follow redirects: a 3xx could re-point the request at an internal
-            // host AFTER the pre-flight egress check. A redirect surfaces as an error the plugin
-            // handles; plugins must target final URLs. (No M7 plugin's fixtures rely on redirects.)
-            redirect: "error"
-          });
-      const text =
-        req.maxResponseBytes !== undefined
-          ? await readBoundedResponseText(res, req.url, req.maxResponseBytes)
-          : await res.text();
-      let body: unknown = text;
+      const target = await assertEgressAllowed(req.url, allowedHosts, allowInternalPrivate);
+      // …and the socket may only be opened to an address that check actually classified. Released
+      // after the body is read, which is long after the connection was established.
+      const release = pins.pin(target);
       try {
-        body = text ? JSON.parse(text) : undefined;
-      } catch {
-        // Not JSON — return the raw text; ScopedHttpResponse.body is deliberately `unknown`.
+        const requestBody = req.body === undefined ? undefined : JSON.stringify(req.body);
+        const res = await undiciFetch(req.url, {
+          method: req.method,
+          headers: req.headers,
+          body: requestBody,
+          // MAJOR #6 — never follow redirects: a 3xx could re-point the request at an internal
+          // host AFTER the pre-flight egress check. A redirect surfaces as an error the plugin
+          // handles; plugins must target final URLs. (No M7 plugin's fixtures rely on redirects.)
+          redirect: "error",
+          dispatcher
+        });
+        const text =
+          req.maxResponseBytes !== undefined
+            ? await readBoundedResponseText(res, req.url, req.maxResponseBytes)
+            : await res.text();
+        let body: unknown = text;
+        try {
+          body = text ? JSON.parse(text) : undefined;
+        } catch {
+          // Not JSON — return the raw text; ScopedHttpResponse.body is deliberately `unknown`.
+        }
+        const headers: Record<string, string> = {};
+        res.headers.forEach((value, key) => {
+          headers[key] = value;
+        });
+        return { status: res.status, headers, body };
+      } finally {
+        release();
       }
-      const headers: Record<string, string> = {};
-      res.headers.forEach((value, key) => {
-        headers[key] = value;
-      });
-      return { status: res.status, headers, body };
     }
   };
 }
