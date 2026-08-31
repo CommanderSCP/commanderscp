@@ -23,6 +23,10 @@ import {
   assertOrgRetainsAdministrativeFloor
 } from "../authz/role-binding-door.js";
 import { inArray } from "drizzle-orm";
+import { eventBus } from "../events/event-bus.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
+import { appendJournalEntry } from "../federation/journal-repo.js";
+import type { FederationImportContext } from "./objects-repo.js";
 
 /**
  * M20.3 (ADR-0031 §4) — does either endpoint of an edge stay inside its own security domain?
@@ -47,10 +51,6 @@ async function eitherEndpointIsDomainLocal(
     .where(and(eq(objects.orgId, orgId), inArray(objects.id, [fromId, toId])));
   return rows.some((row) => row.domainLocal);
 }
-import { eventBus } from "../events/event-bus.js";
-import { ensureFederationSelf } from "../federation/self-repo.js";
-import { appendJournalEntry } from "../federation/journal-repo.js";
-import type { FederationImportContext } from "./objects-repo.js";
 
 function toRelationship(row: typeof relationships.$inferSelect): Relationship {
   return {
