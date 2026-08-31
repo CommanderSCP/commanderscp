@@ -6912,15 +6912,11 @@ export function buildProgram(): Command {
               `See docs/federation-topologies.md.`
           );
         }
-        console.log(
-          `Next: scp discovery run --module argocd-discovery --instance-id ${opts.name} \\`
-        );
-        console.log(
-          `        --config '{"serverUrl":"${serverUrl}","tokenSecretKey":"${tokenKey}","executionSystemId":"${created.id}"}' \\`
-        );
-        console.log(
-          `        --secret-refs '{"${tokenKey}":"${tokenKey}"}'   # then: scp discovery accept <proposalId>`
-        );
+        // `scp discovery accept` IS GONE (ADR-0047); `scp iac scaffold` is its replacement, and it
+        // derives the module/config/secret-refs discovery needs from the execution-system object
+        // itself (`iac-scaffold-reader.ts`'s `discoveryRequestForExecutionSystem`), so the hint
+        // needs no more than `--from`.
+        console.log(`Next: scp iac scaffold --from ${created.id}`);
         printResult(created, opts.output, (item) => objectRow(item as GraphObject));
       }
     );
@@ -7175,7 +7171,9 @@ export function buildProgram(): Command {
 
   const discoveryCmd = program
     .command("discovery")
-    .description("DiscoveryPlugin run/accept — NEVER auto-commits (DESIGN §11)");
+    .description(
+      "DiscoveryPlugin run — prints a PROPOSAL only, NEVER auto-commits (DESIGN §11); feed it to `scp iac scaffold` (ADR-0047 — `discovery accept` is gone)"
+    );
 
   discoveryCmd
     .command("run")
