@@ -171,6 +171,13 @@ Turborepo derives this from workspace `dependsOn`; `pnpm build` = `turbo run bui
 
 **Drift rule:** CI re-runs `openapi:emit` and `sdk generate` and fails on `git diff --exit-code` — the committed spec and generated SDK can never lag the routes (§7).
 
+**The DB row has two gates, and they exist because it had none.** `drizzle-kit generate` never reads the database and never reads the `.sql` files: it diffs `schema.ts` against the newest `drizzle/meta/*_snapshot.json`, so that snapshot is the tool's entire model of what already exists. It had not been regenerated since the M1/M2 era — `0000_snapshot.json` described 4 tables while the journal carried 110 entries and `schema.ts` declared 71 — and `db:generate` did not merely emit a wrong migration, it **aborted on an interactive rename prompt** for columns it believed were new. The documented workflow above had not worked for roughly 107 migrations. `0109_snapshot.json` reconciles it (verified by applying `schema.ts`'s full generated DDL to an empty database and diffing against a fully-migrated one: **identical** on all 124 indexes and on every column of all 71 modelled tables). The two gates that keep it that way:
+
+- `apps/server/src/db/snapshot-freshness.test.ts` (unit) — every table, column and index `schema.ts` declares must be in that snapshot. Edit `schema.ts` without running `db:generate` and this is what fails.
+- `apps/server/src/db/schema-ddl-drift.integration.test.ts` (integration) — every index in a fully-migrated database must have a named declaration in `schema.ts`, **and vice versa**. Migrations here are hand-authored, Drizzle enforces no constraint at runtime, and nothing else compares the two: eleven indexes — four of them race-closing partial uniques on `objects`/`relationships` — had been absent from `schema.ts` for up to four milestones with every test green.
+
+Four tables the migrations create are outside both gates because `schema.ts` does not model them at all: `scanner_assignments`, `scan_db_staleness_policy` and `dependency_subscription_unlock` (instance-scoped singletons addressed by raw SQL), plus the dead `objects_m0_deprecated`. They carry no indexes. Modelling them is a separate piece of work.
+
 ### 3.3 Incremental builds
 
 - Turborepo hashes inputs per package; unchanged packages are cache hits locally and in CI (cache restored from the self-hosted cache dir or artifact store — no SaaS dependency).
