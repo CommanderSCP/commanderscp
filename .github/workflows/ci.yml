@@ -870,12 +870,13 @@ jobs:
     # structurally by Docker's own network isolation, not a firewall rule).
     #
     # Also needs testcontainer-images (4d) + runs mirror-seed before `pnpm build`, same as the other
-    # E2E jobs. KNOWN GAP, not fixed here (out of this file's scope): unlike
-    # deploy/compose/docker-compose.yml, deploy/compose/docker-compose.federation.yml's
-    # domain-a-scp/domain-b-scp `build:` blocks declare no `args:` at all, so SKOPEO_IMAGE/
-    # COSIGN_IMAGE being set in this job's environment does not yet reach that Dockerfile build —
-    # it still resolves the dead quay.io default until docker-compose.federation.yml also declares
-    # `args: [SKOPEO_IMAGE, COSIGN_IMAGE]` in pass-through form for both `scp` services.
+    # E2E jobs. deploy/compose/docker-compose.federation.yml's domain-a-scp `build:` block (the
+    # only one with a `build:` at all — domain-b-scp reuses the image it produces) declares
+    # `args: [SKOPEO_IMAGE, COSIGN_IMAGE]` in pass-through form, same as
+    # deploy/compose/docker-compose.yml, so this job's SKOPEO_IMAGE/COSIGN_IMAGE reach that
+    # Dockerfile build instead of resolving the dead quay.io default. That invariant is held by
+    # deploy/airgap/src/skopeo-bin.test.ts's compose-file census (every compose file that builds
+    # the root Dockerfile must pass both args through), not by anything in this file.
     runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
     permissions:

@@ -65,11 +65,12 @@ Testcontainers suite) run inside this image too, now that it's a pullable artifa
 
 ## Known gaps / follow-ups (tracked, not silently skipped)
 
-- **`tools/openapi/check.sh` is not yet wired into the `codegen-drift` CI job.** The script exists,
-  is vendored, and is tested (manual breaking/non-breaking transcript in the PR description that
-  introduced it), but wiring it into `.github/workflows/ci.yml`'s `codegen-drift` job (plus giving
-  that job enough git history — `fetch-depth: 0` — to resolve a merge base) was scoped out of this
-  change; see `tools/openapi/README.md`.
+- **`tools/openapi/check.sh` runs as its own CI job, not inside `codegen-drift`.** It is wired into
+  `.github/workflows/ci.yml`'s `api-breaking-change` job ("3b. API breaking-change gate (oasdiff,
+  /v1 additive-only)"), which runs on every PR with `fetch-depth: 0` so `check.sh`'s `git
+  merge-base origin/main HEAD` can resolve the base spec — deliberately separate from `codegen-drift`
+  (job 3), which only proves the committed spec matches freshly generated output; see
+  `tools/openapi/README.md`.
 - **Only `linux/amd64` is vendored/tested for `oasdiff`** — matches the CI runner architecture
   (GitHub-hosted `ubuntu-latest`; previously the homelab self-hosted runners, also linux/amd64). A local dev machine on another architecture needs its own vendored binary to run
   `check.sh` directly (or can run it inside a `tools/ci-image` container, which is `linux/amd64`
