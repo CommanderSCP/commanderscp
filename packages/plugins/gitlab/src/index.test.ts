@@ -505,6 +505,38 @@ describe("observe() polling — commits and pipelines", () => {
     scope.done();
   });
 
+  it("keeps walking when the instance CLAMPS the page size below the requested per_page", async () => {
+    // GitLab clamps every list to the instance's `max_page_size` setting, so `per_page=100` can be
+    // answered with fewer rows and still have more to give. Ending the walk on "shorter than what
+    // we ASKED for" would stop on page 1 there — the silent drop pagination exists to close.
+    const { ctx, token, base, pid } = setup();
+    const watermark = "2026-07-01T00:00:00.000Z";
+    const page = (label: string, count: number, createdAt: string): unknown[] =>
+      Array.from({ length: count }, (_, i) => ({
+        id: `${label}${String(i).padStart(38, "0")}`,
+        created_at: createdAt
+      }));
+    const scope = nock(base).matchHeader("private-token", token);
+    scope
+      .get(`/projects/${pid}/repository/commits`)
+      .query((q) => q.page === "1" && q.per_page === "100")
+      .reply(200, page("a", 20, "2026-07-02T00:00:00Z")); // clamped to 20, not short.
+    scope
+      .get(`/projects/${pid}/repository/commits`)
+      .query((q) => q.page === "2")
+      .reply(200, [{ id: "c".repeat(40), created_at: "2026-06-30T00:00:00Z" }]); // pre-watermark: ends the walk
+    scope.get(`/projects/${pid}/pipelines`).query(true).reply(200, []);
+
+    const events = await plugin.observe(ctx, {
+      token: JSON.stringify({ push: watermark, workflow_run: watermark })
+    });
+
+    // 20, not 21: page 2's commit predates the watermark, so it is read and filtered out. The
+    // point is that page 2 was REQUESTED — an unread interceptor is caught by the afterEach.
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(20);
+    scope.done();
+  });
+
   it("passes the cursor watermark as ?since / ?updated_after and filters older events client-side", async () => {
     const { ctx, token, base, pid } = setup();
     const since = "2026-07-01T00:00:00Z";
@@ -516,6 +548,14 @@ describe("observe() polling — commits and pipelines", () => {
         { id: "old".padEnd(40, "0"), created_at: "2026-06-01T00:00:00Z" }, // older -> filtered
         { id: "new".padEnd(40, "0"), created_at: "2026-07-02T00:00:00Z" }
       ]);
+    // This fixture puts the NEWEST commit last (a real GitLab lists newest-first), so the
+    // oldest-entry-predates-the-watermark stop cannot trip, and a 2-row page 1 is the whole
+    // SERVED page size as far as the walk can tell — so it asks for one more page and gets none.
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/commits`)
+      .query((q) => q.page === "2")
+      .reply(200, []);
     nock(base)
       .matchHeader("private-token", token)
       .get(`/projects/${pid}/pipelines`)

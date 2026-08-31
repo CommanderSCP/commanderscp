@@ -445,6 +445,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   const events: ExecutorEvent[] = [];
   const repo = projectPathOf(config);
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     if (sinceIso) query.set("since", sinceIso);
@@ -457,6 +458,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
     if (status < 200 || status >= 300) break;
     const commits = (body as GitlabCommit[]) ?? [];
     if (commits.length === 0) break;
+    servedPageSize ??= commits.length;
     for (const commit of commits) {
       const occurredAt = commit.created_at ?? commit.committed_date ?? new Date().toISOString();
       if (sinceMs !== undefined && new Date(occurredAt).getTime() <= sinceMs) continue;
@@ -471,7 +473,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
         raw: commit
       });
     }
-    if (commits.length < POLL_PAGE_SIZE) break; // a short page is the last page.
+    if (commits.length < servedPageSize) break; // shorter than the SERVED page — the last page.
     if (sinceMs === undefined) break; // cold start reads one page — see MAX_POLL_PAGES.
     const last = commits[commits.length - 1];
     const oldest = last?.created_at ?? last?.committed_date;
@@ -484,6 +486,12 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
  * Page size and per-poll page ceiling for the list resources `observe()` polls, mirroring the
  * github adapter's constants of the same name (the defect and its bound are identical; each adapter
  * keeps its own copy because the query parameter NAMES differ per provider).
+ *
+ * POLL_PAGE_SIZE is what we ASK for, never what we get: GitLab clamps every list to the instance's
+ * `max_page_size` application setting, so a hardened instance answers `per_page=100` with fewer.
+ * Ending on a page shorter than the REQUESTED size would then stop on page 1 and silently drop the
+ * rest — the defect pagination was added to close — so each loop learns the SERVED page size from
+ * page 1 and ends on a page shorter than that (or empty, or at the budget).
  */
 const POLL_PAGE_SIZE = 100;
 const MAX_POLL_PAGES = 5;
@@ -495,6 +503,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
   const events: ExecutorEvent[] = [];
   const repo = projectPathOf(config);
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     if (sinceIso) query.set("updated_after", sinceIso);
@@ -507,6 +516,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
     if (status < 200 || status >= 300) break;
     const pipelines = (body as GitlabPipeline[]) ?? [];
     if (pipelines.length === 0) break;
+    servedPageSize ??= pipelines.length;
     for (const pipeline of pipelines) {
       const occurredAt = pipeline.updated_at ?? pipeline.created_at ?? new Date().toISOString();
       if (sinceMs !== undefined && new Date(occurredAt).getTime() <= sinceMs) continue;
@@ -521,7 +531,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
         raw: pipeline
       });
     }
-    if (pipelines.length < POLL_PAGE_SIZE) break;
+    if (pipelines.length < servedPageSize) break; // shorter than the SERVED page — the last page.
     if (sinceMs === undefined) break;
     const last = pipelines[pipelines.length - 1];
     const oldest = last?.updated_at ?? last?.created_at;

@@ -907,6 +907,39 @@ describe("observe() pagination", () => {
     scope.done();
   });
 
+  it("keeps walking when the host CLAMPS the page size below the requested per_page", async () => {
+    // github.com honours per_page=100, but a self-hosted/proxied host need not (Gitea's
+    // MAX_RESPONSE_ITEMS clamp is the concrete case). Ending the walk on "shorter than what we
+    // ASKED for" stops on page 1 against such a host — the silent drop pagination exists to close.
+    const { config, ctx, authHeader, base } = setup();
+    const watermark = "2026-07-01T00:00:00.000Z";
+    const scope = nock(base).matchHeader("authorization", authHeader);
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query((q) => q.page === "1" && q.per_page === "100")
+      .reply(200, commitPage("a", 30, "2026-07-02T00:00:00Z")); // clamped to 30, not short.
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query((q) => q.page === "2")
+      .reply(200, [{ sha: "c".repeat(40), commit: { author: { date: "2026-06-30T00:00:00Z" } } }]);
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query((q) => q.page === "1")
+      .reply(200, { workflow_runs: runPage(4000, 30, "2026-07-02T00:00:00Z") });
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query((q) => q.page === "2")
+      .reply(200, { workflow_runs: runPage(4100, 1, "2026-06-30T00:00:00Z") });
+
+    const events = await plugin.observe(ctx, cursorFor(watermark, watermark));
+
+    // 31 pushes: /commits filters server-side by `since`, so page 2's pre-watermark commit is
+    // still emitted (it ends the walk, it is not dropped). Runs ARE filtered client-side -> 30.
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(31);
+    expect(events.filter((e) => e.kind === "workflow_run")).toHaveLength(30);
+    scope.done();
+  });
+
   it("stops at the page BUDGET rather than following an endless backlog", async () => {
     const { config, ctx, authHeader, base } = setup();
     const watermark = "2026-07-01T00:00:00.000Z";

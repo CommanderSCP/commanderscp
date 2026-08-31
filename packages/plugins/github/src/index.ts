@@ -406,6 +406,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   const events: ExecutorEvent[] = [];
   const commits: Array<{ sha: string; commit?: { author?: { date?: string } } }> = [];
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     if (sinceIso) query.set("since", sinceIso);
@@ -418,8 +419,9 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
     if (status < 200 || status >= 300) break; // lenient observe posture — see this hook's doc.
     const pageCommits = body as Array<{ sha: string; commit?: { author?: { date?: string } } }>;
     if (!Array.isArray(pageCommits) || pageCommits.length === 0) break;
+    servedPageSize ??= pageCommits.length;
     commits.push(...pageCommits);
-    if (pageCommits.length < POLL_PAGE_SIZE) break; // a short page is the last page.
+    if (pageCommits.length < servedPageSize) break; // shorter than the SERVED page — the last page.
     // GitHub filters `since` server-side, so a full page means there is probably more of the
     // window left; stop early anyway once the page's OLDEST entry predates the watermark.
     const oldest = pageCommits[pageCommits.length - 1]?.commit?.author?.date;
@@ -470,6 +472,12 @@ const MAX_COMMIT_FILE_FETCHES_PER_POLL = 20;
  *
  * A COLD START (no watermark) deliberately reads ONE page. There is no window to catch up on then —
  * only "how much history do we invent events for" — and inventing 500 is not better than 100.
+ *
+ * POLL_PAGE_SIZE is what we ASK for, never what we get: a list endpoint may serve fewer per page
+ * than requested (github.com honours 100, but a self-hosted/proxied instance need not — Gitea's
+ * `MAX_RESPONSE_ITEMS` clamp is the concrete case, see that adapter). Ending on a page shorter than
+ * the REQUESTED size would then stop on page 1 and silently drop the rest, so each loop learns the
+ * SERVED page size from page 1 and ends on a page shorter than that (or empty, or at the budget).
  */
 const POLL_PAGE_SIZE = 100;
 const MAX_POLL_PAGES = 5;
@@ -523,6 +531,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     const { status, body } = await api(
@@ -534,6 +543,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
     if (status < 200 || status >= 300) break; // lenient observe posture — see pollCommits' doc.
     const runs = (body as { workflow_runs?: WorkflowRun[] }).workflow_runs ?? [];
     if (runs.length === 0) break;
+    servedPageSize ??= runs.length;
     for (const run of runs) {
       if (sinceMs !== undefined && run.created_at && new Date(run.created_at).getTime() <= sinceMs)
         continue;
@@ -548,7 +558,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
         raw: run
       });
     }
-    if (runs.length < POLL_PAGE_SIZE) break; // a short page is the last page.
+    if (runs.length < servedPageSize) break; // shorter than the SERVED page — the last page.
     if (sinceMs === undefined) break; // cold start reads one page — see MAX_POLL_PAGES.
     // Unlike /commits, this resource has no server-side `since`: the whole page is filtered here,
     // so the stop condition is the page's OLDEST run falling at/behind the watermark.
