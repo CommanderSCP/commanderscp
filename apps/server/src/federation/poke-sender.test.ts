@@ -7,7 +7,8 @@ import {
   sendPokeToPeer,
   type FederationClientMtls
 } from "./federation-outbound.js";
-import { isPokeTarget } from "./poke-sender.js";
+import { createCommanderPokeSender, isPokeTarget } from "./poke-sender.js";
+import type { Db } from "../db/client.js";
 import { PokeRateLimiter } from "./poke-rate-limit.js";
 import { asTrustDomainId } from "@scp/schemas";
 
@@ -130,5 +131,76 @@ describe("M14.3 send-side coalesce bucket — at most one poke per window (SCOPE
     clock += 5000;
     expect(limiter.tryConsume(key)).toBe(true);
     expect(limiter.tryConsume(key)).toBe(false);
+  });
+});
+
+/**
+ * UNREADABLE mTLS MATERIAL DISABLES THE SENDER — the log and the behavior have to agree.
+ *
+ * `resolveFederationClientMtls` throws when the two env paths are set but the files cannot be read
+ * (or only one is set). The sender caught that, logged "inert", and then computed `active` as
+ * `Boolean(mtls) || federationClientMtlsConfigured(env)` — and that second disjunct is a pure
+ * presence check over exactly the paths that are set in this case. So it stayed ACTIVE: a peer scan
+ * (a DB query) per org per outbox batch, and a fail-closed refusal per peer per coalesce window,
+ * forever, while the operator had been told it was doing nothing.
+ *
+ * The db is a Proxy that RECORDS every property access, so "did not scan peers" is measured rather
+ * than inferred from an absent log line — the round's own catch swallows anything thrown inside it,
+ * which is exactly how the active-after-failure sender stayed invisible.
+ */
+describe("createCommanderPokeSender — mTLS resolution that THROWS disables the sender", () => {
+  /** Records touches instead of throwing: a throw would be swallowed by the round's catch. */
+  function spyDb(): { db: Db; touches: string[] } {
+    const touches: string[] = [];
+    const db = new Proxy(
+      {},
+      {
+        get(_target, prop) {
+          touches.push(String(prop));
+          return undefined;
+        }
+      }
+    ) as Db;
+    return { db, touches };
+  }
+
+  /** For the two log cases, which construct the sender and never signal it. */
+  const unusedDb = spyDb().db;
+
+  const unreadableEnv = {
+    SCP_FEDERATION_MTLS_CERT_FILE: "/nonexistent/scp-poke-sender-cert.pem",
+    SCP_FEDERATION_MTLS_KEY_FILE: "/nonexistent/scp-poke-sender-key.pem"
+  };
+
+  it("no-ops onEventsRelayed instead of scanning peers and refusing a poke per window", async () => {
+    const { db, touches } = spyDb();
+    const sender = createCommanderPokeSender(db, { env: unreadableEnv, log: () => {} });
+    try {
+      sender.onEventsRelayed(["org-1", "org-2"]);
+      await sender.drain();
+      // `withTenantTx` reaches for `db.transaction` first thing, so one touch is one peer scan.
+      expect(touches).toEqual([]);
+    } finally {
+      await sender.stop();
+    }
+  });
+
+  it("says the sender is DISABLED, and why, in one unambiguous line", () => {
+    const lines: string[] = [];
+    createCommanderPokeSender(unusedDb, { env: unreadableEnv, log: (m) => lines.push(m) });
+    // Exactly one line: the old code logged "inert" here AND kept running, so a second, softer
+    // "inert — no material configured" line alongside it would be the same ambiguity again.
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("POKE SENDER DISABLED");
+    expect(lines[0]).toContain("could not be read");
+    // The cause, not just the verdict — the operator needs the path that failed.
+    expect(lines[0]).toContain("/nonexistent/scp-poke-sender-cert.pem");
+  });
+
+  it("still logs the ordinary inert line when nothing is configured at all", () => {
+    const lines: string[] = [];
+    createCommanderPokeSender(unusedDb, { env: {}, log: (m) => lines.push(m) });
+    // Not a misconfiguration: poke mode is opt-in and default-off, and that case must NOT shout.
+    expect(lines).toEqual(["poke sender inert — no outbound mTLS client-cert material configured"]);
   });
 });

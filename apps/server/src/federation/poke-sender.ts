@@ -224,8 +224,9 @@ export interface CommanderPokeSender {
 
 /**
  * Builds the commander poke sender wired into the outbox relay in main.ts (worker/all role only).
- * INERT unless outbound client-cert material is present — `onEventsRelayed` is then a no-op (no peer
- * scan, no dial). Otherwise each distinct org that produced outbox events triggers a best-effort,
+ * INERT unless outbound client-cert material is present AND readable — `onEventsRelayed` is then a
+ * no-op (no peer scan, no dial), and material that is configured but unreadable says so at
+ * `console.error`. Otherwise each distinct org that produced outbox events triggers a best-effort,
  * coalesced poke round to that org's poke-mode downstream peers, off the relay's post-commit path.
  */
 export function createCommanderPokeSender(
@@ -234,28 +235,51 @@ export function createCommanderPokeSender(
 ): CommanderPokeSender {
   const env = opts.env ?? process.env;
   const log = opts.log ?? ((msg: string) => console.debug?.(`[poke-sender] ${msg}`));
+  /** The one message an operator must not miss — a misconfiguration that turned the sender OFF.
+   *  Same injectable sink when a caller supplies one (so it stays testable), but `console.error`
+   *  rather than `console.debug` by default: a disabled component announced at debug level is a
+   *  component that goes unnoticed. */
+  const loud = opts.log ?? ((msg: string) => console.error(`[poke-sender] ${msg}`));
   const coalesceMs = opts.coalesceMs ?? POKE_SEND_COALESCE_SECONDS * 1000;
   const limiter = new PokeRateLimiter({ capacity: 1, refillIntervalMs: coalesceMs, now: opts.now });
   const bearer = env.SCP_FEDERATION_SYNC_BEARER || undefined;
 
   // Resolve outbound client-cert material ONCE (not per outbox batch — it reads files). `null` from
-  // opts means "explicitly none"; a half-configured pair throws in `resolveFederationClientMtls` —
-  // for this best-effort optimization we swallow that into "inert" rather than crash boot (the sync
-  // loop / dialer surface the misconfig loudly elsewhere).
+  // opts means "explicitly none"; a half-configured or unreadable pair throws in
+  // `resolveFederationClientMtls` — for this best-effort optimization we swallow that into INERT
+  // rather than crash boot (the sync loop / dialer surface the misconfig loudly elsewhere).
+  //
+  // THE THROW PATH DISABLES THE SENDER, and it has to say so itself. `federationClientMtlsConfigured`
+  // is a pure presence check over the two env paths, which is exactly what is TRUE when resolution
+  // threw (paths set, material unreadable) — so ORing it in left `active` true after a failure that
+  // had just logged "inert". The sender then scanned peers and produced a fail-closed refusal per
+  // peer per coalesce window forever, while the boot log said it was doing nothing.
   let mtls: FederationClientMtls | undefined;
+  /** Resolution threw: there is no usable material, whatever the env paths claim. */
+  let mtlsUnresolvable = false;
   if (opts.mtls !== undefined) {
     mtls = opts.mtls ?? undefined;
   } else {
     try {
       mtls = resolveFederationClientMtls(env);
     } catch (err) {
-      log(`outbound mTLS material half-configured — poke sender inert: ${String(err)}`);
+      mtlsUnresolvable = true;
       mtls = undefined;
+      loud(
+        "POKE SENDER DISABLED — outbound mTLS client-cert material is configured but could not be " +
+          `read: ${String(err)}. No peer will be poked until it is fixed; downstream peers still ` +
+          "sync on their own poll schedule, so this delays wake-ups rather than losing them."
+      );
     }
   }
-  // Inert when there is no way to authenticate a poke (SCOPE 5). `opts.mtls === null` forces inert.
-  const active = opts.mtls === null ? false : Boolean(mtls) || federationClientMtlsConfigured(env);
-  if (!active) {
+  // Inert when there is no way to authenticate a poke (SCOPE 5). `opts.mtls === null` forces inert;
+  // so does a failed resolution, which is strictly more fail-closed than the refusal loop it
+  // replaces — nothing was ever dialed on that path either.
+  const active =
+    opts.mtls === null || mtlsUnresolvable
+      ? false
+      : Boolean(mtls) || federationClientMtlsConfigured(env);
+  if (!active && !mtlsUnresolvable) {
     log("poke sender inert — no outbound mTLS client-cert material configured");
   }
 
