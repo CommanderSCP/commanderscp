@@ -187,7 +187,12 @@ export async function federationDialJson(opts: {
     return { status: res.status, body };
   } finally {
     // Tear the connection (and its cached TLS material) down promptly — never pooled across dials.
-    await dispatcher?.close().catch(() => undefined);
+    // `destroy()`, NOT `close()`: `close()` waits for in-flight requests, and a response body that
+    // is never read never finishes (undici leaves it pending until GC). The happy path reads
+    // `res.text()` above, but a mid-body abort/socket error leaves it partly read — and this
+    // teardown must not be the thing that decides how long a dial hangs. See artifact-verify.ts's
+    // `fetchBytes`, where the same `close()` was measured hanging past 5s.
+    await dispatcher?.destroy().catch(() => undefined);
   }
 }
 

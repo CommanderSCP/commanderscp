@@ -159,6 +159,15 @@ describe("LocationRegistryReader.resolveBlob (real loopback fetch)", () => {
         res.end();
         return;
       }
+      if (req.url === "/blobs/fault") {
+        // A registry 5xx that carries a large body — the response the reader throws on WITHOUT
+        // reading. 1 MiB, because the teardown only stalls once the unread body outgrows undici's
+        // buffering (a few hundred bytes close instantly and would fixture the bug away).
+        const page = Buffer.alloc(1024 * 1024, 0x61);
+        res.writeHead(500, { "content-length": String(page.length) });
+        res.end(page);
+        return;
+      }
       res.writeHead(200, { "content-type": "application/octet-stream" });
       res.end(req.url === "/blobs/sig" ? "detached-signature" : "sbom-bytes");
     });
@@ -193,6 +202,26 @@ describe("LocationRegistryReader.resolveBlob (real loopback fetch)", () => {
         location: `${base}/blobs/absent`
       } as ArtifactRef)
     ).resolves.toBeNull();
+  });
+
+  it("a registry FAULT fails closed PROMPTLY — the unread response body must not hold the dial open", async () => {
+    // The reader throws on a non-2xx without reading the body, and undici's `Agent.close()` waits
+    // for in-flight requests: a body nobody reads never finishes, so the teardown hung until the
+    // abandoned body was garbage-collected (measured on undici 7.29.0: 10/10 runs still pending
+    // after 5s with this 1 MiB response). `pre-deploy-gate` calls the verifier with no timeout of
+    // its own, so that turned a fail-closed verification error into an unbounded stall the
+    // registry's response size gets to decide. The bound below is the assertion; the test timeout
+    // is only the backstop for the "never settles" case.
+    const reader = new LocationRegistryReader({ allowedBlobBaseUrls: [`${base}/blobs/`] });
+    const startedAt = Date.now();
+    await expect(
+      reader.resolveBlob({
+        type: "blob",
+        digest: DIGEST_A,
+        location: `${base}/blobs/fault`
+      } as ArtifactRef)
+    ).rejects.toThrow(/HTTP 500/);
+    expect(Date.now() - startedAt).toBeLessThan(2000);
   });
 
   it("a location outside the operator-configured base is refused WITHOUT being fetched", async () => {

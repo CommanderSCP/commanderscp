@@ -516,7 +516,15 @@ async function fetchBytes(url: string, target: VerifiedEgressTarget): Promise<Bu
     return await readBoundedBlob(url, dispatcher);
   } finally {
     release();
-    await dispatcher.close();
+    // `destroy()`, NOT `close()`. `close()` waits for every in-flight request to finish, and a
+    // response whose body was never read never finishes: on undici 7.29.0 an unread body >= 64 KiB
+    // leaves `close()` pending until the abandoned body is garbage-collected — measured here as
+    // still pending after 5s on 10/10 runs with a 1 MiB body. Every exit that does NOT read the
+    // body (a non-2xx, an over-cap `content-length`, a 404 that carries one) would hang the caller
+    // instead of failing closed, and the caller is a pre-deploy gate with no timeout of its own —
+    // an attacker-visible registry response would decide how long verification stalls. `destroy()`
+    // tears the socket down unconditionally, which is what "short-lived, never pooled" meant.
+    await dispatcher.destroy();
   }
 }
 
