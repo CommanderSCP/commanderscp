@@ -22,10 +22,27 @@ import { GraphQueryTimeoutError, withStatementTimeout } from "../graph/query-tim
 import { badRequest, requestTimeout } from "../errors.js";
 
 /**
+ * Max connections for the ISOLATED graph-query pool (main.ts wires `deps.graphDb` to a pool sized by
+ * this). The traverse/named-query/subgraph/integrity handlers run RECURSIVE CTEs (depth ≤ 10, edge
+ * fan-out) whose cost is driven by GRAPH SHAPE and the caller's parameters, not by request volume —
+ * an authenticated caller can fire several expensive traversals and, on the shared request pool (pg
+ * default max 10, `connectionTimeoutMillis: 5000`), turn every OTHER tenant's ordinary request into
+ * a checkout TIMEOUT. Same isolation rationale as the SSE pools (main.ts). A small cap means a
+ * starved graph pool degrades only graph reads, never request serving or coordination. Imported by
+ * main.ts so the number and this paragraph cannot drift apart. */
+export const GRAPH_QUERY_POOL_MAX = Math.max(
+  1,
+  Number(process.env.SCP_GRAPH_QUERY_POOL_MAX ?? 4)
+);
+
+/**
  * Named graph queries + generic traverse (DESIGN.md §5). Read-only: authorized at the queried
  * object's scope (`graph:query` permission) — the same containment walk RBAC uses.
  */
 export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
+  // The isolated graph-query pool (see GRAPH_QUERY_POOL_MAX); falls back to the shared request pool
+  // for hand-built deps (openapi:emit / test harness) that don't wire it, exactly like sseAuthzDb.
+  const graphDb = deps.graphDb ?? deps.db;
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
   typed.route({
@@ -53,7 +70,7 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
       }
       let result;
       try {
-        result = await withTenantTx(deps.db, auth.orgId, (tx) =>
+        result = await withTenantTx(graphDb, auth.orgId, (tx) =>
           withStatementTimeout(tx, deps.config.graphQueryStatementTimeoutMs, async () => {
             await authorize(tx, {
               orgId: auth.orgId,
@@ -95,7 +112,7 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
       const auth = await requireAuth(deps, request);
       let result;
       try {
-        result = await withTenantTx(deps.db, auth.orgId, (tx) =>
+        result = await withTenantTx(graphDb, auth.orgId, (tx) =>
           withStatementTimeout(tx, deps.config.graphQueryStatementTimeoutMs, async () => {
             await authorize(tx, {
               orgId: auth.orgId,
@@ -143,7 +160,7 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
       const auth = await requireAuth(deps, request);
       let result;
       try {
-        result = await withTenantTx(deps.db, auth.orgId, (tx) =>
+        result = await withTenantTx(graphDb, auth.orgId, (tx) =>
           withStatementTimeout(tx, deps.config.graphQueryStatementTimeoutMs, async () => {
             await authorize(tx, {
               orgId: auth.orgId,
@@ -193,7 +210,7 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
-      const report = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+      const report = await withTenantTx(graphDb, auth.orgId, async (tx) => {
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,

@@ -23,6 +23,7 @@ import { recordMemberClusterHeartbeat } from "./db/member-heartbeat-repo.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import { SSE_AUTHZ_POOL_MAX } from "./routes/events.js";
+import { GRAPH_QUERY_POOL_MAX } from "./routes/graph.js";
 import type { AppDeps } from "./types.js";
 
 async function main(): Promise<void> {
@@ -210,10 +211,18 @@ async function main(): Promise<void> {
   const sseBridge = startSseBridge(sseBridgePool, config.runtimeDatabaseUrl);
   const sseAuthzPool = createPool(config.runtimeDatabaseUrl, { max: SSE_AUTHZ_POOL_MAX });
   deps.sseAuthzDb = createDb(sseAuthzPool);
+  //  3. `graphQueryPool` — the recursive-CTE graph read routes (routes/graph.ts). Same isolation
+  //     rationale as the SSE pools: their cost is driven by graph shape + caller parameters, not by
+  //     request volume, so a burst of expensive traversals must not starve the request pool and turn
+  //     other tenants' requests into checkout timeouts. `max` imported as `GRAPH_QUERY_POOL_MAX` so
+  //     the number and its justification cannot drift. Assigned after `buildApp`, like `sseAuthzDb`.
+  const graphQueryPool = createPool(config.runtimeDatabaseUrl, { max: GRAPH_QUERY_POOL_MAX });
+  deps.graphDb = createDb(graphQueryPool);
   app.addHook("onClose", async () => {
     await sseBridge.stop();
     await sseBridgePool.end();
     await sseAuthzPool.end();
+    await graphQueryPool.end();
   });
 
   // Outbox relay + pg-boss worker skeleton (DESIGN.md §8) — only the roles that own background
