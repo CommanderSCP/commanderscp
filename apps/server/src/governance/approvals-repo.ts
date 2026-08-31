@@ -1,6 +1,5 @@
 import { and, eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import { asTrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { approvalRequests, approvalVotes, relationships } from "../db/schema.js";
 import { conflict, forbidden, notFound } from "../errors.js";
@@ -10,6 +9,7 @@ import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { computeObjectContentHash, computeRelationshipContentHash } from "../graph/content-hash.js";
 import { ensureInstanceKey, signAttestation, type SignedAttestation } from "./attestation.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 
 /**
  * N-of-M approval quorum (DESIGN §10.2). SECURITY-SENSITIVE surfaces (M4 PR body flag: "approval
@@ -321,21 +321,18 @@ export async function castApprovalVote(
         fromId: input.voterObjectId,
         toId: request.changeObjectId,
         properties: relProperties,
-        // FIXME(ADR-0021 D4, follow-on (i)) — SUSPECTED PRE-EXISTING DEFECT, surfaced by branding
-        // `relationships.origin_domain_id` as a `TrustDomainId` and reported to the owner rather
-        // than silently changed here.
+        // ADR-0021 D4, follow-on (i) — THIS DOMAIN'S MINTED DOMAIN ID, the same value every other
+        // writer of `origin_domain_id` stamps (graph/relationships-repo.ts, graph/objects-repo.ts).
         //
-        // This writes the ORG id into the row's federation-provenance column. Every other writer
-        // of `origin_domain_id` (graph/relationships-repo.ts, graph/objects-repo.ts) stamps
-        // `(await ensureFederationSelf(tx, orgId)).domainId` — a SEPARATE uuid minted per org, not
-        // the org id. So this `approves` edge claims an origin domain that does not exist in
-        // `federation_self`, which makes its single-writer-authority check
-        // (`existing.originDomainId !== self.domainId`) fail for a federated delete.
-        //
-        // Behavior is PRESERVED byte-for-byte here — the fix changes persisted provenance on a
-        // graph-visible relationship and therefore needs its own PR and owner sign-off. The
-        // constructor marks the exact line rather than hiding it behind an implicit widening.
-        originDomainId: asTrustDomainId(input.orgId),
+        // It used to write the ORG id, which is a different uuid entirely: `federation_self.domain_id`
+        // is minted per org and is not derived from `org_id`. So the edge claimed an origin domain
+        // present in no `federation_self` row, and every reader that compares provenance against
+        // `self.domainId` silently declined to act on it — the federated-delete single-writer check,
+        // and (measured beyond the original report) `graph/objects-repo.ts`'s `deleteObject` cascade,
+        // which tombstones touching edges under `eq(relationships.originDomainId, self.domainId)`.
+        // The `approves` edge missed that filter, so deleting the voter or the change left it live
+        // and dangling, permanently and locally. drizzle/0110 repairs the rows already written.
+        originDomainId: (await ensureFederationSelf(tx, input.orgId)).domainId,
         revision: 1,
         contentHash: computeRelationshipContentHash({
           id: relId,
