@@ -526,12 +526,21 @@ export async function buildServiceBoard(
   service: GraphObject
 ): Promise<ServiceBoardResponse> {
   // 1. The service's components: `contains` edges (service → component), one bounded hop.
-  const { objects } = await traverse(tx, orgId, {
-    objectId: service.id,
-    direction: "out",
-    relTypes: ["contains"],
-    maxDepth: 1
-  });
+  // `null` read-scope: this is an INTERNAL one-hop traversal (not the /graph/traverse HTTP door),
+  // invoked after the board route has already authorized the caller for `service`; the components it
+  // returns are exactly the children the caller sees by seeing the service. It is not the
+  // enumeration surface graph read-scoping (routes/graph.ts) guards.
+  const { objects } = await traverse(
+    tx,
+    orgId,
+    {
+      objectId: service.id,
+      direction: "out",
+      relTypes: ["contains"],
+      maxDepth: 1
+    },
+    null
+  );
   // DIRECT children only (intermediate-grouping D3), and they may now be ASSEMBLIES as well as
   // components (migration 0055). `rows` stays strictly per-component — an assembly is reported
   // separately, in `childAssemblies` below, rather than being flattened into its descendants.

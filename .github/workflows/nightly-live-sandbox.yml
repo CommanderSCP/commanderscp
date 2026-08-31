@@ -26,6 +26,9 @@ on:
     - cron: "17 6 * * *" # nightly, off-peak; arbitrary minute to avoid GitHub's exact-hour pile-up
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   check-secrets:
     name: Check for live-sandbox credentials
@@ -60,7 +63,7 @@ jobs:
     if: needs.check-secrets.outputs.have-github-secrets == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
       - run: pnpm build
       - name: workflow_dispatch a real workflow on the configured test repo, poll it to completion via @scp/plugin-github
@@ -78,7 +81,7 @@ jobs:
     if: needs.check-secrets.outputs.have-argocd-secrets == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: honest stub — real kind+ArgoCD bring-up is tracked follow-up, not implemented this milestone
         run: |
           echo "::warning::argocd-live-sandbox is a documented stub (M7 PR body: 'HONEST SCOPE')." >&2

@@ -40,6 +40,25 @@ function trimSlash(url: string): string {
 }
 
 /**
+ * A console link is rendered as a raw `href` in the SPA, so a `webUrl`/`serverUrl` of
+ * `javascript:…` (or `data:`/`vbscript:`) would execute in the operator's browser when clicked —
+ * stored XSS, since execution-system `properties` are operator-supplied and its property schema is
+ * open (`{"type":"object"}`, migration 0019). Only `http(s)` addresses are browsable links; every
+ * other scheme is dropped to null (an un-clickable node) at this single server choke point, which
+ * every render site reaches via `executorConsoleUrl`. Returns the trimmed URL or null.
+ */
+function httpConsoleUrlOrNull(candidate: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  return trimSlash(candidate);
+}
+
+/**
  * The web page for a source repo, or null when it cannot be known.
  *
  * Only `github` resolves today, and deliberately to `github.com` rather than to any configured host:
@@ -62,9 +81,14 @@ export function executionSystemConsoleBase(
   properties: Record<string, unknown> | null | undefined
 ): string | null {
   const webUrl = properties?.["webUrl"];
-  if (typeof webUrl === "string" && webUrl.length > 0) return trimSlash(webUrl);
+  if (typeof webUrl === "string" && webUrl.length > 0) {
+    const safe = httpConsoleUrlOrNull(webUrl);
+    if (safe) return safe;
+    // A non-http(s) webUrl is not a browsable link — fall through to serverUrl rather than
+    // returning a scheme that would execute in the browser.
+  }
   const serverUrl = properties?.["serverUrl"];
-  if (typeof serverUrl === "string" && serverUrl.length > 0) return trimSlash(serverUrl);
+  if (typeof serverUrl === "string" && serverUrl.length > 0) return httpConsoleUrlOrNull(serverUrl);
   return null;
 }
 

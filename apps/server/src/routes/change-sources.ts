@@ -20,6 +20,7 @@ import {
   WebhookSecretConfiguredResponseSchema
 } from "@scp/schemas";
 import type { AppDeps } from "../types.js";
+import { LARGE_BODY_LIMIT_BYTES } from "../http-limits.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
@@ -292,6 +293,9 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
   typed.route({
     method: "POST",
     url: "/api/v1/change-sources/:sourceKind/report",
+    // Carries an open-ended IaC `planJson` blob (executors.ts) that can run to many MiB; opt up from
+    // the modest global ceiling to the large-payload ceiling (http-limits.ts) — still finite.
+    bodyLimit: LARGE_BODY_LIMIT_BYTES,
     schema: {
       params: ChangeSourceEventParamSchema,
       body: ChangeReportRequestSchema,

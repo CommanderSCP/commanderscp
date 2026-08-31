@@ -79,12 +79,15 @@ describe("app.ts setErrorHandler", () => {
       expect(res.statusCode).toBe(400);
     });
 
-    it("413 Payload Too Large past the 64 MiB bodyLimit", async () => {
+    it("413 Payload Too Large past the global bodyLimit", async () => {
+      // The probe route inherits the modest GLOBAL_BODY_LIMIT_BYTES (http-limits.ts, 4 MiB) — small
+      // routes no longer accept the 64 MiB that only the bundle/plan doors opt up to. A body over
+      // the global default is refused with 413 before it ever reaches JSON.parse.
       const res = await app.inject({
         method: "POST",
         url: "/__error_handler_probe",
         headers: { "content-type": "application/json" },
-        payload: `{"a":"${"x".repeat(65 * 1024 * 1024)}"}`
+        payload: `{"a":"${"x".repeat(5 * 1024 * 1024)}"}`
       });
       expect(res.statusCode).toBe(413);
       expect(res.json()).toMatchObject({ title: "Payload Too Large" });

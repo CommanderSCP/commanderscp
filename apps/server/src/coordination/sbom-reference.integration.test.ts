@@ -95,7 +95,7 @@ describe("M17.2 SBOM reference: a typed report's SBOM reference round-trips onto
         // The EXECUTOR's origin cosign signature. SCP records that it exists; SCP never signs.
         signatureRef: `registry.test/${repo}:sha256-${"b2".repeat(32)}.sig`,
         scanner: "trivy",
-        scannerVersion: "0.58.1",
+        scannerVersion: "0.74.0",
         generatedAt: "2026-07-20T09:00:00.000Z"
       }
     });
@@ -112,7 +112,7 @@ describe("M17.2 SBOM reference: a typed report's SBOM reference round-trips onto
       mediaType: "application/vnd.cyclonedx+json",
       signatureRef: `registry.test/${repo}:sha256-${"b2".repeat(32)}.sig`,
       scanner: "trivy",
-      scannerVersion: "0.58.1",
+      scannerVersion: "0.74.0",
       generatedAt: "2026-07-20T09:00:00.000Z"
     });
 

@@ -50,8 +50,8 @@
 # byte-for-byte:
 #   TRIVY_IMAGE    — tools/trivy/pin.env    TRIVY_PINNED_IMAGE    (multi-arch index digest; see that file)
 #   OPENSCAP_IMAGE — tools/openscap/pin.env OPENSCAP_PINNED_IMAGE (fedora multi-arch index digest)
-ARG TRIVY_IMAGE=aquasec/trivy@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7
-ARG OPENSCAP_IMAGE=fedora@sha256:f1a3fab47bcb3c3ddf3135d5ee7ba8b7b25f2e809a47440936212a3a50957f3d
+ARG TRIVY_IMAGE=aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+ARG OPENSCAP_IMAGE=fedora@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42
 
 # ---------------------------------------------------------------------------------------------------
 # STAGE 1 — Trivy: bake the vulnerability DB, then hand the static binary + DB to the final stage.
@@ -72,7 +72,7 @@ FROM ${OPENSCAP_IMAGE}
 # The exact oscap version this image is PINNED to (tools/openscap/pin.env OPENSCAP_PINNED_VERSION).
 # Re-declared here inside the final stage so the RUN below can read it (a global ARG is only in scope
 # for FROM lines). The drift test asserts this default matches pin.env byte-for-byte.
-ARG OPENSCAP_PINNED_VERSION=1.4.0
+ARG OPENSCAP_PINNED_VERSION=1.4.2
 
 # oscap (openscap-scanner) + the SCAP Security Guide datastreams, plus jq/tar for extracting the
 # docker-cp'd OCI layout into a rootfs (run.sh). `--setopt=install_weak_deps=False` keeps the image

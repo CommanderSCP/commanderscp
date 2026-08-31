@@ -1,0 +1,90 @@
+{{- if .Values.bundledExecutor.argoWorkflows.enabled -}}
+{{- $w := .Values.bundledExecutor.argoWorkflows -}}
+{{- $ns := $w.namespace -}}
+# =============================================================================================
+# NetworkPolicy for the bundled Argo Workflows namespace (Mode B). Unlike vendor/argocd/install.yaml
+# (which ships seven NetworkPolicy objects of its own, re-homed by templates/argocd.yaml's generic
+# per-object namespace substitution), Argo Workflows' upstream install.yaml ships NONE — confirmed
+# by grepping "NetworkPolicy" across vendor/argo-workflows/install-part-0{1..4}.yaml: zero hits. The
+# vendored argo-server here also runs `args: [server]` with no `--auth-mode` flag, which is
+# upstream's DEFAULT `server` auth mode: the API server performs every Kubernetes operation as its
+# OWN ServiceAccount (pods/exec, pods/log, pods delete, secrets get/create, workflows create) and
+# requires no per-client bearer token (see the fuller writeup in deploy/helm/values.yaml's
+# `bundledExecutor.argoWorkflows` block, which is also why there is deliberately no auto-wire hook
+# for this backend). So — in upstream's own documented posture — access control for this backend is
+# NETWORK-LEVEL ONLY: anything with a route to argo-server:2746 gets that ServiceAccount's power.
+# These two policies are that missing control.
+#
+# Real labels below are READ, not guessed, from the vendored manifest (still namespaced `argo`
+# pre-render — commanderscp.renderVendoredBackend / this backend's own render loop re-homes
+# metadata.namespace to {{ $ns }}, never a selector label):
+#   vendor/argo-workflows/install-part-04.yaml:40133-40139 — argo-server Deployment
+#     spec.selector.matchLabels / pod template labels: `app: argo-server`
+#   vendor/argo-workflows/install-part-04.yaml:40108-40119 — argo-server Service: same selector,
+#     port 2746 -> targetPort 2746 (Service port == container port, so there is no post-DNAT
+#     port-mismatch trap here — see deploy/helm/templates/networkpolicy.yaml's `allow-argocd` rule
+#     for what that trap looks like where Service port and container port DO differ).
+#
+# Shape mirrors the vendored Argo CD policies (Ingress-only: none of the seven policies in
+# vendor/argocd/install.yaml declare an Egress policyType, so neither do these) but deliberately NOT
+# their content: argocd-server-network-policy ships `ingress: - {}` — allow every peer, every port —
+# as upstream's own default. That is exactly the open door this file exists to avoid recreating for
+# argo-server.
+# =============================================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Allow ingress to argo-server:2746 ONLY from scpd (SCP's api + worker pods) — the sole legitimate
+# caller: this backend is coordinated via the generic pipeline executor (M10.6), and there is no
+# auto-wire hook here to add a second one (unlike argocd/gitea). This is the INGRESS-side match for
+# deploy/helm/templates/networkpolicy.yaml's `allow-argo-workflows` EGRESS rule, which already
+# restricts where scpd may egress TO (this namespace, port 2746/80/443) — restricting the caller's
+# egress says nothing about who ELSE may call in, which is the gap this rule closes.
+#
+# scpd's pod identity is `app.kubernetes.io/name: commanderscp` — deploy/helm's
+# `commanderscp.selectorLabels` default (both api and worker carry it; the main chart's `Chart.Name`
+# is literally `commanderscp` and its default `nameOverride` is empty — deploy/helm/Chart.yaml:2,
+# deploy/helm/values.yaml:20-21). This bundled chart is rendered as a SEPARATE `helm template`
+# invocation from the main chart (see README.md — it is applied via `kubectl apply`, never a Helm
+# release) and carries no value for the main chart's release name or namespace, so the selector below
+# matches that pod label in ANY namespace (namespaceSelector: {} ANDed with podSelector in the same
+# `from` entry) rather than guessing a namespace.
+#
+# ASSUMPTION (noted, not silently guessed around): an SCP install that sets `nameOverride` or
+# `fullnameOverride` on the MAIN chart changes its pods' `app.kubernetes.io/name` label away from
+# `commanderscp`, and this selector needs the matching update — there is no shared template include
+# between the two independently-rendered charts to keep them in sync automatically.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: argo-server-allow-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bundled-argo-workflows
+spec:
+  podSelector:
+    matchLabels:
+      app: argo-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: commanderscp
+      ports:
+        - protocol: TCP
+          port: 2746
+{{- end }}

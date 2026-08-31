@@ -6,3 +6,23 @@
 **/*.tsbuildinfo
 .git
 *.log
+
+# --- 2026-08-31 CVE sweep: keep dev/CI-only artifacts OUT of the build context ---
+# `COPY . .` in the build stage swept these into the shipped image, where a scanner
+# then found their (irrelevant-at-runtime) CVEs and their bytes were pure attack surface.
+#
+# .claude — Claude Code's working dir. It holds LINKED GIT WORKTREES of other sessions
+# (.claude/worktrees/*), so `COPY . .` was dragging ~190 MiB of a second, third, … full
+# checkout — each carrying its own committed tools/openapi/bin/oasdiff Go binary — into
+# the image. Never needed by the build or at runtime.
+.claude
+# CI workflow definitions — never part of the runtime image.
+.github
+#
+# NOT excluded here, deliberately: `tools/openapi/bin/oasdiff-linux-amd64`. The oasdiff Go binary
+# is a BUILD/CI tool (the /v1 breaking-change gate), never read at runtime — but `.dockerignore`
+# applies to EVERY build that uses the repo root as context, and `tools/ci-image/Dockerfile`
+# legitimately `COPY`s oasdiff into the CI toolchain image. Excluding it here broke that build
+# (`COPY tools/openapi/bin/... not found`). So the scpd RUNTIME image drops oasdiff in its own
+# build stage instead (see Dockerfile) — keeping its CVEs out of the shipped server without
+# starving the CI image build.

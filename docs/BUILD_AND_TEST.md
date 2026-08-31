@@ -24,7 +24,7 @@ All versions are pinned in-repo (`.nvmrc`, `package.json#packageManager`, `.tool
 | Docker Engine | **27+** with Compose v2 (**2.29+**) | documented; checked by `pnpm doctor` | Needed for compose stack, Testcontainers, e2e. Colima/Podman (with Docker socket compat) acceptable. |
 | PostgreSQL | **16** (container `postgres:16` only) | compose files / Testcontainers image tag | Never installed on the host; all Postgres usage is containerized. |
 | NATS | **2.10.x** (container `nats:2.10` only) | compose profile / Testcontainers image tag | Optional EventBus backend (design §8); event-bus integration suite runs against it from M3. |
-| OpenTofu | **1.8.x** pinned, baked into the `scp-runner-iac` image (and the CI runner image for tests) | apps/runner-iac/Dockerfile · tools/ci-image | Managed-IaC executor (M7); never in the scpd image, never required on developer hosts. |
+| OpenTofu | **1.8.x** pinned, baked into the `scp-runner-iac` image (and the CI runner image for tests) | apps/runner-iac/Dockerfile · tools/ci-image | Managed-IaC executor (M7); never in the scpd image, never required on developer hosts. Bumping past 1.10 needs a `COPY --from` rework — OpenTofu 1.10+ ships an `ONBUILD RUN exit 1` blocking `FROM` (see the Dockerfile). |
 | Drizzle ORM / drizzle-kit | **latest 0.x pinned exactly** | workspace dependency | Migrations are committed SQL; drizzle-kit only generates them. |
 | Vitest | **3.x** | workspace devDependency | Unit + integration runner. |
 | Playwright | **1.5x pinned** | devDependency in `apps/web` | Chromium only in CI (bundled browser, no CDN fetch at test time — browsers are baked into the CI image). |

@@ -49,6 +49,9 @@ on:
         required: false
         default: "all"
 
+permissions:
+  contents: read
+
 jobs:
   kind-drill:
     name: "kind: install -> golden path -> zero-downtime upgrade -> rollback"
@@ -58,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # kind-drill.sh builds an "old" image from an earlier commit on this branch
       - name: Reclaim disk (see the "DISK" note in this file's header)
@@ -74,13 +77,13 @@ jobs:
       # kind v0.27.0 instead of inheriting whatever `ubuntu-latest` happens to ship, so the drill
       # stays reproducible on any runner.
       - name: Install helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: latest
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
       - name: Install kind (binary only — kind-drill.sh creates its own cluster)
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
         with:
           install_only: true
           version: v0.27.0
@@ -106,7 +109,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Reclaim disk (see the "DISK" note in this file's header)
         run: bash .github/scripts/free-disk.sh
       - uses: ./.github/actions/setup
@@ -137,7 +140,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Reclaim disk (see the "DISK" note in this file's header)
         run: bash .github/scripts/free-disk.sh
       - uses: ./.github/actions/setup
@@ -145,13 +148,13 @@ jobs:
       # Drill prerequisites installed in-workflow (same pattern as the integration CI job) —
       # nightly/on-demand build-time fetch, not a product runtime dependency.
       - name: Install helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: latest
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
       - name: Install kind (binary only — the drill creates its own cluster)
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
         with:
           install_only: true
           version: v0.27.0
@@ -183,7 +186,7 @@ jobs:
     # re-run. The job ceiling must comfortably exceed the drill's own patience.
     timeout-minutes: 55
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Reclaim disk (see the "DISK" note in this file's header)
         run: bash .github/scripts/free-disk.sh
       - uses: ./.github/actions/setup
@@ -191,13 +194,13 @@ jobs:
       # Drill prerequisites installed in-workflow (same pattern as kind-drill / the integration CI
       # job) — nightly/on-demand build-time fetch, not a product runtime dependency.
       - name: Install helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: latest
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
       - name: Install kind (binary only — the drill creates its own cluster)
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
         with:
           install_only: true
           version: v0.27.0

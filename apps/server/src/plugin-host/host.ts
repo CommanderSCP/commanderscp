@@ -141,13 +141,19 @@ export interface PluginHostOptions {
  * CRITICAL #3 (PR #7 review): the previous `{ ...process.env, SCP_PLUGIN_* }` spread handed every
  * plugin subprocess the FULL parent environment — `DATABASE_URL` (the admin/superuser connection,
  * main.ts phase 1), `SCP_COOKIE_SECRET`, `SCP_OIDC_CLIENT_SECRET`, `SCP_RUNTIME_DATABASE_URL`, all
- * of it. A plugin is untrusted, host-mediated code (DESIGN.md §11: "JSON-serializable args/results
- * only, an injected scoped context") — it should never be able to read `process.env` and connect
- * to Postgres as the admin role, bypassing RLS entirely. This allowlists only the handful of
- * variables a Node child genuinely needs to boot and run `tsx`/module resolution: `PATH` (module
- * resolution / any tool the loader shells out to), and the tmp/home dirs a couple of Node/esbuild
- * internals fall back to when unset. Every `SCP_PLUGIN_*` config var the plugin actually needs is
- * passed explicitly by the caller below — never inherited.
+ * of it. This allowlists only the handful of variables a Node child genuinely needs to boot and run
+ * `tsx`/module resolution: `PATH` (module resolution / any tool the loader shells out to), and the
+ * tmp/home dirs a couple of Node/esbuild internals fall back to when unset. Every `SCP_PLUGIN_*`
+ * config var the plugin actually needs is passed explicitly by the caller below — never inherited.
+ *
+ * SCOPE OF THIS CONTROL — read before treating it as a sandbox. This narrows what the subprocess
+ * INHERITS; it is NOT an OS isolation boundary. The child is spawned same-uid with no namespace/seccomp
+ * confinement, so code that runs INSIDE it can still read the parent's `/proc/<ppid>/environ`
+ * directly, and can ignore the injected `ctx.http` egress guard by using `node:net`/`node:fs`
+ * itself. So this defends against ACCIDENTAL env leakage and a COOPERATIVE plugin — and shrinks the
+ * blast radius of a bug — but it does not contain a plugin that is actively hostile at the code
+ * level. Real OS-level isolation (separate uid, unshare/PID-ns, seccomp) is the follow-up that would
+ * make the in-process `ctx.http`/env mediation a true boundary; see DESIGN.md §11.
  */
 function minimalChildEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};

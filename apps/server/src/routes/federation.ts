@@ -41,6 +41,7 @@ import {
 import type { ImportBundleRequest, PromotionBundle } from "@scp/schemas";
 import { trustDomainIdFromWire } from "../domain-id-edge.js";
 import type { AppDeps } from "../types.js";
+import { LARGE_BODY_LIMIT_BYTES } from "../http-limits.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
@@ -828,6 +829,9 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
   typed.route({
     method: "POST",
     url: "/api/v1/federation/imports",
+    // A signed `.scpbundle` arrives as one JSON body; opt up from the modest global ceiling to the
+    // large-payload ceiling (http-limits.ts) — still finite and explicit.
+    bodyLimit: LARGE_BODY_LIMIT_BYTES,
     schema: {
       body: ImportBundleRequestSchema,
       response: {

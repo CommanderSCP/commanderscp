@@ -43,6 +43,10 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
         path: "/",
         httpOnly: true,
         signed: true,
+        // `Secure` in production so the session cookie is never sent over plaintext HTTP (where a
+        // network attacker could capture it). Gated on deploymentMode so the plain-HTTP evaluation
+        // / `pnpm dev` stacks — which set SCP_DEPLOYMENT_MODE=evaluation — keep working.
+        secure: deps.config.deploymentMode === "production",
         sameSite: "lax",
         expires: result.expiresAt
       });

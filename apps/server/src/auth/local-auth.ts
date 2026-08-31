@@ -6,6 +6,7 @@ import type { Db } from "../db/client.js";
 import { orgs, roleBindings, roles, sessions, users } from "../db/schema.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { createObject, getOrgRootObjectId } from "../graph/objects-repo.js";
+import { verifyPasswordHashLimited } from "./argon2-limiter.js";
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h — fine for M0/M1's local-auth bootstrap flow.
 
@@ -188,7 +189,10 @@ export async function login(
   // isn't distinguishable from the response.
   if (!user.passwordHash) return null;
 
-  const valid = await argon2.verify(user.passwordHash, password).catch(() => false);
+  // Through the concurrency gate (argon2-limiter.ts): login is the widest-open argon2 caller, so a
+  // flood here must not saturate the libuv threadpool. A saturation 429 propagates; a wrong password
+  // (or unreadable hash) is `false`, same as before.
+  const valid = await verifyPasswordHashLimited(user.passwordHash, password);
   if (!valid) return null;
 
   const org = await db.query.orgs.findFirst({ where: eq(orgs.id, user.orgId) });

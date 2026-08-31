@@ -76,7 +76,7 @@
  * tarball. That hop stays operator-gated (ADR-0009 D3).
  */
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { and, eq, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type PgBoss from "pg-boss";
@@ -124,6 +124,21 @@ export const INBOX_INGEST_DECISION_KIND = "federation-inbox-ingest";
 
 /** Ledger sha256 sentinel for a file that could not be read at all (traversal-shaped name). */
 const UNREADABLE_SHA = "-";
+
+/**
+ * The `.scpbundle` branch below reads the WHOLE file into memory before it can hash or parse it
+ * (unlike the relay-tarball branch, which streams). Without a pre-read ceiling, a single oversized
+ * file dropped in the CDS staging dir OOMs the worker before the dedupe ledger can fire — and since
+ * the content hash is only computed AFTER the read, the file is never recorded as processed, so the
+ * self-rescheduling loop crash-loops on it. This is the same DoS the HTTP door bounds at `app.ts`'s
+ * 64 MiB `bodyLimit`; the air-gap door is documented as strictly LESS trusted, so it gets the same
+ * ceiling, enforced by `fs.stat` BEFORE the read. Env-overridable for estates with larger bundles.
+ */
+const INBOX_MAX_BUNDLE_BYTES = (() => {
+  const raw = process.env.SCP_INBOX_MAX_BUNDLE_BYTES;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 64 * 1024 * 1024;
+})();
 
 const RELAY_TARBALL_RE = /^scp-relay-(.+)\.tar\.gz$/;
 
@@ -411,6 +426,31 @@ export async function processInboxFile(
   let bundleBytes: Buffer | null = null;
   let sha256: string;
   if (isBundle) {
+    // Size gate BEFORE the read (fail-closed): refuse an oversized bundle without ever loading it
+    // into memory, mirroring app.ts's HTTP bodyLimit. A stat failure also refuses, same as a read
+    // failure — the file is never read, so the ledger identity is the UNREADABLE_SHA sentinel.
+    try {
+      const size = (await stat(filePath)).size;
+      if (size > INBOX_MAX_BUNDLE_BYTES) {
+        return refuseFile(db, {
+          orgId,
+          source,
+          fileName,
+          sha256: UNREADABLE_SHA,
+          reason: `.scpbundle exceeds max size (rejected, fail-closed): ${size} > ${INBOX_MAX_BUNDLE_BYTES} bytes`,
+          underlyingDecisionId: null
+        });
+      }
+    } catch (err) {
+      return refuseFile(db, {
+        orgId,
+        source,
+        fileName,
+        sha256: UNREADABLE_SHA,
+        reason: `.scpbundle not statable (rejected, fail-closed): ${err instanceof Error ? err.message : String(err)}`,
+        underlyingDecisionId: null
+      });
+    }
     try {
       bundleBytes = await readFile(filePath);
     } catch (err) {

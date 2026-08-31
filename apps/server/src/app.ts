@@ -11,6 +11,7 @@ import {
 } from "fastify-type-provider-zod";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import type { AppDeps } from "./types.js";
+import { GLOBAL_BODY_LIMIT_BYTES } from "./http-limits.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import { badRequest, frameworkClientProblem, ProblemError, sendProblem } from "./errors.js";
 import { assertNoPrototypePoisoning, PrototypePoisoningError } from "./util/safe-json.js";
@@ -94,13 +95,15 @@ export async function buildApp(
 
   const app = Fastify({
     logger: options.logger ?? true,
-    // M6 (DESIGN.md §13 — bundle-parser robustness, M6 PR body "SECURITY-SENSITIVE" flag):
-    // `.scpbundle` files POST straight to /federation/imports as one JSON body; Fastify's
-    // built-in default (1 MiB) would reject legitimate multi-thousand-entry bundles, but an
-    // UNBOUNDED limit is exactly the oversized-payload DoS surface a bundle parser must defend
-    // against. 64 MiB is a generous, explicit, non-infinite ceiling — enforced by Fastify BEFORE
-    // the body is ever handed to JSON.parse or any federation code.
-    bodyLimit: 64 * 1024 * 1024,
+    // Global body ceiling (http-limits.ts). Modest by default so a small route (e.g. /auth/login)
+    // can't be handed a huge JSON body that blocks the event loop in the synchronous JSON.parse +
+    // prototype-poisoning walk below. The two doors that ingest large payloads — POST
+    // /federation/imports (a `.scpbundle` as one JSON body) and POST /change-sources/:kind/report
+    // (an open-ended IaC planJson) — opt UP to LARGE_BODY_LIMIT_BYTES per-route. Both limits are
+    // finite and explicit (never unbounded — the oversized-payload DoS a bundle parser must defend
+    // against), and enforced by Fastify BEFORE the body reaches JSON.parse or any route code.
+    // (2026-08-31 security review; the global was previously a flat 64 MiB for bundles' sake.)
+    bodyLimit: GLOBAL_BODY_LIMIT_BYTES,
     // M9.3 (ADR-0001, `docs/adr/0001-in-app-federation-mtls.md`) — when in-app federation mTLS is
     // configured, the WHOLE process listens as HTTPS (there is only ever one Fastify instance /
     // one `.listen()` call — main.ts), not just the federation routes: Node has no per-route TLS

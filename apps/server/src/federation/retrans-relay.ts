@@ -79,6 +79,7 @@ import { promisify } from "node:util";
 import { createReadStream } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 import path from "node:path";
 import { z } from "zod";
 import type { ArtifactRef, TrustDomainId } from "@scp/schemas";
@@ -944,6 +945,48 @@ export type ImportRelayTarballResult =
 /** Internal refusal signal for phase 2 — every refusal path converges on one block Decision. */
 class RelayImportRefusal extends Error {}
 
+/**
+ * Decompressed-size ceiling for an untrusted inbox relay tarball (`SCP_RELAY_MAX_DECOMPRESSED_BYTES`,
+ * default 4 GiB). `tar xzf` extracts to disk BEFORE any signature/checksum check runs, so a gzip
+ * bomb (a few KiB on the wire, terabytes decompressed) would fill the scratch volume / OOM the
+ * worker before the first trust decision — a fail-open the streamed CHECKSUMS verification cannot
+ * catch because it runs on the already-extracted files. `runTar`'s `maxBuffer` bounds only captured
+ * pipe output, not extracted files, so it is not this control.
+ */
+const RELAY_MAX_DECOMPRESSED_BYTES = (() => {
+  const raw = process.env.SCP_RELAY_MAX_DECOMPRESSED_BYTES;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 4 * 1024 * 1024 * 1024;
+})();
+
+/**
+ * Stream the gzip through a counting sink (bounded memory — chunks are counted and discarded, never
+ * buffered) and throw {@link RelayImportRefusal} the moment the decompressed byte total exceeds the
+ * cap, BEFORE `tar` writes anything to disk. A malformed/corrupt gzip surfaces as a pipeline error,
+ * which the caller also converges on a fail-closed refusal.
+ */
+async function assertRelayTarballDecompressedSizeUnderCap(tarballPath: string): Promise<void> {
+  let total = 0;
+  try {
+    await pipeline(createReadStream(tarballPath), createGunzip(), async (source) => {
+      for await (const chunk of source) {
+        total += (chunk as Buffer).length;
+        if (total > RELAY_MAX_DECOMPRESSED_BYTES) {
+          throw new RelayImportRefusal(
+            `relay tarball decompresses beyond the ${RELAY_MAX_DECOMPRESSED_BYTES}-byte cap ` +
+              `(rejected, fail-closed — possible decompression bomb)`
+          );
+        }
+      }
+    });
+  } catch (err) {
+    if (err instanceof RelayImportRefusal) throw err;
+    throw new RelayImportRefusal(
+      `relay tarball is not a readable gzip stream (rejected, fail-closed): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
 interface VerifiedRelayOci {
   artifact: RelayBundleArtifact;
   digest: string;
@@ -998,6 +1041,9 @@ async function extractAndVerifyRelayTarball(args: {
   config: RelayConfig;
 }): Promise<VerifiedRelayTarball> {
   const { workDir, config } = args;
+  // Bound decompression BEFORE `tar` writes to disk — a gzip bomb must be refused ahead of the
+  // extraction, not caught by the post-extraction checksum verify (too late; the disk is full).
+  await assertRelayTarballDecompressedSizeUnderCap(args.tarballPath);
   await runTar(["xzf", args.tarballPath, "-C", workDir]);
   const entries = (await readdir(workDir, { withFileTypes: true })).filter((e) => e.isDirectory());
   const rootEntry = entries.length === 1 ? entries[0] : undefined;

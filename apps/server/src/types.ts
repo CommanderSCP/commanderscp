@@ -29,6 +29,22 @@ export interface AppDeps {
    */
   sseAuthzDb?: Db;
   /**
+   * A SMALL pool dedicated to the recursive-CTE graph read routes (`GET /graph/traverse`,
+   * `/graph/query/:name`, `POST /graph/subgraph`, and the org-wide integrity report — routes/graph.ts),
+   * assigned by `main.ts` beside the SSE pools and sized by `GRAPH_QUERY_POOL_MAX`.
+   *
+   * WHY IT EXISTS. Those handlers run depth-bounded recursive CTEs whose cost is driven by GRAPH
+   * SHAPE and the caller's parameters, not by request volume — an authenticated caller can fire
+   * several expensive traversals and, on the request-serving `db` pool (pg default max 10,
+   * `connectionTimeoutMillis: 5000`), turn every OTHER tenant's ordinary request into a checkout
+   * TIMEOUT. Isolating them means a starved graph pool degrades only graph reads, never request
+   * serving or coordination — the same isolation decision as `sseAuthzDb`, one route family over.
+   *
+   * OPTIONAL ON PURPOSE, exactly like `sseAuthzDb`: hand-built deps (`openapi:emit`, test harnesses)
+   * omit it and routes/graph.ts falls back to `deps.db` (correct, just unisolated).
+   */
+  graphDb?: Db;
+  /**
    * M14.2 (ADR-0009): the process's pg-boss handle, present only on `role === "all" || "worker"`
    * (set by `main.ts` alongside `pluginHost`, once `startPgBoss` has run). The inbound federation
    * poke endpoint (`routes/federation.ts` `POST /federation/poke`) uses it to enqueue an IMMEDIATE

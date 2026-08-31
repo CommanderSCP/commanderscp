@@ -433,7 +433,7 @@ describe("named graph queries: property test — reachability-CTE dedup preserve
 
           for (const queryName of REACHABILITY_QUERIES) {
             const result = await withTenantTx(db, orgId, (tx) =>
-              runNamedQuery(tx, orgId, queryName, params)
+              runNamedQuery(tx, orgId, queryName, params, null)
             );
             const actualIds = new Set(result.objects.map((o) => o.id));
             expect(
@@ -507,7 +507,7 @@ describe("named graph queries: performance regression — high fan-in no longer 
         };
         const start = performance.now();
         const result = await withTenantTx(db, orgId, (tx) =>
-          runNamedQuery(tx, orgId, queryName, params)
+          runNamedQuery(tx, orgId, queryName, params, null)
         );
         const elapsedMs = performance.now() - start;
 

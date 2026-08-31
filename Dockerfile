@@ -40,7 +40,11 @@ FROM ${COSIGN_IMAGE} AS cosign
 
 FROM ${SKOPEO_IMAGE} AS skopeo
 
-FROM node:22-bookworm-slim AS base
+# trixie (Debian 13), not bookworm (2026-08-31 CVE sweep): bookworm-slim carries an unfixed
+# CRITICAL in zlib1g (CVE-2023-45853) that trixie's zlib resolved, plus roughly twice the
+# no-fix-available HIGH backlog. Both build and runtime stages use the same base so native
+# modules (argon2, ssh2/cpu-features) compile against the glibc they run on.
+FROM node:22-trixie-slim AS base
 RUN corepack enable && corepack prepare pnpm@10.12.1 --activate
 WORKDIR /app
 
@@ -55,9 +59,48 @@ RUN pnpm install --offline --frozen-lockfile
 RUN pnpm build
 # Drop devDependencies now that everything is compiled to dist/ — nothing at runtime needs tsc,
 # tsx, vitest, drizzle-kit, etc.
-RUN pnpm prune --prod
+#
+# `pnpm prune --prod` at the workspace root does NOT evict devDependencies from the shared
+# `.pnpm` virtual store (MEASURED 2026-08-31: esbuild/turbo/typescript/@esbuild-kit all survive
+# it), so the compiled-away build toolchain still ships. esbuild is the one that matters for CVEs:
+# it bundles a Go binary whose Go stdlib carries CRITICAL advisories, and it is a devDependency of
+# vite/tsx/drizzle-kit ONLY — never resolvable from any prod dependency (verified:
+# `require.resolve('esbuild')` fails from /app AND from /app/apps/server). `pnpm prune` leaves it
+# because esbuild's PLATFORM binary is an OPTIONAL dep, which prune --prod keeps. Delete the dead
+# store entries explicitly; nothing at runtime can reach them. @esbuild-kit is drizzle-kit's
+# (dev-only) esbuild wrapper — the GHSA-67mh esbuild-dev-server moderate lives there. A full
+# `pnpm deploy --prod` slim of the runtime tree is the proper follow-up (Dockerfile header note).
+#
+# tools/openapi/bin is dropped here rather than via `.dockerignore`: the oasdiff Go binary is a
+# BUILD/CI tool (the /v1 breaking-change gate), never read at runtime, and its old Go stdlib carried
+# CRITICAL/HIGH CVEs — but it CANNOT be `.dockerignore`d, because `tools/ci-image/Dockerfile` builds
+# from this same repo-root context and legitimately `COPY`s oasdiff in. Deleting it from the build
+# stage keeps it out of the scpd runtime image without breaking the CI-image build.
+RUN pnpm prune --prod \
+  && rm -rf node_modules/.pnpm/esbuild@* node_modules/.pnpm/@esbuild+* node_modules/.pnpm/@esbuild-kit+* \
+  && rm -rf tools/openapi/bin
 
-FROM base AS runtime
+# The runtime stage deliberately does NOT reuse `base`: `base` exists to run pnpm (corepack) for
+# the fetch/build stages, and nothing at runtime runs npm, npx, corepack, or pnpm — the CMD is
+# plain `node`. Starting from the bare node image and deleting the bundled npm/corepack tree
+# removes npm's vendored node_modules — the bulk of the FIXABLE HIGH/CRITICAL CVE surface a
+# scanner reports against the stock node image (npm's bundled tar/brace-expansion/pacote/
+# sigstore/... advisories), none of which this image ever executes (2026-08-31 CVE sweep).
+#
+# `apt-get upgrade` folds in Debian security fixes published since the base tag was built — the
+# FROM is a floating tag, so the base already moves build-to-build; the upgrade only moves it
+# forward to the current fix state instead of whenever the tag was last rebuilt.
+#
+# perl-base is force-removed: it carries three CRITICAL CVEs Debian marks no-fix, and nothing in
+# this image runs perl — the server is Node, cosign is a static binary, the skopeo wrapper is
+# POSIX sh. dpkg marks it Essential (maintainer scripts use perl), which only matters for LATER
+# package operations — and no package operation ever happens in the shipped image after this RUN.
+FROM node:22-trixie-slim AS runtime
+RUN apt-get update \
+  && apt-get upgrade -y \
+  && rm -rf /var/lib/apt/lists/* \
+  && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+  && dpkg --purge --force-remove-essential --force-depends perl-base
 ENV NODE_ENV=production
 ENV SCP_ROLE=all
 ENV PORT=8080
@@ -118,4 +161,10 @@ COPY tools/skopeo/skopeo-wrapper.sh /opt/scp/bin/skopeo
 COPY tools/skopeo/policy.json /etc/containers/policy.json
 WORKDIR /app/apps/server
 EXPOSE 8080
+# Run as the base image's non-root `node` user (uid/gid 1000). Every COPY'd file is world-readable
+# (cosign/skopeo are 0555; /app is root-owned but readable) and the server writes only to external
+# Postgres + /tmp at runtime — it never writes under /app (the Helm chart already runs it non-root,
+# proving that). This makes the compose/`docker run` stacks non-root too, defense-in-depth beside
+# the Helm securityContext. A numeric UID keeps runAsNonRoot happy even without /etc/passwd lookup.
+USER 1000:1000
 CMD ["node", "dist/main.js"]
