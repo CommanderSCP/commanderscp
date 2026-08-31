@@ -1,10 +1,15 @@
-import { randomBytes } from "node:crypto";
 import * as argon2 from "argon2";
 import { v7 as uuidv7 } from "uuid";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { personalAccessTokens } from "../db/schema.js";
 import { resolveAuthContext, type AuthContext } from "./local-auth.js";
+import {
+  generateTokenId,
+  generateTokenSecret,
+  mintPrefixedToken,
+  verifyPrefixedToken
+} from "./prefixed-token.js";
 
 const PAT_PREFIX = "scp_pat_";
 
@@ -16,16 +21,9 @@ const PAT_PREFIX = "scp_pat_";
  * CLEARTEXT, indexed lookup key — argon2's output is salted/non-comparable, so unlike
  * `sessions.tokenHash`'s SHA-256 equality lookup, a presented PAT can't be found by hashing it and
  * matching a row directly. `secret` (32+ random bytes, base64url) is the part that's actually
- * argon2-hashed into `tokenHash` and verified on every use.
+ * argon2-hashed into `tokenHash` and verified on every use. Parse/verify sequence shared with
+ * `operator-auth.ts`'s instance operator credentials via `./prefixed-token.js`.
  */
-
-function generateTokenId(): string {
-  return randomBytes(12).toString("base64url"); // 16 base64url chars
-}
-
-function generateSecret(): string {
-  return randomBytes(32).toString("base64url");
-}
 
 export interface CreatedPat {
   id: string;
@@ -41,7 +39,7 @@ export async function createPat(
   params: { orgId: string; userId: string; name: string; expiresAt?: Date | null }
 ): Promise<CreatedPat> {
   const tokenId = generateTokenId();
-  const secret = generateSecret();
+  const secret = generateTokenSecret();
   const tokenHash = await argon2.hash(secret);
   const id = uuidv7();
   const createdAt = new Date();
@@ -61,7 +59,7 @@ export async function createPat(
   return {
     id,
     name: params.name,
-    token: `${PAT_PREFIX}${tokenId}.${secret}`,
+    token: mintPrefixedToken(PAT_PREFIX, tokenId, secret),
     createdAt,
     expiresAt
   };
@@ -136,30 +134,20 @@ export function isPatToken(token: string): boolean {
  * org) — a PAT is exactly as permission-scoped as the user's own session, never more.
  */
 export async function verifyPat(db: Db, token: string): Promise<AuthContext | null> {
-  if (!token.startsWith(PAT_PREFIX)) return null;
-  const rest = token.slice(PAT_PREFIX.length);
-  const dotIndex = rest.indexOf(".");
-  if (dotIndex === -1) return null;
-  const tokenId = rest.slice(0, dotIndex);
-  const secret = rest.slice(dotIndex + 1);
-  if (!tokenId || !secret) return null;
-
-  const row = await db.query.personalAccessTokens.findFirst({
-    where: eq(personalAccessTokens.tokenId, tokenId)
+  const row = await verifyPrefixedToken({
+    prefix: PAT_PREFIX,
+    presented: token,
+    findByTokenId: (tokenId) =>
+      db.query.personalAccessTokens.findFirst({
+        where: eq(personalAccessTokens.tokenId, tokenId)
+      }),
+    touchLastUsed: (id) =>
+      db
+        .update(personalAccessTokens)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(personalAccessTokens.id, id))
   });
   if (!row) return null;
-  if (row.revokedAt) return null;
-  if (row.expiresAt && row.expiresAt.getTime() < Date.now()) return null;
-
-  const valid = await argon2.verify(row.tokenHash, secret).catch(() => false);
-  if (!valid) return null;
-
-  // Best-effort — must never block/fail auth if this update fails (e.g. transient DB hiccup).
-  void db
-    .update(personalAccessTokens)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(personalAccessTokens.id, row.id))
-    .catch(() => undefined);
 
   return resolveAuthContext(db, row.userId);
 }
