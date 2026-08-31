@@ -504,6 +504,15 @@ export async function createRelationship(
       )
   });
   if (tombstone) {
+    const revivedContentHash = computeRelationshipContentHash({
+      id: tombstone.id,
+      orgId: input.orgId,
+      typeId: input.typeId,
+      fromId: input.fromId,
+      toId: input.toId,
+      properties,
+      labels
+    });
     const [revived] = await tx
       .update(relationships)
       .set({
@@ -511,19 +520,85 @@ export async function createRelationship(
         properties,
         labels,
         revision: tombstone.revision + 1,
-        contentHash: computeRelationshipContentHash({
-          id: tombstone.id,
+        contentHash: revivedContentHash
+      })
+      .where(eq(relationships.id, tombstone.id))
+      .returning();
+    if (!revived) throw new Error("failed to revive relationship");
+
+    // A RESURRECTION IS A CREATE, AND IT OWES EVERYTHING A CREATE OWES.
+    //
+    // This branch used to `return` right here, which made reviving an edge the one write in this
+    // file that happened invisibly: no audit event, no governance-reach record for a `contains`
+    // edge, no journal entry, no event publish. An operator reading the audit log saw the leave and
+    // never the rejoin, a subscriber never learned the edge was back, and a peer that had already
+    // replicated the tombstone kept it forever. The four calls below are the insert branch's, in
+    // the same order and in the SAME transaction — the audit hash chain admits nothing else.
+    const revivedIsDomainLocal = fromObj.domainLocal || toObj.domainLocal;
+    await appendAuditEvent(tx, {
+      orgId: input.orgId,
+      actorId: input.actorObjectId,
+      action: `relationship.${input.typeId}.create`,
+      subjectId: revived.id,
+      // `null`, not the tombstone's hash: the state this write starts from is "no edge", because a
+      // tombstone confers nothing. Same value the insert branch records.
+      beforeHash: null,
+      afterHash: revivedContentHash,
+      requestId: input.requestId,
+      subjectDomainLocal: revivedIsDomainLocal
+    });
+    if (reachBefore) {
+      // Subject is the CHILD — see the matching note in the insert branch.
+      await recordGovernanceReachChange(tx, {
+        orgId: input.orgId,
+        actorObjectId: input.actorObjectId,
+        requestId: input.requestId,
+        subjectObjectId: input.toId,
+        route: "contains",
+        detail: {
+          edgeAction: "create",
+          relationshipId: revived.id,
+          containerObjectId: input.fromId
+        },
+        before: reachBefore,
+        subjectDomainLocal: revivedIsDomainLocal
+      });
+    }
+    if (!input.federationImport && !revivedIsDomainLocal) {
+      await appendJournalEntry(tx, {
+        orgId: input.orgId,
+        entryKind: "relationship_upsert",
+        contentHash: revivedContentHash,
+        payload: {
+          id: revived.id,
           orgId: input.orgId,
           typeId: input.typeId,
           fromId: input.fromId,
           toId: input.toId,
           properties,
-          labels
-        })
-      })
-      .where(eq(relationships.id, tombstone.id))
-      .returning();
-    return toRelationship(revived!);
+          labels,
+          // THE REVIVED ROW'S OWN provenance and revision, not the `originDomainId`/`revision`
+          // computed above for a fresh insert: a resurrection keeps the authoring domain the row
+          // was created under, and its revision advances from the tombstone's rather than from 1.
+          originDomainId: revived.originDomainId,
+          revision: revived.revision
+        }
+      });
+    }
+    await eventBus.publish(tx, {
+      orgId: input.orgId,
+      type: "scp.relationship.created",
+      source: `/relationships`,
+      subject: revived.id,
+      data: {
+        id: revived.id,
+        typeId: input.typeId,
+        fromId: input.fromId,
+        toId: input.toId
+      }
+    });
+
+    return toRelationship(revived);
   }
 
   let row: typeof relationships.$inferSelect | undefined;
