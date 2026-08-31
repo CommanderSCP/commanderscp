@@ -20,7 +20,7 @@
 import { Command } from "commander";
 import { cp, mkdir, rm, writeFile, chmod, copyFile, readFile } from "node:fs/promises";
 import path from "node:path";
-import { run } from "./exec.js";
+import { run } from "@scp/cosign";
 import * as skopeo from "./skopeo.js";
 import * as cosign from "./cosign.js";
 import { readOciManifestDigest, verifyOciLayoutIntegrity } from "./oci-layout.js";
