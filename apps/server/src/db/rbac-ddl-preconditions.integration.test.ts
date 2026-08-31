@@ -390,22 +390,35 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
   // -----------------------------------------------------------------------------------------
   // schema.ts <-> DDL agreement.
   //
-  // Nothing else in this repo checks it. Drizzle does not enforce constraints at runtime, these
-  // tables' DDL is hand-authored (not `drizzle-kit generate`d), and CI has no drift gate for the
-  // db schema the way it has one for the OpenAPI document — so a `unique(...)`/`check(...)`
-  // declaration in schema.ts is, on its own, a comment that TypeScript happens to compile. That
-  // is precisely the "built and tested but wired nowhere" shape: the schema.ts edit in this
-  // increment would pass every other check in the repo even if the migration had never been
-  // written. These assertions read BOTH sides and compare them.
+  // Drizzle does not enforce constraints at runtime and these tables' DDL is hand-authored (not
+  // `drizzle-kit generate`d), so a `unique(...)`/`check(...)` declaration in schema.ts is, on its
+  // own, a comment that TypeScript happens to compile. That is precisely the "built and tested but
+  // wired nowhere" shape: the schema.ts edit in this increment would pass every other check in the
+  // repo even if the migration had never been written. These assertions read BOTH sides.
+  //
+  // `db/schema-ddl-drift.integration.test.ts` now carries the general form of this — every index in
+  // the migrated database must have a named declaration in schema.ts, and vice versa. It was
+  // written because this block's own observation ("nothing else in this repo checks it") turned
+  // out to be load-bearing: seven indexes, four of them race-closing partial uniques on
+  // `objects`/`relationships`, had been missing from schema.ts for up to four milestones. What
+  // stays here is the SHAPE of 0097's own constraints, which a name-level gate cannot see.
   // -----------------------------------------------------------------------------------------
 
   describe("schema.ts agrees with the DDL", () => {
     it("declares the same partial unique index on `roles` that the database actually has", async () => {
-      const declared = getTableConfig(roles).indexes.map((i) => ({
-        name: i.config.name,
-        unique: i.config.unique,
-        partial: i.config.where !== undefined
-      }));
+      // Located BY NAME, not by asserting the whole index array. `roles` has since acquired
+      // `roles_org_name_key` (drizzle/0103) and `roles_managed_stack` (drizzle/0108), and an
+      // exact-array assertion here would make every later index on this table look like a
+      // regression in 0097's test. That completeness question — no index in the database missing
+      // from schema.ts, and none declared that the database lacks — is `schema-ddl-drift`'s job
+      // now, generically, for every table. What belongs HERE is 0097's own index's SHAPE.
+      const declared = getTableConfig(roles)
+        .indexes.filter((i) => i.config.name === "roles_builtin_name_key")
+        .map((i) => ({
+          name: i.config.name,
+          unique: i.config.unique,
+          partial: i.config.where !== undefined
+        }));
       expect(declared).toEqual([{ name: "roles_builtin_name_key", unique: true, partial: true }]);
 
       const live = await admin.query<{ indexdef: string }>(
