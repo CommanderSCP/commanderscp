@@ -22,8 +22,7 @@
  * would lose state, which is why the subprocess-host path always sets `statePath`.
  */
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { createFileBackedJsonCache } from "@scp/plugin-api";
 import type {
   AbortResult,
   Cursor,
@@ -228,34 +227,22 @@ function expandRepeatedDetail(
 }
 
 export class FakeExecutorPlugin implements ExecutorPlugin {
-  /** Fallback store used only when `ctx.config.statePath` is unset — see module doc. */
-  private inMemoryState: FakeExecutorState = { targets: {} };
+  /** Fallback store used only when `ctx.config.statePath` is unset — see module doc. Per-instance
+   *  (unlike the module-scoped caches in the other executor plugins), matching this class's
+   *  existing per-instance in-memory fallback. */
+  private readonly dedupCache = createFileBackedJsonCache<FakeExecutorState>(() => ({
+    targets: {}
+  }));
 
   private async loadState(config: unknown): Promise<FakeExecutorState> {
-    const statePath = readConfig(config).statePath;
-    if (!statePath) return this.inMemoryState;
-    try {
-      const raw = await readFile(statePath, "utf8");
-      return JSON.parse(raw) as FakeExecutorState;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return { targets: {} };
-      throw err;
-    }
+    return this.dedupCache.load(readConfig(config).statePath);
   }
 
   private async saveState(config: unknown, state: FakeExecutorState): Promise<void> {
-    const statePath = readConfig(config).statePath;
-    if (!statePath) {
-      this.inMemoryState = state;
-      return;
-    }
-    await mkdir(dirname(statePath), { recursive: true });
     // Write-to-temp + rename: the only atomicity guarantee this tiny JSON blob needs, and it's
     // what protects the "kill subprocess mid-wave, wave resumes" scenario from ever reading a
     // half-written state file if a respawned process races the old one's final write.
-    const tmpPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(tmpPath, JSON.stringify(state), "utf8");
-    await rename(tmpPath, statePath);
+    return this.dedupCache.save(readConfig(config).statePath, state);
   }
 
   async observe(ctx: PluginContext, since?: Cursor): Promise<ExecutorEvent[]> {

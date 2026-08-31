@@ -1,6 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { createFileBackedJsonCache } from "@scp/plugin-api";
 import type {
   AbortResult,
   Cursor,
@@ -85,31 +84,13 @@ async function resolveToken(ctx: PluginContext, config: ArgoCdConfig): Promise<s
 }
 
 // -----------------------------------------------------------------------------------------
-// Dedup cache — see module doc. Mirrors @scp/plugin-fake-executor's persistence shape exactly.
+// Dedup cache — see module doc. Mirrors @scp/plugin-fake-executor's persistence shape exactly
+// (both call @scp/plugin-api's createFileBackedJsonCache, the shared write-to-temp+rename triad).
 // -----------------------------------------------------------------------------------------
 
-let inMemoryState: DedupState = { targets: {} };
-
-async function loadState(statePath: string | undefined): Promise<DedupState> {
-  if (!statePath) return inMemoryState;
-  try {
-    return JSON.parse(await readFile(statePath, "utf8")) as DedupState;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { targets: {} };
-    throw err;
-  }
-}
-
-async function saveState(statePath: string | undefined, state: DedupState): Promise<void> {
-  if (!statePath) {
-    inMemoryState = state;
-    return;
-  }
-  await mkdir(dirname(statePath), { recursive: true });
-  const tmpPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(state), "utf8");
-  await rename(tmpPath, statePath);
-}
+const dedupCache = createFileBackedJsonCache<DedupState>(() => ({ targets: {} }));
+const loadState = dedupCache.load;
+const saveState = dedupCache.save;
 
 function mintExternalId(appName: string): string {
   return `${appName}${REF_DELIMITER}${randomUUID()}`;

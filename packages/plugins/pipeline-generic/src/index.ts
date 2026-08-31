@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { createFileBackedJsonCache } from "@scp/plugin-api";
 import type {
   AbortResult,
   Cursor,
@@ -130,28 +129,9 @@ function pruneDedupState(state: DedupState): void {
   for (const key of keys.slice(0, keys.length - DEDUP_CACHE_MAX_KEYS)) delete state.keys[key];
 }
 
-let inMemoryState: DedupState = { keys: {} };
-
-async function loadState(statePath: string | undefined): Promise<DedupState> {
-  if (!statePath) return inMemoryState;
-  try {
-    return JSON.parse(await readFile(statePath, "utf8")) as DedupState;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { keys: {} };
-    throw err;
-  }
-}
-
-async function saveState(statePath: string | undefined, state: DedupState): Promise<void> {
-  if (!statePath) {
-    inMemoryState = state;
-    return;
-  }
-  await mkdir(dirname(statePath), { recursive: true });
-  const tmpPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(state), "utf8");
-  await rename(tmpPath, statePath);
-}
+const dedupCache = createFileBackedJsonCache<DedupState>(() => ({ keys: {} }));
+const loadState = dedupCache.load;
+const saveState = dedupCache.save;
 
 async function observe(_ctx: PluginContext, _since?: Cursor): Promise<ExecutorEvent[]> {
   return []; // see module doc — this executor's observe path is inbound (webhook/CLI report), not polled.

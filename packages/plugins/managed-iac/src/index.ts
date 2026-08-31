@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { createFileBackedJsonCache } from "@scp/plugin-api";
 import type {
   AbortResult,
   Cursor,
@@ -241,28 +242,9 @@ function storeOutcome(state: DedupState, cacheKey: string, outcome: PendingOutco
   state.keys[cacheKey] = { ...outcome, detail: boundDetail(outcome.detail) };
 }
 
-let inMemoryState: DedupState = { keys: {} };
-
-async function loadState(statePath: string | undefined): Promise<DedupState> {
-  if (!statePath) return inMemoryState;
-  try {
-    return JSON.parse(await readFile(statePath, "utf8")) as DedupState;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { keys: {} };
-    throw err;
-  }
-}
-
-async function saveState(statePath: string | undefined, state: DedupState): Promise<void> {
-  if (!statePath) {
-    inMemoryState = state;
-    return;
-  }
-  await mkdir(dirname(statePath), { recursive: true });
-  const tmpPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(state), "utf8");
-  await rename(tmpPath, statePath);
-}
+const dedupCache = createFileBackedJsonCache<DedupState>(() => ({ keys: {} }));
+const loadState = dedupCache.load;
+const saveState = dedupCache.save;
 
 // -----------------------------------------------------------------------------------------
 // Runner container launch — COPY the workspace in/out (never bind-mount; CRITICAL #1 + fixes the
