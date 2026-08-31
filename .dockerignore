@@ -16,10 +16,13 @@
 # checkout — each carrying its own committed tools/openapi/bin/oasdiff Go binary — into
 # the image. Never needed by the build or at runtime.
 .claude
-# The oasdiff Go binary is the /v1 breaking-change gate — a BUILD/CI tool (pnpm gen),
-# never read at runtime (the server emits its OpenAPI from Zod in-process). Its old Go
-# stdlib carried several CRITICAL/HIGH CVEs. tools/openapi/openapi.v1.json (the spec
-# itself) is kept — only the binary is excluded.
-tools/openapi/bin
 # CI workflow definitions — never part of the runtime image.
 .github
+#
+# NOT excluded here, deliberately: `tools/openapi/bin/oasdiff-linux-amd64`. The oasdiff Go binary
+# is a BUILD/CI tool (the /v1 breaking-change gate), never read at runtime — but `.dockerignore`
+# applies to EVERY build that uses the repo root as context, and `tools/ci-image/Dockerfile`
+# legitimately `COPY`s oasdiff into the CI toolchain image. Excluding it here broke that build
+# (`COPY tools/openapi/bin/... not found`). So the scpd RUNTIME image drops oasdiff in its own
+# build stage instead (see Dockerfile) — keeping its CVEs out of the shipped server without
+# starving the CI image build.

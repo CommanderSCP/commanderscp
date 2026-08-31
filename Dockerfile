@@ -70,8 +70,15 @@ RUN pnpm build
 # store entries explicitly; nothing at runtime can reach them. @esbuild-kit is drizzle-kit's
 # (dev-only) esbuild wrapper — the GHSA-67mh esbuild-dev-server moderate lives there. A full
 # `pnpm deploy --prod` slim of the runtime tree is the proper follow-up (Dockerfile header note).
+#
+# tools/openapi/bin is dropped here rather than via `.dockerignore`: the oasdiff Go binary is a
+# BUILD/CI tool (the /v1 breaking-change gate), never read at runtime, and its old Go stdlib carried
+# CRITICAL/HIGH CVEs — but it CANNOT be `.dockerignore`d, because `tools/ci-image/Dockerfile` builds
+# from this same repo-root context and legitimately `COPY`s oasdiff in. Deleting it from the build
+# stage keeps it out of the scpd runtime image without breaking the CI-image build.
 RUN pnpm prune --prod \
-  && rm -rf node_modules/.pnpm/esbuild@* node_modules/.pnpm/@esbuild+* node_modules/.pnpm/@esbuild-kit+*
+  && rm -rf node_modules/.pnpm/esbuild@* node_modules/.pnpm/@esbuild+* node_modules/.pnpm/@esbuild-kit+* \
+  && rm -rf tools/openapi/bin
 
 # The runtime stage deliberately does NOT reuse `base`: `base` exists to run pnpm (corepack) for
 # the fetch/build stages, and nothing at runtime runs npm, npx, corepack, or pnpm — the CMD is
