@@ -8,6 +8,7 @@ import type {
   ApprovalRequest,
   ApprovalVote,
   Campaign,
+  CampaignAdoptionResponse,
   CampaignExplainResponse,
   CampaignStatus,
   Change,
@@ -2028,6 +2029,36 @@ function printCampaignExplainResult(result: CampaignExplainResponse, output: Out
         ? (decision.reasonTree["summary"] as string)
         : JSON.stringify(decision.reasonTree);
     console.log(`  [${decision.createdAt}] ${decision.kind} -> ${decision.verdict}: ${summary}`);
+  }
+}
+
+/**
+ * Prints a Campaign's per-target adoption verdicts (M25.5, `scp campaign adoption <id>`) — the
+ * campaign-scoped answer to "has each of this campaign's components migrated yet?", derived live
+ * at read time. Same shape deviation from `printResult`/`printTable` as `printCampaignExplainResult`
+ * above, and for the same reason: this is one object with array fields, not a list of rows.
+ */
+function printCampaignAdoptionResult(result: CampaignAdoptionResponse, output: OutputFormat): void {
+  if (output === "json") {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(`Campaign ${result.campaignObjectId}`);
+  console.log(`Evidence: ${result.evidence === null ? "(none declared)" : result.evidence.kind}`);
+
+  console.log(`\nTargets (${result.targets.length}):`);
+  for (const target of result.targets) {
+    const ref = target.targetUrn ?? target.targetName ?? target.targetObjectId;
+    console.log(`  - ${ref}: ${target.verdict} — ${target.summary}`);
+    for (const observation of target.observations) {
+      console.log(`      ${observation}`);
+    }
+  }
+
+  if (result.unresolvedTargets.length > 0) {
+    console.log(`\nUnresolved targets (${result.unresolvedTargets.length}):`);
+    for (const ref of result.unresolvedTargets) console.log(`  - ${ref}`);
   }
 }
 
@@ -4612,6 +4643,19 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.campaigns.explain(id);
       printCampaignExplainResult(result, opts.output);
+    });
+
+  campaignCmd
+    .command("adoption <id>")
+    .description(
+      "Per-target adoption evidence for a Campaign — whether each component has migrated, derived live from the evidence source the recipe names (M25.5)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (id: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.campaigns.adoption(id);
+      printCampaignAdoptionResult(result, opts.output);
     });
 
   /**

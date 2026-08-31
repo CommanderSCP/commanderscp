@@ -205,6 +205,7 @@ import {
   listCampaigns as listCampaignsRequest,
   getCampaign as getCampaignRequest,
   explainCampaign as explainCampaignRequest,
+  campaignAdoption as campaignAdoptionRequest,
   rollbackCampaign as rollbackCampaignRequest,
   // M25.6a (owner decision D4) — the deadline's set/move/CLEAR verb.
   setCampaignDeadline as setCampaignDeadlineRequest,
@@ -389,6 +390,7 @@ import type {
   CampaignListQuery,
   CampaignListResponse,
   CampaignExplainResponse,
+  CampaignAdoptionResponse,
   CampaignDeadlineInput,
   OverrideCampaignDeadlineRequest,
   CreateCampaignRequest,
@@ -2009,6 +2011,12 @@ export class ScpClient {
     },
     explain: async (id: string): Promise<CampaignExplainResponse> => {
       const result = await explainCampaignRequest({ client: this.client, path: { id } });
+      return unwrap(result);
+    },
+    /** M25.5 — "has each of this campaign's components migrated yet?", derived live from the
+     *  evidence source the recipe names. Same `object:read`-at-the-campaign scope as `explain`. */
+    adoption: async (id: string): Promise<CampaignAdoptionResponse> => {
+      const result = await campaignAdoptionRequest({ client: this.client, path: { id } });
       return unwrap(result);
     },
     /**
