@@ -38,6 +38,9 @@ export function registerOidcRoutes(app: FastifyInstance, deps: AppDeps): void {
       path: PKCE_COOKIE_PATH,
       httpOnly: true,
       signed: true,
+      // Secure in production (never over plaintext HTTP); relaxed for the eval/dev plain-HTTP
+      // stacks. Same rationale as the session cookie in routes/auth.ts.
+      secure: deps.config.deploymentMode === "production",
       sameSite: "lax",
       maxAge: PKCE_COOKIE_TTL_SECONDS
     });
@@ -134,6 +137,9 @@ export function registerOidcRoutes(app: FastifyInstance, deps: AppDeps): void {
       path: "/",
       httpOnly: true,
       signed: true,
+      // Secure in production (never over plaintext HTTP); relaxed for the eval/dev plain-HTTP
+      // stacks. Same rationale as the session cookie in routes/auth.ts.
+      secure: deps.config.deploymentMode === "production",
       sameSite: "lax",
       expires: provisioned.session.expiresAt
     });

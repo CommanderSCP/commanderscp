@@ -6,6 +6,7 @@ import { hasPermission } from "../authz/resolve.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { SSE_RESYNC_EVENT_TYPE } from "../events/sse-bridge.js";
 import { sseHub, type RelayedEvent } from "../events/sse-hub.js";
+import { tooManyRequests } from "../errors.js";
 
 /**
  * `GET /events/stream` (DESIGN.md §6, §8) — Server-Sent Events fed from this process's in-process
@@ -167,6 +168,19 @@ const MAX_PENDING_FRAMES = 1_000;
  *  before it can reach the pool. Same literal, same reason, as events/sse-bridge.ts's gate. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * SSE connection caps. Each open stream holds a socket, a DB-check queue, and a hub listener for its
+ * connection lifetime, so an authenticated caller who opens streams in a loop can exhaust the pod's
+ * file descriptors / the SSE authz pool without ever tripping a request-rate limit (the connection
+ * is long-lived, not a burst of requests). A per-principal cap stops one identity monopolising the
+ * budget; a global cap stops a fleet of identities doing the same. Both refuse with 429 BEFORE the
+ * 200 head is written, so the caller sees a clean error rather than a stream that never delivers.
+ */
+const MAX_SSE_CONNS_PER_PRINCIPAL = 8;
+const MAX_SSE_CONNS_GLOBAL = 2_000;
+let openSseConns = 0;
+const openSseConnsByPrincipal = new Map<string, number>();
+
 export function registerEventStreamRoute(app: FastifyInstance, deps: AppDeps): void {
   app.get(
     "/api/v1/events/stream",
@@ -185,12 +199,38 @@ export function registerEventStreamRoute(app: FastifyInstance, deps: AppDeps): v
     async (request, reply) => {
       const auth = await requireAuth(deps, request);
 
+      // Connection caps, checked BEFORE the 200 head so an over-limit caller gets a 429 (via the
+      // global error handler) instead of a dead stream. Registered/incremented only after the head
+      // is written, and decremented exactly once on close.
+      const principalKey = auth.subjectObjectId;
+      const principalConns = openSseConnsByPrincipal.get(principalKey) ?? 0;
+      if (openSseConns >= MAX_SSE_CONNS_GLOBAL) {
+        throw tooManyRequests("event stream connection limit reached (server) — retry shortly");
+      }
+      if (principalConns >= MAX_SSE_CONNS_PER_PRINCIPAL) {
+        throw tooManyRequests(
+          `event stream connection limit reached (${MAX_SSE_CONNS_PER_PRINCIPAL} concurrent per principal)`
+        );
+      }
+
       reply.raw.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
         connection: "keep-alive"
       });
       reply.raw.write(": connected\n\n");
+
+      openSseConns += 1;
+      openSseConnsByPrincipal.set(principalKey, principalConns + 1);
+      let counted = true;
+      const releaseConnSlot = (): void => {
+        if (!counted) return;
+        counted = false;
+        openSseConns -= 1;
+        const remaining = (openSseConnsByPrincipal.get(principalKey) ?? 1) - 1;
+        if (remaining <= 0) openSseConnsByPrincipal.delete(principalKey);
+        else openSseConnsByPrincipal.set(principalKey, remaining);
+      };
 
       // Per-CONNECTION, never module-level: the memo is keyed by subject alone, so one shared
       // across connections would answer one principal's question with another's verdict.
@@ -314,6 +354,7 @@ export function registerEventStreamRoute(app: FastifyInstance, deps: AppDeps): v
         closed = true;
         clearInterval(heartbeat);
         sseHub.off(auth.orgId, send);
+        releaseConnSlot();
         // Queued frames still resolve their in-flight checks, but the `closed` guard above stops
         // them writing to a socket that is gone.
         readMemo.clear();
