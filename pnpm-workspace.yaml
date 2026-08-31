@@ -17,8 +17,18 @@ packages:
 # is the safe fix. NOTE: lodash-es@4.18.0 is marked deprecated upstream ("Bad
 # release. Please use lodash-es@4.17.23 instead") — use 4.18.1, which carries the
 # fix and is not deprecated. Re-evaluate if cel-js ever ships against chevrotain@12+.
+# js-yaml (transitively via packages/sdk -> @hey-api/openapi-ts -> @hey-api/
+# json-schema-ref-parser, which pins js-yaml to EXACT 4.2.0 in every release) is
+# affected by GHSA-52cp-r559-cp3m (HIGH, quadratic CPU via YAML merge-key chains,
+# fixed in 4.3.0) and GHSA-5p4m-2wfm-xmqj (HIGH, quadratic CPU via !!omap, fixed
+# in 4.3.1). Dev-only codegen path (never in any prod dependency graph), but the
+# exact pin means no lockfile refresh can reach the patched line — override the
+# one vulnerable edge rather than js-yaml globally (the 3.x line used by
+# @changesets is patched separately via normal range resolution to >=3.15.1).
+# Re-evaluate when @hey-api/json-schema-ref-parser ships against js-yaml >=4.3.1.
 overrides:
   lodash-es: 4.18.1
+  "@hey-api/json-schema-ref-parser>js-yaml": "^4.3.1"
 
 # --- pnpm audit disposition notes (M9.2 hygiene pass, 2026-07) ---
 #
