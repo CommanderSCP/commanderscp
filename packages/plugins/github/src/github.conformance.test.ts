@@ -109,11 +109,13 @@ beforeAll(() => {
   nock(executorConfig.apiBaseUrl ?? "https://api.github.com")
     .matchHeader("authorization", executorAuthHeader)
     .get(`/repos/${executorConfig.owner}/${executorConfig.repo}/commits`)
+    .query(true)
     .reply(200, [{ sha: "b".repeat(40), commit: { author: { date: new Date().toISOString() } } }])
     .persist();
   nock(executorConfig.apiBaseUrl ?? "https://api.github.com")
     .matchHeader("authorization", executorAuthHeader)
     .get(`/repos/${executorConfig.owner}/${executorConfig.repo}/actions/runs`)
+    .query(true)
     .reply(200, { workflow_runs: [] })
     .persist();
 

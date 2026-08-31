@@ -444,18 +444,22 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
   const repo = projectPathOf(config);
-  const query = sinceIso ? `?since=${encodeURIComponent(sinceIso)}` : "";
-  const { status, body } = await api(
-    ctx,
-    config,
-    "GET",
-    `/projects/${projectId(config)}/repository/commits${query}`
-  );
-  if (status >= 200 && status < 300) {
+  const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
+    const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
+    if (sinceIso) query.set("since", sinceIso);
+    const { status, body } = await api(
+      ctx,
+      config,
+      "GET",
+      `/projects/${projectId(config)}/repository/commits?${query.toString()}`
+    );
+    if (status < 200 || status >= 300) break;
     const commits = (body as GitlabCommit[]) ?? [];
+    if (commits.length === 0) break;
     for (const commit of commits) {
       const occurredAt = commit.created_at ?? commit.committed_date ?? new Date().toISOString();
-      if (sinceIso && new Date(occurredAt).getTime() <= new Date(sinceIso).getTime()) continue;
+      if (sinceMs !== undefined && new Date(occurredAt).getTime() <= sinceMs) continue;
       events.push({
         kind: "push",
         occurredAt,
@@ -467,9 +471,22 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
         raw: commit
       });
     }
+    if (commits.length < POLL_PAGE_SIZE) break; // a short page is the last page.
+    if (sinceMs === undefined) break; // cold start reads one page — see MAX_POLL_PAGES.
+    const last = commits[commits.length - 1];
+    const oldest = last?.created_at ?? last?.committed_date;
+    if (oldest && new Date(oldest).getTime() <= sinceMs) break;
   }
   return events;
 }
+
+/**
+ * Page size and per-poll page ceiling for the list resources `observe()` polls, mirroring the
+ * github adapter's constants of the same name (the defect and its bound are identical; each adapter
+ * keeps its own copy because the query parameter NAMES differ per provider).
+ */
+const POLL_PAGE_SIZE = 100;
+const MAX_POLL_PAGES = 5;
 
 /** Adapter `pollRuns` hook: recent pipelines (approximates a `Pipeline Hook` webhook). GitLab's
  *  pipelines list accepts `updated_after` (ISO); we also filter client-side. */
@@ -477,18 +494,22 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
   const repo = projectPathOf(config);
-  const query = sinceIso ? `?updated_after=${encodeURIComponent(sinceIso)}` : "";
-  const { status, body } = await api(
-    ctx,
-    config,
-    "GET",
-    `/projects/${projectId(config)}/pipelines${query}`
-  );
-  if (status >= 200 && status < 300) {
+  const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
+    const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
+    if (sinceIso) query.set("updated_after", sinceIso);
+    const { status, body } = await api(
+      ctx,
+      config,
+      "GET",
+      `/projects/${projectId(config)}/pipelines?${query.toString()}`
+    );
+    if (status < 200 || status >= 300) break;
     const pipelines = (body as GitlabPipeline[]) ?? [];
+    if (pipelines.length === 0) break;
     for (const pipeline of pipelines) {
       const occurredAt = pipeline.updated_at ?? pipeline.created_at ?? new Date().toISOString();
-      if (sinceIso && new Date(occurredAt).getTime() <= new Date(sinceIso).getTime()) continue;
+      if (sinceMs !== undefined && new Date(occurredAt).getTime() <= sinceMs) continue;
       events.push({
         kind: "workflow_run",
         occurredAt,
@@ -500,6 +521,11 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
         raw: pipeline
       });
     }
+    if (pipelines.length < POLL_PAGE_SIZE) break;
+    if (sinceMs === undefined) break;
+    const last = pipelines[pipelines.length - 1];
+    const oldest = last?.updated_at ?? last?.created_at;
+    if (oldest && new Date(oldest).getTime() <= sinceMs) break;
   }
   return events;
 }

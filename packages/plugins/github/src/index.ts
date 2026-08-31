@@ -404,39 +404,75 @@ interface WorkflowRun {
 async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]> {
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
-  const commitsPath = `/repos/${config.owner}/${config.repo}/commits${sinceIso ? `?since=${encodeURIComponent(sinceIso)}` : ""}`;
-  const { status: commitsStatus, body: commitsBody } = await api(ctx, config, "GET", commitsPath);
-  if (commitsStatus >= 200 && commitsStatus < 300) {
-    const commits = commitsBody as Array<{ sha: string; commit?: { author?: { date?: string } } }>;
-    let fileFetchBudget = MAX_COMMIT_FILE_FETCHES_PER_POLL;
-    for (const commit of commits) {
-      const occurredAt = commit.commit?.author?.date ?? new Date().toISOString();
-      // The commits LIST response carries no `files` (GitHub only returns them on the single-commit
-      // resource), so poll-vs-push equivalence for `paths` costs one extra GET per commit. Budgeted
-      // rather than unbounded: a repo that lands a large backlog between polls must not turn one
-      // observe tick into hundreds of API calls. Commits past the budget still produce an event —
-      // just without `paths`, so they route by the repo-only mappings exactly as before.
-      const paths =
-        fileFetchBudget > 0 ? await fetchCommitPaths(ctx, config, commit.sha) : undefined;
-      if (fileFetchBudget > 0) fileFetchBudget -= 1;
-      events.push({
-        kind: "push",
-        occurredAt,
-        correlation: normalizeCorrelation({
-          repo: `${config.owner}/${config.repo}`,
-          commitSha: commit.sha,
-          correlationKey: "refs/heads/*",
-          ...(paths && paths.length > 0 ? { paths } : {})
-        }),
-        raw: commit
-      });
-    }
+  const commits: Array<{ sha: string; commit?: { author?: { date?: string } } }> = [];
+  const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
+    const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
+    if (sinceIso) query.set("since", sinceIso);
+    const { status, body } = await api(
+      ctx,
+      config,
+      "GET",
+      `/repos/${config.owner}/${config.repo}/commits?${query.toString()}`
+    );
+    if (status < 200 || status >= 300) break; // lenient observe posture — see this hook's doc.
+    const pageCommits = body as Array<{ sha: string; commit?: { author?: { date?: string } } }>;
+    if (!Array.isArray(pageCommits) || pageCommits.length === 0) break;
+    commits.push(...pageCommits);
+    if (pageCommits.length < POLL_PAGE_SIZE) break; // a short page is the last page.
+    // GitHub filters `since` server-side, so a full page means there is probably more of the
+    // window left; stop early anyway once the page's OLDEST entry predates the watermark.
+    const oldest = pageCommits[pageCommits.length - 1]?.commit?.author?.date;
+    if (sinceMs !== undefined && oldest && new Date(oldest).getTime() <= sinceMs) break;
+    if (sinceMs === undefined) break; // cold start: no window to catch up on — see MAX_POLL_PAGES.
+  }
+  let fileFetchBudget = MAX_COMMIT_FILE_FETCHES_PER_POLL;
+  for (const commit of commits) {
+    const occurredAt = commit.commit?.author?.date ?? new Date().toISOString();
+    // The commits LIST response carries no `files` (GitHub only returns them on the single-commit
+    // resource), so poll-vs-push equivalence for `paths` costs one extra GET per commit. Budgeted
+    // rather than unbounded: a repo that lands a large backlog between polls must not turn one
+    // observe tick into hundreds of API calls. Commits past the budget still produce an event —
+    // just without `paths`, so they route by the repo-only mappings exactly as before.
+    const paths = fileFetchBudget > 0 ? await fetchCommitPaths(ctx, config, commit.sha) : undefined;
+    if (fileFetchBudget > 0) fileFetchBudget -= 1;
+    events.push({
+      kind: "push",
+      occurredAt,
+      correlation: normalizeCorrelation({
+        repo: `${config.owner}/${config.repo}`,
+        commitSha: commit.sha,
+        correlationKey: "refs/heads/*",
+        ...(paths && paths.length > 0 ? { paths } : {})
+      }),
+      raw: commit
+    });
   }
   return events;
 }
 
 /** Per-poll ceiling on single-commit fetches (see `pollCommits`). */
 const MAX_COMMIT_FILE_FETCHES_PER_POLL = 20;
+
+/**
+ * Page size and per-poll page ceiling for the two LIST resources `observe()` polls.
+ *
+ * Both used to read whatever GitHub's default page held (30, newest-first) and stop. Anything older
+ * than that page — a release train that lands 40 commits between two observe ticks, a busy
+ * monorepo's workflow runs — was not "deferred to the next poll", it was gone: the cursor advances
+ * to the newest entry seen, so the events beneath the page boundary were never correlated at all.
+ *
+ * Bounded rather than "follow rel=next to the end", in the same spirit as
+ * `MAX_COMMIT_FILE_FETCHES_PER_POLL`: paginating an active repo without a ceiling turns one observe
+ * tick into an unbounded API spend and a rate-limit outage. Five pages of 100 covers ~16x the old
+ * window; past it the same truncation as before applies, which is the accepted (and now
+ * substantially rarer) risk.
+ *
+ * A COLD START (no watermark) deliberately reads ONE page. There is no window to catch up on then —
+ * only "how much history do we invent events for" — and inventing 500 is not better than 100.
+ */
+const POLL_PAGE_SIZE = 100;
+const MAX_POLL_PAGES = 5;
 
 /**
  * The changed-file set of ONE commit, via the single-commit resource (the only GitHub endpoint that
@@ -486,16 +522,20 @@ async function fetchCommitPaths(
 async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]> {
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
-  const runsPath = `/repos/${config.owner}/${config.repo}/actions/runs`;
-  const { status: runsStatus, body: runsBody } = await api(ctx, config, "GET", runsPath);
-  if (runsStatus >= 200 && runsStatus < 300) {
-    const runs = (runsBody as { workflow_runs?: WorkflowRun[] }).workflow_runs ?? [];
+  const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
+  for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
+    const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
+    const { status, body } = await api(
+      ctx,
+      config,
+      "GET",
+      `/repos/${config.owner}/${config.repo}/actions/runs?${query.toString()}`
+    );
+    if (status < 200 || status >= 300) break; // lenient observe posture — see pollCommits' doc.
+    const runs = (body as { workflow_runs?: WorkflowRun[] }).workflow_runs ?? [];
+    if (runs.length === 0) break;
     for (const run of runs) {
-      if (
-        sinceIso &&
-        run.created_at &&
-        new Date(run.created_at).getTime() <= new Date(sinceIso).getTime()
-      )
+      if (sinceMs !== undefined && run.created_at && new Date(run.created_at).getTime() <= sinceMs)
         continue;
       events.push({
         kind: "workflow_run",
@@ -508,6 +548,12 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
         raw: run
       });
     }
+    if (runs.length < POLL_PAGE_SIZE) break; // a short page is the last page.
+    if (sinceMs === undefined) break; // cold start reads one page — see MAX_POLL_PAGES.
+    // Unlike /commits, this resource has no server-side `since`: the whole page is filtered here,
+    // so the stop condition is the page's OLDEST run falling at/behind the watermark.
+    const oldest = runs[runs.length - 1]?.created_at;
+    if (oldest && new Date(oldest).getTime() <= sinceMs) break;
   }
   return events;
 }

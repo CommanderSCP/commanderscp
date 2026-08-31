@@ -186,6 +186,7 @@ describe("trigger() — workflow_dispatch", () => {
     const pollScope = nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, {
         workflow_runs: [
           {
@@ -218,6 +219,7 @@ describe("trigger() — workflow_dispatch", () => {
     const pollScope = nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, {
         workflow_runs: [{ id: runId, status: "waiting", created_at: new Date().toISOString() }]
       });
@@ -246,6 +248,7 @@ describe("trigger() — workflow_dispatch", () => {
     const pollScope = nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .times(3)
       .reply(200, { workflow_runs: [] });
 
@@ -276,6 +279,7 @@ describe("trigger() — workflow_dispatch", () => {
     const pollScope = nock(apiBase(config))
       .matchHeader("authorization", "token resolved-secret-pat")
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, {
         workflow_runs: [{ id: 1, status: "running", created_at: new Date().toISOString() }]
       });
@@ -304,6 +308,7 @@ describe("trigger() idempotency — in-memory dedup cache", () => {
     const pollScope = nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, {
         workflow_runs: [{ id: runId, status: "running", created_at: new Date().toISOString() }]
       });
@@ -344,6 +349,7 @@ describe("trigger() idempotency — file-backed dedup cache", () => {
     const pollScope = nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, {
         workflow_runs: [{ id: runId, status: "running", created_at: new Date().toISOString() }]
       });
@@ -503,12 +509,50 @@ describe("observe() polling — commits, runs, and package pushes", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, opts.commits ?? []);
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: opts.runs ?? [] });
   }
+
+  it("walks /commits PAGES until a page's oldest entry predates the watermark (one default page dropped the rest)", async () => {
+    // Gitea filters the whole window client-side (no `since` param), so reading only page 1 lost
+    // every commit beneath it — permanently, since the cursor still advances.
+    const { config, ctx, authHeader, base } = setup();
+    const watermark = "2026-07-01T00:00:00.000Z";
+    const page = (label: string, count: number, dateIso: string): unknown[] =>
+      Array.from({ length: count }, (_, i) => ({
+        sha: `${label}${String(i).padStart(38, "0")}`,
+        commit: { author: { date: dateIso } }
+      }));
+    const scope = nock(base).matchHeader("authorization", authHeader);
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query((q) => q.page === "1" && q.limit === "100")
+      .reply(200, page("a", 100, "2026-07-02T00:00:00Z"));
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query((q) => q.page === "2")
+      .reply(200, [
+        { sha: "b".repeat(40), commit: { author: { date: "2026-07-01T12:00:00Z" } } },
+        { sha: "c".repeat(40), commit: { author: { date: "2026-06-30T00:00:00Z" } } } // pre-watermark: ends the walk
+      ]);
+    scope
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
+      .reply(200, { workflow_runs: [] });
+    scope.get(`/packages/${config.owner}`).reply(200, []);
+
+    const events = await plugin.observe(ctx, {
+      token: JSON.stringify({ push: watermark, workflow_run: watermark })
+    });
+
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(101); // 100 + the one after it
+    scope.done();
+  });
 
   it("emits a package-push event with correlation.artifactDigest for a sha256: package version (github never populated this)", async () => {
     const { config, ctx, authHeader, base } = setup();
@@ -558,10 +602,12 @@ describe("observe() polling — commits, runs, and package pushes", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, {
         workflow_runs: [
           { id: 55, status: "success", head_sha: runSha, created_at: "2026-07-01T00:05:00Z" }
@@ -598,10 +644,12 @@ describe("observe() polling — commits, runs, and package pushes", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
     nock(base)
       .matchHeader("authorization", authHeader)
@@ -619,10 +667,12 @@ describe("observe() polling — commits, runs, and package pushes", () => {
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(403, { message: "rate limited" });
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
     nock(base)
       .matchHeader("authorization", authHeader)
@@ -651,10 +701,12 @@ describe("base URL resolution (baseUrl → serverUrl; required, no default)", ()
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, [{ sha: commitSha, commit: { author: { date: "2026-07-01T00:00:00Z" } } }]);
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
     nock(base)
       .matchHeader("authorization", authHeader)
@@ -675,10 +727,12 @@ describe("base URL resolution (baseUrl → serverUrl; required, no default)", ()
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query(true)
       .reply(200, []);
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/${config.owner}/${config.repo}/actions/runs`)
+      .query(true)
       .reply(200, { workflow_runs: [] });
     nock(base)
       .matchHeader("authorization", authHeader)
