@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import * as argon2 from "argon2";
+import { verifyPasswordHashLimited } from "./argon2-limiter.js";
 
 /**
  * The `<prefix><tokenId>.<secret>` bearer-token shape shared by PATs (`pat.ts`) and instance
@@ -78,7 +78,9 @@ export async function verifyPrefixedToken<Row extends PrefixedTokenRow>(
   if (row.revokedAt) return null;
   if (row.expiresAt && row.expiresAt.getTime() < Date.now()) return null;
 
-  const valid = await argon2.verify(row.tokenHash, parsed.secret).catch(() => false);
+  // Through the concurrency gate (argon2-limiter.ts) — same libuv-threadpool-saturation defense as
+  // login. A saturation 429 propagates to the caller; a wrong secret is `false`, as before.
+  const valid = await verifyPasswordHashLimited(row.tokenHash, parsed.secret);
   if (!valid) return null;
 
   // Best-effort — must never block/fail auth if this update fails (e.g. transient DB hiccup).
