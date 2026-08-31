@@ -136,9 +136,9 @@ export function ScaffoldPanel({
 
       {ungrouped.length > 0 && (
         <Alert tone="warning" data-testid={`${testIdPrefix}-ungrouped`}>
-          <strong>{ungroupedSummary}</strong>{" "}
-          {ungrouped.map((u) => u.name).join(", ")}. Name a service for each, or they are left
-          behind — deliberately, because a component without one is an orphan.
+          <strong>{ungroupedSummary}</strong> {ungrouped.map((u) => u.name).join(", ")}. Name a
+          service for each, or they are left behind — deliberately, because a component without one
+          is an orphan.
         </Alert>
       )}
 

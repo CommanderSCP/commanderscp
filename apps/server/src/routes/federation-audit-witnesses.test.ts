@@ -94,8 +94,8 @@ describe("GET /api/v1/federation/audit-witnesses", () => {
     mockAuthorize.mockReset();
     mockListAuditWitnessesForOrigin.mockReset();
     mockRequireAuth.mockResolvedValue(AUTH);
-    mockWithTenantTx.mockImplementation(async (_db: unknown, _orgId: unknown, fn: (tx: unknown) => unknown) =>
-      fn({})
+    mockWithTenantTx.mockImplementation(
+      async (_db: unknown, _orgId: unknown, fn: (tx: unknown) => unknown) => fn({})
     );
     mockAuthorize.mockResolvedValue(undefined);
     mockListAuditWitnessesForOrigin.mockResolvedValue(WITNESS_ROWS);
@@ -161,7 +161,9 @@ describe("GET /api/v1/federation/audit-witnesses", () => {
   });
 
   it("propagates an authorize() refusal as the same status it throws — never masked into 200", async () => {
-    mockAuthorize.mockRejectedValue(new ProblemError(403, "Forbidden", { detail: "no federation:read" }));
+    mockAuthorize.mockRejectedValue(
+      new ProblemError(403, "Forbidden", { detail: "no federation:read" })
+    );
     const res = await app.inject({
       method: "GET",
       url: "/api/v1/federation/audit-witnesses?originDomainId=peer-domain-1"

@@ -68,7 +68,7 @@ Testcontainers suite) run inside this image too, now that it's a pullable artifa
 - **`tools/openapi/check.sh` runs as its own CI job, not inside `codegen-drift`.** It is wired into
   `.github/workflows/ci.yml`'s `api-breaking-change` job ("3b. API breaking-change gate (oasdiff,
   /v1 additive-only)"), which runs on every PR with `fetch-depth: 0` so `check.sh`'s `git
-  merge-base origin/main HEAD` can resolve the base spec — deliberately separate from `codegen-drift`
+merge-base origin/main HEAD` can resolve the base spec — deliberately separate from `codegen-drift`
   (job 3), which only proves the committed spec matches freshly generated output; see
   `tools/openapi/README.md`.
 - **Only `linux/amd64` is vendored/tested for `oasdiff`** — matches the CI runner architecture
