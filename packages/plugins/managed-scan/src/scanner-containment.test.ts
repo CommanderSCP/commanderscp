@@ -300,7 +300,7 @@ describe("scanner-containment detectors actually detect (negative controls)", ()
   it("invocationHits does NOT flag mentions, method names, or pins (the gate stays maintainable)", () => {
     expect(invocationHits('const SUPPORTED = new Set(["trivy", "trivy-vm"]);')).toHaveLength(0);
     expect(invocationHits("// the trivy DB is baked at build time")).toHaveLength(0);
-    expect(invocationHits("TRIVY_PINNED_VERSION=0.58.1")).toHaveLength(0);
+    expect(invocationHits("TRIVY_PINNED_VERSION=0.74.0")).toHaveLength(0);
     expect(invocationHits('if (method === "trivy-vm") { … }')).toHaveLength(0);
     expect(invocationHits('await execFileAsync(docker, ["create", image, "trivy"])')).toHaveLength(
       0

@@ -10,12 +10,17 @@
 #
 # `docker build -t scp-runner-iac:dev apps/runner-iac` is the only build command for this image
 # (BUILD_AND_TEST.md §3.3). Built FROM OpenTofu's own official image (pinned tag, matching
-# BUILD_AND_TEST.md §1's "OpenTofu 1.8.x pinned") rather than hand-downloading/verifying a release
+# BUILD_AND_TEST.md §1's "OpenTofu 1.12.x pinned") rather than hand-downloading/verifying a release
 # binary — the upstream image already owns that supply chain; this Dockerfile only adds the run
 # shim and drops every credential the run shim's ENTRYPOINT loads to environment variables that
 # never leave this container (see run.sh's own doc comment for the credential-confinement
 # contract the managed-iac orchestrator plugin relies on).
-FROM ghcr.io/opentofu/opentofu:1.8.5
+# (1.8.5 -> 1.12.6, 2026-08-31 CVE sweep: the 1.8 line stopped receiving upstream image rebuilds —
+# its image scanned 3 CRITICAL / 55 HIGH, ancient git/musl included — and 1.12.6 is the newest
+# supported patch release, scanning 1 CRITICAL / 10 HIGH, all of which are Go-module advisories
+# already fixed upstream awaiting the next OpenTofu release. State written by a newer tofu upgrades
+# the state format irreversibly, so this bump is forward-only for managed-iac workspaces.)
+FROM ghcr.io/opentofu/opentofu:1.12.6
 
 # The upstream image already provides `tofu`; add only the run shim on top. No package manager
 # calls, no extra tooling — every extra byte here is extra attack surface in a container that,

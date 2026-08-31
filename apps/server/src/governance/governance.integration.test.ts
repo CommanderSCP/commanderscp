@@ -1813,7 +1813,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
           mediaType: "application/vnd.cyclonedx+json",
           signatureRef: `registry.test/${repo}:sbom.sig`,
           scanner: "trivy",
-          scannerVersion: "0.58.1"
+          scannerVersion: "0.74.0"
         }
       });
       await withTenantTx(server.deps.db, org.orgId, (tx) =>

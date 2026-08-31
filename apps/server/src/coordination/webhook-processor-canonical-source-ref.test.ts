@@ -36,7 +36,7 @@ describe("canonicalizeSourceRef: the report body's supply-chain fields become ca
       mediaType: "application/vnd.cyclonedx+json",
       signatureRef: "registry.test/acme/api:sha256-" + "1c".repeat(32) + ".sig",
       scanner: "trivy",
-      scannerVersion: "0.58.1",
+      scannerVersion: "0.74.0",
       generatedAt: "2026-07-20T10:00:00.000Z"
     }
   };
@@ -55,7 +55,7 @@ describe("canonicalizeSourceRef: the report body's supply-chain fields become ca
       mediaType: "application/vnd.cyclonedx+json",
       signatureRef: "registry.test/acme/api:sha256-" + "1c".repeat(32) + ".sig",
       scanner: "trivy",
-      scannerVersion: "0.58.1",
+      scannerVersion: "0.74.0",
       generatedAt: "2026-07-20T10:00:00.000Z"
     });
     // No document, no bytes, no base64 blob — a reference is a set of strings and nothing else.

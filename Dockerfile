@@ -40,7 +40,11 @@ FROM ${COSIGN_IMAGE} AS cosign
 
 FROM ${SKOPEO_IMAGE} AS skopeo
 
-FROM node:22-bookworm-slim AS base
+# trixie (Debian 13), not bookworm (2026-08-31 CVE sweep): bookworm-slim carries an unfixed
+# CRITICAL in zlib1g (CVE-2023-45853) that trixie's zlib resolved, plus roughly twice the
+# no-fix-available HIGH backlog. Both build and runtime stages use the same base so native
+# modules (argon2, ssh2/cpu-features) compile against the glibc they run on.
+FROM node:22-trixie-slim AS base
 RUN corepack enable && corepack prepare pnpm@10.12.1 --activate
 WORKDIR /app
 
@@ -57,7 +61,27 @@ RUN pnpm build
 # tsx, vitest, drizzle-kit, etc.
 RUN pnpm prune --prod
 
-FROM base AS runtime
+# The runtime stage deliberately does NOT reuse `base`: `base` exists to run pnpm (corepack) for
+# the fetch/build stages, and nothing at runtime runs npm, npx, corepack, or pnpm — the CMD is
+# plain `node`. Starting from the bare node image and deleting the bundled npm/corepack tree
+# removes npm's vendored node_modules — the bulk of the FIXABLE HIGH/CRITICAL CVE surface a
+# scanner reports against the stock node image (npm's bundled tar/brace-expansion/pacote/
+# sigstore/... advisories), none of which this image ever executes (2026-08-31 CVE sweep).
+#
+# `apt-get upgrade` folds in Debian security fixes published since the base tag was built — the
+# FROM is a floating tag, so the base already moves build-to-build; the upgrade only moves it
+# forward to the current fix state instead of whenever the tag was last rebuilt.
+#
+# perl-base is force-removed: it carries three CRITICAL CVEs Debian marks no-fix, and nothing in
+# this image runs perl — the server is Node, cosign is a static binary, the skopeo wrapper is
+# POSIX sh. dpkg marks it Essential (maintainer scripts use perl), which only matters for LATER
+# package operations — and no package operation ever happens in the shipped image after this RUN.
+FROM node:22-trixie-slim AS runtime
+RUN apt-get update \
+  && apt-get upgrade -y \
+  && rm -rf /var/lib/apt/lists/* \
+  && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+  && dpkg --purge --force-remove-essential --force-depends perl-base
 ENV NODE_ENV=production
 ENV SCP_ROLE=all
 ENV PORT=8080
