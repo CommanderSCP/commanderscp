@@ -123,10 +123,15 @@ const debug = debuglog("scp-runner-launcher");
  *      issued, `create` is inside the `try`, and teardown addresses that NAME. See
  *      {@link runnerContainerName} for why the obvious "just move the await inside the try" is NOT
  *      the fix.
- *   2. STILL OPEN, and not this port's to fix. A managed-scan run whose copy-out fails ends stuck in
- *      `pending`; that is the plugin's outer error handling —
- *      {@link RunnerCopyOut.onFailure} `"propagate"` reproduces the rejection that causes it, and
- *      managed-iac has the same shape for a create or copy-in failure.
+ *   2. FIXED (M23.0 defect 2), by the PLUGINS rather than by this port, and this entry said "STILL
+ *      OPEN" for a release after it stopped being true. A managed-scan run whose copy-out fails used
+ *      to end stuck in `pending`, because the {@link RunnerCopyOut.onFailure} `"propagate"` rejection
+ *      escaped `trigger()` with no outcome ever recorded. M23.1 phase 2 wrapped every managed
+ *      plugin's `trigger()` body in {@link withRecordedOutcome}, which catches that rejection and
+ *      records `failed`. MEASURED, not reasoned: `@scp/plugin-managed-scan`'s
+ *      `launch-argv.golden.test.ts` ("A FAILED COPY-OUT IS NOT SWALLOWED") fails the second
+ *      `docker cp` and asserts `status()` reports `failed`. managed-iac's create/copy-in failures
+ *      take the same catch.
  *   3. FIXED (M23.0 defect 3) for the host process table, PARTIALLY. Resolved credentials used to
  *      ride the `create` argv as `-e KEY=VALUE`, readable by any local process. They now travel as
  *      {@link RunnerSpec.secretEnv} and reach Docker through a mode-0600 `--env-file` that is

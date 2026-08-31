@@ -166,7 +166,8 @@ describe("M23.1: managed-scan launches through the injected RunnerLauncher", () 
       copyIn: [{ hostDir: join(scratch, "oci"), containerPath: "/work/image" }],
       // THE OPPOSITE OF managed-iac ON BOTH AXES, and fail-closed on purpose: a failed scan must
       // produce NO evidence (the commander writes none and E6 then refuses), and a failed copy-out
-      // ESCAPES rather than being swallowed.
+      // PROPAGATES out of the launcher rather than being swallowed there — `trigger()`'s outer
+      // catch is what turns it into a recorded `failed`, which the last case in this file measures.
       copyOut: {
         containerPath: "/work/out",
         hostDir: join(scratch, "out"),

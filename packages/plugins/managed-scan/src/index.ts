@@ -243,9 +243,12 @@ async function runScanContainer(
     copyIn,
     // ONLY ON SUCCESS, AND NOT GUARDED — the opposite of managed-iac on both axes. A failed scan
     // must produce NO evidence (fail-closed: the commander writes none and E6 then refuses), and a
-    // failed copy-out escapes `trigger()` rather than being swallowed. M23.0 recorded that the
-    // escape leaves the run reporting `pending` forever; that defect is deliberately preserved here
-    // and is the next increment's, because fixing it now would make "byte-identical" untestable.
+    // failed copy-out propagates as a rejection rather than being swallowed by the launcher.
+    // M23.0 recorded that the rejection then left the run reporting `pending` forever, and this
+    // comment claimed the defect was deliberately preserved. IT IS NOT, AND THAT IS MEASURED:
+    // M23.1 phase 2's `withRecordedOutcome` (below) catches the rejection and records `failed` —
+    // `launch-argv.golden.test.ts`'s "A FAILED COPY-OUT IS NOT SWALLOWED" case fails the second
+    // `docker cp` and asserts `status()` reports `failed`.
     copyOut: {
       containerPath: "/work/out",
       hostDir: outputDir,
