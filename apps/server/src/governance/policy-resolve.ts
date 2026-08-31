@@ -207,27 +207,26 @@ export interface MatchPoliciesInput {
 }
 
 /**
- * Gathers every policy that matches ANY of `targetObjectIds`' containment chains (or the actor's
- * group membership), each annotated with WHERE/HOW it matched — ready to hand to
- * `policy-model.ts`'s `resolvePolicies` for the stricter-wins merge. Deduplicates a policy that
- * matches the same target-chain-object more than once.
- *
- * THAT DEDUP IS NOT THEORETICAL, and this comment used to say it was ("can't happen with today's
- * three match kinds"). The scope keys are independent `if`s, not `else if`s, so a document carrying
- * two of them matches on OR and CAN record the same (policy, object) twice — e.g.
- * `{objectRef: <a service>, group: <the group that owns it>}`. `record` is first-writer-wins and
- * the branch order is objectRef → selector → group → ownerGroup, so in that case the surviving
- * `via` names the FIRST branch that matched, not the only one. The MATCH is right either way (the
- * entry, its anchor and its depth are identical whichever branch produced it); only the provenance
- * LABEL is lossy, and it is lossy in a documented, deterministic direction. Widening `via` to a set
- * would change the shape of every persisted reason tree and is deliberately left out of this change.
+ * The shared walk both `matchPoliciesForTargets` and `matchPoliciesForTargetsByTarget` run —
+ * candidates, chains, the ownership cache and the four scope-kind branches, all identical. Only
+ * WHAT HAPPENS WITH A MATCH differs between the two callers (one flat dedup vs. one dedup per
+ * target), so that is the only thing factored out as a callback. Keeping this walk in ONE place is
+ * deliberate: two copies of one containment/scope predicate drifting apart is exactly how this file
+ * describes the group-scope fail-open ever having shipped (module doc above).
  */
-export async function matchPoliciesForTargets(
+async function walkPolicyMatches(
   tx: TenantTx,
-  input: MatchPoliciesInput
-): Promise<MatchedPolicy[]> {
+  input: MatchPoliciesInput,
+  onMatch: (
+    targetId: string,
+    candidate: PolicyCandidate,
+    objectId: string,
+    depth: number,
+    via: MatchedPolicy["matchedAt"]["via"]
+  ) => void
+): Promise<void> {
   const candidates = await listPolicyCandidates(tx, input.orgId);
-  if (candidates.length === 0) return [];
+  if (candidates.length === 0) return;
 
   const chains = new Map<string, ChainEntry[]>();
   for (const targetId of input.targetObjectIds) {
@@ -249,43 +248,16 @@ export async function matchPoliciesForTargets(
     return owned;
   };
 
-  const matches = new Map<string, MatchedPolicy>();
-
   for (const candidate of candidates) {
     const scope = candidate.properties.scope;
-    const enforcement = candidate.properties.enforcement;
-    const effects = candidate.properties.effects ?? [];
-    const condition = candidate.properties.condition;
-    const emergencyPolicy = candidate.properties.emergencyPolicy ?? false;
-    const autoRollbackOnFailure = candidate.properties.autoRollbackOnFailure ?? false;
-
-    const record = (
-      objectId: string,
-      depth: number,
-      via: MatchedPolicy["matchedAt"]["via"]
-    ): void => {
-      const key = `${candidate.id}::${objectId}`;
-      if (matches.has(key)) return;
-      matches.set(key, {
-        policyObjectId: candidate.id,
-        policyVersion: candidate.version,
-        name: candidate.name,
-        enforcement,
-        condition,
-        effects,
-        matchedAt: { objectId, depth, via },
-        emergencyPolicy,
-        autoRollbackOnFailure
-      });
-    };
 
     if (!scope || (!scope.objectRef && !scope.selector && !scope.group)) {
       // Unscoped = applies org-wide (module doc comment) — match once at every target's org root
       // (depth 0) rather than once globally, so multi-target callers still see one entry per
-      // relevant chain for reason-tree purposes; the Map above dedups by (policy, matched object).
-      for (const chain of chains.values()) {
+      // relevant chain for reason-tree purposes.
+      for (const [targetId, chain] of chains) {
         const root = chain[0];
-        if (root) record(root.id, 0, "unscoped");
+        if (root) onMatch(targetId, candidate, root.id, 0, "unscoped");
       }
       continue;
     }
@@ -293,19 +265,19 @@ export async function matchPoliciesForTargets(
     if (scope.objectRef) {
       const refId = await resolveRef(tx, input.orgId, scope.objectRef);
       if (refId) {
-        for (const chain of chains.values()) {
+        for (const [targetId, chain] of chains) {
           const hit = chain.find((c) => c.id === refId);
-          if (hit) record(hit.id, hit.depth, "objectRef");
+          if (hit) onMatch(targetId, candidate, hit.id, hit.depth, "objectRef");
         }
       }
     }
 
     if (scope.selector?.labels) {
       const selector = scope.selector.labels;
-      for (const chain of chains.values()) {
+      for (const [targetId, chain] of chains) {
         for (const ancestor of chain) {
           if (labelsMatch(selector, ancestor.labels)) {
-            record(ancestor.id, ancestor.depth, "selector");
+            onMatch(targetId, candidate, ancestor.id, ancestor.depth, "selector");
           }
         }
       }
@@ -318,9 +290,9 @@ export async function matchPoliciesForTargets(
         // work done BY this group." It has no containment-chain anchor of its own, so it attaches
         // at every target's org root (depth 0), the same placement convention as "unscoped".
         if (await isMemberOf(tx, input.orgId, input.actorObjectId, groupId)) {
-          for (const chain of chains.values()) {
+          for (const [targetId, chain] of chains) {
             const root = chain[0];
-            if (root) record(root.id, 0, "group");
+            if (root) onMatch(targetId, candidate, root.id, 0, "group");
           }
         }
 
@@ -334,15 +306,102 @@ export async function matchPoliciesForTargets(
         // blocked promotion can show WHICH tier set the binding floor).
         const owned = await ownedForGroup(groupId);
         if (owned.size > 0) {
-          for (const chain of chains.values()) {
+          for (const [targetId, chain] of chains) {
             for (const entry of chain) {
-              if (owned.has(entry.id)) record(entry.id, entry.depth, "ownerGroup");
+              if (owned.has(entry.id))
+                onMatch(targetId, candidate, entry.id, entry.depth, "ownerGroup");
             }
           }
         }
       }
     }
   }
+}
 
+function matchedPolicyOf(
+  candidate: PolicyCandidate,
+  objectId: string,
+  depth: number,
+  via: MatchedPolicy["matchedAt"]["via"]
+): MatchedPolicy {
+  return {
+    policyObjectId: candidate.id,
+    policyVersion: candidate.version,
+    name: candidate.name,
+    enforcement: candidate.properties.enforcement,
+    condition: candidate.properties.condition,
+    effects: candidate.properties.effects ?? [],
+    matchedAt: { objectId, depth, via },
+    emergencyPolicy: candidate.properties.emergencyPolicy ?? false,
+    autoRollbackOnFailure: candidate.properties.autoRollbackOnFailure ?? false
+  };
+}
+
+/**
+ * Gathers every policy that matches ANY of `targetObjectIds`' containment chains (or the actor's
+ * group membership), each annotated with WHERE/HOW it matched — ready to hand to
+ * `policy-model.ts`'s `resolvePolicies` for the stricter-wins merge. Deduplicates a policy that
+ * matches the same target-chain-object more than once.
+ *
+ * THAT DEDUP IS NOT THEORETICAL, and this comment used to say it was ("can't happen with today's
+ * three match kinds"). The scope keys are independent `if`s, not `else if`s, so a document carrying
+ * two of them matches on OR and CAN record the same (policy, object) twice — e.g.
+ * `{objectRef: <a service>, group: <the group that owns it>}`. The surviving `via` names the FIRST
+ * branch that matched, not the only one (branch order: objectRef → selector → group → ownerGroup).
+ * The MATCH is right either way (the entry, its anchor and its depth are identical whichever branch
+ * produced it); only the provenance LABEL is lossy, and it is lossy in a documented, deterministic
+ * direction. Widening `via` to a set would change the shape of every persisted reason tree and is
+ * deliberately left out of this change.
+ *
+ * DEDUPES ACROSS TARGETS, on purpose: this is the UNION every caller here wants except one
+ * (`binding-policy/reconcile-bindings.ts`'s per-target attribution — see
+ * `matchPoliciesForTargetsByTarget` below, which exists BECAUSE this dedup is unsafe for that
+ * caller: two targets sharing a common ancestor matched by the same policy would collapse into one
+ * entry with no record of which target(s) it covers).
+ */
+export async function matchPoliciesForTargets(
+  tx: TenantTx,
+  input: MatchPoliciesInput
+): Promise<MatchedPolicy[]> {
+  const matches = new Map<string, MatchedPolicy>();
+  await walkPolicyMatches(tx, input, (_targetId, candidate, objectId, depth, via) => {
+    const key = `${candidate.id}::${objectId}`;
+    if (matches.has(key)) return;
+    matches.set(key, matchedPolicyOf(candidate, objectId, depth, via));
+  });
   return [...matches.values()];
+}
+
+/**
+ * The per-target-attributed sibling of `matchPoliciesForTargets`, for callers that need to know
+ * WHICH target a match covers rather than the flat union — today just
+ * `binding-policy/reconcile-bindings.ts`'s `gatherContributions`, which used to call the function
+ * above once per target (one full policy-table scan + group-ownership resolution per target) purely
+ * to get this attribution. Runs the SAME shared walk once for the whole `targetObjectIds` list —
+ * one scan, one ownership resolution — and dedupes PER TARGET (`${policyId}::${objectId}` within
+ * each target's own list) rather than across all of them, so the result for each target is
+ * identical to what an isolated single-target call to `matchPoliciesForTargets` would have
+ * returned. Every id in `targetObjectIds` gets an entry, even an empty one, so a caller can index
+ * the result without deciding what a missing key means (mirrors `freezesByTarget`'s contract).
+ */
+export async function matchPoliciesForTargetsByTarget(
+  tx: TenantTx,
+  input: MatchPoliciesInput
+): Promise<Map<string, MatchedPolicy[]>> {
+  const byTarget = new Map<string, MatchedPolicy[]>();
+  const seenByTarget = new Map<string, Set<string>>();
+  for (const targetId of input.targetObjectIds) {
+    if (!byTarget.has(targetId)) {
+      byTarget.set(targetId, []);
+      seenByTarget.set(targetId, new Set());
+    }
+  }
+  await walkPolicyMatches(tx, input, (targetId, candidate, objectId, depth, via) => {
+    const key = `${candidate.id}::${objectId}`;
+    const seen = seenByTarget.get(targetId)!;
+    if (seen.has(key)) return;
+    seen.add(key);
+    byTarget.get(targetId)!.push(matchedPolicyOf(candidate, objectId, depth, via));
+  });
+  return byTarget;
 }

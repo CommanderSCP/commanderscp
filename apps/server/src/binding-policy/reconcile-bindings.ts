@@ -35,7 +35,7 @@ import type { ExecutorLane, ExecutorType } from "@scp/schemas";
 import { executorBindings } from "../db/schema.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
-import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
+import { matchPoliciesForTargetsByTarget } from "../governance/policy-resolve.js";
 import { listHookLanes, listPlacementRows } from "./placement-needs.js";
 import {
   deleteExecutorBinding,
@@ -188,24 +188,31 @@ async function pruneUnwanted(
   return pruned;
 }
 
-/** Every `executorBinding` effect matching each target's own containment chain. */
+/**
+ * Every `executorBinding` effect matching each target's own containment chain.
+ *
+ * ONE call for every target in the org, not one per target: `matchPoliciesForTargetsByTarget`
+ * (`governance/policy-resolve.ts`) runs the org-wide policy scan and the group-ownership
+ * resolution ONCE for the whole list and still returns per-target attribution, instead of this
+ * loop re-running both for every placement target on every ~1s reconcile tick.
+ */
 async function gatherContributions(
   tx: TenantTx,
   orgId: string,
   targetObjectIds: string[]
 ): Promise<Map<string, BindingContribution[]>> {
+  const matchedByTarget = await matchPoliciesForTargetsByTarget(tx, {
+    orgId,
+    targetObjectIds,
+    // The reconciler has no acting user. Group-scope's ACTING half therefore never fires, and its
+    // OWNING half - which does not read the actor at all (ADR-0016 section 2a) - still does. That
+    // asymmetry is documented in `subscription-authoring-guard.ts` and is deliberate here too: a
+    // binding policy scoped to a group is matched by what that group OWNS, not by who is acting,
+    // because nobody is.
+    actorObjectId: SYSTEM_ACTOR_ID
+  });
   const byTarget = new Map<string, BindingContribution[]>();
-  for (const targetObjectId of targetObjectIds) {
-    const matched = await matchPoliciesForTargets(tx, {
-      orgId,
-      targetObjectIds: [targetObjectId],
-      // The reconciler has no acting user. Group-scope's ACTING half therefore never fires, and its
-      // OWNING half - which does not read the actor at all (ADR-0016 section 2a) - still does. That
-      // asymmetry is documented in `subscription-authoring-guard.ts` and is deliberate here too: a
-      // binding policy scoped to a group is matched by what that group OWNS, not by who is acting,
-      // because nobody is.
-      actorObjectId: SYSTEM_ACTOR_ID
-    });
+  for (const [targetObjectId, matched] of matchedByTarget) {
     const contributions: BindingContribution[] = [];
     for (const policy of matched) {
       for (const effect of policy.effects as unknown[]) {
