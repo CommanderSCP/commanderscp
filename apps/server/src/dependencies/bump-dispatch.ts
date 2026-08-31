@@ -52,7 +52,8 @@ import {
 import {
   bindingRepoPath,
   createGitProviderManifestReader,
-  isGitProviderModule
+  isGitProviderModule,
+  normalizeRepoIdentity
 } from "./manifest-reader.js";
 
 /**
@@ -636,6 +637,73 @@ async function dispatchForComponent(
     });
   if (dueDeclarations.length === 0) return;
 
+  // ONE (repository, ref) FOR THE WHOLE DISPATCH, AND IT IS GROUPED FOR RATHER THAN ASSUMED.
+  //
+  // The paragraph above states the invariant — observed_ref is the only honest base for an edit —
+  // and the code enforced it for the FIRST due declaration only: `dueDeclarations[0].observedRef`
+  // became `baseBranch` and every other declaration was then dispatched against it. A component may
+  // legitimately declare one line from several manifests observed in DIFFERENT repositories or at
+  // different refs — `ingestion-stamp-repo.ts` names the shape ("`acme/widgets` (a go.mod) and
+  // `acme/charts` (a Dockerfile) each produce their own pass") — and every such declaration after
+  // the first was edited on a branch it was never read at.
+  //
+  // REFUSED, NOT DISPATCHED PER GROUP, and the reason is the delegation verdict rather than effort.
+  // `readStandingDelegationVerdict` reads the LATEST `dependency_delegation` Decision for the
+  // COMPONENT: one verdict per component, not per repository. Probing two repositories in one run
+  // would write two verdicts under one subject, they would alternate on every advance, and an
+  // `allow` earned by repo B would then stand as the answer for repo A — a fail-open in the one
+  // guard that keeps two actuators off one file. Per-repository dispatch needs a per-repository
+  // verdict first; until then the honest answer is to author nothing and say why.
+  const sources = new Map<string, { repo: string | null; ref: string | null; paths: string[] }>();
+  for (const { declaration } of dueDeclarations) {
+    const key = JSON.stringify([declaration.observedRepo, declaration.observedRef]);
+    const group = sources.get(key) ?? {
+      repo: declaration.observedRepo,
+      ref: declaration.observedRef,
+      paths: []
+    };
+    group.paths.push(declaration.manifestPath);
+    sources.set(key, group);
+  }
+  if (sources.size > 1) {
+    const described = [...sources.values()]
+      .map(
+        (g) =>
+          `${g.repo ?? "(no repository recorded)"}@${g.ref ?? "(no ref recorded)"} ` +
+          `(${[...g.paths].sort().join(", ")})`
+      )
+      .sort()
+      .join("; ");
+    // Per declaration, so each refused manifest is named in the outcome rather than one of them
+    // standing in for the rest.
+    for (const { declaration } of dueDeclarations) {
+      skip(
+        "declarations_disagree_on_source",
+        `this component's due declarations of this line were observed in more than one place — ` +
+          `${described} — and a bump is only ever composed against the ref its manifest was read ` +
+          `at. Nothing is authored until they agree`,
+        declaration.manifestPath
+      );
+    }
+    return;
+  }
+  const source = [...sources.values()][0]!;
+
+  // AND THE BINDING MUST NAME THAT REPOSITORY. `pickComponentGitBinding` sorts the component's
+  // git-provider bindings by id and takes the first, which for a component bound to two
+  // repositories is an arbitrary choice — so without this the credential and the repository path
+  // could both come from a binding that has nothing to do with the manifest being edited.
+  // `observedRepo` NULL is "the repository was not recorded" (drizzle/0063), not a disagreement, so
+  // it falls through to the binding exactly as before.
+  if (source.repo !== null && normalizeRepoIdentity(repo) !== normalizeRepoIdentity(source.repo)) {
+    skip(
+      "git_binding_names_another_repository",
+      `the manifest was observed in '${source.repo}' but this component's git binding names ` +
+        `'${repo}', so the credential in hand is not authority over the repository being edited`
+    );
+    return;
+  }
+
   // ---- PHASE 2 (provider I/O, OUTSIDE any transaction) ---------------------------------------
   // DOES THIS REPOSITORY ALREADY DELEGATE ITS DEPENDENCY UPDATES TO SOMEBODY ELSE?
   //
@@ -658,7 +726,7 @@ async function dispatchForComponent(
   // `delegation-detection.ts`'s "WHAT ABSENT MEANS" already declares ("no probe on record means NO
   // DELEGATION HAS BEEN OBSERVED"), and it is why the actuator half exists — nothing is written to a
   // delegating repository either way.
-  const baseRef = dueDeclarations[0]?.declaration.observedRef ?? null;
+  const baseRef = source.ref;
   if (!baseRef || !baseRef.startsWith("refs/heads/")) {
     skip(
       "no_observed_branch",
