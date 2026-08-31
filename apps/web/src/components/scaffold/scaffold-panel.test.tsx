@@ -110,6 +110,26 @@ describe("ScaffoldPanel", () => {
     // …and is ABSENT from the emitted code. This is the half that matters: a panel that defaulted
     // it into a service would still show a banner and would still be wrong.
     expect(view.byTestId("scaffold-source").textContent).not.toContain("worker");
+    // Real pluralization (copy rule 6, "component(s)" is banned): exactly one leftover reads as
+    // singular, verb agreement included — never "1 component(s) have".
+    expect(ungrouped).toContain("1 component has no service");
+    expect(ungrouped).not.toMatch(/component\(s\)/);
+    view.unmount();
+  });
+
+  it("(2b) two ungrouped components read as plural, not '2 component(s) have'", async () => {
+    const view = render(panel(["api", "worker", "queue"]));
+
+    const inputs = Array.from(
+      view.container.querySelectorAll<HTMLInputElement>('[data-testid="scaffold-service-input"]')
+    );
+    typeInto(inputs[0]!, "payments");
+    await flush();
+    await settle(view, "scaffold-source");
+
+    const ungrouped = view.byTestId("scaffold-ungrouped").textContent ?? "";
+    expect(ungrouped).toContain("2 components have no service");
+    expect(ungrouped).not.toMatch(/component\(s\)/);
     view.unmount();
   });
 
