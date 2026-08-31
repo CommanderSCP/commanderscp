@@ -6,3 +6,20 @@
 **/*.tsbuildinfo
 .git
 *.log
+
+# --- 2026-08-31 CVE sweep: keep dev/CI-only artifacts OUT of the build context ---
+# `COPY . .` in the build stage swept these into the shipped image, where a scanner
+# then found their (irrelevant-at-runtime) CVEs and their bytes were pure attack surface.
+#
+# .claude — Claude Code's working dir. It holds LINKED GIT WORKTREES of other sessions
+# (.claude/worktrees/*), so `COPY . .` was dragging ~190 MiB of a second, third, … full
+# checkout — each carrying its own committed tools/openapi/bin/oasdiff Go binary — into
+# the image. Never needed by the build or at runtime.
+.claude
+# The oasdiff Go binary is the /v1 breaking-change gate — a BUILD/CI tool (pnpm gen),
+# never read at runtime (the server emits its OpenAPI from Zod in-process). Its old Go
+# stdlib carried several CRITICAL/HIGH CVEs. tools/openapi/openapi.v1.json (the spec
+# itself) is kept — only the binary is excluded.
+tools/openapi/bin
+# CI workflow definitions — never part of the runtime image.
+.github

@@ -59,7 +59,19 @@ RUN pnpm install --offline --frozen-lockfile
 RUN pnpm build
 # Drop devDependencies now that everything is compiled to dist/ — nothing at runtime needs tsc,
 # tsx, vitest, drizzle-kit, etc.
-RUN pnpm prune --prod
+#
+# `pnpm prune --prod` at the workspace root does NOT evict devDependencies from the shared
+# `.pnpm` virtual store (MEASURED 2026-08-31: esbuild/turbo/typescript/@esbuild-kit all survive
+# it), so the compiled-away build toolchain still ships. esbuild is the one that matters for CVEs:
+# it bundles a Go binary whose Go stdlib carries CRITICAL advisories, and it is a devDependency of
+# vite/tsx/drizzle-kit ONLY — never resolvable from any prod dependency (verified:
+# `require.resolve('esbuild')` fails from /app AND from /app/apps/server). `pnpm prune` leaves it
+# because esbuild's PLATFORM binary is an OPTIONAL dep, which prune --prod keeps. Delete the dead
+# store entries explicitly; nothing at runtime can reach them. @esbuild-kit is drizzle-kit's
+# (dev-only) esbuild wrapper — the GHSA-67mh esbuild-dev-server moderate lives there. A full
+# `pnpm deploy --prod` slim of the runtime tree is the proper follow-up (Dockerfile header note).
+RUN pnpm prune --prod \
+  && rm -rf node_modules/.pnpm/esbuild@* node_modules/.pnpm/@esbuild+* node_modules/.pnpm/@esbuild-kit+*
 
 # The runtime stage deliberately does NOT reuse `base`: `base` exists to run pnpm (corepack) for
 # the fetch/build stages, and nothing at runtime runs npm, npx, corepack, or pnpm — the CMD is
@@ -142,4 +154,10 @@ COPY tools/skopeo/skopeo-wrapper.sh /opt/scp/bin/skopeo
 COPY tools/skopeo/policy.json /etc/containers/policy.json
 WORKDIR /app/apps/server
 EXPOSE 8080
+# Run as the base image's non-root `node` user (uid/gid 1000). Every COPY'd file is world-readable
+# (cosign/skopeo are 0555; /app is root-owned but readable) and the server writes only to external
+# Postgres + /tmp at runtime — it never writes under /app (the Helm chart already runs it non-root,
+# proving that). This makes the compose/`docker run` stacks non-root too, defense-in-depth beside
+# the Helm securityContext. A numeric UID keeps runAsNonRoot happy even without /etc/passwd lookup.
+USER 1000:1000
 CMD ["node", "dist/main.js"]
