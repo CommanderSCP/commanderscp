@@ -375,6 +375,49 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
     ).toBe(200);
   });
 
+  it("DENY refuses an already-approved grant — un-approving has exactly one path, `revoke`", async () => {
+    // The state-machine bar, not an authority one: `securityOfficer` clears BOTH permission bars in
+    // every call below. `approve` requires `requested` and `revoke` requires `approved`; `deny` used
+    // to require nothing, so `approved -> denied` silently took a LIVE waiver away through the verb
+    // that answers a request, skipping revoke's precondition and writing a transition no docblock in
+    // the route describes.
+    const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
+    const grantId = await raiseGrant();
+    expect(
+      (
+        await call(
+          "POST",
+          securityOfficer.token,
+          `/api/v1/scan-override-grants/${grantId}/approve`,
+          {
+            expiresAt,
+            reason: "approve first so there is something to deny"
+          }
+        )
+      ).statusCode
+    ).toBe(200);
+
+    const deny = await call(
+      "POST",
+      securityOfficer.token,
+      `/api/v1/scan-override-grants/${grantId}/deny`,
+      { reason: "deny must not be a second way to un-approve" }
+    );
+    expect(deny.statusCode, deny.body).toBe(400);
+    expect(deny.body).toContain("approved");
+    expect(deny.body).toContain("revoke it instead");
+
+    // And it is still `approved` — the refusal did not half-apply. Proven through the door rather
+    // than a read: `revoke` demands `approved`, so a 200 here is the status assertion.
+    const revoke = await call(
+      "POST",
+      securityOfficer.token,
+      `/api/v1/scan-override-grants/${grantId}/revoke`,
+      { reason: "the documented path to take it back" }
+    );
+    expect(revoke.statusCode, revoke.body).toBe(200);
+  });
+
   // =============================================================================================
   // SPLIT 3 — `change:accept` is ADDED at every target of accept/rollback, and NOT to cancel
   // =============================================================================================

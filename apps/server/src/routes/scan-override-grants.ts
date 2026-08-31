@@ -372,6 +372,16 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
           `only an 'approved' grant can be revoked — '${input.id}' is '${current.status}'`
         );
       }
+      // DENY IS A DECISION ON A REQUEST, not a second way to un-approve one. Without this bar,
+      // `approved -> denied` is reachable and takes a live waiver away through a verb whose whole
+      // state machine — and every doc above — describes it as answering a `requested` grant, while
+      // skipping the ONE precondition `revoked` carries. Un-approving has exactly one path.
+      if (input.to === "denied" && current.status !== "requested") {
+        throw badRequest(
+          `only a 'requested' grant can be denied — '${input.id}' is '${current.status}'` +
+            (current.status === "approved" ? "; revoke it instead" : "")
+        );
+      }
       const decidedAt = new Date().toISOString();
       const nextProperties: Record<string, unknown> = {
         ...row.properties,
