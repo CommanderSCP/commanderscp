@@ -398,17 +398,17 @@ async function topologyWavePlaces(
  * the wave-boundary gate that passes `SYSTEM_ACTOR_ID`. Only a policy whose reach comes PURELY from
  * the caller's own membership still shows differently to two people on the same page.
  */
-async function gateForStage(
+/**
+ * The DB-independent half of `gateForStage`: which policies apply and which controls they require.
+ * Split out so the stage loop can collect every `controlId` across every stage BEFORE resolving
+ * control names, and resolve them in one batched read instead of one per control per stage.
+ */
+async function resolveGatePolicies(
   tx: TenantTx,
   orgId: string,
   actorObjectId: string,
-  placementObjectId: string,
-  /** The release the check statuses are AS OF — the newest change at this stage, or null when
-   *  nothing has ever reached it. A `control_run` belongs to a CHANGE (`control_runs.change_object_id`),
-   *  so there is no such thing as a control outcome for a stage in the abstract; saying which change
-   *  the answer is about is what keeps "passed" from reading as a standing property of the place. */
-  asOfChangeId: string | null
-): Promise<ComponentPipelineStage["gate"]> {
+  placementObjectId: string
+): Promise<{ policies: ComponentPipelineStage["gate"]["policies"]; controlIds: string[] }> {
   const matched = await matchPoliciesForTargets(tx, {
     orgId,
     targetObjectIds: [placementObjectId],
@@ -424,26 +424,38 @@ async function gateForStage(
       scope: a.scope
     }))
   }));
-
   const controlIds = [...new Set(policies.flatMap((p) => p.requireControls))];
+  return { policies, controlIds };
+}
+
+/**
+ * The rest of `gateForStage` — outcomes plus control names — resolved from a `controlNames` map
+ * built ONCE for the whole journey (see the stage loop in `getComponentPipeline`), instead of one
+ * `findFirst` per control here.
+ */
+async function buildGateChecks(
+  tx: TenantTx,
+  orgId: string,
+  policies: ComponentPipelineStage["gate"]["policies"],
+  controlIds: string[],
+  /** The release the check statuses are AS OF — the newest change at this stage, or null when
+   *  nothing has ever reached it. A `control_run` belongs to a CHANGE (`control_runs.change_object_id`),
+   *  so there is no such thing as a control outcome for a stage in the abstract; saying which change
+   *  the answer is about is what keeps "passed" from reading as a standing property of the place. */
+  asOfChangeId: string | null,
+  controlNames: Map<string, string>
+): Promise<ComponentPipelineStage["gate"]> {
   const outcomes = asOfChangeId
     ? await readExistingControlOutcomes(tx, orgId, asOfChangeId, controlIds)
     : {};
-  const checks: ComponentPipelineStage["gate"]["checks"] = [];
-  for (const controlId of controlIds) {
-    const control = await tx.query.objects.findFirst({
-      where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, controlId), eqOp(t.orgId, orgId))
-    });
-    const recorded = outcomes[controlId];
-    checks.push({
-      controlId,
-      // A DANGLING reference is kept with a null name rather than dropped: a policy requiring a
-      // control that no longer exists blocks every release, and that must be visible.
-      name: control?.name ?? null,
-      status: recorded ?? (asOfChangeId ? "pending" : "not_started"),
-      changeId: asOfChangeId
-    });
-  }
+  const checks: ComponentPipelineStage["gate"]["checks"] = controlIds.map((controlId) => ({
+    controlId,
+    // A DANGLING reference is kept with a null name rather than dropped: a policy requiring a
+    // control that no longer exists blocks every release, and that must be visible.
+    name: controlNames.get(controlId) ?? null,
+    status: outcomes[controlId] ?? (asOfChangeId ? "pending" : "not_started"),
+    changeId: asOfChangeId
+  }));
 
   return { policies, checks };
 }
@@ -693,6 +705,28 @@ export async function getComponentPipeline(
   // two arrays recombine into exactly this order and a client never infers an interleaving.
   const stages: ComponentPipelineStage[] = [];
   const unplacedStages: ComponentPipelineUnplacedStage[] = [];
+
+  // FIRST PASS over placed seeds: resolve everything that does not need a control's or an execution
+  // system's own row (policy matching, binding resolution), and collect their ids. The SECOND pass
+  // below resolves those two id sets with one batched read each — the same "collect ids across the
+  // whole journey, then one `inArray` read" shape `targetRows` already uses above — instead of one
+  // `findFirst` per control per stage and one per execution-system-carrying binding per stage.
+  type PreparedStage = {
+    order: number;
+    seed: StageSeed;
+    deploymentTarget: ComponentPipelineStage["deploymentTarget"];
+    outpost: ComponentPipelineTargetOutpost;
+    stageName: string | null;
+    resolved: { row: ExecutorBindingRow; resolvedVia: string }[];
+    placementCurrents: ComponentPipelineStage["currents"];
+    gatePolicies: ComponentPipelineStage["gate"]["policies"];
+    gateControlIds: string[];
+    asOfChangeId: string | null;
+  };
+  const prepared: PreparedStage[] = [];
+  const allControlIds = new Set<string>();
+  const allSystemIds = new Set<string>();
+
   for (const [order, seed] of seeds.entries()) {
     const target = targetById.get(seed.deploymentTargetId);
     const tProps = (target?.properties ?? {}) as {
@@ -791,16 +825,52 @@ export async function getComponentPipeline(
       }
     }
     resolved.sort((a, b) => a.row.type.localeCompare(b.row.type));
+    for (const { row } of resolved) {
+      if (row.executionSystemId) allSystemIds.add(row.executionSystemId);
+    }
+
+    const placementCurrents = currents.get(seed.placement.id) ?? [];
+    const { policies: gatePolicies, controlIds: gateControlIds } = await resolveGatePolicies(
+      tx,
+      orgId,
+      actorObjectId,
+      seed.placement.id
+    );
+    for (const controlId of gateControlIds) allControlIds.add(controlId);
+
+    prepared.push({
+      order,
+      seed,
+      deploymentTarget,
+      outpost,
+      stageName,
+      resolved,
+      placementCurrents,
+      gatePolicies,
+      gateControlIds,
+      asOfChangeId: placementCurrents[0]?.changeId ?? null
+    });
+  }
+
+  // SECOND PASS: the two ids sets collected above, resolved with one batched read each.
+  const controlNames = await namesForObjectIds(tx, orgId, [...allControlIds]);
+  const systemRows =
+    allSystemIds.size === 0
+      ? []
+      : await tx
+          .select({ id: objects.id, name: objects.name, properties: objects.properties })
+          .from(objects)
+          .where(and(eq(objects.orgId, orgId), inArray(objects.id, [...allSystemIds])));
+  const systemById = new Map(systemRows.map((r) => [r.id, r]));
+
+  for (const p of prepared) {
     const bindings: ComponentPipelineStage["bindings"] = [];
-    for (const { row, resolvedVia } of resolved) {
+    for (const { row, resolvedVia } of p.resolved) {
       let executionSystemName: string | null = null;
       let systemKind: string | null = null;
       let consoleBase: string | null = null;
       if (row.executionSystemId) {
-        const sys = await tx.query.objects.findFirst({
-          where: (t, { eq: eqOp, and: andOp }) =>
-            andOp(eqOp(t.id, row.executionSystemId!), eqOp(t.orgId, orgId))
-        });
+        const sys = systemById.get(row.executionSystemId);
         executionSystemName = sys?.name ?? null;
         const props = (sys?.properties ?? null) as Record<string, unknown> | null;
         // The system's OWN kind decides the URL shape — two bindings of the same routing Type can
@@ -823,13 +893,13 @@ export async function getComponentPipeline(
       });
     }
 
-    const placementCurrents = currents.get(seed.placement.id) ?? [];
-    const gate = await gateForStage(
+    const gate = await buildGateChecks(
       tx,
       orgId,
-      actorObjectId,
-      seed.placement.id,
-      placementCurrents[0]?.changeId ?? null
+      p.gatePolicies,
+      p.gateControlIds,
+      p.asOfChangeId,
+      controlNames
     );
 
     // THE VERSION STAIRCASE (Phase 4a) — derived from the stage's newest current (`current`,
@@ -840,27 +910,28 @@ export async function getComponentPipeline(
     // render) — undefined only when nothing has ever been observed here, in which case the field
     // stays `null` and `"version"` stays in `unknownFields`, exactly as before Phase 4a existed.
     const derivedVersion: string | undefined = preferredObservedVersion(
-      placementCurrents[0]?.observed
+      p.placementCurrents[0]?.observed
     );
+    const target = targetById.get(p.seed.deploymentTargetId);
 
     stages.push({
-      placement: seed.placement,
-      order,
-      wave: seed.wave,
-      deploymentTarget,
+      placement: p.seed.placement!,
+      order: p.order,
+      wave: p.seed.wave,
+      deploymentTarget: p.deploymentTarget,
       maintainedBy: maintainerOf(target?.originDomainId ?? null),
-      outpost,
-      stageName,
+      outpost: p.outpost,
+      stageName: p.stageName,
       binding: bindings[0] ?? null,
       bindings,
-      current: placementCurrents[0] ?? null,
-      currents: placementCurrents,
+      current: p.placementCurrents[0] ?? null,
+      currents: p.placementCurrents,
       gate,
       // Null means "no stage dependency is withholding this stage's release" — a live answer, not a
       // remembered one. NOT added to `unknownFields`: see `ComponentPipelineHoldSchema` for why the
       // one case that looks unobservable (an outpost's stripped-on-import declaration) genuinely is
       // not held here rather than unknown here.
-      hold: holds.get(seed.placement.id) ?? null,
+      hold: holds.get(p.seed.placement!.id) ?? null,
       version: derivedVersion ?? null,
       unknownFields: derivedVersion === undefined ? ["version"] : []
     });
