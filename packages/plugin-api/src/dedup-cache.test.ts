@@ -94,8 +94,12 @@ describe("createFileBackedJsonCache", () => {
   });
 
   it("two independent cache instances do not share in-memory state", async () => {
-    const cacheA = createFileBackedJsonCache<{ keys: Record<string, string> }>(() => ({ keys: {} }));
-    const cacheB = createFileBackedJsonCache<{ keys: Record<string, string> }>(() => ({ keys: {} }));
+    const cacheA = createFileBackedJsonCache<{ keys: Record<string, string> }>(() => ({
+      keys: {}
+    }));
+    const cacheB = createFileBackedJsonCache<{ keys: Record<string, string> }>(() => ({
+      keys: {}
+    }));
 
     await cacheA.save(undefined, { keys: { a: "1" } });
     expect(await cacheB.load(undefined)).toEqual({ keys: {} });
