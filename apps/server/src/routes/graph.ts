@@ -30,10 +30,7 @@ import { badRequest, requestTimeout } from "../errors.js";
  * a checkout TIMEOUT. Same isolation rationale as the SSE pools (main.ts). A small cap means a
  * starved graph pool degrades only graph reads, never request serving or coordination. Imported by
  * main.ts so the number and this paragraph cannot drift apart. */
-export const GRAPH_QUERY_POOL_MAX = Math.max(
-  1,
-  Number(process.env.SCP_GRAPH_QUERY_POOL_MAX ?? 4)
-);
+export const GRAPH_QUERY_POOL_MAX = Math.max(1, Number(process.env.SCP_GRAPH_QUERY_POOL_MAX ?? 4));
 
 /**
  * Named graph queries + generic traverse (DESIGN.md §5). Read-only: authorized at the queried

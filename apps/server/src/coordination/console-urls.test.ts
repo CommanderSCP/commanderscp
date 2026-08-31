@@ -77,7 +77,9 @@ describe("execution-system console base", () => {
       })
     ).toBe("https://argocd.example.com");
     expect(executionSystemConsoleBase({ webUrl: "javascript:alert(1)" })).toBeNull();
-    expect(executionSystemConsoleBase({ webUrl: "data:text/html,<script>alert(1)</script>" })).toBeNull();
+    expect(
+      executionSystemConsoleBase({ webUrl: "data:text/html,<script>alert(1)</script>" })
+    ).toBeNull();
   });
 
   it("drops a non-http(s) serverUrl too (no fallthrough target left)", () => {

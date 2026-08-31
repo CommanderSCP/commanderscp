@@ -10,13 +10,13 @@ truth every consumer reads.
 
 ## What is pinned
 
-|                                                                                   |                                                                                                                                                             |
-| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Tool                                                                              | [aquasecurity/trivy](https://github.com/aquasecurity/trivy)                                                                                                 |
+|                                                                                   |                                                                                                                                                            |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool                                                                              | [aquasecurity/trivy](https://github.com/aquasecurity/trivy)                                                                                                |
 | Version                                                                           | **0.74.0** (`Version` reported by `trivy version`)                                                                                                         |
 | Image ref (**what the runner builds FROM**)                                       | `aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969` — the **multi-arch index (manifest-list) digest** for tag `0.74.0` |
-| linux/amd64 platform digest (production runner arch, provenance + drift-asserted) | `sha256:ee940acbf1f58ebadb42d01434ce4609530bf1b52536afbd1eee66cd7123c5c9`                                                                                   |
-| License                                                                           | Apache-2.0 (upstream)                                                                                                                                       |
+| linux/amd64 platform digest (production runner arch, provenance + drift-asserted) | `sha256:ee940acbf1f58ebadb42d01434ce4609530bf1b52536afbd1eee66cd7123c5c9`                                                                                  |
+| License                                                                           | Apache-2.0 (upstream)                                                                                                                                      |
 
 ## Why the INDEX digest, not the amd64 PLATFORM digest (the deliberate deviation from cosign/skopeo)
 
