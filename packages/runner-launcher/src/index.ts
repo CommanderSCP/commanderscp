@@ -3980,6 +3980,18 @@ export function createDockerRunnerLauncher(
           );
         }
       }
+      for (const entry of spec.env) {
+        // `env` is as caller-shaped as `secretEnv` and had no check at all. Docker reads a bare
+        // `-e KEY` (no `=`) as "inherit KEY from THIS process's environment" — so a malformed entry
+        // imports the SERVER's own variable into the runner instead of failing — and the Kubernetes
+        // adapter's `indexOf("=")` split turns the same entry into a name missing its last
+        // character. Two different silent wrong answers from one unvalidated string. Newlines are
+        // NOT refused here (unlike `secretEnv`): these travel as argv / `env[].value`, where a
+        // multi-line value is exactly one variable, not two.
+        if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(entry)) {
+          refuse(`env entry '${entry.split("=")[0] ?? ""}=…' is not a KEY=VALUE pair`);
+        }
+      }
 
       // 1. STAGE THE SECRETS OFF THE COMMAND LINE (M23.0 defect 3). Before the `try`, so a failure
       //    here tears nothing down — no container has been asked for yet.

@@ -1756,6 +1756,19 @@ export function createKubernetesRunnerLauncher(
           );
         }
       }
+      for (const entry of spec.env) {
+        // The same refusal the Docker adapter now makes, for the same reason. Without it this
+        // adapter's `indexOf("=")` split (see the container's `env` mapping) turns an entry with no
+        // `=` into `{ name: entry.slice(0, -1), value: entry }` — a variable named after the entry
+        // minus its last character. Silently wrong beats loudly wrong in no way at all.
+        if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(entry)) {
+          fail(
+            "spec",
+            [],
+            new Error(`env entry '${entry.split("=")[0] ?? ""}=…' is not a KEY=VALUE pair`)
+          );
+        }
+      }
 
       /**
        * A RUN THAT LOST ITS NAME TO SOMEBODY ELSE TEARS DOWN NOTHING. The Docker adapter's
