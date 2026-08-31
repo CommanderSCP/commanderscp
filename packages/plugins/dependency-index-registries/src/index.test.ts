@@ -9,8 +9,9 @@
  * and why that field matters — a fixture built from a guess would prove the parser reads the
  * fixture, which is the vacuous-test shape this repo has already been bitten by.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import nock from "nock";
+import type { PluginContext } from "@scp/plugin-api";
 import {
   createGoIndexPlugin,
   createMavenIndexPlugin,
@@ -344,5 +345,47 @@ describe("HAZARD: the chart's egress is default-deny, so this reads as a plugin 
     const result = classifyTransportError(blocked, "https://npm.internal/lodash");
     expect(result.reason).toBe("unreachable");
     expect(result.detail).toMatch(/allowedHosts/);
+  });
+});
+
+describe("the per-request timeout timer", () => {
+  // `Promise.race` does not cancel the loser. The timeout used to be scheduled and then abandoned
+  // by every call that answered in time — a live timer holding its rejection closure until the
+  // deadline passed, on a path polled per ecosystem per subscription tick. Both halves are
+  // asserted: the timer is gone when the request wins, and it still fires when nothing answers.
+  const ctxWithHttp = (
+    request: PluginContext["http"]["request"],
+    timeoutMs = 5_000
+  ): PluginContext => ({
+    ...createTestContext({ baseUrl: GO_BASE, timeoutMs }),
+    http: { request }
+  });
+  const query = { ecosystem: "go" as const, coordinate: "example.com/x", majorLine: "v1" };
+
+  it("is cleared once the request settles — nothing outlives the call", async () => {
+    vi.useFakeTimers();
+    try {
+      const ctx = ctxWithHttp(async () => ({ status: 200, headers: {}, body: "v1.0.0\nv1.1.0\n" }));
+      const result = await createGoIndexPlugin().listVersions(ctx, query);
+      expect(result.status).toBe("available");
+      expect(vi.getTimerCount(), "a timer survived a settled request").toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("STILL fires for a request that never settles (the clear must not defeat the timeout)", async () => {
+    vi.useFakeTimers();
+    try {
+      const ctx = ctxWithHttp(() => new Promise(() => {}));
+      const pending = createGoIndexPlugin().listVersions(ctx, query);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+      expect(result).toMatchObject({ status: "unavailable", reason: "unreachable" });
+      if (result.status !== "unavailable") throw new Error("unreachable");
+      expect(result.detail).toMatch(/exceeded 5000ms/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

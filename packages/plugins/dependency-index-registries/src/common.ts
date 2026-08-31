@@ -7,9 +7,9 @@
  * surfaces as an indistinguishable "the fetch blew up":
  *
  *  1. REDIRECTS ARE HARD-DISABLED on the plugin HTTP client. `plugin-host/subprocess-entry.ts`
- *     passes `redirect: "error"` on BOTH of its fetch branches (the undici-dispatcher branch and
- *     the global-fetch branch) with the reason stated inline: "a 3xx could re-point the request at
- *     an internal host AFTER the pre-flight egress check". Public package registries redirect
+ *     passes `redirect: "error"` on the one fetch every plugin request goes through, with the
+ *     reason stated inline: "a 3xx could re-point the request at an internal host AFTER the
+ *     pre-flight egress check". Public package registries redirect
  *     ROUTINELY — `registry.npmjs.org` and `pypi.org` both serve some paths through a CDN 301, and
  *     `repo1.maven.org` redirects bare-directory paths. So a perfectly reachable index fails, and
  *     it must not be reported as "unreachable": the remedy is "configure the FINAL url", which is
@@ -166,18 +166,26 @@ export async function fetchIndexDocument(
 ): Promise<IndexDocument> {
   const timeoutMs = config.timeoutMs ?? DEFAULT_INDEX_TIMEOUT_MS;
   let response;
+  // The timer is CLEARED once the race settles, whichever side won. Losing the race does not
+  // cancel a `setTimeout`: every call that answered in time used to leave a live timer behind,
+  // holding its closure until the deadline passed, on a path polled per ecosystem per tick.
+  // (`unref` keeps it from blocking process exit; it does not make it free.)
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     response = await Promise.race([
       ctx.http.request({ method: "GET", url, headers: config.headers ?? {} }),
       new Promise<never>((_resolve, reject) => {
-        setTimeout(
+        timer = setTimeout(
           () => reject(new Error(`index request exceeded ${timeoutMs}ms`)),
           timeoutMs
-        ).unref?.();
+        );
+        timer.unref?.();
       })
     ]);
   } catch (err) {
     return classifyTransportError(err, url);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 
   if (response.status >= 300 && response.status < 400) {
