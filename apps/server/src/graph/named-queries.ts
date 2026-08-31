@@ -223,56 +223,88 @@ async function groupByDomain(
   return Object.fromEntries(result.rows.map((r) => [r.domain_urn, r.count]));
 }
 
+/** Keep only the objects the caller may read (`object:read` scope). `null` = org-root reader, no
+ *  filter — see routes/graph.ts / traverse.ts for why this is applied on TOP of the `graph:query`
+ *  authorization the route already did. */
+function filterReadable(
+  objs: GraphObject[],
+  readableIds: ReadonlySet<string> | null
+): GraphObject[] {
+  return readableIds === null ? objs : objs.filter((o) => readableIds.has(o.id));
+}
+
 export async function runNamedQuery(
   tx: TenantTx,
   orgId: string,
   name: NamedGraphQuery,
-  params: GraphQueryRequest
+  params: GraphQueryRequest,
+  /**
+   * The caller's readable object-id set (`object:read` scope), or `null` for an org-root reader. Every
+   * result object, path, and count below is intersected with it, so a named query never enumerates
+   * objects the caller lacks `object:read` on — the enumeration bypass role-model.md §8.6a tracked.
+   * Counts are computed AFTER filtering, so they cannot leak the existence of non-readable objects.
+   */
+  readableIds: ReadonlySet<string> | null
 ): Promise<GraphQueryResult> {
   const relTypes = params.relTypes ?? null;
 
   switch (name) {
     case "owners-of": {
-      const objs = await ownersOf(tx, orgId, params.objectId, params.maxDepth);
+      const objs = filterReadable(
+        await ownersOf(tx, orgId, params.objectId, params.maxDepth),
+        readableIds
+      );
       return { query: name, objects: objs };
     }
     case "dependents-of": {
-      const objs = await transitiveReverseClosure(
-        tx,
-        orgId,
-        params.objectId,
-        relTypes ?? ["depends_on"],
-        params.maxDepth
+      const objs = filterReadable(
+        await transitiveReverseClosure(
+          tx,
+          orgId,
+          params.objectId,
+          relTypes ?? ["depends_on"],
+          params.maxDepth
+        ),
+        readableIds
       );
       return { query: name, objects: objs };
     }
     case "consumers-of": {
-      const objs = await transitiveReverseClosure(
-        tx,
-        orgId,
-        params.objectId,
-        relTypes ?? ["consumes"],
-        params.maxDepth
+      const objs = filterReadable(
+        await transitiveReverseClosure(
+          tx,
+          orgId,
+          params.objectId,
+          relTypes ?? ["consumes"],
+          params.maxDepth
+        ),
+        readableIds
       );
       return { query: name, objects: objs };
     }
     case "impact-of": {
-      const objs = await transitiveReverseClosure(
-        tx,
-        orgId,
-        params.objectId,
-        relTypes ?? DEFAULT_IMPACT_TYPES,
-        params.maxDepth
+      const objs = filterReadable(
+        await transitiveReverseClosure(
+          tx,
+          orgId,
+          params.objectId,
+          relTypes ?? DEFAULT_IMPACT_TYPES,
+          params.maxDepth
+        ),
+        readableIds
       );
       return { query: name, objects: objs };
     }
     case "blast-radius": {
-      const objs = await transitiveReverseClosure(
-        tx,
-        orgId,
-        params.objectId,
-        relTypes ?? DEFAULT_IMPACT_TYPES,
-        params.maxDepth
+      const objs = filterReadable(
+        await transitiveReverseClosure(
+          tx,
+          orgId,
+          params.objectId,
+          relTypes ?? DEFAULT_IMPACT_TYPES,
+          params.maxDepth
+        ),
+        readableIds
       );
       const counts: Record<string, number> = {};
       for (const o of objs) {
@@ -294,12 +326,15 @@ export async function runNamedQuery(
       return { query: name, objects: objs, counts };
     }
     case "domains-impacted": {
-      const objs = await transitiveReverseClosure(
-        tx,
-        orgId,
-        params.objectId,
-        relTypes ?? DEFAULT_IMPACT_TYPES,
-        params.maxDepth
+      const objs = filterReadable(
+        await transitiveReverseClosure(
+          tx,
+          orgId,
+          params.objectId,
+          relTypes ?? DEFAULT_IMPACT_TYPES,
+          params.maxDepth
+        ),
+        readableIds
       );
       const counts = await groupByDomain(
         tx,
@@ -318,7 +353,16 @@ export async function runNamedQuery(
         relTypes,
         params.maxDepth
       );
-      return { query: name, objects: objs, paths };
+      if (readableIds === null) return { query: name, objects: objs, paths };
+      // A path is returned ONLY if EVERY node on it is readable — otherwise the path array would leak
+      // the ids of non-readable intermediate hops. Objects are then narrowed to the surviving paths.
+      const survivingPaths = paths.filter((p) => p.every((id) => readableIds.has(id)));
+      const involved = new Set(survivingPaths.flat());
+      return {
+        query: name,
+        objects: objs.filter((o) => involved.has(o.id)),
+        paths: survivingPaths
+      };
     }
   }
 }

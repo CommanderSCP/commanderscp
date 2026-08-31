@@ -11,15 +11,52 @@ import {
   TraverseRequestSchema,
   TraverseResultSchema
 } from "@scp/schemas";
+import { sql } from "drizzle-orm";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
-import { withTenantTx } from "../db/tenant-tx.js";
+import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { readableScopeForListDoor } from "../authz/list-door-scope.js";
 import { runNamedQuery } from "../graph/named-queries.js";
 import { subgraph, traverse } from "../graph/traverse.js";
 import { findGraphIntegrityIssues } from "../graph/integrity-repo.js";
 import { GraphQueryTimeoutError, withStatementTimeout } from "../graph/query-timeout.js";
 import { badRequest, requestTimeout } from "../errors.js";
+
+/**
+ * The caller's readable object-id set for graph READS. `graph:query` (authorized per-route below)
+ * decides whether a traversal may RUN from a given root; it does NOT constrain the RESULT SET, which
+ * the org-only queries otherwise returned in full — the enumeration bypass role-model.md §8.6a
+ * tracked (a component-scoped principal reading its parent service + siblings via traverse, which
+ * `GET /objects/{type}/{id}` refuses). This resolves the subject's `object:read` scope through the
+ * SAME production door every list uses (`readableScopeForListDoor`) and materializes it to a Set the
+ * query functions intersect their output with.
+ *
+ *  - `null`  → org-root reader: read everything, no post-filter (behaviour identical to before).
+ *  - a Set   → the ids this subject may read; results are narrowed to it.
+ *  - throws 403 → the subject holds no `object:read` anywhere (so has nothing to see).
+ *
+ * No `?scopeObjectId=` hint is passed: a traversal can legitimately reach readable objects OUTSIDE
+ * the query root's own subtree, so the filter must be the subject's FULL readable set.
+ */
+async function readableObjectIdSet(
+  tx: TenantTx,
+  orgId: string,
+  subjectObjectId: string
+): Promise<ReadonlySet<string> | null> {
+  const filter = await readableScopeForListDoor(tx, {
+    orgId,
+    subjectObjectId,
+    permission: "object:read",
+    scopeObjectRef: undefined,
+    resolveScopeObject: () => {
+      throw new Error("unreachable: graph read-scoping passes no scope hint");
+    }
+  });
+  if (filter === null) return null;
+  const rows = await tx.execute<{ id: string }>(sql`SELECT id FROM ${filter} AS readable_set`);
+  return new Set(rows.rows.map((r) => r.id));
+}
 
 /**
  * Max connections for the ISOLATED graph-query pool (main.ts wires `deps.graphDb` to a pool sized by
@@ -75,7 +112,8 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
               permission: "graph:query",
               scopeObjectId: request.query.objectId
             });
-            return runNamedQuery(tx, auth.orgId, name, request.query);
+            const readableIds = await readableObjectIdSet(tx, auth.orgId, auth.subjectObjectId);
+            return runNamedQuery(tx, auth.orgId, name, request.query, readableIds);
           })
         );
       } catch (err) {
@@ -117,7 +155,8 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
               permission: "graph:query",
               scopeObjectId: request.query.objectId
             });
-            return traverse(tx, auth.orgId, request.query);
+            const readableIds = await readableObjectIdSet(tx, auth.orgId, auth.subjectObjectId);
+            return traverse(tx, auth.orgId, request.query, readableIds);
           })
         );
       } catch (err) {
@@ -165,7 +204,8 @@ export function registerGraphRoutes(app: FastifyInstance, deps: AppDeps): void {
               permission: "graph:query",
               scopeObjectId: request.body.objectId
             });
-            return subgraph(tx, auth.orgId, request.body);
+            const readableIds = await readableObjectIdSet(tx, auth.orgId, auth.subjectObjectId);
+            return subgraph(tx, auth.orgId, request.body, readableIds);
           })
         );
       } catch (err) {

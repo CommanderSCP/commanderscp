@@ -30,7 +30,16 @@ type EdgeRow = {
 export async function traverse(
   tx: TenantTx,
   orgId: string,
-  req: TraverseRequest
+  req: TraverseRequest,
+  /**
+   * The caller's readable object-id set (`object:read` scope), or `null` for an org-root reader who
+   * may read everything. When a Set, the returned objects/edges are intersected with it, so a
+   * sub-org-scoped principal never sees an object it lacks `object:read` on — the same authority
+   * `GET /objects/{type}/{id}` enforces, which the org-only walk otherwise bypassed (2026-08-31
+   * security review; role-model.md §8.6a). `graph:query` gates whether the traversal may run at all;
+   * this gates which of its results are visible. Resolved once in routes/graph.ts.
+   */
+  readableIds: ReadonlySet<string> | null
 ): Promise<TraverseResult> {
   const relTypes = req.relTypes ?? null;
   const wantOut = req.direction === "out" || req.direction === "both";
@@ -73,14 +82,19 @@ export async function traverse(
     `)
   ]);
 
+  const objects = objRows.rows.map(mapRawObjectRow);
+  const edges = edgeRows.rows.map((e) => ({
+    id: e.id,
+    typeId: e.type_id,
+    fromId: e.from_id,
+    toId: e.to_id
+  }));
+  if (readableIds === null) return { objects, edges };
+  // Intersect with the caller's readable set: an object only if readable, an edge only if BOTH
+  // endpoints are readable (so no edge reveals a non-readable neighbour).
   return {
-    objects: objRows.rows.map(mapRawObjectRow),
-    edges: edgeRows.rows.map((e) => ({
-      id: e.id,
-      typeId: e.type_id,
-      fromId: e.from_id,
-      toId: e.to_id
-    }))
+    objects: objects.filter((o) => readableIds.has(o.id)),
+    edges: edges.filter((e) => readableIds.has(e.fromId) && readableIds.has(e.toId))
   };
 }
 
@@ -95,19 +109,27 @@ export async function traverse(
 export async function subgraph(
   tx: TenantTx,
   orgId: string,
-  req: SubgraphRequest
+  req: SubgraphRequest,
+  /** The caller's readable object-id set, or `null` for an org-root reader — see {@link traverse}.
+   *  An edge is returned only when BOTH endpoints are readable, so a caller cannot use a
+   *  caller-supplied `ids` set to discover edges among objects it lacks `object:read` on. */
+  readableIds: ReadonlySet<string> | null
 ): Promise<SubgraphResult> {
   const edgeRows = await tx.execute<EdgeRow>(sql`
     SELECT id, type_id, from_id, to_id FROM relationships
     WHERE org_id = ${orgId}::uuid AND deleted_at IS NULL
       AND ${sqlIn("from_id", req.ids)} AND ${sqlIn("to_id", req.ids)}
   `);
+  const edges = edgeRows.rows.map((e) => ({
+    id: e.id,
+    typeId: e.type_id,
+    fromId: e.from_id,
+    toId: e.to_id
+  }));
   return {
-    edges: edgeRows.rows.map((e) => ({
-      id: e.id,
-      typeId: e.type_id,
-      fromId: e.from_id,
-      toId: e.to_id
-    }))
+    edges:
+      readableIds === null
+        ? edges
+        : edges.filter((e) => readableIds.has(e.fromId) && readableIds.has(e.toId))
   };
 }

@@ -300,7 +300,7 @@ async function main(): Promise<void> {
           await tx.execute(
             sql`SELECT set_config('statement_timeout', ${String(QUERY_STATEMENT_TIMEOUT_MS)}, true)`
           );
-          return runNamedQuery(tx, orgId, "impact-of", { objectId, maxDepth: MAX_DEPTH });
+          return runNamedQuery(tx, orgId, "impact-of", { objectId, maxDepth: MAX_DEPTH }, null);
         });
         latencies.push(performance.now() - start);
       }
