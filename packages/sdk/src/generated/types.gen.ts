@@ -22032,6 +22032,70 @@ export type ListFederationRelayBuildsResponses = {
 
 export type ListFederationRelayBuildsResponse = ListFederationRelayBuildsResponses[keyof ListFederationRelayBuildsResponses];
 
+export type ListFederationAuditWitnessesData = {
+    body?: never;
+    path?: never;
+    query: {
+        originDomainId: string;
+    };
+    url: '/federation/audit-witnesses';
+};
+
+export type ListFederationAuditWitnessesErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListFederationAuditWitnessesError = ListFederationAuditWitnessesErrors[keyof ListFederationAuditWitnessesErrors];
+
+export type ListFederationAuditWitnessesResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            originDomainId: string;
+            sequence: number;
+            auditEventId: string;
+            contentHash: string;
+            witnessedAt: string;
+        }>;
+    };
+};
+
+export type ListFederationAuditWitnessesResponse = ListFederationAuditWitnessesResponses[keyof ListFederationAuditWitnessesResponses];
+
 export type FederationPokeData = {
     body?: never;
     path?: never;

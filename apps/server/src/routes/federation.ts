@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import {
+  AuditWitnessListResponseSchema,
   ExportJournalRequestSchema,
   ExportPromotionRequestSchema,
   FederationPeerSchema,
@@ -107,6 +108,7 @@ import { wakeFederationSyncNow } from "../federation/federation-sync.js";
 import { inboxLoopEnabled, wakeInboxNow } from "../federation/inbox-loop.js";
 import { autoRelayEnabled, wakeAutoRelayNow } from "../federation/auto-relay.js";
 import { listRelayBuilds, reopenRelayBuild } from "../federation/relay-builds-repo.js";
+import { listAuditWitnessesForOrigin } from "../federation/audit-witness-repo.js";
 import { getChangeRow } from "../coordination/changes-repo.js";
 import { pokeRateLimiter } from "../federation/poke-rate-limit.js";
 import { recordPokeWake } from "../federation/poke-metrics.js";
@@ -1098,6 +1100,61 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         });
       });
       reply.status(200).send({ items });
+    }
+  });
+
+  // FEDERATION AUDIT WITNESS (multi-region-instance-resilience.md §7.2.7) — the OPERATOR READ
+  // SURFACE for the post-failover runbook's peers-witness comparison (resilience.md §7.2 step 5):
+  // `scp audit verify` alone cannot see a truncated chain (any prefix of a valid hash chain
+  // verifies as valid), so the operator compares the restored origin's chain head against what
+  // THIS domain earlier witnessed of it. Same simple authorize-in-its-own-tx shape as
+  // `/federation/relay-builds` above — this handler has no out-of-tx work either.
+  typed.route({
+    method: "GET",
+    url: "/api/v1/federation/audit-witnesses",
+    schema: {
+      querystring: z.object({
+        originDomainId: z.string().min(1)
+      }),
+      response: {
+        200: AuditWitnessListResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "listFederationAuditWitnesses",
+        summary:
+          "What this domain has witnessed of one origin's audit-chain head — the post-failover peers-witness comparison (resilience runbook §7.2 step 5)",
+        tags: ["federation"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const items = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:read",
+          scopeObjectId: auth.orgId
+        });
+        return listAuditWitnessesForOrigin(
+          tx,
+          auth.orgId,
+          trustDomainIdFromWire(request.query.originDomainId)
+        );
+      });
+      reply.status(200).send({
+        items: items.map((row) => ({
+          originDomainId: row.originDomainId,
+          sequence: row.sequence,
+          auditEventId: row.auditEventId,
+          contentHash: row.contentHash,
+          witnessedAt: row.witnessedAt.toISOString()
+        }))
+      });
     }
   });
 

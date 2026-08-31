@@ -50,6 +50,9 @@ import type {
   // M13.1b — the auto-relay build ledger's operator read surface (owner ask).
   RelayBuild,
   RelayBuildStatus,
+  // Federation audit witness (multi-region-instance-resilience.md §7.2.7) — the post-failover
+  // peers-witness comparison's read surface (resilience runbook §7.2 step 5).
+  AuditWitness,
   // M13.2/M13.3b — the two scan surfaces whose table rows are now exported formatters (Y2).
   InstanceScanFloor,
   InstanceScanExclusionAdmission,
@@ -592,6 +595,22 @@ export function relayBuildRow(row: RelayBuild): Record<string, string> {
     claimedUntil: isAbsent(row.claimedUntil) ? "-" : row.claimedUntil,
     lastReason: isAbsent(row.lastReason) ? "-" : row.lastReason,
     decisionId: isAbsent(row.lastDecisionId) ? "-" : row.lastDecisionId
+  };
+}
+
+/**
+ * One federation audit-witness row as a table row (`scp audit witnesses --origin <domainId>`) —
+ * the post-failover peers-witness comparison's read surface (resilience runbook §7.2 step 5,
+ * multi-region-instance-resilience.md §7.2.7). Exported for the same reason as `relayBuildRow`: a
+ * guard no test can invoke is a guard nothing holds in place.
+ */
+export function auditWitnessRow(row: AuditWitness): Record<string, string> {
+  return {
+    origin: row.originDomainId,
+    sequence: String(row.sequence),
+    auditEventId: row.auditEventId,
+    contentHash: row.contentHash,
+    witnessedAt: row.witnessedAt
   };
 }
 
@@ -4223,6 +4242,25 @@ export function buildProgram(): Command {
         `FAILED: audit chain broken at event ${result.brokenAt?.id} — ${result.brokenAt?.reason} (${result.eventCount} events checked).`
       );
       process.exitCode = 1;
+    });
+
+  // Federation audit witness (multi-region-instance-resilience.md §7.2.7) — the post-failover
+  // runbook's peers-witness comparison (resilience.md §7.2 step 5): `scp audit verify` alone
+  // cannot see a truncated chain (any prefix of a valid hash chain still verifies), so this reads
+  // what THIS domain earlier witnessed of an origin peer's audit-chain head, for comparison
+  // against that origin's restored `scp audit verify` head after a failover.
+  auditCmd
+    .command("witnesses")
+    .description(
+      "What this domain has witnessed of one origin peer's audit-chain head — the post-failover peers-witness comparison (resilience runbook §7.2 step 5); peers are witnesses, never a restoration source"
+    )
+    .requiredOption("--origin <domainId>", "the origin domain whose chain you're checking")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { origin: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const rows = await client.federation.listAuditWitnesses(opts.origin);
+      printResult(rows, opts.output, (raw) => auditWitnessRow(raw as AuditWitness));
     });
 
   // -------------------------------------------------------------------------------------

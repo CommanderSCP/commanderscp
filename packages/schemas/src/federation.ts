@@ -1171,6 +1171,33 @@ export const RelayBuildListResponseSchema = z.object({
 });
 export type RelayBuildListResponse = z.infer<typeof RelayBuildListResponseSchema>;
 
+// ===========================================================================================
+// FEDERATION AUDIT WITNESS (multi-region-instance-resilience.md §7.2.7) — `GET
+// /federation/audit-witnesses?originDomainId=`, the OPERATOR READ SURFACE for what this domain
+// has passively witnessed of a peer's audit-chain head. This is what the post-failover runbook's
+// peers-witness comparison (§7.2 step 5) actually reads: `scp audit verify` alone cannot see a
+// truncated chain because any prefix of a valid hash chain verifies as valid, so the comparison
+// needs a peer's independent, earlier-recorded view of the origin's chain. Data access:
+// `federation/audit-witness-repo.ts`'s `listAuditWitnessesForOrigin`.
+// ===========================================================================================
+
+/** One witnessed entry of an origin domain's audit chain, in the order it was witnessed. */
+export const AuditWitnessSchema = z.object({
+  originDomainId: z.string(),
+  sequence: z.number().int(),
+  auditEventId: z.string(),
+  contentHash: z.string(),
+  witnessedAt: z.string().datetime()
+});
+export type AuditWitness = z.infer<typeof AuditWitnessSchema>;
+
+/** `GET /federation/audit-witnesses` response — `{ items }`, matching the newer non-cursor list
+ *  responses in this file (see `RelayBuildListResponseSchema`'s doc for the precedent survey). */
+export const AuditWitnessListResponseSchema = z.object({
+  items: z.array(AuditWitnessSchema)
+});
+export type AuditWitnessListResponse = z.infer<typeof AuditWitnessListResponseSchema>;
+
 /** `POST /federation/imports` accepts either bundle kind — the importer sniffs `header.kind`. */
 export const ImportBundleRequestSchema = z.union([SyncBundleSchema, PromotionBundleSchema]);
 export type ImportBundleRequest = z.infer<typeof ImportBundleRequestSchema>;

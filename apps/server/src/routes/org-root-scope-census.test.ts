@@ -349,6 +349,11 @@ const ORG_ROOT_PINNED: readonly CensusEntry[] = [
     why: "relay builds are per-link records, not per-object ones"
   },
   {
+    site: "routes/federation.ts :: GET /api/v1/federation/audit-witnesses :: federation:read",
+    cls: "org-level",
+    why: "audit witnesses are per-origin-domain records keyed by (org, originDomainId, sequence), not per-object ones"
+  },
+  {
     site: "routes/federation.ts :: POST /api/v1/federation/overlays :: object:write",
     cls: "org-level",
     why: "BAR 1 of a CONJUNCTION, and the only one this census can see. An overlay is ALWAYS created at org-root containment, so its own scope IS the org root; the governance-managed sub-case adds overlay-repo.ts's policy:write bar on top. 2.5a ADDED a second bar at the resolved BASE object beside this one — it did NOT re-scope this one, which is why this entry stays. The pair is a deliberate TIGHTENING and the pure-widening invariant that governs the 21 re-scoped doors does not apply to it; the accepted consequence (a base with tombstoned ancestors is unreachable to everyone until its chain is repaired) is argued at the doors and pinned by routes/federation-overlay-base-authority.integration.test.ts"
