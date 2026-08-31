@@ -14,12 +14,12 @@ export interface IdempotentResult<T> {
  * Reads the `Idempotency-Key` header, normalising a repeated header (which Fastify surfaces as an
  * array) to "absent" the way every route in the tree already does.
  *
- * EXPORTED HERE 2026-08-27 rather than hand-typed a SEVENTH time. Six route modules carry a private
- * `idempotencyKey(request)` with this body — `objects.ts`, `objects-generic.ts`, `type-registry.ts`,
- * `typed-registries.ts`, `relationships.ts`, `ownership.ts` — and `routes/role-bindings.ts` was about
- * to be the seventh. The six are NOT converted here: that is a sweep across six unrelated route
- * files for no behaviour change, and this branch's diff is an authz change. They are named so the
- * next census finds them listed rather than having to rediscover them.
+ * EXPORTED HERE 2026-08-27 rather than hand-typed a SEVENTH time. `routes/role-bindings.ts` was
+ * about to be the seventh; `objects-generic.ts`, `type-registry.ts`, `relationships.ts` and
+ * `placements.ts` have since been converted to this shared helper too (dedup sweep). Four route
+ * modules still carry a private `idempotencyKey(request)` with this body — `objects.ts`,
+ * `typed-registries.ts`, `ownership.ts`, `components.ts` — named so the next census finds them
+ * listed rather than having to rediscover them.
  */
 export function idempotencyKeyOf(request: FastifyRequest): string | undefined {
   const header = request.headers["idempotency-key"];

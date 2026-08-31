@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
   CreatePlacementRequestSchema,
@@ -13,7 +13,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { readableScopeForListDoor } from "../authz/list-door-scope.js";
-import { withIdempotency } from "../idempotency.js";
+import { idempotencyKeyOf, withIdempotency } from "../idempotency.js";
 import { getObjectByIdOrUrn, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { resolveDeclaredContainmentParent } from "../graph/containment-parent-authz.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
@@ -38,10 +38,6 @@ import { createPlacement, listPlacements, withdrawPlacement } from "../graph/pla
 export function registerPlacementRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
   const base = "/api/v1/placements";
-  const idempotencyKey = (request: FastifyRequest): string | undefined => {
-    const header = request.headers["idempotency-key"];
-    return typeof header === "string" ? header : undefined;
-  };
 
   typed.route({
     method: "POST",
@@ -91,7 +87,7 @@ export function registerPlacementRoutes(app: FastifyInstance, deps: AppDeps): vo
           tx,
           {
             orgId: auth.orgId,
-            idempotencyKey: idempotencyKey(request),
+            idempotencyKey: idempotencyKeyOf(request),
             route: `POST ${base}`,
             requestBody: request.body
           },
