@@ -8,7 +8,7 @@ import type {
 } from "@scp/schemas";
 import { DependencySubscriptionDeliverySchema } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { componentDependencies, decisions, objects } from "../db/schema.js";
+import { componentDependencies, decisions } from "../db/schema.js";
 import { latestDecisionForSubjectKind } from "../coordination/decisions-repo.js";
 import { CURSOR_UUID_RE, decodeCursor, encodeCursor } from "../pagination.js";
 import { listBumpAuthorshipsByComponent } from "./bump-authorship-repo.js";
@@ -19,6 +19,7 @@ import {
   listDependencyLinesByIds
 } from "./dependency-inventory-repo.js";
 import { DEPENDENCY_INVENTORY_DECISION_KIND } from "./inventory-ingestion.js";
+import { namesForObjectIds } from "./producer-declaration.js";
 import {
   mergeComponentIngestionGate,
   resolveDeclaredComponentLines
@@ -219,14 +220,7 @@ export async function readComponentDependencyInventory(
   );
   const producerByKey = new Map(producers.map((p) => [`${p.ecosystem} ${p.coordinate}`, p]));
   const producerIds = [...new Set(producers.map((p) => p.producerObjectId))];
-  const producerNameById = new Map<string, string>();
-  if (producerIds.length > 0) {
-    const producers = await tx
-      .select({ id: objects.id, name: objects.name })
-      .from(objects)
-      .where(and(eq(objects.orgId, input.orgId), inArray(objects.id, producerIds)));
-    for (const p of producers) producerNameById.set(p.id, p.name);
-  }
+  const producerNameById = await namesForObjectIds(tx, input.orgId, producerIds);
 
   const rows: ComponentDependencyInventoryRow[] = [];
   for (const declaration of page) {
@@ -350,16 +344,12 @@ export async function readComponentDependencyBumps(
 
   const changeIds = items.map((a) => a.changeObjectId);
   const lineIds = [...new Set(items.map((a) => a.lineId))];
-  const [changeNames, lines, mergeDecisions, dispatchDecisions] = await Promise.all([
-    tx
-      .select({ id: objects.id, name: objects.name })
-      .from(objects)
-      .where(and(eq(objects.orgId, input.orgId), inArray(objects.id, changeIds))),
+  const [nameById, lines, mergeDecisions, dispatchDecisions] = await Promise.all([
+    namesForObjectIds(tx, input.orgId, changeIds),
     listDependencyLinesByIds(tx, input.orgId, lineIds),
     newestDecisionsBySubject(tx, input.orgId, DEPENDENCY_BUMP_MERGE_DECISION_KIND, changeIds),
     newestDecisionsBySubject(tx, input.orgId, DEPENDENCY_BUMP_DECISION_KIND, changeIds)
   ]);
-  const nameById = new Map(changeNames.map((c) => [c.id, c.name]));
   const lineById = new Map(lines.map((l) => [l.id, l]));
 
   const rows: ComponentDependencyBump[] = items.map((a) => {
