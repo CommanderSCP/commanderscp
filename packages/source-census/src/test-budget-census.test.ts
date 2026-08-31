@@ -514,6 +514,18 @@ const UNIT_HOOK_OVERRIDES: Record<string, { ms: number; why: string }> = {
     ms: 30_000,
     why: "same warm-up"
   },
+  "packages/cli/src/audit-witnesses-cli.test.ts": {
+    ms: 30_000,
+    why: "same warm-up"
+  },
+  "packages/cli/src/campaign-adoption-cli.test.ts": {
+    ms: 30_000,
+    why: "same warm-up"
+  },
+  "packages/cli/src/connect-argocd-cli.test.ts": {
+    ms: 30_000,
+    why: "same warm-up"
+  },
   "packages/runner-launcher/src/no-spawn-on-kubernetes.behaviour.test.ts": {
     ms: 190_000,
     why: "A BUILD IN A HOOK: `npx tsc -b` with an inner 180_000ms subprocess timeout, because the subject of that file is the built dist rather than the vitest-transformed source. 6.3x the reviewed maximum, deliberately NOT absorbed into it"
