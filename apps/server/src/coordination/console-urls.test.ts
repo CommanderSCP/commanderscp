@@ -15,6 +15,7 @@ import { executionSystemConsoleBase, executorConsoleUrl, repoConsoleUrl } from "
  * | drop the glob check from `repoConsoleUrl` | the pattern test FAILS — `org/*` would link to a repo literally named `*` |
  * | fall back to `gitlab.com` for a gitlab mapping | the self-hosted test FAILS — that URL points at a stranger's repo |
  * | prefer `serverUrl` over `webUrl` | the console-base test FAILS — the operator's browsable address loses to the in-cluster one |
+ * | drop the http(s)-scheme check from `executionSystemConsoleBase` | the XSS tests FAIL — a `javascript:` webUrl would be returned and rendered as a live href |
  */
 describe("repo console URLs", () => {
   it("links a literal github repo", () => {
@@ -63,6 +64,31 @@ describe("execution-system console base", () => {
   it("is null when the system names no address at all", () => {
     expect(executionSystemConsoleBase({ kind: "argocd" })).toBeNull();
     expect(executionSystemConsoleBase(null)).toBeNull();
+  });
+
+  it("drops a non-http(s) webUrl — a `javascript:`/`data:` scheme would be stored XSS", () => {
+    // execution-system `properties` are operator-supplied and the render site uses the return value
+    // as a raw href, so a script-scheme URL must never come back out. It falls THROUGH to serverUrl
+    // rather than returning the dangerous scheme.
+    expect(
+      executionSystemConsoleBase({
+        webUrl: "javascript:alert(document.cookie)",
+        serverUrl: "https://argocd.example.com"
+      })
+    ).toBe("https://argocd.example.com");
+    expect(executionSystemConsoleBase({ webUrl: "javascript:alert(1)" })).toBeNull();
+    expect(executionSystemConsoleBase({ webUrl: "data:text/html,<script>alert(1)</script>" })).toBeNull();
+  });
+
+  it("drops a non-http(s) serverUrl too (no fallthrough target left)", () => {
+    expect(executionSystemConsoleBase({ serverUrl: "javascript:alert(1)" })).toBeNull();
+    expect(executionSystemConsoleBase({ serverUrl: "vbscript:msgbox(1)" })).toBeNull();
+  });
+
+  it("keeps a normal http(s) address (the guard is scheme-only, not a whitelist of hosts)", () => {
+    expect(executionSystemConsoleBase({ webUrl: "http://argocd.internal:8080/" })).toBe(
+      "http://argocd.internal:8080"
+    );
   });
 });
 
