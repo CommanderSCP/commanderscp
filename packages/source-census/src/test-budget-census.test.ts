@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { trackedFiles } from "./tracked.js";
 
 /**
  * ================================================================================================
@@ -85,15 +85,6 @@ interface UnitSuite {
   setupFiles: string[];
 }
 
-function trackedFiles(): string[] {
-  const out = execFileSync("git", ["ls-files", "-z"], {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024
-  });
-  return out.split("\0").filter((p) => p.length > 0);
-}
-
 /**
  * Read the declared `testTimeout` out of a vitest config's SOURCE rather than by importing it.
  * Importing would execute `defineConfig` and every plugin the config pulls in — which is how a
@@ -124,7 +115,7 @@ function declaredSetupFiles(source: string): string[] {
 }
 
 function unitSuites(): UnitSuite[] {
-  const files = trackedFiles();
+  const files = trackedFiles(REPO_ROOT);
   const manifests = files.filter((p) => p === "package.json" || p.endsWith("/package.json"));
   const suites: UnitSuite[] = [];
   for (const manifest of manifests) {
@@ -228,7 +219,7 @@ describe("no unit suite runs on a per-test deadline nobody chose", () => {
     ).toStrictEqual([]);
 
     // The list must also be complete: every tracked non-unit vitest config is in it.
-    const tracked = trackedFiles().filter(
+    const tracked = trackedFiles(REPO_ROOT).filter(
       (p) => /vitest\.[a-z]+\.config\.ts$/.test(p) && !p.endsWith("vitest.config.ts")
     );
     expect(
@@ -656,7 +647,7 @@ describe("no HOOK runs on a deadline nobody chose either", () => {
     // bounds nothing today — but the cost of declaring it is a line, and the cost of NOT declaring it is
     // that the next hook to be added arrives on the implicit default with nobody looking. That is
     // the precise shape of the defect this file exists for, so uniformity wins over minimalism.
-    const files = trackedFiles();
+    const files = trackedFiles(REPO_ROOT);
     const withoutHooks = SUITES.filter((s) =>
       unitTestFiles(s, SUITES, files).every((f) => {
         const src = readFileSync(resolve(REPO_ROOT, f), "utf8");
@@ -698,7 +689,7 @@ describe("no HOOK runs on a deadline nobody chose either", () => {
 
   it("every PER-HOOK override in the unit layer is named, and every name still overrides", () => {
     // The hole a config-only gate leaves. Both directions, so the table cannot become decoration.
-    const files = trackedFiles();
+    const files = trackedFiles(REPO_ROOT);
     const seen = new Map<string, number>();
     for (const suite of SUITES) {
       for (const f of unitTestFiles(suite, SUITES, files)) {

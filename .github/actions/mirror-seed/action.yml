@@ -5,16 +5,34 @@ description: >
   pull (charter principle 5 — CI runs offline; see tools/ci-mirror/images.list for the manifest and
   scripts/ci-mirror.sh's header for the four consumer forms). `seed` appends its exports
   (SCP_TEST_SUBJECT_REGISTRY, SCP_SKOPEO_IMAGE_REF, SCP_COSIGN_IMAGE_REF, the root Dockerfile's own
-  SKOPEO_IMAGE/COSIGN_IMAGE build ARGs, REGISTRY_AUTH_FILE) to $GITHUB_ENV, so they reach every
+  SKOPEO_IMAGE/COSIGN_IMAGE/NODE_IMAGE build ARGs, REGISTRY_AUTH_FILE) to $GITHUB_ENV, so they reach every
   later step of the SAME job for free — including a `docker compose build` step. A job whose build
   happens INSIDE a nested `docker run` (this repo has one: e2e-web/"9") still has to forward them
-  explicitly with `-e SKOPEO_IMAGE -e COSIGN_IMAGE`, because $GITHUB_ENV only reaches the runner's
+  explicitly with `-e SKOPEO_IMAGE -e COSIGN_IMAGE -e NODE_IMAGE`, because $GITHUB_ENV only reaches the runner's
   own step shells, not a container's — see that job's own comment.
 
   Call this AFTER checkout (and, where the job has one, the toolchain setup step) and BEFORE
   anything that pulls or builds an image. The calling job must declare `permissions: packages:
   read` and put the job that populates the mirror in its `needs:` (job key `testcontainer-images`,
   "4d. Mirror every third-party test image to GHCR") — otherwise this can race an empty mirror.
+
+inputs:
+  seed-skip:
+    description: >
+      Space-separated aliases (or alias repos, tag omitted) this job declares it will NEVER
+      consume, forwarded to `ci-mirror.sh seed` as SCP_SEED_SKIP so it need not pull them. Only
+      safe alongside blackhole enforcement — a wrongly-skipped image must fail loudly at its
+      consumer, not fall back to a live upstream pull (see ci-mirror.sh's own comment).
+    default: ""
+  blackhole:
+    description: >
+      "true" points every mirrored upstream registry at 127.0.0.1 immediately after seeding, so an
+      unmirrored (or wrongly-skipped) pull later in the job CANNOT pass — the enforcement that
+      makes "CI runs offline" a checked property (charter principle 5). Leave "false" only when
+      the job must place the blackhole itself, later (e2e-web: its ci-image fallback build for
+      fork PRs legitimately reaches upstream first). If the blackhole ever reds a job, mirror or
+      un-skip the image it revealed; never turn it off.
+    default: "false"
 
 runs:
   using: composite
@@ -23,6 +41,13 @@ runs:
       shell: bash
       run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-    - name: Seed every mirrored image and point the non-taggable consumers at the mirror
+    - name: Seed every mirrored image this job consumes, and point the non-taggable consumers at the mirror
       shell: bash
+      env:
+        SCP_SEED_SKIP: ${{ inputs.seed-skip }}
       run: scripts/ci-mirror.sh seed
+
+    - name: Deny the mirrored upstream registries for the rest of the job
+      if: ${{ inputs.blackhole == 'true' }}
+      shell: bash
+      run: scripts/ci-mirror.sh blackhole

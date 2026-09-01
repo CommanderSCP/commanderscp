@@ -14,13 +14,17 @@ import {
 import { REPO_ROOT } from "./repo-paths.js";
 
 /**
- * Parse `tools/skopeo/pin.env` (the single source of truth) as KEY=VALUE pairs.
+ * Parse a `tools/<pin>/pin.env` (each a single source of truth) as KEY=VALUE pairs. One PARSER for
+ * every pin file — the file format is one format, and a parsing fix applied to a per-pin copy and
+ * not its twin is the comment-proof bug class this function exists to prevent — while every
+ * ASSERTION stays per-pin at the call sites, so separate pins keep separate verdicts (the budget
+ * census's rule).
  *
- * Already comment-proof, like cosign-bin.test.ts's twin: the key pattern is anchored to the start
- * of the trimmed line and admits only `[A-Z_0-9]`, so a `#`-prefixed line cannot become a pin.
+ * Comment-proof, like cosign-bin.test.ts's twin: the key pattern is anchored to the start of the
+ * trimmed line and admits only `[A-Z_0-9]`, so a `#`-prefixed line cannot become a pin.
  */
-function readPinEnv(): Record<string, string> {
-  const text = readFileSync(path.join(REPO_ROOT, "tools/skopeo/pin.env"), "utf8");
+function readPinEnv(relative: string): Record<string, string> {
+  const text = readFileSync(path.join(REPO_ROOT, relative), "utf8");
   const out: Record<string, string> = {};
   for (const line of text.split("\n")) {
     const match = /^([A-Z_0-9]+)=(.*)$/.exec(line.trim());
@@ -56,7 +60,7 @@ function readRepoFile(relative: string): string {
  * --version` check at the bottom of this file, which runs the resolved binary.
  */
 describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", () => {
-  const pin = readPinEnv();
+  const pin = readPinEnv("tools/skopeo/pin.env");
 
   it("pin.env is well-formed (version + amd64 platform digest + paths)", () => {
     // Upstream reports the version WITHOUT a leading `v` (unlike cosign).
@@ -104,6 +108,32 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
     const dockerfile = readRepoFile("Dockerfile");
     expect(dockerfile).toMatch(atLineStart("FROM ${SKOPEO_IMAGE} AS skopeo"));
 
+    // The Node BASE image is the same consumer form (2026-08-31) — it was the last third-party
+    // image the build still resolved against Docker Hub live, un-pinned, after skopeo and cosign
+    // were mirrored. Both stages that use it, plus the digest-pinned ARG default from
+    // tools/node/pin.env, plus the absence of a bare floating-tag FROM that would bypass the ARG.
+    const nodePin = readPinEnv("tools/node/pin.env");
+    expect(nodePin.NODE_PINNED_IMAGE).toMatch(/^docker\.io\/library\/node@sha256:[0-9a-f]{64}$/);
+    expect(dockerfile).toMatch(atLineStart(`ARG NODE_IMAGE=${nodePin.NODE_PINNED_IMAGE}`));
+    expect(dockerfile).toMatch(atLineStart("FROM ${NODE_IMAGE} AS base"));
+    expect(dockerfile).toMatch(atLineStart("FROM ${NODE_IMAGE} AS runtime"));
+    expect(
+      dockerfile,
+      "a bare `FROM node:<tag>` bypasses the pinned, mirror-servable ARG"
+    ).not.toMatch(/^FROM node:/m);
+
+    // And no `# syntax=` parser directive: it names a BuildKit frontend image that BuildKit pulls
+    // from Docker Hub LIVE on a cold build — an unmirrored dependency on every fresh E2E runner.
+    // A parser directive is only live on the FIRST line, so that is the line asserted.
+    expect(
+      dockerfile.split("\n")[0],
+      "the root Dockerfile reintroduced a syntax directive — a live Docker Hub frontend pull"
+    ).not.toMatch(/^#\s*syntax=/);
+    expect(
+      readRepoFile("tools/ci-image/Dockerfile").split("\n")[0],
+      "tools/ci-image/Dockerfile reintroduced a syntax directive — a live Docker Hub frontend pull"
+    ).not.toMatch(/^#\s*syntax=/);
+
     // A CENSUS, NOT A CASE — and this is the correction that matters. The first version of this
     // guard read `deploy/compose/docker-compose.yml` BY NAME, and a second compose file
     // (`docker-compose.federation.yml`, which e2e-m6 builds the very same Dockerfile with) had no
@@ -134,6 +164,9 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
       expect(text, `${rel} builds the root Dockerfile but does not pass COSIGN_IMAGE`).toMatch(
         /^\s+- COSIGN_IMAGE\s*$/m
       );
+      expect(text, `${rel} builds the root Dockerfile but does not pass NODE_IMAGE`).toMatch(
+        /^\s+- NODE_IMAGE\s*$/m
+      );
       // COMMENTS STRIPPED FIRST, and that is not fussiness — the un-stripped version of this
       // assertion FAILED on its own explanatory comment, which spells out the broken form in order to
       // warn against it. That is the repo's documented hazard in miniature: prose describing a hazard
@@ -148,6 +181,9 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
       expect(yamlOnly, `${rel} uses the empty-when-unset interpolation form`).not.toMatch(
         /COSIGN_IMAGE=\$\{/
       );
+      expect(yamlOnly, `${rel} uses the empty-when-unset interpolation form`).not.toMatch(
+        /NODE_IMAGE=\$\{/
+      );
     }
 
     // ...and the mirror exports it under the Dockerfile's own ARG name. Exporting only the
@@ -156,6 +192,12 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
     const mirror = readRepoFile("scripts/ci-mirror.sh");
     expect(mirror).toContain('echo "SKOPEO_IMAGE=${skopeo_ref}"');
     expect(mirror).toContain('echo "COSIGN_IMAGE=${cosign_ref}"');
+    expect(mirror).toContain('echo "NODE_IMAGE=${node_ref}"');
+    // …and the manifest itself carries the node pin BY VARIABLE, the same no-drift contract the
+    // two CLI pins have (ci-offline-mirror.test.ts asserts theirs; this is the node twin).
+    expect(readRepoFile("tools/ci-mirror/images.list")).toMatch(
+      atLineStart("${NODE_PINNED_IMAGE}")
+    );
   });
 
   it("the wrapper runs the vendored binary against the vendored loader, from the libexec dir", () => {

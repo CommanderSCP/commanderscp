@@ -11,7 +11,7 @@
     "migrate": "node dist/migrate-bin.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
+    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests ${SCP_INTEGRATION_SHARD:-}",
     "openapi:emit": "tsx src/openapi-emit.ts",
     "db:generate": "drizzle-kit generate",
     "seed": "tsx src/seed.ts",

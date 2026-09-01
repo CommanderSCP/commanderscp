@@ -15,18 +15,19 @@
  * directory. Requires `helm` on PATH (BUILD_AND_TEST.md §1: Helm 3.16+) — no live cluster needed,
  * this is pure `helm template` (offline rendering).
  *
- * SKIPS (does not fail) when `helm` isn't on PATH at all — this script is wired into the
- * top-level `pnpm test` (Turborepo picks up this package's `test` script), which runs in a CI job
- * that deliberately installs no tools of its own, and on developer machines that may have no Helm.
- * A hard ENOENT there would fail the unit-test stage for a tool-availability gap, not a real
- * regression. (Historical note: that skip branch was ALWAYS taken in CI when the unit-test stage
- * ran on `homelab-commanderscp-linux-general`, which shipped Node only. CI now runs on GitHub-hosted
- * `ubuntu-latest`, which pre-installs helm, so the assertions below genuinely execute in the
- * unit-test stage too — a bonus, not the guarantee.) The assertions below are a REAL gate
- * regardless of any of that: `.github/workflows/ci.yml`'s
- * dedicated `helm-verify` job installs Helm ITSELF (`azure/setup-helm@v4`) before running this
- * exact script — not trusting the runner image — so a loosened `values.yaml` genuinely fails CI
- * there on any runner. See that job's own comment. Locally, any dev with Helm on PATH gets the
+ * WHAT A MISSING `helm` MEANS is selected by SCP_HELM_VERIFY (see main()'s own comment for the
+ * three modes and their reasons). Unset — developer machines, `pnpm test` locally — it PROBES:
+ * runs when helm is on PATH, skips (does not fail) when not, because a hard ENOENT would fail the
+ * unit-test stage for a tool-availability gap, not a real regression. The assertions are a REAL
+ * gate regardless: `.github/workflows/ci.yml`'s dedicated `helm-verify` job (4b) installs Helm
+ * ITSELF (`azure/setup-helm@v4`) — not trusting the runner image — and runs this exact script
+ * with SCP_HELM_VERIFY=require, so there a missing helm FAILS instead of skipping and a loosened
+ * `values.yaml` genuinely reds CI on any runner. CI's unit-test job (4) sets SCP_HELM_VERIFY=skip:
+ * its runner happens to pre-install helm, and probing there ran the identical assertions a second
+ * time with a result that depended on GitHub's runner-image contents. (Historical note: that
+ * probe's skip branch was ALWAYS taken back when the unit-test stage ran on the Node-only homelab
+ * runner; it began genuinely executing when CI moved to `ubuntu-latest` — a bonus, never the
+ * guarantee, and now deliberately off there.) Locally, any dev with Helm on PATH still gets the
  * real check for free via `pnpm test`.
  */
 import { execFileSync } from "node:child_process";
@@ -2087,12 +2088,48 @@ function verifyBundledChart(docs: K8sDoc[]): void {
 }
 
 function main(): void {
+  // SCP_HELM_VERIFY selects what a missing helm MEANS (2026-08-31):
+  //   require  — helm absent FAILS. Set by CI job 4b, the job that installs a pinned helm itself
+  //              and is wired into the 5z gate. Before this mode existed, 4b's guarantee rested on
+  //              the probe below: if azure/setup-helm ever stopped putting helm on PATH, the
+  //              "guaranteed" gate went GREEN having asserted nothing — the exact vacuous-green
+  //              shape this repo documents (a check that passes without running).
+  //   skip     — do not run, and say so. Set by CI job 4 (unit tests): its runner happens to
+  //              pre-install helm, so the probe made this suite's result depend on GitHub's
+  //              runner-image contents while 4b runs the identical script against a PINNED helm
+  //              seconds later. Skipping removes the duplicate run and the runner-image
+  //              dependency; it removes no gate — 4b is the gate.
+  //   (unset)  — probe: run when helm is on PATH, skip when not. Local-dev behaviour, unchanged.
+  // Any other value is a config typo and must fail rather than silently probe.
+  const mode = process.env["SCP_HELM_VERIFY"] ?? "";
+  if (mode !== "" && mode !== "skip" && mode !== "require") {
+    console.error(
+      `helm-verify: FATAL — unknown SCP_HELM_VERIFY value '${mode}' (use skip|require, or unset for probe)`
+    );
+    process.exit(1);
+  }
+  if (mode === "skip") {
+    console.log(
+      "helm-verify: SKIP (SCP_HELM_VERIFY=skip) — this invocation deliberately does not run the " +
+        "assertions; CI job 4b runs this exact script against a pinned helm with " +
+        "SCP_HELM_VERIFY=require and is the gate."
+    );
+    return;
+  }
   if (!helmAvailable()) {
+    if (mode === "require") {
+      console.error(
+        "helm-verify: FATAL — SCP_HELM_VERIFY=require but 'helm' is not on PATH. This invocation " +
+          "is the gate (CI job 4b installs a pinned helm first); a missing binary here means the " +
+          "install step broke, and skipping would be a green job that asserted nothing."
+      );
+      process.exit(1);
+    }
     console.log(
       "helm-verify: SKIP — 'helm' not found on PATH (BUILD_AND_TEST.md §1 requires Helm 3.16+ to " +
-        "run this check). This is expected on CI's general Node-only unit-test runner; the " +
-        "dedicated 'helm-verify' CI job installs Helm and runs this exact script for real. To run " +
-        "it yourself, install Helm and re-run `pnpm --filter @scp/helm-verify test`."
+        "run this check). The dedicated 'helm-verify' CI job installs a pinned Helm and runs this " +
+        "exact script with SCP_HELM_VERIFY=require. To run it yourself, install Helm and re-run " +
+        "`pnpm --filter @scp/helm-verify test`."
     );
     return;
   }

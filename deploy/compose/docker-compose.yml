@@ -40,6 +40,7 @@ services:
       args:
         - SKOPEO_IMAGE
         - COSIGN_IMAGE
+        - NODE_IMAGE
     environment:
       SCP_ROLE: all
       PORT: "8080"

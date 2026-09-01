@@ -48,6 +48,24 @@ export default defineConfig({
     // `onTaskUpdate` RPC deadline a synchronous hook would otherwise be free to cross.
     hookTimeout: 30_000,
     coverage: {
+      // ENABLED IN-CONFIG AND ONLY UNDER CI, not `--coverage` on the CI command line. The flag
+      // used to be passed as `pnpm test -- --coverage`, and anything after turbo's `--` is folded
+      // into the hash of EVERY task in the graph — all 38 `:build` tasks missed cache and
+      // re-executed inside the test job (measured 2026-08-31: @scp/server#build completed at
+      // t+162s of the unit-test step, delaying this package's suite by exactly that). In-config
+      // enablement collects the same coverage with unmodified build hashes.
+      //
+      // CI-CONDITIONAL because an unconditional `enabled: true` gates FILTERED runs too — a dev
+      // running one test file collects that file's coverage against the whole-package denominator
+      // and fails the floor (measured: a single apps/web file run reports 11.55% against the 38%
+      // floor and exits 1). Local behaviour therefore stays exactly what it was before this
+      // change: bare and filtered runs collect nothing. CI behaviour also stays what it was:
+      // every unit run collects and the thresholds bind. `CI` is declared in turbo.json's `test`
+      // env list, so a CI run and a local run hash differently and can never replay each other's
+      // cached results — behaviour that differs must not share a cache key.
+      // `coverage-census.test.ts` (@scp/source-census) asserts every config with thresholds
+      // carries exactly this line, so the pairing cannot silently regress.
+      enabled: process.env.CI === "true",
       provider: "v8",
       reporter: ["text-summary"],
       thresholds: {

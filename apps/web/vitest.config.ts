@@ -64,6 +64,11 @@ export default defineConfig({
     // `onTaskUpdate` RPC deadline a synchronous hook would otherwise be free to cross.
     hookTimeout: 30_000,
     coverage: {
+      // Enabled in-config and only under CI, rather than `--coverage` on the CI command line —
+      // same reasons, same census as apps/server/vitest.config.ts: a turbo `--` passthrough busts
+      // every build task's cache, and an UNconditional enable fails filtered local runs against
+      // the whole-package floors (measured on this very config: one file → 11.55% vs 38%).
+      enabled: process.env.CI === "true",
       provider: "v8",
       reporter: ["text-summary"],
       thresholds: {
