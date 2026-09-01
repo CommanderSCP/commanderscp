@@ -1,4 +1,11 @@
-# syntax=docker/dockerfile:1.7
+# NO `# syntax=` directive, DELIBERATELY (2026-08-31). The directive named
+# `docker/dockerfile:1.7`, a BuildKit-ONLY frontend that BuildKit PULLS FROM DOCKER HUB — an
+# unauthenticated, rate-limitable live network call on every cold compose build, i.e. on every E2E
+# job's fresh runner (charter principle 5; the same reason job 4c keeps DOCKER_BUILDKIT=0 for the
+# runner images — see ci.yml's comment there). This file uses no feature beyond what dockerd's
+# BUILT-IN frontend supports (censused 2026-08-31: no heredocs, no --mount/--link/--parents), so
+# the directive bought nothing and cost an unmirrored upstream dependency. The E2E jobs' blackhole
+# step is what keeps this true: a reintroduced directive fails the build there loudly.
 #
 # Single multi-stage image for the "scp" binary — server + worker + Web UI v1 (React SPA, served
 # as static assets by apps/server — DESIGN.md §14), local auth (BUILD_AND_TEST.md §3.3, §5.2).
@@ -36,6 +43,15 @@ ARG COSIGN_IMAGE=ghcr.io/sigstore/cosign/cosign@sha256:bea051df6a6d3bc84288b6db0
 # scope before any stage begins — the classic builder hard-errors otherwise.)
 ARG SKOPEO_IMAGE=quay.io/skopeo/stable@sha256:0e392474a4383b733038b85eff26ade929d2ff10e8deead25a6add3ed79fb362
 
+# DIGEST-PINNED Node base (2026-08-31), pin source of truth: tools/node/pin.env. This was the last
+# un-pinned, un-mirrored third-party image on the E2E path — the floating `node:22-trixie-slim`
+# tag resolved against Docker Hub LIVE on every compose build. Same consumer form as the two pins
+# above: CI's `ci-mirror.sh seed` exports NODE_IMAGE pointing at the GHCR mirror and every compose
+# file that builds this Dockerfile passes it through as a build arg; unset (local dev, air-gap
+# bundle builds) it falls back to this pinned default. Keep in sync with tools/node/pin.env —
+# deploy/airgap/src/skopeo-bin.test.ts fails if they drift.
+ARG NODE_IMAGE=docker.io/library/node@sha256:7b8a0c89c54499bee567618f96578e1a12a800f062fbdbfd1fb6a443fa6f6284
+
 FROM ${COSIGN_IMAGE} AS cosign
 
 FROM ${SKOPEO_IMAGE} AS skopeo
@@ -44,7 +60,7 @@ FROM ${SKOPEO_IMAGE} AS skopeo
 # CRITICAL in zlib1g (CVE-2023-45853) that trixie's zlib resolved, plus roughly twice the
 # no-fix-available HIGH backlog. Both build and runtime stages use the same base so native
 # modules (argon2, ssh2/cpu-features) compile against the glibc they run on.
-FROM node:22-trixie-slim AS base
+FROM ${NODE_IMAGE} AS base
 RUN corepack enable && corepack prepare pnpm@10.12.1 --activate
 WORKDIR /app
 
@@ -87,15 +103,15 @@ RUN pnpm prune --prod \
 # scanner reports against the stock node image (npm's bundled tar/brace-expansion/pacote/
 # sigstore/... advisories), none of which this image ever executes (2026-08-31 CVE sweep).
 #
-# `apt-get upgrade` folds in Debian security fixes published since the base tag was built — the
-# FROM is a floating tag, so the base already moves build-to-build; the upgrade only moves it
-# forward to the current fix state instead of whenever the tag was last rebuilt.
+# `apt-get upgrade` folds in Debian security fixes published since the pinned base was built —
+# with the FROM now digest-pinned (tools/node/pin.env) the base no longer moves on its own, so
+# the upgrade is what carries fixes between deliberate pin bumps.
 #
 # perl-base is force-removed: it carries three CRITICAL CVEs Debian marks no-fix, and nothing in
 # this image runs perl — the server is Node, cosign is a static binary, the skopeo wrapper is
 # POSIX sh. dpkg marks it Essential (maintainer scripts use perl), which only matters for LATER
 # package operations — and no package operation ever happens in the shipped image after this RUN.
-FROM node:22-trixie-slim AS runtime
+FROM ${NODE_IMAGE} AS runtime
 RUN apt-get update \
   && apt-get upgrade -y \
   && rm -rf /var/lib/apt/lists/* \

@@ -26,9 +26,10 @@ name: CI
 # So the prediction is retired rather than restated: E2E now runs on pull requests and 5z requires
 # it. The cost is real and was accepted deliberately — six more jobs per PR, job 9 the heaviest
 # (a compose build plus Chromium). Two things make it affordable: the E2E jobs need only
-# static-checks/codegen-drift/unit-tests, so they start early and run alongside the integration
-# shards rather than after them; and job 9's toolchain image is content-hash cached in GHCR (9a), so
-# the multi-GB build happens only when the Dockerfile or lockfile actually changes.
+# codegen-drift + the mirror jobs (2026-08-31 — static-checks/unit-tests moved from their `needs:`
+# into 5z's own, so E2E and the shards start at ~t+60s and run alongside everything else); and job
+# 9's toolchain image is content-hash cached in GHCR (9a), so the multi-GB build happens only when
+# the Dockerfile or lockfile actually changes.
 #
 # Job 4d (mirror-images) is a prerequisite of integration-shard AND every E2E job (7, 8, 8b-8d, 9)
 # — not a gate itself — that mirrors every third-party image the test tier touches off Docker Hub /
@@ -174,6 +175,16 @@ jobs:
     name: "4. Unit tests"
     runs-on: ubuntu-latest
     needs: build
+    env:
+      # tools/helm-verify runs from the default `test` task. Its probe mode made this job's result
+      # depend on GitHub's runner-image contents (`ubuntu-latest` pre-installs helm, so the probe
+      # genuinely rendered here) while job 4b runs the IDENTICAL script against a PINNED helm and
+      # is the wired gate. `skip` removes the duplicate run and the runner-image dependency; it
+      # removes no gate — 4b sets `require`, which is what turned its guarantee from a probe that
+      # cannot tell "nothing regressed" from "nothing ran" into a hard failure when helm is absent.
+      # (Declared as `env` on `@scp/helm-verify#test` in turbo.json, so skip-runs and real runs
+      # hash — and therefore cache — separately.)
+      SCP_HELM_VERIFY: skip
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
@@ -187,21 +198,22 @@ jobs:
       # (not fails) when absent — see tools/helm-verify/src/verify.ts's and
       # deploy/airgap/src/install-sh-tamper.test.ts's own comments. Those same assertions are
       # genuinely CI-gated elsewhere, with the tool explicitly installed first: helm-verify below
-      # (job 4b) and the install.sh tamper suite in job 5 (Integration).
+      # (job 4b, SCP_HELM_VERIFY=require — see this job's `env` above for why it is `skip` here)
+      # and the install.sh tamper suite in job 5 (Integration). cosign and skopeo are not
+      # pre-installed on `ubuntu-latest` and the tamper suite requires them, so it skips here as
+      # designed.
       #
-      # RUNNER NOTE: the old `homelab-commanderscp-linux-general` label shipped Node ONLY, so those
-      # probes always took the skip branch here. `ubuntu-latest` PRE-INSTALLS helm, so
-      # tools/helm-verify now genuinely renders and asserts inside this job too. That is a
-      # strengthening, not a risk — job 4b runs the identical script against a pinned Helm and is
-      # still the job that GUARANTEES the assertions run — but it means this stage's result is no
-      # longer independent of GitHub's runner-image contents. cosign and skopeo are NOT
-      # pre-installed, and the tamper suite requires all three, so it still skips here as designed.
-      #
-      # `--coverage`, not a bare `pnpm test`: the per-app `vitest.config.ts` files now carry
-      # coverage THRESHOLDS (owner decision 2026-08-01), and a threshold only fails a run when
-      # coverage is actually collected. Without this flag the thresholds would be decorative —
-      # which is precisely the state §7 was in when it claimed "≥80%" while configuring nothing.
-      # Turbo forwards everything after `--` to each package's `test` script.
+      # NO `-- --coverage` PASSTHROUGH, and the absence is load-bearing (2026-08-31). Anything
+      # after turbo's `--` is folded into the hash of EVERY task in the graph — measured: with the
+      # flag, all 38 `:build` tasks missed cache and re-executed inside this job, and
+      # @scp/server#build completed at t+162s of the test step, delaying that package's own suite
+      # by exactly that (the `pnpm build` step above had just replayed the same 38 tasks from cache
+      # in ~300ms). Coverage is now enabled IN the two configs that carry thresholds
+      # (apps/server, apps/web — owner decision 2026-08-01 put the thresholds there), which
+      # collects the same coverage with unmodified task hashes and makes the thresholds bind on a
+      # bare local `pnpm test` too. @scp/source-census's coverage-census.test.ts asserts the
+      # thresholds/enabled pairing repo-wide, so the next config to add thresholds cannot land
+      # them decorative.
       #
       # ------------------------------------------------------------------------------------------
       # THE HEAVIEST SUITE RUNS FIRST, WITH THE RUNNER TO ITSELF. Not a style preference — a
@@ -230,8 +242,8 @@ jobs:
       # replayed from cache below would otherwise never execute inside the sweep at all — the gate
       # would go green for this package having watched nothing.
       - name: "Unit tests — @scp/runner-launcher alone (see the measurement above)"
-        run: node scripts/tmpdir-leak-sweep.mjs -- pnpm exec turbo run test --filter=@scp/runner-launcher -- --coverage
-      - run: pnpm test -- --coverage
+        run: node scripts/tmpdir-leak-sweep.mjs -- pnpm exec turbo run test --filter=@scp/runner-launcher
+      - run: pnpm test
 
   helm-verify:
     name: "4b. Helm hardened-defaults gate (tools/helm-verify)"
@@ -268,7 +280,14 @@ jobs:
         with:
           version: latest
       - run: pnpm build
+      # `require` (2026-08-31): helm ABSENT now FAILS this job instead of skipping. The script's
+      # default probe mode cannot tell "nothing regressed" from "nothing ran" — if azure/setup-helm
+      # ever stopped putting helm on PATH, this job went GREEN having asserted nothing, inside the
+      # job whose whole purpose is to guarantee the assertions run. Fail-closed is the posture
+      # every other gate in this file already takes.
       - run: pnpm --filter @scp/helm-verify test
+        env:
+          SCP_HELM_VERIFY: require
 
   runner-images:
     name: "4c. Prebuild + publish runner images to GHCR (content-hash tags)"
@@ -504,13 +523,21 @@ jobs:
           '
 
   integration-shard:
-    name: "5. Integration shard ${{ matrix.shard }}/2 (Testcontainers Postgres + real-Docker runners)"
-    # LEVER 2: SHARDED across a 2-way matrix. vitest `--shard=i/2` deterministically splits the
-    # integration test FILES across two independent jobs on two runners, halving wall-clock. The
-    # `integration` aggregation gate below `needs:` this matrix so branch protection references ONE
-    # stable check name instead of the per-shard names. (Combined with LEVER 3's per-worker parallel
-    # forks WITHIN each shard, the two levers compose: files split across shards, then run in
-    # parallel within a shard.)
+    name: "5. Integration shard ${{ matrix.shard }}/4 (Testcontainers Postgres + real-Docker runners)"
+    # LEVER 2: SHARDED across a 4-way matrix. vitest `--shard=i/4` deterministically splits the
+    # integration test FILES across four independent jobs on four runners. The `integration`
+    # aggregation gate below `needs:` this matrix so branch protection references ONE stable check
+    # name instead of the per-shard names. (Combined with LEVER 3's per-worker parallel forks
+    # WITHIN each shard, the two levers compose: files split across shards, then run in parallel
+    # within a shard.)
+    #
+    # WHY FOUR, MEASURED BEFORE SPENT (2026-08-31): simulated against the real per-file durations
+    # of two green runs, using vitest's real assignment (sha1(path)-sort + contiguous slice,
+    # reproduced byte-exact against the observed 2-way split). 2->4 shards cut the shard wall by
+    # ~260s; 4->6 buys ~65s more and 6->8 approximately NOTHING, because the floor is the single
+    # longest file (~226s, apps/server coupling.integration.test.ts) which file-granularity
+    # sharding cannot split. Four is where the marginal shard stops paying for its ~2min fixed
+    # overhead; past four, shorten the outlier files instead of adding runners.
     #
     # Needs a real Docker daemon for Testcontainers, plus the ability to create `--network none`
     # runner containers. `ubuntu-latest` ships a NATIVE Docker Engine (no DinD sidecar), which is a
@@ -536,7 +563,21 @@ jobs:
     # that declare that exact script name) — with all three tools genuinely on PATH, the tamper
     # scenario actually executes here instead of skipping.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests, runner-images, testcontainer-images]
+    # DELIBERATELY NOT `needs: static-checks` OR `unit-tests` (2026-08-31). Those two edges were
+    # fail-fast ordering, not correctness: neither job publishes an artifact, env var or cache this
+    # job consumes (verified — no upload/download-artifact anywhere in .github/, $GITHUB_ENV is
+    # job-scoped, the runner-image tags are recomputed here from the shared script), so their only
+    # effect was to hold the ~12-minute shards until t≈390s. Removing them starts the shards at
+    # t≈60s and takes ~5 minutes off every green run's wall clock; runner minutes are free for this
+    # public repo, so a lint-red PR burning a doomed shard run costs slots, not money, and
+    # cancel-in-progress already bounds force-push waste. THE GATE IS UNCHANGED: job 5z now names
+    # static-checks and unit-tests in its own `needs:` (see its comment — without that, dropping
+    # these edges would have silently removed both from branch protection).
+    #
+    # codegen-drift STAYS: it is a correctness gate (stale codegen means every test below tests a
+    # lie — its own comment), and it is free here (it finishes before testcontainer-images does).
+    # runner-images/testcontainer-images STAY: the pulls below race an empty GHCR without them.
+    needs: [codegen-drift, runner-images, testcontainer-images]
     permissions:
       contents: read
       packages: read
@@ -559,12 +600,23 @@ jobs:
       # the job ends, so there is nothing for it to reclaim. (A self-hosted runner is the case that
       # WOULD want it — hence disabled here in the job env, not globally in the test code.)
       TESTCONTAINERS_RYUK_DISABLED: "true"
+      # LEVER 2's delivery mechanism, and WHY IT IS AN ENV VAR RATHER THAN A `--` PASSTHROUGH
+      # (2026-08-31): anything after turbo's `--` is folded into the hash of EVERY task in the
+      # graph, so `pnpm test:integration -- --shard=i/2` made all 38 `:build` tasks miss cache and
+      # re-execute inside this job — measured at ~76s per shard, immediately after the `pnpm build`
+      # step above had replayed the identical tasks from cache in ~150ms. The five
+      # `test:integration` scripts expand `${SCP_INTEGRATION_SHARD:-}` instead (declared in
+      # turbo.json's `passThroughEnv`, which turbo's strict env mode requires and which leaves task
+      # hashes untouched), so the builds replay and only vitest sees the shard. The guard step
+      # below is what keeps this from rotting: unset, every shard silently runs the FULL suite —
+      # slower, still green, and nobody would notice the lever had disconnected.
+      SCP_INTEGRATION_SHARD: "--shard=${{ matrix.shard }}/4"
     strategy:
-      # fail-fast off: a failure in one shard must not cancel the other, so a red run still reports
-      # every failing file across both shards (the aggregation gate fails if EITHER shard failed).
+      # fail-fast off: a failure in one shard must not cancel the others, so a red run still reports
+      # every failing file across all shards (the aggregation gate fails if ANY shard failed).
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
@@ -580,7 +632,13 @@ jobs:
       # SCP_SKOPEO_IMAGE_REF, SCP_COSIGN_IMAGE_REF). See tools/ci-mirror/images.list.
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Seed every mirrored image and point the non-taggable consumers at the mirror
+      - name: Seed every mirrored image this job consumes, and point the non-taggable consumers at the mirror
+        env:
+          # `kindest/node` is ~1.27 GB that ONLY job 4e's cluster uses; seeding it here cost ~15s
+          # of every shard (measured 2026-08-31). Safe to skip precisely because this job runs
+          # `blackhole` below: a skip that ever turned out wrong fails the consumer loudly at pull
+          # time instead of quietly reopening the live-upstream hole — see ci-mirror.sh's comment.
+          SCP_SEED_SKIP: kindest/node
         run: scripts/ci-mirror.sh seed
       - name: Install the PINNED cosign (the same binary the scp image ships)
         # PINNED, not `sigstore/cosign-installer@v3` (M17.3 E1). Two reasons the unpinned network
@@ -626,11 +684,14 @@ jobs:
       # instead of building. (Local dev, with these env vars unset, still legacy-builds as before.)
       - name: Compute the content-hash runner image tags (same formula as the publish job)
         run: scripts/runner-image-tags.sh >> "$GITHUB_ENV"
-      - name: Pull the pre-built runner images
+      - name: Pull the pre-built runner images (in parallel — the three pulls share no layers)
         run: |
-          docker pull "$SCP_RUNNER_SCAN_IMAGE_REF"
-          docker pull "$SCP_RUNNER_IAC_IMAGE_REF"
-          docker pull "$SCP_RUNNER_DEP_IMAGE_REF"
+          pids=""
+          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF"; do
+            docker pull "$ref" & pids="$pids $!"
+          done
+          # `wait` PER PID, not a bare `wait`: a bare one exits 0 even when a pull failed.
+          for pid in $pids; do wait "$pid"; done
       # ENFORCEMENT, not decoration. Everything the test tier needs is now local or on GHCR, so from
       # here to the end of the job Docker Hub and quay.io resolve to 127.0.0.1. An image pull that
       # still depends on an outside registry CANNOT pass — on any run, on a good day for Docker Hub
@@ -644,7 +705,19 @@ jobs:
       # revealed, not to move this step down.
       - name: Deny the mirrored upstream registries for the rest of the job
         run: scripts/ci-mirror.sh blackhole
-      # LEVER 2: `--shard=i/2` — turbo forwards args after `--` to every test:integration task.
+      # LEVER 2's guard: SCP_INTEGRATION_SHARD (see the job `env` above for the mechanism) unset
+      # or empty means every shard runs the FULL suite — 4x the work, still green, invisible. A
+      # lever that can disconnect silently is this repo's documented failure shape, so the shard
+      # arg is asserted present before anything runs.
+      - name: Assert the shard selector is actually set (an empty one silently un-shards the matrix)
+        run: |
+          case "${SCP_INTEGRATION_SHARD:-}" in
+            --shard=${{ matrix.shard }}/*) echo "sharding with ${SCP_INTEGRATION_SHARD}" ;;
+            *)
+              echo "::error::SCP_INTEGRATION_SHARD is '${SCP_INTEGRATION_SHARD:-}' — expected --shard=${{ matrix.shard }}/N. Every shard would run the full suite."
+              exit 1
+              ;;
+          esac
       # THE LIST IS FIVE PACKAGES, not the three this comment used to name (M23.0 verification
       # pass 9): @scp/server, @scp/runner-launcher, @scp/plugin-managed-dep, @scp/plugin-managed-iac
       # and @scp/plugin-managed-scan. It went stale for the same reason it is only a comment — turbo
@@ -654,10 +727,10 @@ jobs:
       #     python3 -c "import json;d=json.load(open('$f'));print(d['name']) if 'test:integration' in d.get('scripts',{}) else None"
       #   done
       # All five pass `--passWithNoTests`, so a single-file suite runs in whichever shard vitest
-      # assigns it and no-ops in the other. vitest shards at FILE granularity, so shard 1/2 +
-      # shard 2/2 together cover every file exactly once — verified locally (file counts sum to the
-      # full suite, none dropped or doubled).
-      - run: pnpm test:integration -- --shard=${{ matrix.shard }}/2
+      # assigns it and no-ops in the others. vitest shards at FILE granularity, so the union of
+      # shards 1..4 covers every file exactly once — the partition property BUILD_AND_TEST.md §6
+      # names as the whole point of the lever.
+      - run: pnpm test:integration
       # Explicit, not part of test:integration's task graph (see comment above) — this is the ONLY
       # place in CI these tool-dependent assertions run for real rather than skip. Runs EXACTLY ONCE
       # across the matrix (shard 1 only): it is not part of the sharded vitest suite, so running it
@@ -684,13 +757,13 @@ jobs:
     #   - Job 5 blackholes Docker Hub and quay.io PART WAY THROUGH, and a cluster bring-up placed
     #     after that line would fail on the node-image pull. Here the blackhole comes first, before
     #     anything that needs an image, which is a stronger claim than job 5 can make.
-    #   - Wall clock is small and separable: cluster create ~25s warm, image load ~2s, chart RBAC
-    #     ~2s, and the suite itself ~50s for eleven cases (re-measured 2026-08-20 on arm64/colima
-    #     after M23.4 added four; the CI runner is amd64 with different I/O, so treat these as the
-    #     shape rather than the number). HALF OF THAT 50s IS ONE CASE ON PURPOSE: "THE LAUNCHER
-    #     DYING MID-RUN" gives its abandoned run a 30-second budget so the Secret's collection can
-    #     be observed in the first HALF of it — a window in which the launcher provably has not
-    #     issued a teardown. Shortening the budget shortens the proof, not just the job.
+    #   - Wall clock is small and separable: cluster create ~30s, and the suite ~122s for 21 cases
+    #     (measured 2026-08-30 on the CI runner itself, run 33285722862 — this line previously
+    #     carried "~50s for eleven cases" from a 2026-08-20 arm64/colima measurement, stale on both
+    #     counts). PART OF THAT IS ONE CASE ON PURPOSE: "THE LAUNCHER DYING MID-RUN" gives its
+    #     abandoned run a 30-second budget so the Secret's collection can be observed in the first
+    #     HALF of it — a window in which the launcher provably has not issued a teardown.
+    #     Shortening the budget shortens the proof, not just the job.
     #
     # WHAT IT DELIBERATELY DOES NOT INSTALL: a CNI. kind's default kindnet does not enforce
     # NetworkPolicy — re-measured for M23.2 with a known-positive control, a pod SELECTED by a
@@ -700,7 +773,11 @@ jobs:
     # raw.githubusercontent.com at cluster-build time. NETWORK CONTAINMENT IS NOT GATED HERE and is
     # not claimed to be; it stays with the scheduled air-gap drill, which already has the machinery.
     runs-on: ubuntu-latest
-    needs: [static-checks, unit-tests, testcontainer-images]
+    # Only the mirror population is a real dependency (the seed below races an empty GHCR without
+    # it). static-checks and unit-tests were fail-fast ordering, dropped 2026-08-31 for the same
+    # measured reason as on integration-shard (see that job's needs comment); 5z carries both
+    # directly now, so nothing left branch protection.
+    needs: [testcontainer-images]
     permissions:
       contents: read
       packages: read
@@ -749,22 +826,30 @@ jobs:
     # result check means this gate goes RED whenever any shard failed or was cancelled, rather than
     # being silently skipped.
     #
-    # DONE (2026-07-24): `main` branch protection now requires exactly this check plus "3. Codegen
-    # drift". Requiring 5z transitively covers static-checks, codegen-drift, unit-tests and
-    # runner-images, because integration-shard `needs:` all four (plus testcontainer-images, added
-    # this PR) — if any of them fails the matrix is skipped, `needs.integration-shard.result !=
-    # "success"`, and this gate goes red. See §6.
+    # DONE (2026-07-24): `main` branch protection requires exactly this check plus "3. Codegen
+    # drift" — unchanged since, including by the 2026-08-31 restructure below.
     #
-    # UPDATED (this PR): also `needs: [helm-verify, prod-audit]` directly. 4b was previously
-    # reachable from nothing — a red 4b did not block merge despite that job's own comment claiming
-    # it did (see the CORRECTION note on job 4b above). 5y (prod-audit) is net-new this PR; its own
-    # 5 pre-existing findings were remediated in the same PR that adds the gate (see 5y's comment),
-    # so it's wired in immediately rather than landing dark. Neither has another dependency
-    # relationship with integration-shard, so both are added as sibling `needs:` entries here
-    # rather than folded into that job's chain.
+    # static-checks AND unit-tests ARE NAMED HERE DIRECTLY (2026-08-31), AND MUST STAY. They used
+    # to be covered TRANSITIVELY: integration-shard `needs:`ed both, so their failure skipped the
+    # matrix and redded this gate. That same edge held the ~12-minute shards until the ~6-minute
+    # unit job finished — pure serialization on every green run, which is most runs. The shards
+    # dropped the edges (their needs comment has the measurements); the gating moved HERE, where it
+    # costs zero wall clock because this job starts after the shards end (~810s) and unit-tests is
+    # long done (~390s). REMOVE A NAME FROM THIS LIST AND IT LEAVES BRANCH PROTECTION — that is
+    # the exact defect job 4b's CORRECTION note records (a job whose comment claimed it gated,
+    # reachable from nothing), and it would be invisible: every check still shows in the PR list,
+    # only the required one stops caring. Mutation-proven before merge: a scratch branch with a
+    # broken typecheck reds this gate through the static-checks entry.
+    #
+    # (Historical: 4b was once reachable from nothing — a red 4b did not block merge despite its
+    # own comment claiming it did. 5y was wired in the same PR that added it. Both are sibling
+    # `needs:` entries here for the same reason static-checks/unit-tests now are.)
     needs:
       [
         integration-shard,
+        static-checks,
+        codegen-drift,
+        unit-tests,
         helm-verify,
         prod-audit,
         kind-runner-harness,
@@ -786,6 +871,9 @@ jobs:
           failed=0
           for pair in \
             "integration-shard=${{ needs.integration-shard.result }}" \
+            "static-checks (2)=${{ needs.static-checks.result }}" \
+            "codegen-drift (3)=${{ needs.codegen-drift.result }}" \
+            "unit-tests (4)=${{ needs.unit-tests.result }}" \
             "helm-verify (4b)=${{ needs.helm-verify.result }}" \
             "prod-audit (5y)=${{ needs.prod-audit.result }}" \
             "kind-runner-harness (4e)=${{ needs.kind-runner-harness.result }}" \
@@ -819,7 +907,7 @@ jobs:
     # compose build`'s `FROM ${SKOPEO_IMAGE}` pulls straight from quay.io and 404s on the now-deleted
     # pin.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
+    needs: [codegen-drift, testcontainer-images]
     permissions:
       contents: read
       packages: read
@@ -827,6 +915,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/mirror-seed
+      # ENFORCEMENT, same statement as job 5's (2026-08-31): everything this job's compose
+      # build/up needs is now local or on GHCR — postgres:16 seeded, the root Dockerfile's
+      # skopeo/cosign/node FROMs served via the exported build ARGs, and no `# syntax=` frontend
+      # directive left to pull. This step is what found `FROM node:22-trixie-slim` resolving
+      # Docker Hub LIVE on every E2E build (the last unmirrored image on this path) and is what
+      # keeps the next one from surviving: an unmirrored pull CANNOT pass here. If this step ever
+      # makes an E2E job red, mirror the image it revealed; do not move the step.
+      - name: Deny the mirrored upstream registries for the rest of the job
+        run: scripts/ci-mirror.sh blackhole
       - run: pnpm build
       - run: bash scripts/e2e-m0.sh
 
@@ -835,7 +932,7 @@ jobs:
     # Same as e2e-m0: needs a real Docker daemon (compose), and needs testcontainer-images (4d) +
     # runs mirror-seed before `pnpm build` for the same quay.io-mirror reason.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
+    needs: [codegen-drift, testcontainer-images]
     permissions:
       contents: read
       packages: read
@@ -843,6 +940,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/mirror-seed
+      # ENFORCEMENT, same statement as job 5's (2026-08-31): everything this job's compose
+      # build/up needs is now local or on GHCR — postgres:16 seeded, the root Dockerfile's
+      # skopeo/cosign/node FROMs served via the exported build ARGs, and no `# syntax=` frontend
+      # directive left to pull. This step is what found `FROM node:22-trixie-slim` resolving
+      # Docker Hub LIVE on every E2E build (the last unmirrored image on this path) and is what
+      # keeps the next one from surviving: an unmirrored pull CANNOT pass here. If this step ever
+      # makes an E2E job red, mirror the image it revealed; do not move the step.
+      - name: Deny the mirrored upstream registries for the rest of the job
+        run: scripts/ci-mirror.sh blackhole
       - run: pnpm build
       - run: bash scripts/e2e-m4.sh
 
@@ -853,7 +959,7 @@ jobs:
     # Same as e2e-m0/e2e-m4: needs a real Docker daemon (compose), and needs testcontainer-images
     # (4d) + runs mirror-seed before `pnpm build` for the same quay.io-mirror reason.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
+    needs: [codegen-drift, testcontainer-images]
     permissions:
       contents: read
       packages: read
@@ -861,6 +967,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/mirror-seed
+      # ENFORCEMENT, same statement as job 5's (2026-08-31): everything this job's compose
+      # build/up needs is now local or on GHCR — postgres:16 seeded, the root Dockerfile's
+      # skopeo/cosign/node FROMs served via the exported build ARGs, and no `# syntax=` frontend
+      # directive left to pull. This step is what found `FROM node:22-trixie-slim` resolving
+      # Docker Hub LIVE on every E2E build (the last unmirrored image on this path) and is what
+      # keeps the next one from surviving: an unmirrored pull CANNOT pass here. If this step ever
+      # makes an E2E job red, mirror the image it revealed; do not move the step.
+      - name: Deny the mirrored upstream registries for the rest of the job
+        run: scripts/ci-mirror.sh blackhole
       - run: pnpm build
       - run: bash scripts/e2e-m5.sh
 
@@ -881,7 +996,7 @@ jobs:
     # deploy/airgap/src/skopeo-bin.test.ts's compose-file census (every compose file that builds
     # the root Dockerfile must pass both args through), not by anything in this file.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
+    needs: [codegen-drift, testcontainer-images]
     permissions:
       contents: read
       packages: read
@@ -889,6 +1004,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/mirror-seed
+      # ENFORCEMENT, same statement as job 5's (2026-08-31): everything this job's compose
+      # build/up needs is now local or on GHCR — postgres:16 seeded, the root Dockerfile's
+      # skopeo/cosign/node FROMs served via the exported build ARGs, and no `# syntax=` frontend
+      # directive left to pull. This step is what found `FROM node:22-trixie-slim` resolving
+      # Docker Hub LIVE on every E2E build (the last unmirrored image on this path) and is what
+      # keeps the next one from surviving: an unmirrored pull CANNOT pass here. If this step ever
+      # makes an E2E job red, mirror the image it revealed; do not move the step.
+      - name: Deny the mirrored upstream registries for the rest of the job
+        run: scripts/ci-mirror.sh blackhole
       - run: pnpm build
       - run: bash scripts/e2e-m6.sh
 
@@ -905,7 +1029,7 @@ jobs:
     # GitHub/ArgoCD/Terraform wire-format coverage comes from each plugin's deterministic
     # nock-fixture suite (unit-tests job) plus the opt-in nightly-live-sandbox.yml workflow.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
+    needs: [codegen-drift, testcontainer-images]
     permissions:
       contents: read
       packages: read
@@ -913,6 +1037,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/mirror-seed
+      # ENFORCEMENT, same statement as job 5's (2026-08-31): everything this job's compose
+      # build/up needs is now local or on GHCR — postgres:16 seeded, the root Dockerfile's
+      # skopeo/cosign/node FROMs served via the exported build ARGs, and no `# syntax=` frontend
+      # directive left to pull. This step is what found `FROM node:22-trixie-slim` resolving
+      # Docker Hub LIVE on every E2E build (the last unmirrored image on this path) and is what
+      # keeps the next one from surviving: an unmirrored pull CANNOT pass here. If this step ever
+      # makes an E2E job red, mirror the image it revealed; do not move the step.
+      - name: Deny the mirrored upstream registries for the rest of the job
+        run: scripts/ci-mirror.sh blackhole
       - run: pnpm build
       - run: bash scripts/e2e-m7.sh
 
@@ -981,7 +1114,9 @@ jobs:
     # $GITHUB_ENV alone does not reach it — see the `-e SKOPEO_IMAGE -e COSIGN_IMAGE` forwarding on
     # that `docker run` invocation and its own comment.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests, ci-image, testcontainer-images]
+    # Same 2026-08-31 restructure as every other E2E job (see integration-shard's needs comment):
+    # static-checks/unit-tests were fail-fast edges, 5z gates them directly now.
+    needs: [codegen-drift, ci-image, testcontainer-images]
     permissions:
       contents: read
       packages: read
@@ -1008,6 +1143,16 @@ jobs:
             echo "::warning::$IMAGE unavailable — building it in this job (expected for fork PRs)"
             docker build -f tools/ci-image/Dockerfile -t "$IMAGE" .
           fi
+
+      # ENFORCEMENT, same statement as job 5's (2026-08-31) — but AFTER the toolchain-image step
+      # above, deliberately: that step's fork-PR fallback legitimately builds tools/ci-image from
+      # its upstream bases, and blackholing first would turn "fork PRs build the image themselves"
+      # into "fork PRs cannot pass". From here down — the compose build and the Playwright run,
+      # which is everything this job exists to do — an unmirrored pull CANNOT pass. The nested
+      # `docker run` changes nothing: pulls are resolved by the RUNNER's daemon (the socket mount
+      # below), which reads the /etc/hosts this step edits.
+      - name: Deny the mirrored upstream registries for the rest of the job
+        run: scripts/ci-mirror.sh blackhole
 
       # Everything scripts/e2e-web.sh needs — Node 22, pnpm + its pre-warmed store, Playwright's
       # Chromium + its OS-level deps, the Docker CLI + compose plugin — is baked into
@@ -1042,13 +1187,13 @@ jobs:
       # until this job actually runs here; if it fails, the docker.sock mount and `--network host`
       # are the first two things to look at.
       #
-      # `-e SKOPEO_IMAGE -e COSIGN_IMAGE`: the `mirror-seed` step above exported these into THIS
-      # step's own shell via $GITHUB_ENV, but scripts/e2e-web.sh's `docker compose build` runs
-      # inside the container this `docker run` starts, not in this shell — $GITHUB_ENV never
-      # reaches a container's environment, only later steps of the same runner job. `-e NAME` with
-      # no value forwards the value from the invoking shell (this one), which is exactly what's
-      # needed for docker-compose.yml's pass-through `build.args` to pick up the mirror ref instead
-      # of the Dockerfile's dead quay.io default. No extra `docker login` is needed inside the
+      # `-e SKOPEO_IMAGE -e COSIGN_IMAGE -e NODE_IMAGE`: the `mirror-seed` step above exported
+      # these into THIS step's own shell via $GITHUB_ENV, but scripts/e2e-web.sh's `docker compose
+      # build` runs inside the container this `docker run` starts, not in this shell — $GITHUB_ENV
+      # never reaches a container's environment, only later steps of the same runner job. `-e NAME`
+      # with no value forwards the value from the invoking shell (this one), which is exactly
+      # what's needed for docker-compose.yml's pass-through `build.args` to pick up the mirror refs
+      # instead of the Dockerfile's upstream defaults (dead quay.io digest, live docker.io node). No extra `docker login` is needed inside the
       # container: the `FROM ${SKOPEO_IMAGE}`/`${COSIGN_IMAGE}` pull is issued to the RUNNER's
       # daemon (Docker-outside-of-Docker, via the socket mount below), already authenticated by
       # `mirror-seed`'s GHCR login — and ci-mirror.sh's own comment records that the mirror
@@ -1059,6 +1204,7 @@ jobs:
             --network host \
             -e SKOPEO_IMAGE \
             -e COSIGN_IMAGE \
+            -e NODE_IMAGE \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$(pwd):/workspace" -w /workspace \
             "${{ steps.img.outputs.ref }}" \

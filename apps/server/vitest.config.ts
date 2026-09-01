@@ -48,6 +48,16 @@ export default defineConfig({
     // `onTaskUpdate` RPC deadline a synchronous hook would otherwise be free to cross.
     hookTimeout: 30_000,
     coverage: {
+      // `enabled: true` HERE, not `--coverage` on the CI command line. The flag used to be passed
+      // as `pnpm test -- --coverage`, and anything after turbo's `--` is folded into the hash of
+      // EVERY task in the graph — all 38 `:build` tasks missed cache and re-executed inside the
+      // test job (measured 2026-08-31: @scp/server#build completed at t+162s of the unit-test
+      // step, delaying this package's suite by exactly that). In-config enablement collects the
+      // same coverage with an unmodified task hash, and is STRONGER than the flag: a bare local
+      // `pnpm test` now enforces the thresholds too, instead of leaving them decorative.
+      // `coverage-census.test.ts` (@scp/source-census) asserts every config with thresholds sets
+      // this, so the pairing cannot silently regress.
+      enabled: true,
       provider: "v8",
       reporter: ["text-summary"],
       thresholds: {

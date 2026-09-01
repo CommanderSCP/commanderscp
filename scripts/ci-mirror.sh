@@ -45,11 +45,13 @@ manifest="${repo_root}/tools/ci-mirror/images.list"
 . "${repo_root}/tools/skopeo/pin.env"
 # shellcheck source=../tools/cosign/pin.env
 . "${repo_root}/tools/cosign/pin.env"
+# shellcheck source=../tools/node/pin.env
+. "${repo_root}/tools/node/pin.env"
 
 # The pin variables images.list is allowed to reference. Listed explicitly rather than expanded
 # blindly so a typo in the manifest is a hard failure, not an empty substitution that would mirror
 # a ref like `@sha256:` and only be noticed as a confusing registry error much later.
-PIN_VARS="SKOPEO_PINNED_IMAGE SKOPEO_PINNED_VERSION COSIGN_PINNED_IMAGE COSIGN_PINNED_VERSION"
+PIN_VARS="SKOPEO_PINNED_IMAGE SKOPEO_PINNED_VERSION COSIGN_PINNED_IMAGE COSIGN_PINNED_VERSION NODE_PINNED_IMAGE NODE_PINNED_VERSION"
 for _pin in ${PIN_VARS}; do
   if [ -z "${!_pin-}" ]; then
     echo "FATAL: ${_pin} is not set — a tools/*/pin.env this script sources has changed shape" >&2
@@ -155,22 +157,44 @@ case "${mode}" in
   seed)
     skopeo_ref=""
     cosign_ref=""
+    node_ref=""
     handle_entry() {
-      local upstream="$1" alias="$2" id_ref="$3" alias_ref="$4"
+      local upstream="$1" alias="$2" id_ref="$3" alias_ref="$4" skip
+      # SCP_SEED_SKIP: space-separated aliases (or alias repos, tag omitted) a job declares it will
+      # NEVER consume, so it need not spend wall clock pulling them — job 5's shards skip
+      # `kindest/node` (~1.27 GB that only job 4e's cluster uses; ~15s/shard measured 2026-08-31).
+      # FAIL-CLOSED BY CONSTRUCTION: every job that seeds selectively also runs `blackhole`, so a
+      # wrongly-skipped image cannot be quietly pulled upstream — the consumer fails loudly and the
+      # fix is to remove the entry from SCP_SEED_SKIP, never to move the blackhole. Skipping an
+      # entry whose ref seed must export (the pinned CLI tools, the Node base) trips the FATAL
+      # check below rather than exporting an unseeded ref.
+      for skip in ${SCP_SEED_SKIP:-}; do
+        if [ "${alias}" = "${skip}" ] || [ "${alias%:*}" = "${skip}" ]; then
+          echo "seed: skipping ${alias} (SCP_SEED_SKIP)"
+          return 0
+        fi
+      done
       docker pull "${id_ref}"
       # Re-tag to the exact literal the test names. Testcontainers and `docker create` both skip
       # their own pull when the tag already resolves locally, so no test file changes for this form.
       docker tag "${id_ref}" "${alias}"
-      # The two pinned CLI tools are identified by their PIN, not by a hardcoded repo name here, so
+      # ALSO re-tag to the mirror alias ref itself: the consumers that read an exported ref (the
+      # two installer scripts' `docker create`, measured at ~0.8s of redundant manifest-only pull
+      # each when only the alias string missed the local store) then find it locally too. The
+      # fail-closed `cosign version`/`skopeo --version` assertions in the installers still run, so
+      # a mirror alias that had drifted from its digest is still caught at the version gate.
+      docker tag "${id_ref}" "${alias_ref}"
+      # The pinned images are identified by their PIN, not by a hardcoded repo name here, so
       # renaming a mirror path cannot silently stop pointing the installers at the mirror.
       [ "${upstream}" = "${SKOPEO_PINNED_IMAGE}" ] && skopeo_ref="${alias_ref}"
       [ "${upstream}" = "${COSIGN_PINNED_IMAGE}" ] && cosign_ref="${alias_ref}"
+      [ "${upstream}" = "${NODE_PINNED_IMAGE}" ] && node_ref="${alias_ref}"
       return 0
     }
     for_each_entry
 
-    if [ -z "${skopeo_ref}" ] || [ -z "${cosign_ref}" ]; then
-      echo "FATAL: images.list no longer mirrors the pinned skopeo and/or cosign image" >&2
+    if [ -z "${skopeo_ref}" ] || [ -z "${cosign_ref}" ] || [ -z "${node_ref}" ]; then
+      echo "FATAL: images.list no longer mirrors the pinned skopeo, cosign and/or node image (or SCP_SEED_SKIP excluded one of them)" >&2
       exit 1
     fi
 
@@ -190,6 +214,9 @@ case "${mode}" in
       # form so an unset value falls back to the Dockerfile default rather than to an empty string.
       echo "SKOPEO_IMAGE=${skopeo_ref}"
       echo "COSIGN_IMAGE=${cosign_ref}"
+      # Same consumer form for the root Dockerfile's Node base (2026-08-31): `FROM ${NODE_IMAGE}`
+      # resolves at the registry, so the compose builds take this ARG or pull docker.io live.
+      echo "NODE_IMAGE=${node_ref}"
       # skopeo (containers/image) reads Docker's own credential file when pointed at it. The mirror
       # packages are public today, so this is belt-and-braces — it is what keeps the subject pulls
       # working if a mirror package is ever created private.

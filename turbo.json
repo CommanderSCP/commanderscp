@@ -10,10 +10,12 @@
     "//#lint": {},
     "typecheck": { "dependsOn": ["^build"] },
     "test": { "dependsOn": ["build"] },
+    "@scp/helm-verify#test": { "dependsOn": ["build"], "env": ["SCP_HELM_VERIFY"] },
     "test:integration": {
       "dependsOn": ["build"],
       "cache": false,
       "passThroughEnv": [
+        "SCP_INTEGRATION_SHARD",
         "SCP_RUNNER_SCAN_IMAGE_REF",
         "SCP_RUNNER_IAC_IMAGE_REF",
         "SCP_RUNNER_DEP_IMAGE_REF",

@@ -5,10 +5,10 @@ description: >
   pull (charter principle 5 — CI runs offline; see tools/ci-mirror/images.list for the manifest and
   scripts/ci-mirror.sh's header for the four consumer forms). `seed` appends its exports
   (SCP_TEST_SUBJECT_REGISTRY, SCP_SKOPEO_IMAGE_REF, SCP_COSIGN_IMAGE_REF, the root Dockerfile's own
-  SKOPEO_IMAGE/COSIGN_IMAGE build ARGs, REGISTRY_AUTH_FILE) to $GITHUB_ENV, so they reach every
+  SKOPEO_IMAGE/COSIGN_IMAGE/NODE_IMAGE build ARGs, REGISTRY_AUTH_FILE) to $GITHUB_ENV, so they reach every
   later step of the SAME job for free — including a `docker compose build` step. A job whose build
   happens INSIDE a nested `docker run` (this repo has one: e2e-web/"9") still has to forward them
-  explicitly with `-e SKOPEO_IMAGE -e COSIGN_IMAGE`, because $GITHUB_ENV only reaches the runner's
+  explicitly with `-e SKOPEO_IMAGE -e COSIGN_IMAGE -e NODE_IMAGE`, because $GITHUB_ENV only reaches the runner's
   own step shells, not a container's — see that job's own comment.
 
   Call this AFTER checkout (and, where the job has one, the toolchain setup step) and BEFORE

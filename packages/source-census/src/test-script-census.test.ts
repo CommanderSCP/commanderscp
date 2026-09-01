@@ -57,7 +57,7 @@ const FLAG = "--passWithNoTests";
  * siblings and needs no special reason beyond theirs.
  */
 const INTEGRATION_FLAG_ALLOWLIST: Record<string, string> = {
-  "@scp/server": "CI shards test:integration 2 ways; a shard may draw zero files",
+  "@scp/server": "CI shards test:integration 4 ways; a shard may draw zero files",
   "@scp/plugin-managed-iac": "single-file suite; the other shard legitimately draws zero files",
   "@scp/plugin-managed-dep": "single-file suite; the other shard legitimately draws zero files",
   "@scp/plugin-managed-scan": "single-file suite; the other shard legitimately draws zero files",

@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1.7
+# NO `# syntax=` directive, deliberately (2026-08-31, same census as the root Dockerfile): the
+# directive made BuildKit pull the `docker/dockerfile:1.7` frontend from Docker Hub live on every
+# cache-miss build, and this file uses nothing beyond the built-in frontend's stable syntax.
 #
 # tools/ci-image/Dockerfile — versioned CI runner image (BUILD_AND_TEST.md §1, §6: "Required
 # tooling (Node, pnpm store, Playwright browsers, oasdiff) is baked into a versioned CI runner

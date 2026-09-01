@@ -50,6 +50,7 @@ services:
       args:
         - SKOPEO_IMAGE
         - COSIGN_IMAGE
+        - NODE_IMAGE
     networks: [domain-a]
     environment:
       SCP_ROLE: all
