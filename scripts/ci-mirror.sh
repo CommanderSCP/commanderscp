@@ -159,42 +159,52 @@ case "${mode}" in
     cosign_ref=""
     node_ref=""
     handle_entry() {
-      local upstream="$1" alias="$2" id_ref="$3" alias_ref="$4" skip
+      local upstream="$1" alias="$2" id_ref="$3" alias_ref="$4" skip ref="${alias_ref}"
       # SCP_SEED_SKIP: space-separated aliases (or alias repos, tag omitted) a job declares it will
       # NEVER consume, so it need not spend wall clock pulling them — job 5's shards skip
-      # `kindest/node` (~1.27 GB that only job 4e's cluster uses; ~15s/shard measured 2026-08-31).
-      # FAIL-CLOSED BY CONSTRUCTION: every job that seeds selectively also runs `blackhole`, so a
-      # wrongly-skipped image cannot be quietly pulled upstream — the consumer fails loudly and the
-      # fix is to remove the entry from SCP_SEED_SKIP, never to move the blackhole. Skipping an
-      # entry whose ref seed must export (the pinned CLI tools, the Node base) trips the FATAL
-      # check below rather than exporting an unseeded ref.
+      # `kindest/node` (~1.27 GB that only job 4e's cluster uses; ~15s/shard measured 2026-08-31)
+      # and the E2E jobs skip the whole integration-tier fixture set. FAIL-CLOSED BY CONSTRUCTION:
+      # every job that seeds selectively also runs `blackhole`, so a wrongly-skipped image cannot
+      # be quietly pulled upstream — the consumer fails loudly and the fix is to remove the entry
+      # from SCP_SEED_SKIP, never to move the blackhole.
+      #
+      # A skipped PIN records the SKIPPED sentinel rather than staying empty, so the check below
+      # can tell "this job deliberately skips it" (fine — its export is omitted, and any consumer
+      # that needed it after all fails loudly under the blackhole) from "the manifest lost the
+      # entry" (always FATAL: a pin the exports exist to serve has silently vanished for every
+      # job at once).
       for skip in ${SCP_SEED_SKIP:-}; do
         if [ "${alias}" = "${skip}" ] || [ "${alias%:*}" = "${skip}" ]; then
           echo "seed: skipping ${alias} (SCP_SEED_SKIP)"
-          return 0
+          ref="SKIPPED"
+          break
         fi
       done
-      docker pull "${id_ref}"
-      # Re-tag to the exact literal the test names. Testcontainers and `docker create` both skip
-      # their own pull when the tag already resolves locally, so no test file changes for this form.
-      docker tag "${id_ref}" "${alias}"
-      # ALSO re-tag to the mirror alias ref itself: the consumers that read an exported ref (the
-      # two installer scripts' `docker create`, measured at ~0.8s of redundant manifest-only pull
-      # each when only the alias string missed the local store) then find it locally too. The
-      # fail-closed `cosign version`/`skopeo --version` assertions in the installers still run, so
-      # a mirror alias that had drifted from its digest is still caught at the version gate.
-      docker tag "${id_ref}" "${alias_ref}"
+      if [ "${ref}" != "SKIPPED" ]; then
+        docker pull "${id_ref}"
+        # Re-tag to the exact literal the test names. Testcontainers and `docker create` both skip
+        # their own pull when the tag already resolves locally, so no test file changes for this
+        # form.
+        docker tag "${id_ref}" "${alias}"
+        # ALSO re-tag to the mirror alias ref itself: the consumers that read an exported ref (the
+        # two installer scripts' `docker create`, measured at ~0.8s of redundant manifest-only pull
+        # each when only the alias string missed the local store) then find it locally too. The
+        # fail-closed `cosign version`/`skopeo --version` assertions in the installers still run,
+        # so a mirror alias that had drifted from its digest is still caught at the version gate.
+        docker tag "${id_ref}" "${alias_ref}"
+      fi
       # The pinned images are identified by their PIN, not by a hardcoded repo name here, so
       # renaming a mirror path cannot silently stop pointing the installers at the mirror.
-      [ "${upstream}" = "${SKOPEO_PINNED_IMAGE}" ] && skopeo_ref="${alias_ref}"
-      [ "${upstream}" = "${COSIGN_PINNED_IMAGE}" ] && cosign_ref="${alias_ref}"
-      [ "${upstream}" = "${NODE_PINNED_IMAGE}" ] && node_ref="${alias_ref}"
+      [ "${upstream}" = "${SKOPEO_PINNED_IMAGE}" ] && skopeo_ref="${ref}"
+      [ "${upstream}" = "${COSIGN_PINNED_IMAGE}" ] && cosign_ref="${ref}"
+      [ "${upstream}" = "${NODE_PINNED_IMAGE}" ] && node_ref="${ref}"
       return 0
     }
     for_each_entry
 
+    # Empty means the MANIFEST no longer carries the pin (SKIPPED would mean this job opted out).
     if [ -z "${skopeo_ref}" ] || [ -z "${cosign_ref}" ] || [ -z "${node_ref}" ]; then
-      echo "FATAL: images.list no longer mirrors the pinned skopeo, cosign and/or node image (or SCP_SEED_SKIP excluded one of them)" >&2
+      echo "FATAL: images.list no longer mirrors the pinned skopeo, cosign and/or node image" >&2
       exit 1
     fi
 
@@ -203,20 +213,31 @@ case "${mode}" in
       # Consumer form 2: the registry+namespace prefix the scan-subject suites build their skopeo
       # `docker://` sources from. Unset (local dev) they default to docker.io/library.
       echo "SCP_TEST_SUBJECT_REGISTRY=${MIRROR_NAMESPACE}"
-      # Consumer form 3: a `docker create <repo>@sha256:…` cannot be served by a local tag, so the
-      # installers take their image ref from here. Their fail-closed version assertion still runs.
-      echo "SCP_SKOPEO_IMAGE_REF=${skopeo_ref}"
-      echo "SCP_COSIGN_IMAGE_REF=${cosign_ref}"
-      # Consumer form 4: a DIGEST-PINNED `FROM` in the root Dockerfile. Neither a local re-tag nor a
-      # ref an installer reads can serve it — `FROM …@sha256:…` resolves at the registry — so the
-      # image build took its bytes from quay.io LIVE until these two were exported. The names are the
-      # Dockerfile's own ARGs, and `deploy/compose/docker-compose.yml` declares them in pass-through
-      # form so an unset value falls back to the Dockerfile default rather than to an empty string.
-      echo "SKOPEO_IMAGE=${skopeo_ref}"
-      echo "COSIGN_IMAGE=${cosign_ref}"
-      # Same consumer form for the root Dockerfile's Node base (2026-08-31): `FROM ${NODE_IMAGE}`
-      # resolves at the registry, so the compose builds take this ARG or pull docker.io live.
-      echo "NODE_IMAGE=${node_ref}"
+      # A pin THIS JOB opted out of (SCP_SEED_SKIP) exports nothing — the compose pass-through
+      # form treats an unset var as "use the Dockerfile's pinned default", whereas exporting the
+      # sentinel (or an empty string) would poison a `FROM`/`docker create` downstream.
+      if [ "${skopeo_ref}" != "SKIPPED" ]; then
+        # Consumer form 3: a `docker create <repo>@sha256:…` cannot be served by a local tag, so
+        # the installers take their image ref from here. Their fail-closed version assertion still
+        # runs.
+        echo "SCP_SKOPEO_IMAGE_REF=${skopeo_ref}"
+        # Consumer form 4: a DIGEST-PINNED `FROM` in the root Dockerfile. Neither a local re-tag
+        # nor a ref an installer reads can serve it — `FROM …@sha256:…` resolves at the registry —
+        # so the image build took its bytes from quay.io LIVE until this was exported. The names
+        # are the Dockerfile's own ARGs, and `deploy/compose/docker-compose.yml` declares them in
+        # pass-through form so an unset value falls back to the Dockerfile default rather than to
+        # an empty string.
+        echo "SKOPEO_IMAGE=${skopeo_ref}"
+      fi
+      if [ "${cosign_ref}" != "SKIPPED" ]; then
+        echo "SCP_COSIGN_IMAGE_REF=${cosign_ref}"
+        echo "COSIGN_IMAGE=${cosign_ref}"
+      fi
+      if [ "${node_ref}" != "SKIPPED" ]; then
+        # Same consumer form for the root Dockerfile's Node base (2026-08-31): `FROM ${NODE_IMAGE}`
+        # resolves at the registry, so the compose builds take this ARG or pull docker.io live.
+        echo "NODE_IMAGE=${node_ref}"
+      fi
       # skopeo (containers/image) reads Docker's own credential file when pointed at it. The mirror
       # packages are public today, so this is belt-and-braces — it is what keeps the subject pulls
       # working if a mirror package is ever created private.

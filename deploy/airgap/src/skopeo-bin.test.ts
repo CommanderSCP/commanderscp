@@ -14,29 +14,17 @@ import {
 import { REPO_ROOT } from "./repo-paths.js";
 
 /**
- * Parse `tools/skopeo/pin.env` (the single source of truth) as KEY=VALUE pairs.
+ * Parse a `tools/<pin>/pin.env` (each a single source of truth) as KEY=VALUE pairs. One PARSER for
+ * every pin file — the file format is one format, and a parsing fix applied to a per-pin copy and
+ * not its twin is the comment-proof bug class this function exists to prevent — while every
+ * ASSERTION stays per-pin at the call sites, so separate pins keep separate verdicts (the budget
+ * census's rule).
  *
- * Already comment-proof, like cosign-bin.test.ts's twin: the key pattern is anchored to the start
- * of the trimmed line and admits only `[A-Z_0-9]`, so a `#`-prefixed line cannot become a pin.
+ * Comment-proof, like cosign-bin.test.ts's twin: the key pattern is anchored to the start of the
+ * trimmed line and admits only `[A-Z_0-9]`, so a `#`-prefixed line cannot become a pin.
  */
-function readPinEnv(): Record<string, string> {
-  const text = readFileSync(path.join(REPO_ROOT, "tools/skopeo/pin.env"), "utf8");
-  const out: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const match = /^([A-Z_0-9]+)=(.*)$/.exec(line.trim());
-    if (match?.[1] && match[2] !== undefined) out[match[1]] = match[2];
-  }
-  return out;
-}
-
-/**
- * The same comment-proof reader for `tools/node/pin.env` — the Node base-image pin added
- * 2026-08-31, when `FROM node:22-trixie-slim` turned out to be the LAST un-pinned, un-mirrored
- * third-party image on the E2E path. A second function rather than a parameterised one, for the
- * budget census's stated reason: separate pins with separate tables must not share a verdict.
- */
-function readNodePinEnv(): Record<string, string> {
-  const text = readFileSync(path.join(REPO_ROOT, "tools/node/pin.env"), "utf8");
+function readPinEnv(relative: string): Record<string, string> {
+  const text = readFileSync(path.join(REPO_ROOT, relative), "utf8");
   const out: Record<string, string> = {};
   for (const line of text.split("\n")) {
     const match = /^([A-Z_0-9]+)=(.*)$/.exec(line.trim());
@@ -72,7 +60,7 @@ function readRepoFile(relative: string): string {
  * --version` check at the bottom of this file, which runs the resolved binary.
  */
 describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", () => {
-  const pin = readPinEnv();
+  const pin = readPinEnv("tools/skopeo/pin.env");
 
   it("pin.env is well-formed (version + amd64 platform digest + paths)", () => {
     // Upstream reports the version WITHOUT a leading `v` (unlike cosign).
@@ -124,7 +112,7 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
     // image the build still resolved against Docker Hub live, un-pinned, after skopeo and cosign
     // were mirrored. Both stages that use it, plus the digest-pinned ARG default from
     // tools/node/pin.env, plus the absence of a bare floating-tag FROM that would bypass the ARG.
-    const nodePin = readNodePinEnv();
+    const nodePin = readPinEnv("tools/node/pin.env");
     expect(nodePin.NODE_PINNED_IMAGE).toMatch(/^docker\.io\/library\/node@sha256:[0-9a-f]{64}$/);
     expect(dockerfile).toMatch(atLineStart(`ARG NODE_IMAGE=${nodePin.NODE_PINNED_IMAGE}`));
     expect(dockerfile).toMatch(atLineStart("FROM ${NODE_IMAGE} AS base"));

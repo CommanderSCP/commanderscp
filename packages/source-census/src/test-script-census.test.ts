@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { trackedFiles } from "./tracked.js";
 
 /**
  * ================================================================================================
@@ -27,12 +27,13 @@ import { describe, expect, it } from "vitest";
  *     an error about "no test files", not about the coverage that vanished. Asserted as a census so
  *     the failure NAMES the package.
  *
- * `test:integration` IS DIFFERENT, AND IT IS NOT AN OVERSIGHT. CI job 5 runs
- * `pnpm test:integration -- --shard=${matrix.shard}/2`, and vitest shards at FILE granularity: a
- * single-file suite (managed-iac, managed-dep) runs in whichever shard vitest assigns it and
- * legitimately finds ZERO files in the other. Removing the flag there would red half of every CI
- * run for a suite that is working correctly. Those scripts are therefore allowlisted BY NAME with
- * that reason, and the allowlist is checked for staleness in both directions.
+ * `test:integration` IS DIFFERENT, AND IT IS NOT AN OVERSIGHT. CI job 5 shards vitest 4 ways
+ * (via the SCP_INTEGRATION_SHARD env var — see the shard-lever census at the bottom of this
+ * file), and vitest shards at FILE granularity: a single-file suite (managed-iac, managed-dep)
+ * runs in whichever shard vitest assigns it and legitimately finds ZERO files in the others.
+ * Removing the flag there would red most of every CI run for a suite that is working correctly.
+ * Those scripts are therefore allowlisted BY NAME with that reason, and the allowlist is checked
+ * for staleness in both directions.
  *
  * WHY THIS FILE LIVES IN `@scp/source-census`. This package is the repo's "census over its own
  * tracked source" utility (`readStripped` is what the repo-wide containment gates read with); a
@@ -78,22 +79,13 @@ interface Pkg {
   integrationFiles: string[];
 }
 
-function trackedFiles(): string[] {
-  const out = execFileSync("git", ["ls-files", "-z"], {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024
-  });
-  return out.split("\0").filter((p) => p.length > 0);
-}
-
 /** A vitest-run script, as opposed to `turbo run test` (the root) or `tsx src/verify.ts` (helm-verify). */
 function isVitest(script: string | undefined): script is string {
   return script !== undefined && /\bvitest\b/.test(script);
 }
 
 function census(): Pkg[] {
-  const files = trackedFiles();
+  const files = trackedFiles(REPO_ROOT);
   const manifests = files.filter((p) => p === "package.json" || p.endsWith("/package.json"));
   const packages: Pkg[] = [];
 
@@ -224,5 +216,47 @@ describe("no package may report test success for having run nothing", () => {
       empty,
       "a `test:integration` script with no *.integration.test.ts file runs nothing in every shard; write the suite or name it in KNOWN_EMPTY_INTEGRATION_SUITES"
     ).toStrictEqual([]);
+  });
+});
+
+describe("the shard lever cannot silently disconnect (SCP_INTEGRATION_SHARD)", () => {
+  /**
+   * CI job 5 delivers vitest's `--shard=i/N` through the SCP_INTEGRATION_SHARD env var — NOT a
+   * turbo `--` passthrough, which folds into every task hash in the graph and rebuilt the whole
+   * workspace inside each shard (~76s/shard, measured 2026-08-31; ci.yml's job-5 env comment).
+   * That mechanism has exactly two rot points a workflow-side guard cannot see, censused here:
+   *
+   *   1. turbo runs STRICT env — drop the var from `test:integration`'s `passThroughEnv` and
+   *      turbo strips it before the script runs, `${SCP_INTEGRATION_SHARD:-}` expands empty, and
+   *      every shard runs the FULL suite: 4x the work, still green, invisible.
+   *   2. a `test:integration` script that omits the `${SCP_INTEGRATION_SHARD:-}` suffix (the
+   *      likely shape of the NEXT package, copied from a stale example) runs its full file set in
+   *      every shard — the same rotted-lever shape one package at a time.
+   *
+   * (ci.yml's own assert step covers the third rot point, the workflow `env:` block itself.)
+   */
+  const SHARD_TOKEN = "${SCP_INTEGRATION_SHARD:-}";
+
+  it("turbo.json passes SCP_INTEGRATION_SHARD through to test:integration (strict env)", () => {
+    const turbo = JSON.parse(readFileSync(resolve(REPO_ROOT, "turbo.json"), "utf8")) as {
+      tasks?: Record<string, { passThroughEnv?: string[] }>;
+    };
+    expect(
+      turbo.tasks?.["test:integration"]?.passThroughEnv,
+      "without this entry turbo strips the var and every CI shard silently runs the full suite"
+    ).toContain("SCP_INTEGRATION_SHARD");
+  });
+
+  it("EVERY vitest test:integration script expands the shard selector", () => {
+    const unsharded = PACKAGES.filter(
+      (p) => isVitest(p.integration) && !p.integration!.includes(SHARD_TOKEN)
+    ).map((p) => `${p.name} (${p.path}): "test:integration": "${p.integration}"`);
+    expect(
+      unsharded,
+      `append ${SHARD_TOKEN} to the script — without it this package's whole integration suite runs in all 4 CI shards instead of being partitioned`
+    ).toStrictEqual([]);
+
+    // Non-vacuity: the census must actually be seeing sharded scripts today.
+    expect(PACKAGES.filter((p) => p.integration?.includes(SHARD_TOKEN)).length).toBeGreaterThan(4);
   });
 });

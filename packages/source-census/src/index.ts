@@ -97,6 +97,8 @@ export {
 
 export { atLineStart, readHashStripped, stripHashComments } from "./hash.js";
 
+export { trackedFiles } from "./tracked.js";
+
 /**
  * THE OTHER HALF OF THE SAME LESSON, AND THE REASON IT LIVES HERE. Everything above is machinery for
  * reading source; `spawn-observer.ts` is machinery for proving a source census's blind spot is

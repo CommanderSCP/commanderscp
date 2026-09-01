@@ -209,11 +209,14 @@ jobs:
       # @scp/server#build completed at t+162s of the test step, delaying that package's own suite
       # by exactly that (the `pnpm build` step above had just replayed the same 38 tasks from cache
       # in ~300ms). Coverage is now enabled IN the two configs that carry thresholds
-      # (apps/server, apps/web — owner decision 2026-08-01 put the thresholds there), which
-      # collects the same coverage with unmodified task hashes and makes the thresholds bind on a
-      # bare local `pnpm test` too. @scp/source-census's coverage-census.test.ts asserts the
-      # thresholds/enabled pairing repo-wide, so the next config to add thresholds cannot land
-      # them decorative.
+      # (apps/server, apps/web — owner decision 2026-08-01 put the thresholds there), gated on
+      # `process.env.CI === "true"` so it collects exactly where it used to (every CI unit run,
+      # where the thresholds bind as before) and nowhere it didn't (a filtered local run would
+      # fail whole-package floors on one file's coverage — measured, see the config's comment).
+      # `CI` is in turbo.json's `test` env list, so CI and local runs hash separately and cannot
+      # replay each other's cached results. @scp/source-census's coverage-census.test.ts asserts
+      # the thresholds/enabled pairing repo-wide, so the next config to add thresholds cannot
+      # land them decorative.
       #
       # ------------------------------------------------------------------------------------------
       # THE HEAVIEST SUITE RUNS FIRST, WITH THE RUNNER TO ITSELF. Not a style preference — a
@@ -634,11 +637,13 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Seed every mirrored image this job consumes, and point the non-taggable consumers at the mirror
         env:
-          # `kindest/node` is ~1.27 GB that ONLY job 4e's cluster uses; seeding it here cost ~15s
-          # of every shard (measured 2026-08-31). Safe to skip precisely because this job runs
-          # `blackhole` below: a skip that ever turned out wrong fails the consumer loudly at pull
-          # time instead of quietly reopening the live-upstream hole — see ci-mirror.sh's comment.
-          SCP_SEED_SKIP: kindest/node
+          # `kindest/node` is ~1.27 GB that ONLY job 4e's cluster uses (seeding it here cost
+          # ~15s of every shard, measured 2026-08-31), and `node` is the root Dockerfile's base —
+          # this job builds no image, so its NODE_IMAGE export is deliberately omitted too. Safe
+          # to skip precisely because this job runs `blackhole` below: a skip that ever turned out
+          # wrong fails the consumer loudly at pull time instead of quietly reopening the
+          # live-upstream hole — see ci-mirror.sh's comment.
+          SCP_SEED_SKIP: kindest/node node
         run: scripts/ci-mirror.sh seed
       - name: Install the PINNED cosign (the same binary the scp image ships)
         # PINNED, not `sigstore/cosign-installer@v3` (M17.3 E1). Two reasons the unpinned network
@@ -705,10 +710,14 @@ jobs:
       # revealed, not to move this step down.
       - name: Deny the mirrored upstream registries for the rest of the job
         run: scripts/ci-mirror.sh blackhole
-      # LEVER 2's guard: SCP_INTEGRATION_SHARD (see the job `env` above for the mechanism) unset
-      # or empty means every shard runs the FULL suite — 4x the work, still green, invisible. A
-      # lever that can disconnect silently is this repo's documented failure shape, so the shard
-      # arg is asserted present before anything runs.
+      # LEVER 2's guard — SCOPE STATED HONESTLY: this step reads the same runner-shell env the
+      # `env:` block above sets, so it catches exactly one rot point — that block being deleted,
+      # renamed or mistyped in THIS file. The other two rot points live outside the workflow's
+      # sight (turbo strict-env stripping the var if it leaves passThroughEnv; a test:integration
+      # script omitting the `${SCP_INTEGRATION_SHARD:-}` suffix) and are censused where they can
+      # be seen, in @scp/source-census's test-script-census ("the shard lever cannot silently
+      # disconnect"). All three failure modes have the same symptom: every shard runs the FULL
+      # suite — 4x the work, still green, invisible.
       - name: Assert the shard selector is actually set (an empty one silently un-shards the matrix)
         run: |
           case "${SCP_INTEGRATION_SHARD:-}" in
@@ -914,16 +923,19 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
+      # Seed ONLY what this job's compose stack consumes — postgres:16 plus the three build-ARG
+      # pins (skopeo/cosign/node); the skipped entries are integration-tier fixtures (kind node,
+      # Testcontainers backends, scan subjects) this job never touches (~2 GB of dead pulls,
+      # measured 2026-08-31) — then IMMEDIATELY blackhole the mirrored upstream registries.
+      # The blackhole (`blackhole: "true"`, same statement as job 5's) is what makes both the
+      # subset seed and "CI runs offline" CHECKED properties on the E2E path: it is the step that
+      # found `FROM node:22-trixie-slim` resolving Docker Hub LIVE on every E2E build, and an
+      # unmirrored (or wrongly-skipped) pull CANNOT pass it. If it reds this job, mirror or
+      # un-skip the image it revealed; never remove the enforcement.
       - uses: ./.github/actions/mirror-seed
-      # ENFORCEMENT, same statement as job 5's (2026-08-31): everything this job's compose
-      # build/up needs is now local or on GHCR — postgres:16 seeded, the root Dockerfile's
-      # skopeo/cosign/node FROMs served via the exported build ARGs, and no `# syntax=` frontend
-      # directive left to pull. This step is what found `FROM node:22-trixie-slim` resolving
-      # Docker Hub LIVE on every E2E build (the last unmirrored image on this path) and is what
-      # keeps the next one from surviving: an unmirrored pull CANNOT pass here. If this step ever
-      # makes an E2E job red, mirror the image it revealed; do not move the step.
-      - name: Deny the mirrored upstream registries for the rest of the job
-        run: scripts/ci-mirror.sh blackhole
+        with:
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          blackhole: "true"
       - run: pnpm build
       - run: bash scripts/e2e-m0.sh
 
@@ -939,16 +951,19 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
+      # Seed ONLY what this job's compose stack consumes — postgres:16 plus the three build-ARG
+      # pins (skopeo/cosign/node); the skipped entries are integration-tier fixtures (kind node,
+      # Testcontainers backends, scan subjects) this job never touches (~2 GB of dead pulls,
+      # measured 2026-08-31) — then IMMEDIATELY blackhole the mirrored upstream registries.
+      # The blackhole (`blackhole: "true"`, same statement as job 5's) is what makes both the
+      # subset seed and "CI runs offline" CHECKED properties on the E2E path: it is the step that
+      # found `FROM node:22-trixie-slim` resolving Docker Hub LIVE on every E2E build, and an
+      # unmirrored (or wrongly-skipped) pull CANNOT pass it. If it reds this job, mirror or
+      # un-skip the image it revealed; never remove the enforcement.
       - uses: ./.github/actions/mirror-seed
-      # ENFORCEMENT, same statement as job 5's (2026-08-31): everything this job's compose
-      # build/up needs is now local or on GHCR — postgres:16 seeded, the root Dockerfile's
-      # skopeo/cosign/node FROMs served via the exported build ARGs, and no `# syntax=` frontend
-      # directive left to pull. This step is what found `FROM node:22-trixie-slim` resolving
-      # Docker Hub LIVE on every E2E build (the last unmirrored image on this path) and is what
-      # keeps the next one from surviving: an unmirrored pull CANNOT pass here. If this step ever
-      # makes an E2E job red, mirror the image it revealed; do not move the step.
-      - name: Deny the mirrored upstream registries for the rest of the job
-        run: scripts/ci-mirror.sh blackhole
+        with:
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          blackhole: "true"
       - run: pnpm build
       - run: bash scripts/e2e-m4.sh
 
@@ -966,16 +981,19 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
+      # Seed ONLY what this job's compose stack consumes — postgres:16 plus the three build-ARG
+      # pins (skopeo/cosign/node); the skipped entries are integration-tier fixtures (kind node,
+      # Testcontainers backends, scan subjects) this job never touches (~2 GB of dead pulls,
+      # measured 2026-08-31) — then IMMEDIATELY blackhole the mirrored upstream registries.
+      # The blackhole (`blackhole: "true"`, same statement as job 5's) is what makes both the
+      # subset seed and "CI runs offline" CHECKED properties on the E2E path: it is the step that
+      # found `FROM node:22-trixie-slim` resolving Docker Hub LIVE on every E2E build, and an
+      # unmirrored (or wrongly-skipped) pull CANNOT pass it. If it reds this job, mirror or
+      # un-skip the image it revealed; never remove the enforcement.
       - uses: ./.github/actions/mirror-seed
-      # ENFORCEMENT, same statement as job 5's (2026-08-31): everything this job's compose
-      # build/up needs is now local or on GHCR — postgres:16 seeded, the root Dockerfile's
-      # skopeo/cosign/node FROMs served via the exported build ARGs, and no `# syntax=` frontend
-      # directive left to pull. This step is what found `FROM node:22-trixie-slim` resolving
-      # Docker Hub LIVE on every E2E build (the last unmirrored image on this path) and is what
-      # keeps the next one from surviving: an unmirrored pull CANNOT pass here. If this step ever
-      # makes an E2E job red, mirror the image it revealed; do not move the step.
-      - name: Deny the mirrored upstream registries for the rest of the job
-        run: scripts/ci-mirror.sh blackhole
+        with:
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          blackhole: "true"
       - run: pnpm build
       - run: bash scripts/e2e-m5.sh
 
@@ -1003,16 +1021,19 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
+      # Seed ONLY what this job's compose stack consumes — postgres:16 plus the three build-ARG
+      # pins (skopeo/cosign/node); the skipped entries are integration-tier fixtures (kind node,
+      # Testcontainers backends, scan subjects) this job never touches (~2 GB of dead pulls,
+      # measured 2026-08-31) — then IMMEDIATELY blackhole the mirrored upstream registries.
+      # The blackhole (`blackhole: "true"`, same statement as job 5's) is what makes both the
+      # subset seed and "CI runs offline" CHECKED properties on the E2E path: it is the step that
+      # found `FROM node:22-trixie-slim` resolving Docker Hub LIVE on every E2E build, and an
+      # unmirrored (or wrongly-skipped) pull CANNOT pass it. If it reds this job, mirror or
+      # un-skip the image it revealed; never remove the enforcement.
       - uses: ./.github/actions/mirror-seed
-      # ENFORCEMENT, same statement as job 5's (2026-08-31): everything this job's compose
-      # build/up needs is now local or on GHCR — postgres:16 seeded, the root Dockerfile's
-      # skopeo/cosign/node FROMs served via the exported build ARGs, and no `# syntax=` frontend
-      # directive left to pull. This step is what found `FROM node:22-trixie-slim` resolving
-      # Docker Hub LIVE on every E2E build (the last unmirrored image on this path) and is what
-      # keeps the next one from surviving: an unmirrored pull CANNOT pass here. If this step ever
-      # makes an E2E job red, mirror the image it revealed; do not move the step.
-      - name: Deny the mirrored upstream registries for the rest of the job
-        run: scripts/ci-mirror.sh blackhole
+        with:
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          blackhole: "true"
       - run: pnpm build
       - run: bash scripts/e2e-m6.sh
 
@@ -1036,16 +1057,19 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup
+      # Seed ONLY what this job's compose stack consumes — postgres:16 plus the three build-ARG
+      # pins (skopeo/cosign/node); the skipped entries are integration-tier fixtures (kind node,
+      # Testcontainers backends, scan subjects) this job never touches (~2 GB of dead pulls,
+      # measured 2026-08-31) — then IMMEDIATELY blackhole the mirrored upstream registries.
+      # The blackhole (`blackhole: "true"`, same statement as job 5's) is what makes both the
+      # subset seed and "CI runs offline" CHECKED properties on the E2E path: it is the step that
+      # found `FROM node:22-trixie-slim` resolving Docker Hub LIVE on every E2E build, and an
+      # unmirrored (or wrongly-skipped) pull CANNOT pass it. If it reds this job, mirror or
+      # un-skip the image it revealed; never remove the enforcement.
       - uses: ./.github/actions/mirror-seed
-      # ENFORCEMENT, same statement as job 5's (2026-08-31): everything this job's compose
-      # build/up needs is now local or on GHCR — postgres:16 seeded, the root Dockerfile's
-      # skopeo/cosign/node FROMs served via the exported build ARGs, and no `# syntax=` frontend
-      # directive left to pull. This step is what found `FROM node:22-trixie-slim` resolving
-      # Docker Hub LIVE on every E2E build (the last unmirrored image on this path) and is what
-      # keeps the next one from surviving: an unmirrored pull CANNOT pass here. If this step ever
-      # makes an E2E job red, mirror the image it revealed; do not move the step.
-      - name: Deny the mirrored upstream registries for the rest of the job
-        run: scripts/ci-mirror.sh blackhole
+        with:
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
+          blackhole: "true"
       - run: pnpm build
       - run: bash scripts/e2e-m7.sh
 
@@ -1123,7 +1147,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # Subset seed, same list and reason as the other five E2E jobs — but WITHOUT the action's
+      # blackhole input: this job's own blackhole step sits later, after the ci-image
+      # acquisition below, whose fork-PR fallback build legitimately reaches upstream.
       - uses: ./.github/actions/mirror-seed
+        with:
+          seed-skip: kindest/node nats registry minio/minio quay.io/keycloak/keycloak alpine debian oraclelinux
 
       - name: Compute the same toolchain image tag as the ci-image job
         id: img

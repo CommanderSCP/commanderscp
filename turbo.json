@@ -9,8 +9,8 @@
     "generate": { "dependsOn": ["^openapi:emit"], "outputs": ["src/generated/**"] },
     "//#lint": {},
     "typecheck": { "dependsOn": ["^build"] },
-    "test": { "dependsOn": ["build"] },
-    "@scp/helm-verify#test": { "dependsOn": ["build"], "env": ["SCP_HELM_VERIFY"] },
+    "test": { "dependsOn": ["build"], "env": ["CI"] },
+    "@scp/helm-verify#test": { "dependsOn": ["build"], "env": ["CI", "SCP_HELM_VERIFY"] },
     "test:integration": {
       "dependsOn": ["build"],
       "cache": false,

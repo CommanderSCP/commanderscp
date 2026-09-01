@@ -54,11 +54,22 @@
 # build output into a "versioned" (i.e. long-lived, rebuilt only on toolchain/lockfile changes)
 # image would make it stale the moment a second commit landed.
 
-FROM node:22-bookworm-slim
+# DIGEST-PINNED (2026-08-31): this was a floating `node:22-bookworm-slim` — the same
+# tag-is-not-an-identity class the root Dockerfile's NODE_IMAGE pin closed the same day. This
+# build legitimately reaches the network on a cache miss (it downloads Chromium from
+# cdn.playwright.dev by design), so the base is pinned but NOT mirrored: the pin buys immutable
+# bytes and immunity to a tag re-point, which is what the 2026-08-18 deleted-digest outage
+# actually punished.
+#
+# STILL bookworm, deliberately, while the ROOT Dockerfile moved to trixie (its 2026-08-31 CVE
+# sweep — an earlier revision of the comment below claimed the two "match", which stopped being
+# true then): this image's Playwright OS-dependency set is validated against bookworm, and it is
+# a CI toolchain image, not a shipped artifact, so the root image's CVE argument does not
+# transfer. Node itself still matches .nvmrc's "22" / BUILD_AND_TEST.md §1's Node 22.17.x line.
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 
-# Matches .nvmrc's "22" / BUILD_AND_TEST.md §1's Node 22.17.x line (inherited from the base
-# image's own pinned Node 22 build) and the root Dockerfile's `node:22-bookworm-slim` convention —
-# kept in sync deliberately so CI's toolchain matches what the shipped image builds with.
+# corepack pins pnpm to the exact version package.json#packageManager names, so CI's toolchain
+# matches what the shipped image builds with.
 RUN corepack enable && corepack prepare pnpm@10.12.1 --activate
 
 # Pin pnpm's content-addressable store to a fixed, explicit path rather than letting pnpm

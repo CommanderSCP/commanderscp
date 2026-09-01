@@ -51,7 +51,11 @@ CLUSTER_NAME="${SCP_KIND_CLUSTER:-scp-runner-harness}"
 NAMESPACE="${SCP_KIND_NAMESPACE:-scp-runner-harness}"
 # The kind node image. DIGEST-PINNED IN THE MIRROR MANIFEST and re-tagged to this literal by
 # `ci-mirror.sh seed`; this default is what a developer's machine uses.
-NODE_IMAGE="${SCP_KIND_NODE_IMAGE:-kindest/node:v1.36.1}"
+# KIND_NODE_IMAGE, not NODE_IMAGE (2026-08-31): `ci-mirror.sh seed` now exports NODE_IMAGE into
+# the job env — the root Dockerfile's Node.js BASE image, an unrelated concept — and this
+# script's old variable of that name would have shadowed it one bad refactor away from feeding
+# `kind create cluster --image` a Node.js image.
+KIND_NODE_IMAGE="${SCP_KIND_NODE_IMAGE:-kindest/node:v1.36.1}"
 # The image the runner Jobs run. `alpine:3.20` is ALREADY in tools/ci-mirror/images.list (it is
 # managed-scan's clean scan subject), so the harness adds no new mirror entry for it — and it has a
 # shell, which is what lets one image stand in for all three runner classes' observable behaviour:
@@ -98,13 +102,13 @@ nodes:
         containerPath: ${NODE_WORKSPACE}
 EOF
 
-  log "creating cluster '${CLUSTER_NAME}' from ${NODE_IMAGE}"
+  log "creating cluster '${CLUSTER_NAME}' from ${KIND_NODE_IMAGE}"
   local t0 t1
   t0=$(date +%s)
   kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
   kind create cluster \
     --name "$CLUSTER_NAME" \
-    --image "$NODE_IMAGE" \
+    --image "$KIND_NODE_IMAGE" \
     --config "${WORKDIR}/kind-config.yaml" \
     --kubeconfig "$KUBECONFIG" \
     --wait 120s
