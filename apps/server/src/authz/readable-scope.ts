@@ -98,7 +98,7 @@ import type { Permission } from "./resolve.js";
  * so the LIST doors show those objects via `null`. **get-by-id does NOT admit them** — an earlier
  * version of this paragraph claimed it did, and that was measured false (org-root allow + a deny at
  * the object: `GET /objects/user/{id}` -> 403, while the list returns the row). Do not "repair" the
- * LIST door to match get-by-id on the strength of a comment: `role-binding-door.ts` §2d's projection
+ * LIST door to match get-by-id on the strength of a comment: `docs/authz/role-binding-door.md` §2d's projection
  * bar is stated against the LIST behaviour, and that repair would silently make the grant preview the
  * only door showing the row. No test pins this parity today — it is named in §8's open list.
  * `hasPermission()` called in ISOLATION at that object returns false, so the drift test below

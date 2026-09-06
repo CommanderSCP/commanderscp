@@ -1684,7 +1684,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     expect(
       inherited.statusCode,
       "the reversed ordering confers the group's authority — if this is no longer 201, the grant " +
-        "door has become subject-sensitive and role-binding-door.ts §2b's measurement is stale"
+        "door has become subject-sensitive and `docs/authz/role-binding-door.md` §2b's measurement is stale"
     ).toBe(201);
 
     // CLEAN UP, so the Operator does not carry Owner into the cases below. Revoking the group's
@@ -1973,7 +1973,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     expect(refused.statusCode, refused.body).toBe(409);
     // The message moved from "live user or service account" to "live principal that can
     // AUTHENTICATE" when the floor's anchor moved from the graph object's TYPE to the CREDENTIAL
-    // (`authz/role-binding-door.ts` §7, third revision — the phantom brick). Matched on the phrase
+    // (`docs/authz/role-binding-door.md` §7, third revision — the phantom brick). Matched on the phrase
     // that is about THIS case (an empty group) plus the permission, so the assertion stays about the
     // refusal rather than about the sentence around it.
     expect(refused.body).toContain("role_binding:write");
@@ -2242,7 +2242,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
         [...codes].sort(),
         `attempt ${attempt}: outcomes so far ${JSON.stringify(outcomes)} — a [200,200] pair means ` +
           `both revokes were admitted against a survivor the other was deleting, which is the ` +
-          `check-then-act race authz/role-binding-door.ts §0's advisory lock exists to close. ` +
+          `check-then-act race docs/authz/role-binding-door.md §0's advisory lock exists to close. ` +
           `A=${byBootstrap.body} B=${bySecond.body}`
       ).toEqual([200, 409]);
 
@@ -2333,7 +2333,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
         `attempt ${attempt}: outcomes so far ${JSON.stringify(outcomes)} — grant=${grantRes.body} ` +
           `join=${joinRes.body}. Exactly one of the two must be refused: every serial order of ` +
           `these two requests refuses one, so admitting both is an outcome no serial execution ` +
-          `produces (authz/role-binding-door.ts §0)`
+          `produces (docs/authz/role-binding-door.md §0)`
       ).toHaveLength(1);
 
       // AND THE END STATE MATCHES ONE OF THE TWO SERIAL ONES, read from the tables rather than
@@ -2360,7 +2360,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     // name: the ids, names and types of the principals inside a group. Ordered with the SHAPE
     // refusals — where it originally sat, "because it IS one" — it answered "who is in this group?"
     // for any caller who could reach the route, including one about to be told they have no standing
-    // at all. `authz/role-binding-door.ts` §7's 409 was already placed after the bars for exactly
+    // at all. `docs/authz/role-binding-door.md` §7's 409 was already placed after the bars for exactly
     // this reason; this case is what keeps the two consistent.
     const team = await freshGroup("disclosure");
     const ghost = await freshSubject();
@@ -2395,7 +2395,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   });
 
   it("MEASUREMENT (open, not a guard): role NAME authority is conferred by a permissions-subset grant", async () => {
-    // NOT A REFUSAL CASE. This records a property `authz/role-binding-door.ts` §2a and §8 state is
+    // NOT A REFUSAL CASE. This records a property `docs/authz/role-binding-door.md` §2a and §8 state is
     // OPEN, so that the statement in those comments is measured rather than asserted — and so that
     // anyone who later closes it has a case that changes colour.
     //
@@ -2442,7 +2442,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     expect(
       [granteeIsApprover, granterIsApprover],
       "if this is no longer [true, false] the door has grown a role-NAME bar and " +
-        "role-binding-door.ts §2a/§8's 'not checked' statement is now false — rewrite it"
+        "`docs/authz/role-binding-door.md` §2a/§8's 'not checked' statement is now false — rewrite it"
     ).toEqual([true, false]);
   });
 

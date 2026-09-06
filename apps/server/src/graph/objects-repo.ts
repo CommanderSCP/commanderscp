@@ -1909,7 +1909,7 @@ export async function deleteObject(
     }
   }
 
-  // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7) — DOOR C, HALF ONE: the RELEVANCE
+  // THE ADMINISTRATOR FLOOR (`docs/authz/role-binding-door.md` §7) — DOOR C, HALF ONE: the RELEVANCE
   // PROBE, which has to be read HERE because the tombstone below and the edge cascade further down
   // both destroy the evidence it reads. The check itself runs at the END of this function.
   //
@@ -2029,7 +2029,7 @@ export async function deleteObject(
   // cascade fires.
   //
   // The predicate takes §0's org lock itself, which this transaction is already holding by now
-  // (every `appendAuditEvent` in the cascade took the same key). See `role-binding-door.ts` §7.
+  // (every `appendAuditEvent` in the cascade took the same key). See `docs/authz/role-binding-door.md` §7.
   if (touchesRoleAuthority) {
     await assertOrgRetainsAdministrativeFloor(tx, {
       orgId: input.orgId,

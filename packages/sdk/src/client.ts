@@ -1458,7 +1458,7 @@ export class ScpClient {
       return unwrap(result);
     },
     /** Authors an ORG role. Refused if it names a built-in, carries an unknown permission, or
-     *  carries a permission the caller does not hold at the org root (role-binding-door.ts §9). */
+     *  carries a permission the caller does not hold at the org root (`docs/authz/role-binding-door.md` §9). */
     create: async (
       body: CreateRoleRequest,
       opts: { idempotencyKey?: string } = {}

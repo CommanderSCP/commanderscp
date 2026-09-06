@@ -67,7 +67,7 @@ export async function createStackManagedRoleBinding(
   input: StackBindingInput
 ): Promise<void> {
   // FIRST STATEMENT, as on the typed door: two concurrent applies reading before either writes is
-  // the shape `role-binding-door.ts` §0 takes this lock for.
+  // the shape `docs/authz/role-binding-door.md` §0 takes this lock for.
   await lockOrgRoleAuthority(tx, input.orgId);
 
   const role = await roleByName(tx, input.orgId, input.roleName);

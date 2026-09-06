@@ -148,7 +148,7 @@ export function registerOperatorCredentialRoutes(app: FastifyInstance, deps: App
       await requireInstanceOperator(deps, request, "instance operator credentials");
 
       // REVOKING YOUR OWN CREDENTIAL IS ALLOWED, and there is no last-credential floor here — the
-      // deliberate opposite of the administrative floor on role bindings (role-binding-door.ts §7).
+      // deliberate opposite of the administrative floor on role bindings (`docs/authz/role-binding-door.md` §7).
       // The difference is recoverability: an org that revokes its last Owner binding has NO way
       // back through the API, whereas a deployment that revokes its last operator credential is
       // recovered by setting SCP_OPERATOR_TOKEN and restarting — an action the operator of a

@@ -201,7 +201,7 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
   // eligibility resolves BUILT-IN names only. These three operations ship on top of that fix and
   // would be unsafe without it.
   //
-  // Every refusal is in `authz/role-binding-door.ts` §9. This file resolves inputs, orders the
+  // Every refusal is in `docs/authz/role-binding-door.md` §9. This file resolves inputs, orders the
   // bars, and writes the audit chain.
 
   typed.route({
@@ -379,7 +379,7 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
             permissionsAfter: [...updated.permissions].sort(),
             // THE BLAST RADIUS, recorded because it is not re-checked anywhere. Adding a permission
             // widens EVERY EXISTING BINDING of this role with no re-evaluation — the same property
-            // `role-binding-door.ts` §8 records for built-ins, except reachable through the API
+            // `docs/authz/role-binding-door.md` §8 records for built-ins, except reachable through the API
             // here. The subset rule bounds it to the editor's own authority and nothing bounds it
             // to the original author's.
             permissionsAdded: added,
@@ -606,7 +606,7 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
   // that team's members. MEASURED: a team-scoped Viewer got a 200 carrying a member's id, typeId and
   // name while the same token's `GET /objects/user/{that id}` answered 403.
   //
-  // SO THE PROJECTION IS FILTERED TOO (`authz/role-binding-door.ts` §2d). `readableSubsetOf` keeps
+  // SO THE PROJECTION IS FILTERED TOO (`docs/authz/role-binding-door.md` §2d). `readableSubsetOf` keeps
   // only principals inside this caller's readable scope, composed from `authz/readable-scope.ts`'s
   // one definition rather than re-derived — the same set the LIST doors return. That is NOT identical
   // to "what `GET /objects/{type}/{idOrUrn}` would admit": for an org-root reader carrying a lower
@@ -751,7 +751,7 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
   // operator fixing a typo is told about the typo rather than being told they lack standing to make
   // it. Step 6's 422 names OTHER rows — the ids, names and types of the principals inside a group —
   // so ahead of step 4 it handed the membership of any group in the org to a caller who was about to
-  // be 403'd. It now runs last. `authz/role-binding-door.ts` §7's 409 was already placed after the
+  // be 403'd. It now runs last. `docs/authz/role-binding-door.md` §7's 409 was already placed after the
   // bars for the same reason (it discloses how many administrators the org has left); the two are
   // now consistent, and that consistency is the rule rather than two independent judgement calls.
   typed.route({
@@ -838,7 +838,7 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
             });
 
             // 6 — THE SAME SUBJECT REFUSALS, APPLIED TO THE MEMBERS THIS BINDING WOULD EMPOWER
-            // (`authz/role-binding-door.ts` §2b). `assertBindableSubject` above judges the named
+            // (`docs/authz/role-binding-door.md` §2b). `assertBindableSubject` above judges the named
             // subject; when that subject is a `group` or `team` the binding also reaches everything
             // `member_of` leads to, and NOTHING looked at that set before 2026-08-27. A no-op for a
             // `user`/`service-account` subject and for an empty group.
@@ -868,7 +868,7 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
               reached
             });
 
-            // 7 — D7's ACKNOWLEDGEMENT (`authz/role-binding-door.ts` §2c, owner ruling 2026-08-27).
+            // 7 — D7's ACKNOWLEDGEMENT (`docs/authz/role-binding-door.md` §2c, owner ruling 2026-08-27).
             // AFTER §2b, deliberately: §2b names a defect in the ESTATE that no retry fixes (a
             // tombstoned member), this one names a value the caller can re-read and resend, and
             // reporting the unfixable one first costs a round trip fewer. Both are behind the
@@ -965,10 +965,10 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
   // `Administrator` binding immortal the day the role was deprecated — the exact opposite of a
   // deprecation — and re-checking `bindable_at` would make every binding written at a nonsensical
   // scope permanent, when cleaning those up is half the reason the column exists. See
-  // `authz/role-binding-door.ts` §4.
+  // `docs/authz/role-binding-door.md` §4.
   //
   // PLUS ONE REFUSAL THAT IS NOT AN AUTHORITY BAR AT ALL — the last-administrator 409
-  // (`authz/role-binding-door.ts` §7). Both bars above pass legitimately when the org's only Owner
+  // (`docs/authz/role-binding-door.md` §7). Both bars above pass legitimately when the org's only Owner
   // revokes their own org-root Owner binding: they hold `role_binding:write`, and Owner's permissions
   // are trivially a subset of Owner's. Measured on a fresh org, that request returned 200 and left
   // ZERO bindings — after which every endpoint 403s, `GET /roles` and `GET /role-bindings` included,
@@ -987,7 +987,7 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
         401: ProblemSchema,
         403: ProblemSchema,
         404: ProblemSchema,
-        // The last-administrator floor (`authz/role-binding-door.ts` §7).
+        // The last-administrator floor (`docs/authz/role-binding-door.md` §7).
         409: ProblemSchema
       }
     },
@@ -1007,7 +1007,7 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
         // both admitted, zero administrative bindings left, every endpoint 403 afterwards. The
         // transaction the comment below correctly insists on does not serialize that on its own —
         // READ COMMITTED gives every statement a fresh snapshot. See
-        // `authz/role-binding-door.ts` §0.
+        // `docs/authz/role-binding-door.md` §0.
         await lockOrgRoleAuthority(tx, auth.orgId);
 
         const binding = await getRoleBindingById(tx, auth.orgId, request.params.id);
@@ -1021,7 +1021,7 @@ export function registerRoleBindingRoutes(app: FastifyInstance, deps: AppDeps): 
           verb: "revoke"
         });
 
-        // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7) — DELETE FIRST, THEN ASK.
+        // THE ADMINISTRATOR FLOOR (`docs/authz/role-binding-door.md` §7) — DELETE FIRST, THEN ASK.
         //
         // This used to be `assertNotLastAdministrativeBinding`, evaluated BEFORE the delete and
         // excluding this row from its own count. That shape is why the floor guarded exactly one of

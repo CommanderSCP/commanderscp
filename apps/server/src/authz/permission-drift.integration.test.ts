@@ -79,7 +79,7 @@ const UNGATED_BY_DESIGN: Readonly<Record<string, string>> = {};
  * `array_append`ing a permission to one does not widen a role — it widens EVERY EXISTING BINDING OF
  * THAT ROLE, in every org, at once, with no per-org opt-out and no re-check.
  *
- * `authz/role-binding-door.ts` §8 records why that cannot be fixed at the write door: the subset
+ * `docs/authz/role-binding-door.md` §8 records why that cannot be fixed at the write door: the subset
  * rule is a WRITE-time test with no read-time mirror, so a binding written legitimately today
  * confers whatever its role gains tomorrow. Re-testing at resolve time would put ~20 permission
  * probes on the hot path of every authorization AND make a subject's authority depend on the

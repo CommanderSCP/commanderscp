@@ -20,7 +20,7 @@ import {
  * THE FEDERATION-IMPORT CARVE-OUT ON `member_of` IS DELIBERATE — pinned in BOTH directions
  * ================================================================================================
  *
- * `authz/role-binding-door.ts` §2a applies the no-escalation subset rule when a `member_of` edge is
+ * `docs/authz/role-binding-door.md` §2a applies the no-escalation subset rule when a `member_of` edge is
  * created, at `graph/relationships-repo.ts`'s `createRelationship`. It is wrapped in
  * `if (!input.federationImport)`, and until this file existed **that condition was pinned by nothing
  * in either direction**: delete it and no test in the tree goes red, while a peer's signed bundle
@@ -182,7 +182,7 @@ describe("§2a's federation-import carve-out on `member_of`", () => {
  * §7'S ADMINISTRATOR FLOOR TAKES THE SAME CARVE-OUT — and it was pinned by nothing
  * ================================================================================================
  *
- * The floor (`authz/role-binding-door.ts` §7) is called from TWO NEW CHOKE POINTS this increment
+ * The floor (`docs/authz/role-binding-door.md` §7) is called from TWO NEW CHOKE POINTS this increment
  * added — `graph/relationships-repo.ts`'s `deleteRelationship` and `graph/objects-repo.ts`'s
  * `deleteObject` — and each call is wrapped in `!input.federationImport`, byte-identically to §2a's.
  * **Nothing would have failed if either `!input.federationImport` were dropped.** What it would do

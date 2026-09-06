@@ -39,7 +39,7 @@ import { hasPermission } from "./resolve.js";
  *   not hold OrgAdmin. Without rule 2 this ordering would be the hole: a Viewer with
  *   `role_binding:write` could point a claim they control at a group somebody else made powerful.
  *
- * The reversed-ordering pair is exactly the shape `role-binding-door.ts` §2a/§2b had to be fixed for
+ * The reversed-ordering pair is exactly the shape `docs/authz/role-binding-door.md` §2a/§2b had to be fixed for
  * twice, which is why it is enumerated here rather than assumed.
  *
  * ------------------------------------------------------------------------------------------------
@@ -51,7 +51,7 @@ import { hasPermission } from "./resolve.js";
  * chose to delegate that decision to the directory, for that specific group.
  *
  * Nor does it re-check anything afterwards. A mapping authored today survives the author's own
- * revocation tomorrow — the same write-time-only property `role-binding-door.ts` §8 records for
+ * revocation tomorrow — the same write-time-only property `docs/authz/role-binding-door.md` §8 records for
  * bindings, and for the same reason: a read-time mirror would put ~20 permission probes on every
  * authorization.
  */

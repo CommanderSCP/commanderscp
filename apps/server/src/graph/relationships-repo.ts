@@ -395,7 +395,7 @@ export async function createRelationship(
   // `authz/resolve.ts`'s `subject_expand` walks `member_of` from_id -> to_id, so a role binding held
   // by a GROUP or TEAM resolves for every member. Writing this edge therefore hands `toId`'s
   // authority to `fromId` without a `role_bindings` row ever being written — which routes straight
-  // around `authz/role-binding-door.ts` §2, the rule that stops a `role_binding:write` holder minting
+  // around `docs/authz/role-binding-door.md` §2, the rule that stops a `role_binding:write` holder minting
   // themselves Owner. MEASURED before this guard: an org-root **Operator** — four rungs below
   // Administrator — self-joined a group holding Owner and resolved as Owner, using only the
   // `relationship:write` every org-root principal from Operator upward holds at every object.
@@ -414,12 +414,12 @@ export async function createRelationship(
   // THIS GUARDS ONE OF TWO ORDERINGS. Joining a group that ALREADY holds a binding is refused here;
   // joining an empty group and having a binding written onto it afterwards is not, and must not be —
   // the empty-group join is every ordinary team membership on the estate. The other ordering is
-  // `role-binding-door.ts` §2b, on the grant door, and §8 of that module lists what neither closes.
+  // `docs/authz/role-binding-door.md` §2b, on the grant door, and §8 of that module lists what neither closes.
   //
   // AND THERE IS A THIRD ORDERING: NEITHER. Concurrently, this join and that grant each read before
   // the other writes, so a request pair whose every SERIAL order refuses one of the two is admitted
   // twice. `assertMayJoinRoleBearingSubject` takes the org's advisory lock as its own first
-  // statement to close that (`role-binding-door.ts` §0) — HERE and not at the route, and taken
+  // statement to close that (`docs/authz/role-binding-door.md` §0) — HERE and not at the route, and taken
   // inside the guard and not beside it, because `createRelationship` has thirteen callers.
   //
   // The `federationImport` exemption is the one this file already applies to
@@ -839,7 +839,7 @@ export async function deleteRelationship(
     .set({ deletedAt: new Date(), revision: nextRevision })
     .where(eq(relationships.id, existing.id));
 
-  // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7) — DOOR B, AND THE CASCADE OF DOOR C.
+  // THE ADMINISTRATOR FLOOR (`docs/authz/role-binding-door.md` §7) — DOOR B, AND THE CASCADE OF DOOR C.
   //
   // Removing the `member_of` edge under a group's administrative binding leaves the BINDING ROW
   // INTACT while no live principal resolves through it any more. MEASURED, in four plain sequential

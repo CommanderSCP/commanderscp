@@ -214,7 +214,7 @@ export const CreateRoleBindingRequestSchema = z.object({
    * flow AND the exploit's step 2. It is accepted, because acknowledging zero is a TRUE statement at
    * the moment of the grant, and because the follow-on it enables is separately guarded: joining a
    * group that already holds a binding runs the no-escalation subset rule at the choke point
-   * (`authz/role-binding-door.ts` §2a), so an empty group can only be seated afterwards by a
+   * (`docs/authz/role-binding-door.md` §2a), so an empty group can only be seated afterwards by a
    * principal who already holds everything it carries. `undefined` and `[]` are therefore NOT the
    * same thing here — the first is "I did not look", the second is "I looked and it is empty" — and
    * only the second is admitted for a group subject.
@@ -509,7 +509,7 @@ export type CreateRoleRequest = z.infer<typeof CreateRoleRequestSchema>;
  * bound.
  *
  * ⚠️ WIDENING A ROLE WIDENS EVERY EXISTING BINDING OF IT, with no re-check — the same property
- * `role-binding-door.ts` §8 records for built-ins, except that here it is reachable through the API
+ * `docs/authz/role-binding-door.md` §8 records for built-ins, except that here it is reachable through the API
  * rather than only through a migration. The subset rule bounds it: a caller may only add
  * permissions they themselves hold at the org root, so a role can never be widened past its
  * editor's own authority. It is NOT bounded by what the original AUTHOR held, and it is not

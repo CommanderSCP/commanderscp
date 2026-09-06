@@ -361,7 +361,7 @@ export const ManifestRoleBindingSchema = z.object({
 export type ManifestRoleBinding = z.infer<typeof ManifestRoleBindingSchema>;
 
 /** One org-defined role. `permissions` must all be strings this system defines AND ones the
- *  applying principal holds at the org root (`role-binding-door.ts` §9). */
+ *  applying principal holds at the org root (`docs/authz/role-binding-door.md` §9). */
 export const ManifestRoleSchema = z.object({
   name: z.string().min(1).max(200),
   permissions: z.array(z.string()).max(100),

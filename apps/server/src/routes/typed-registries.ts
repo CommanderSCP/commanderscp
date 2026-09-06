@@ -411,7 +411,7 @@ export function registerTypedRegistryRoutes(
         401: ProblemSchema,
         403: ProblemSchema,
         404: ProblemSchema,
-        // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7), inherited from
+        // THE ADMINISTRATOR FLOOR (`docs/authz/role-binding-door.md` §7), inherited from
         // `graph/objects-repo.ts`'s `deleteObject`. DECLARED ON THE TEMPLATE, therefore on all ten
         // typed registries, and NOT on a hand-picked four — even though only `user`,
         // `service-account`, `group` and `team` can hold a role binding through the write door.

@@ -395,7 +395,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
         401: ProblemSchema,
         403: ProblemSchema,
         404: ProblemSchema,
-        // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7), inherited from
+        // THE ADMINISTRATOR FLOOR (`docs/authz/role-binding-door.md` §7), inherited from
         // `graph/objects-repo.ts`'s `deleteObject` — the same choke point, so the same declaration
         // as the typed-registry template next door, and for the reason stated there: the floor runs
         // when `objectTouchesRoleAuthority` says this row is some binding's subject or has a live

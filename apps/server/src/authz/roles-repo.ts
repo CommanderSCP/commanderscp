@@ -294,7 +294,7 @@ export async function assertPolicyApprovalRolesExist(
 }
 
 /** Storage for the custom-role authoring API (role-model.md §5 step 10). Decides nothing: every
- *  refusal lives in `authz/role-binding-door.ts` §9 and runs before any of these are called. */
+ *  refusal lives in `docs/authz/role-binding-door.md` §9 and runs before any of these are called. */
 export async function insertRole(
   tx: TenantTx,
   input: {

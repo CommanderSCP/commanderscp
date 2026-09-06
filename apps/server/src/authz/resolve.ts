@@ -247,7 +247,7 @@ export interface PermissionCheck {
  * parameter here rather than a second body.
  *
  * That is not tidiness. The two directions are used to answer the two halves of ONE rule
- * (`authz/role-binding-door.ts` §2a and §2b): the join door asks "what will this joiner inherit"
+ * (`docs/authz/role-binding-door.md` §2a and §2b): the join door asks "what will this joiner inherit"
  * and the grant door asks "who does this binding reach". If the walks disagreed about a live edge,
  * about the bound, or about cycle termination, one ordering of the same two requests would be
  * guarded and the other would not — which is the defect §2b exists to close, re-introduced one level
@@ -290,7 +290,7 @@ function memberOfClosureCte(opts: {
  * walked `from_id -> to_id` over live `member_of` edges. It is the reason a role binding held by a
  * GROUP grants authority to that group's members, and therefore the reason `graph/relationships-repo.ts`
  * has to apply the role-binding door's subset rule when a `member_of` edge is CREATED
- * (`authz/role-binding-door.ts` §2a): writing this edge is what makes the binding reach a new
+ * (`docs/authz/role-binding-door.md` §2a): writing this edge is what makes the binding reach a new
  * principal.
  *
  * EXTRACTED 2026-08-27 BECAUSE IT WAS ABOUT TO BE HAND-TYPED FOR THE FIFTH TIME. The three copies in
@@ -324,7 +324,7 @@ export function subjectExpandCte(
  * way: the seed group/team, plus every principal (and nested group) that transitively reaches it.
  *
  * WHY A SECOND DIRECTION EXISTS AT ALL. `subjectExpandCte` is seeded at a KNOWN principal and finds
- * the groups above it, which is what a permission check needs. `authz/role-binding-door.ts` §2b asks
+ * the groups above it, which is what a permission check needs. `docs/authz/role-binding-door.md` §2b asks
  * the opposite question — a binding is about to be written ON a group, and the door needs the
  * principals BELOW it — and the group is the known end there. Seeding `subjectExpandCte` at the
  * group would walk further UP into the groups the group belongs to, which is a different set and
@@ -685,7 +685,7 @@ export interface ContributingBindingRow {
  * IT LIVES HERE, BESIDE THE WALKS, ON PURPOSE. The obvious home is `authz/roles-repo.ts` with the
  * other binding reads, and putting it there would mean a SECOND transcription of the `member_of`
  * and containment expansions. This repo has already paid for a duplicated walk definition
- * (`role-binding-door.ts` §2b emits its downward walk from the same `memberOfClosureCte` as the
+ * (`docs/authz/role-binding-door.md` §2b emits its downward walk from the same `memberOfClosureCte` as the
  * upward one for exactly this reason), and two copies of a traversal that disagree about the depth
  * bound or a live edge is a defect that presents as an explanation which does not match the
  * decision it explains.

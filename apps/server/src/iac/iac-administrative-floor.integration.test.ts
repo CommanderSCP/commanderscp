@@ -18,7 +18,7 @@ import { objects, relationships } from "../db/schema.js";
  * THE ADMINISTRATOR FLOOR IS AT THE CHOKE POINT, NOT AT THE ROUTE — proven through IaC APPLY
  * ================================================================================================
  *
- * `authz/role-binding-door.ts` §7's floor is enforced from `graph/relationships-repo.ts`'s
+ * `docs/authz/role-binding-door.md` §7's floor is enforced from `graph/relationships-repo.ts`'s
  * `deleteRelationship` and `graph/objects-repo.ts`'s `deleteObject`, not from
  * `routes/relationships.ts` and `routes/objects-generic.ts`.
  * `routes/rbac-administrative-floor.integration.test.ts` measures every refusal through the HTTP

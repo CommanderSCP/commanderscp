@@ -18,7 +18,7 @@ import { objects, relationships } from "../db/schema.js";
  * THE `member_of` SUBSET RULE IS AT THE CHOKE POINT, NOT AT THE ROUTE — proven through IaC APPLY
  * ================================================================================================
  *
- * `authz/role-binding-door.ts` §2a closes the escalation where a lesser principal joins a group that
+ * `docs/authz/role-binding-door.md` §2a closes the escalation where a lesser principal joins a group that
  * holds a powerful role binding and inherits it through `authz/resolve.ts`'s `subject_expand`.
  * `routes/rbac-role-binding-door.integration.test.ts` pins that through `POST /relationships`.
  *

@@ -207,7 +207,7 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
         401: ProblemSchema,
         403: ProblemSchema,
         404: ProblemSchema,
-        // THE ADMINISTRATOR FLOOR (`authz/role-binding-door.ts` §7). Removing the `member_of` edge
+        // THE ADMINISTRATOR FLOOR (`docs/authz/role-binding-door.md` §7). Removing the `member_of` edge
         // that makes an org's last administrative binding reachable is refused with 409 from
         // `graph/relationships-repo.ts`'s `deleteRelationship` — a CHOKE POINT, so this route
         // inherits the refusal and must declare it. Undeclared it would have been serialized as a

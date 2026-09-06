@@ -927,7 +927,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
   // Administrator, Owner and OrgAdmin.
   //
   // THE PROPERTY SURVIVES, ON A DIFFERENT FOOTING. That door applies the NO-ESCALATION SUBSET RULE
-  // (`authz/role-binding-door.ts` §2): a binding may be written only if every permission the granted
+  // (`docs/authz/role-binding-door.md` §2): a binding may be written only if every permission the granted
   // role carries is one the acting subject already holds AT THAT SCOPE, computed by running
   // `hasPermission` per member of the target role's array. `Owner` holds `freeze:override`,
   // `change:emergency` and `campaign:deadline-override`; Administrator deliberately holds none of
@@ -940,7 +940,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
   // a GROUP resolves for every member (`authz/resolve.ts`'s `subject_expand` walks `member_of`), so
   // until 2026-08-27 an Administrator could bind Owner to a group and then join it — and so could an
   // ORG-ROOT OPERATOR, four rungs lower, since creating that edge needed only the `relationship:write`
-  // every org-root principal holds at every object. `authz/role-binding-door.ts` §2a closes it by
+  // every org-root principal holds at every object. `docs/authz/role-binding-door.md` §2a closes it by
   // applying the SAME subset rule at `graph/relationships-repo.ts`'s `createRelationship`, so the
   // rule now bounds the membership door as well as the binding door, on every caller of that
   // function — IaC apply included.
@@ -955,7 +955,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
   // `iac/iac-member-of-role-escalation.integration.test.ts`.
   //
   // PATHS KNOWN TO BE OPEN, named here rather than implied, with the full list and the reasoning in
-  // `authz/role-binding-door.ts` §8:
+  // `docs/authz/role-binding-door.md` §8:
   //
   //   * §2a applies the subset rule and NOT bar §1, so an actor who already holds everything a
   //     group's bindings carry may add a THIRD party to that group without `role_binding:write`.

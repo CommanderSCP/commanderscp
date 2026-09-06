@@ -24,7 +24,7 @@ import {
  * THE ADMINISTRATOR FLOOR IS A PROPERTY OF THE ORG — every door that can falsify it
  * ================================================================================================
  *
- * `authz/role-binding-door.ts` §7's floor shipped as `assertNotLastAdministrativeBinding`: a rule
+ * `docs/authz/role-binding-door.md` §7's floor shipped as `assertNotLastAdministrativeBinding`: a rule
  * owned by `routes/role-bindings.ts`'s DELETE handler, phrased as "what would be left if I removed
  * THIS binding". It refused the revoke correctly, its advisory lock serialized it correctly, and it
  * guarded **one of three public-API doors that can empty an org's administrators**. The other two
@@ -66,7 +66,7 @@ import {
  * ------------------------------------------------------------------------------------------------
  * AND D7 + ITS PREVIEW, WHICH ARE NOT THE FLOOR — why they live here anyway
  * ------------------------------------------------------------------------------------------------
- * The acknowledgement (`authz/role-binding-door.ts` §2c) and `GET /role-bindings/grant-preview`
+ * The acknowledgement (docs/authz/role-binding-door.md §2c) and `GET /role-bindings/grant-preview`
  * (§2d) are grant-side, not floor-side. They are measured here rather than in the door suite for one
  * reason: that suite's `grant()` helper AUTO-ACKNOWLEDGES, so every case in it would pass against a
  * door that had no acknowledgement at all. Cases about the acknowledgement have to be written where
@@ -127,7 +127,7 @@ import {
  *       -> **0 failed, 45 passed.** Recorded because it is the honest result: the short-circuit is a
  *          COST decision and removing it changes no verdict in any suite. What it DOES change is
  *          that an org already below the floor could no longer revoke a `deny` row or a
- *          service-scoped binding. Not pinned; named in `role-binding-door.ts` §7.
+ *          service-scoped binding. Not pinned; named in `docs/authz/role-binding-door.md` §7.
  *  7. `authz/role-binding-door.ts` — deleted §2a's member-shape half (the
  *     `unbindablePrincipalReasons(reachedByJoiner)` refusal in `assertMayJoinRoleBearingSubject`)
  *       -> **1 failed, 44 passed.** "§2b's refusals apply on the JOIN path…": `expected 201 to be
@@ -238,7 +238,7 @@ import {
  *   - **the credential anchor's own limit**: a `users` row with no password, no `oidc_subject` and
  *     no live PAT counts as credentialed and cannot actually sign in — and the same is true of an
  *     IdP-provisioned row whose subject the IdP has since disabled, which is the FIELD-REACHABLE
- *     shape rather than a hand-SQL one. Deliberate — see `authz/role-binding-door.ts` §8 for why
+ *     shape rather than a hand-SQL one. Deliberate — see `docs/authz/role-binding-door.md` §8 for why
  *     every tighter anchor is time-varying and why the honest position is that this floor bounds
  *     what the API can produce and not what an identity provider can.
  *   - **the preview's ONE divergence from `hasPermission`**: `readableObjectFilterSql` returns
@@ -1339,7 +1339,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
 
     // THE GRANTER: `OrgAdmin` bound at the SERVICE. Written through the harness rather than through
     // the door on purpose — `bindable_at` for OrgAdmin is `organization`, so this is exactly the
-    // hand-written-SQL population `authz/role-binding-door.ts` §4 says the door must keep working
+    // hand-written-SQL population `docs/authz/role-binding-door.md` §4 says the door must keep working
     // for, and it is the only shape that holds `role_binding:write` below the org root.
     const granter = await createTestUser(server, org, [{ role: "OrgAdmin", scope: service }]);
     // The role id is read with the ADMIN's token, and that is not a shortcut: `GET /roles` is pinned
