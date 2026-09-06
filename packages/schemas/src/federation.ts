@@ -403,28 +403,7 @@ export const OutpostConfigSchema = z.object({
 });
 export type OutpostConfig = z.infer<typeof OutpostConfigSchema>;
 
-/**
- * THE RECONCILE PRECONDITION TOKEN — one `objectId:version` pair per live claimant the caller
- * PREVIEWED, sent as the repeatable `?ifClaimant=` query parameter (optimistic concurrency).
- *
- * WHY A PAIR AND NOT A BARE ID. Reconcile's outcome is derived from the set of live `outpost` rows
- * bound to one peer, read INSIDE the write transaction — i.e. after whatever the caller previewed.
- * Three things can change in that window and all three change the outcome:
- *   * a claimant APPEARS — a new id enters the set (a locally-authored row can then outrank the
- *     shadow the operator meant to adopt, silently DROPPING their entered value);
- *   * a claimant DISAPPEARS — an id leaves the set (soft-deleted elsewhere);
- *   * a claimant's ORIGIN/PROVENANCE CHANGES — the id is UNCHANGED, so ids alone are blind to it,
- *     yet a shadow adopted in the meantime is no longer a shadow and no longer ranks last.
- * `version` catches the third: every writer of `objects` that can restamp `originDomainId` or clear
- * `provenance` bumps `version` unconditionally (`graph/objects-repo.ts` — adoption is `updateObject`
- * with `existing.version + 1`). `revision` would NOT do: it is AUTHOR-assigned on the import path,
- * so it is not locally monotone.
- *
- * Both halves are already on {@link OutpostConfigSchema}, so the token is constructible from exactly
- * the array `GET /federation/outposts` returned — no second fetch, no new read-side field, and the
- * request stays CHECKABLE against the preview that was rendered beside it (which an opaque digest or
- * a server-minted ETag would not be).
- */
+/** THE RECONCILE PRECONDITION TOKEN. See docs/schemas/federation.md §1. */
 export const OUTPOST_CLAIMANT_TOKEN_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[1-9][0-9]*$/;
 
@@ -515,27 +494,7 @@ export const OutpostConfigReconcileResultSchema = z.object({
 });
 export type OutpostConfigReconcileResult = z.infer<typeof OutpostConfigReconcileResultSchema>;
 
-/**
- * THE STALE-PRECONDITION REFUSAL BODY — `412 Precondition Failed` from
- * `POST /federation/outposts/{peer}/reconcile` when the `?ifClaimant=` set does not match the live
- * claimants read inside the transaction.
- *
- * 412, NOT A SECOND 409. The 409 on this route is the AUTHORITY CONFLICT and it is PERMANENT until
- * the operator chooses differently (`?keep=`); staleness is TRANSIENT and retryable after a
- * re-preview. Collapsing both onto one status turns "choose differently" into "look again, then
- * press the same button" — and consumers here key on status alone. 412 is also already the house's
- * optimistic-concurrency refusal (`updateObject`'s `expectedVersion`). NOT 428: the precondition is
- * optional by design, so the server must never demand one.
- *
- * `claimants` IS THE POINT. A bare refusal would force a second read and open a second window; the
- * refusal carries the FRESH claimant list so a caller CAN re-render a real preview from the same
- * response, then re-issue with a fresh token, without a second read. It is an RFC 9457 extension
- * member, like the in-house `decision_id`.
- *
- * NOT EVERY CALLER TAKES THAT OFFER (R3, PR #156 residual). `scp federation outpost reconcile`
- * (`packages/cli/src/cli.ts`) does: it re-previews straight from this body. The Outposts web panel
- * (`apps/web/src/routes/outpost-configuration.tsx`) does not — it treats the 412 as a signal to
- * refetch the list instead, deliberately paying the second round trip this field exists to save. */
+/** THE STALE-PRECONDITION REFUSAL BODY. See docs/schemas/federation.md §2. */
 export const OutpostReconcileStaleProblemSchema = ProblemSchema.extend({
   /** Every live `outpost` config row bound to the peer AT THE MOMENT OF REFUSAL, most authoritative
    *  first — the same projection `GET /federation/outposts` returns, so a caller can re-derive the
@@ -557,20 +516,7 @@ export const OutpostReconcileStaleProblemSchema = ProblemSchema.extend({
 });
 export type OutpostReconcileStaleProblem = z.infer<typeof OutpostReconcileStaleProblemSchema>;
 
-// -------------------------------------------------------------------------------------------
-// M16.2 phase A (E4) — THE NARROW PEER PATCH. `POST /federation/peers` (pair/re-pair) is the only
-// peer write there was, and it is a FOOTGUN for a settings form: `publicKey` is REQUIRED there, and
-// a DIFFERENT value is treated as a KEY ROTATION that supersedes the current key window and
-// hard-revokes the old key (sequence-anchored, `peers-repo.ts`). A UI that round-trips a peer and
-// re-pairs it therefore rotates the peer's trust anchor whenever it drops or mangles the key.
-//
-// This request body admits NO KEY MATERIAL AT ALL — not `publicKey`, not `cosignPublicKey` — so the
-// PATCH route is STRUCTURALLY incapable of rotating, superseding or revoking a peer key. `role` is
-// likewise absent: a peer's federation role is an identity-level assertion established at pairing,
-// not a settings-form field. Every field is optional and ABSENT MEANS PRESERVE (the same tri-state
-// discipline re-pair uses); `deliveryTarget: null` explicitly CLEARS back to the instance-env
-// fallback. Key rotation stays exactly where it was — a deliberate re-pair.
-// -------------------------------------------------------------------------------------------
+// M16.2 phase A (E4) — THE NARROW PEER PATCH. See docs/schemas/federation.md §3.
 
 export const UpdateFederationPeerRequestSchema = z.object({
   name: z.string().min(1).max(200).optional(),
@@ -671,19 +617,7 @@ export const FederationPeerStatusSchema = z.object({
    *  Reports `"poll"` for a pokeMode peer that has never been poked (D2), when this instance has no
    *  outbound client-cert material (D4), and while the peer's last pull failed (the reconnect leg). */
   effectiveCadence: z.enum(["poke", "poll"]).optional(),
-  // -----------------------------------------------------------------------------------------
-  // M16.2 phase A (E3) — PENDING-VS-APPLIED, HONESTLY. Every field below is optional/additive and
-  // nullable ("no observation"), and every NAME says what it MEASURES.
-  //
-  // THE ONE-SIDED DERIVATION (the reason there is no `appliedAtPeer` field here, and never will be
-  // until M16.4 builds one): `sync_cursors` records only what WE applied FROM a peer, never what a
-  // peer applied FROM US; `export-repo.ts` ships only this domain's own entries, so a return bundle
-  // cannot carry our sequences back; and `bundle_transfers` has no production UPDATE path, so every
-  // EXPORT row is inserted `created` and never advances. The strongest honest commander-side
-  // statement is therefore PENDING-EXPORT — "this much of my own journal has not been put into a
-  // bundle addressed to that peer yet" — which says NOTHING about what the peer applied. A field
-  // named for application at the peer would be a fabrication, so there isn't one.
-  // -----------------------------------------------------------------------------------------
+  // M16.2 phase A (E3) — PENDING-VS-APPLIED, HONESTLY. See docs/schemas/federation.md §4.
   /** The highest `throughSequence` of any SYNC EXPORT bundle this instance has produced for this
    *  peer. `null` = never exported to this peer — deliberately NOT `0`, which would read as "synced
    *  up to the beginning". Measures WHAT WE PUT ON THE WIRE, never what the peer accepted. */
@@ -718,15 +652,7 @@ export const FederationPeerStatusSchema = z.object({
    *  With two rows bound to one peer the authoritative one always wins — this used to be a
    *  last-write-wins map, in which a shadow could silently override the commander's own assertion. */
   trustTierProvenance: z.enum(["declared", "unverified"]).nullable().optional(),
-  /** THE CONFIGURED TRANSPORT CHANNEL — config-derived, never an observation, and named for that
-   *  (review round 4 replaced a `connectivity` field whose `"connected"` value asserted reachability
-   *  this instance had not observed). `"dialable"` = an https/mTLS `baseUrl` is configured, so this side
-   *  MAY dial the peer — it does NOT mean the peer has ever been reached; `lastPullAttemptAt`/
-   *  `lastPullSuccessAt`/`effectiveCadence` in this same row are the observations, and they do reflect
-   *  failure. `"air-gap"` = NO base URL and a configured `deliveryTarget` (a file/object channel).
-   *  `null` = not honestly derivable, declared in `unknownFields`, in two cases: no transport configured
-   *  at all, or a base URL federation refuses to dial (plain http) — which is a contradictory
-   *  configuration to surface, not an air-gap posture to infer. */
+  /** THE CONFIGURED TRANSPORT CHANNEL. See docs/schemas/federation.md §5. */
   transportMode: z.enum(["dialable", "air-gap"]).optional().nullable(),
   /** The fields of THIS peer-status row whose values this instance CANNOT OBSERVE, by name — the
    *  same honesty contract `ServiceBoardRowSchema.unknownFields` established. A listed field still
@@ -772,13 +698,7 @@ export const ExportJournalRequestSchema = z.object({
    *  BOTH absent refuses fail-closed). The response body stays the bundle document, unchanged —
    *  the drop is the server-side leg of the CDS walk the operator otherwise does by hand. */
   deliver: z.boolean().optional(),
-  /** DIVERGENCE RAIL 2 (multi-region-instance-resilience.md §7.2) — the puller's cursor anchor:
-   *  the `rowHash` of the entry it has applied AT `sinceSequence`. The exporter compares it against
-   *  its OWN journal row at that sequence and refuses (`journal_divergence`) on mismatch — proof its
-   *  tail was rolled back and re-minted after an async-replication failover. Additive & OPTIONAL:
-   *  only FULL-scope receivers hold a real anchor (a sparse receiver's cursor `rowHash` is null and
-   *  it omits this), and an un-upgraded puller simply never sends it (rail 1 still covers the strict
-   *  `sinceSequence > tail` case with no new wire data). */
+  /** DIVERGENCE RAIL 2. See docs/schemas/federation.md §6. */
   lastAppliedRowHash: z.string().optional()
 });
 
@@ -789,11 +709,7 @@ export const ExportJournalRequestSchema = z.object({
  *  tests all match ONE literal rather than restating it. */
 export const JOURNAL_DIVERGENCE_PROBLEM_TYPE = "urn:scp:federation:journal_divergence";
 
-/** The `journal_divergence` 409 body. Extension members carry the exporter's OWN tail at the moment
- *  of refusal so an operator (or `scp federation doctor`) can see how far the fork/rollback reaches
- *  in one round trip. OPTIONAL, never required (the PR #156 lesson `OutpostReconcileStaleProblemSchema`
- *  records: a REQUIRED extension a throw path fails to populate turns a valid 409 into a serializer
- *  500). Rails 1, 2, and 4 all refuse with this shape. */
+/** The `journal_divergence` 409 body. See docs/schemas/federation.md §7. */
 export const JournalDivergenceProblemSchema = ProblemSchema.extend({
   exporterTailSequence: z.number().int().nonnegative().optional(),
   exporterTailRowHash: z.string().optional()
@@ -801,11 +717,7 @@ export const JournalDivergenceProblemSchema = ProblemSchema.extend({
 export type JournalDivergenceProblem = z.infer<typeof JournalDivergenceProblemSchema>;
 export type ExportJournalRequest = z.infer<typeof ExportJournalRequestSchema>;
 
-// -------------------------------------------------------------------------------------------
-// The `.scpbundle` envelope (DESIGN §13 file transport). Deliberately NOT a tar/zip archive —
-// see federation-journal.ts's module doc for the robustness rationale — a single bounded,
-// checksummed, signed JSON document instead.
-// -------------------------------------------------------------------------------------------
+// The `.scpbundle` envelope (DESIGN §13 file transport). See docs/schemas/federation.md §8.
 
 export const SyncBundleHeaderSchema = z.object({
   formatVersion: z.literal(1),
@@ -818,13 +730,7 @@ export const SyncBundleHeaderSchema = z.object({
 });
 export type SyncBundleHeader = z.infer<typeof SyncBundleHeaderSchema>;
 
-/** DIVERGENCE RAIL 4 (multi-region-instance-resilience.md §7.2) — the exporter's SIGNED attestation
- *  of its OWN journal tail, carried on EVERY export (even an empty one). Signed over
- *  `{exporterDomainId, peerDomainId, tailSequence, tailRowHash}` with the same instance key the
- *  bundle uses — the domain ids are bound in so an attestation cannot be replayed onto another
- *  bundle. The importer persists it as a MONOTONIC high-water mark per (peer, origin) and refuses
- *  `journal_divergence` on any regression or same-height content change — which is what makes a
- *  lost/rolled-back tail detectable for a NARROW-scope peer, where rails 1–3 are silent. */
+/** DIVERGENCE RAIL 4. See docs/schemas/federation.md §9. */
 export const JournalTailAttestationSchema = z.object({
   tailSequence: z.number().int().nonnegative(),
   tailRowHash: z.string(),
@@ -845,12 +751,7 @@ export const SyncBundleSchema = z.object({
 });
 export type SyncBundle = z.infer<typeof SyncBundleSchema>;
 
-/** §7.2.6 RESYNC — the SIGNED CROSS-DOMAIN HANDSHAKE. The IMPORTER (the diverged side) sends this to
- *  the exporter's `POST /federation/resync`. `requestSignature` is the importer's signature over a
- *  canonical `{resync:true, importerDomainId, exporterDomainId}` payload, made with the importer's own
- *  instance key — the exporter verifies it against the importer's paired public key, so the request
- *  authenticates the importer authorizing a forced overwrite of ITS OWN replica. `peer` is the
- *  importer's own domain id (how the exporter knows it as a peer). */
+/** §7.2.6 RESYNC — the SIGNED CROSS-DOMAIN HANDSHAKE. See docs/schemas/federation.md §10. */
 export const FederationResyncRequestSchema = z.object({
   peer: z.string().min(1),
   requestSignature: z.string()
@@ -1044,12 +945,7 @@ export const ImportPromotionResponseSchema = z.object({
 });
 export type ImportPromotionResponse = z.infer<typeof ImportPromotionResponseSchema>;
 
-// ===========================================================================================
-// M15.5(c) — the RETRANS VALIDATE-THEN-RELAY (ADR-0019 §2). The byte tarball itself is a
-// SEPARATE channel artifact (never part of any federation bundle — bundles stay metadata-only,
-// ADR-0009); these are only the API request/response shapes for driving the relay. The tarball
-// crosses the CDS out-of-band as a file, exactly like the `.scpbundle` walk.
-// ===========================================================================================
+// M15.5(c) — the RETRANS VALIDATE-THEN-RELAY (ADR-0019 §2). See docs/schemas/federation.md §11.
 
 /** `POST /federation/relay` — build the signed relay tarball for an imported, M17.4(a)-verified
  *  promotion (retrans-role instances only). */
@@ -1162,15 +1058,7 @@ export const RelayBuildListResponseSchema = z.object({
 });
 export type RelayBuildListResponse = z.infer<typeof RelayBuildListResponseSchema>;
 
-// ===========================================================================================
-// FEDERATION AUDIT WITNESS (multi-region-instance-resilience.md §7.2.7) — `GET
-// /federation/audit-witnesses?originDomainId=`, the OPERATOR READ SURFACE for what this domain
-// has passively witnessed of a peer's audit-chain head. This is what the post-failover runbook's
-// peers-witness comparison (§7.2 step 5) actually reads: `scp audit verify` alone cannot see a
-// truncated chain because any prefix of a valid hash chain verifies as valid, so the comparison
-// needs a peer's independent, earlier-recorded view of the origin's chain. Data access:
-// `federation/audit-witness-repo.ts`'s `listAuditWitnessesForOrigin`.
-// ===========================================================================================
+// FEDERATION AUDIT WITNESS. See docs/schemas/federation.md §12.
 
 /** One witnessed entry of an origin domain's audit chain, in the order it was witnessed. */
 export const AuditWitnessSchema = z.object({

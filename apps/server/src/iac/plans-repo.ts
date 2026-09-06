@@ -369,15 +369,7 @@ async function objectUrnByIdIncludingTombstones(
   return row?.urn ?? null;
 }
 
-/**
- * Live objects this stack OWNS — the object prune pool.
- *
- * Keyed on the server-written `managed_by_stack` column (drizzle/0068), NOT on
- * `labels @> {"scp:managed-by":"iac","scp:stack":…}` as it was until then. That containment test
- * read a map the prune target itself could write under plain `object:write`, so two label keys put
- * an arbitrary object into this delete pool — or took an object out of it, so its own stack could
- * never decommission it. `iac/stack-ownership.ts` has the full account.
- */
+/** Live objects this stack OWNS — the object prune pool. See docs/iac/plans-repo.md §1. */
 async function fetchManagedObjects(tx: TenantTx, orgId: string, stackName: string) {
   return tx
     .select()
@@ -392,14 +384,7 @@ async function fetchManagedObjects(tx: TenantTx, orgId: string, stackName: strin
 }
 
 /** Live relationships this stack owns — the relationship prune pool. Same column, same reason. */
-/**
- * Bindings THIS stack owns (drizzle/0108). The `managed_by_stack` predicate is the whole safety
- * property of IaC-managed authority: a binding granted through `POST /role-bindings` carries NULL,
- * never matches, and therefore cannot be revoked by any manifest.
- *
- * Joined to `roles` for the NAME, because a manifest declares a role by name and the diff has to
- * key on the same thing the author wrote.
- */
+/** Bindings THIS stack owns (drizzle/0108). See docs/iac/plans-repo.md §2. */
 async function listStackManagedRoleBindings(tx: TenantTx, orgId: string, stackName: string) {
   return tx
     .select({
@@ -550,11 +535,7 @@ export async function computeDiffForManifest(
   // A hook's owning object is its COMPONENT — the row hangs off it and inherits its ownership, the
   // same rule a source mapping's component and a producer's component get.
   for (const hook of manifest.pipelineHooks ?? []) referencedUrns.add(hook.componentUrn);
-  // A role binding names TWO objects and OWNS NEITHER. Unlike every collection above — where the
-  // referenced object is the row's owner and the stack declares it — a binding points at a subject
-  // and a scope that almost always live outside this stack (a user, an org root, somebody else's
-  // service). They are added here so `endpointId` can resolve them at apply; ownership is
-  // unaffected, and `computePlanDiff` never treats them as objects this stack manages.
+  // A role binding names TWO objects and OWNS NEITHER. See docs/iac/plans-repo.md §3.
   for (const binding of manifest.roleBindings ?? []) {
     referencedUrns.add(binding.subjectUrn);
     referencedUrns.add(binding.scopeUrn);
@@ -645,12 +626,7 @@ export async function computeDiffForManifest(
     listPlacementsForComponents(tx, orgId, ownedIdList)
   ]);
 
-  // THE BINDING POOL SPANS OBJECTS *AND* PLACEMENTS. `executor_bindings.target_object_id` points at
-  // either, and a placement is not in `manifest.objects` (that door refuses pair-bound types, #207),
-  // so keying the pool on owned OBJECTS alone made every binding on a placement invisible to the
-  // diff: unadoptable (a re-plan proposes it forever) and unprunable. Sequenced after the placement
-  // read rather than folded into the Promise.all above, because the placement ids ARE the extra
-  // targets — the dependency is real, not incidental ordering.
+  // THE BINDING POOL SPANS OBJECTS *AND* PLACEMENTS. See docs/iac/plans-repo.md §4.
   const ownedBindingRows = await listExecutorBindingsForTargets(tx, orgId, [
     ...ownedIdList,
     ...ownedPlacementRows.map((row) => row.placementId)
@@ -773,24 +749,14 @@ export async function computeDiffForManifest(
     const ecosystemOf = (row: ProducerRow) =>
       row.ecosystem as ResolvedManifestDependencyProducer["ecosystem"];
 
-    // THE PRUNE POOL — DROP, and here the claim holds. This pool decides what gets RETRACTED. A
-    // declaration whose producer cannot be named is one this plan can neither honestly report a
-    // prune of (the reviewed entry names the producer LOSING the coordinate) nor prove ownership
-    // of, since ownership is inherited from a component that is no longer there. Dropping it means
-    // the retraction does not happen: inaction, and the coordinate keeps the behaviour it has today.
+    // THE PRUNE POOL. See docs/iac/plans-repo.md §5.
     const toManaged = (row: ProducerRow): ResolvedManifestDependencyProducer | null => {
       const producerUrn = objectsById.get(row.producerObjectId)?.urn;
       if (!producerUrn) return null;
       return { producerUrn, ecosystem: ecosystemOf(row), coordinate: row.coordinate };
     };
 
-    // THE EXISTENCE POOL — KEEP, ALWAYS. This pool answers "does this coordinate already have a
-    // holder", and the answer is YES whether or not the holder can be named: the row is live and the
-    // next declaration is an upsert straight over it. Dropping it made the diff emit a `create`,
-    // whose reason sentence tells the reviewing operator the coordinate "is polled as third-party
-    // today" — so the plan inverted its own most consequential fact and the apply performed an
-    // unreviewed overwrite. Keeping the row under {@link unresolvedProducerUrn} makes it an `update`
-    // that NAMES the situation, which `invalidProducerDeclarations` refuses in its own branch.
+    // THE EXISTENCE POOL. See docs/iac/plans-repo.md §6.
     const toExisting = (row: ProducerRow): ResolvedManifestDependencyProducer => ({
       producerUrn:
         objectsById.get(row.producerObjectId)?.urn ?? unresolvedProducerUrn(row.producerObjectId),
@@ -877,13 +843,7 @@ export async function computeDiffForManifest(
       rollout: row.rollout
     });
   }
-  // ROLE BINDINGS AND ORG ROLES (drizzle/0108). Read UNCONDITIONALLY for the reason the rollout
-  // pool gives: absent means empty for both, so a prune is always in scope and a pool we skipped
-  // reading would make every prune a silent no-op.
-  //
-  // SCOPED TO THIS STACK'S OWN ROWS. `managed_by_stack = :stackName` is the whole safety property:
-  // a binding granted through `POST /role-bindings` carries NULL, is invisible here, and therefore
-  // cannot be revoked by any manifest.
+  // ROLE BINDINGS AND ORG ROLES. See docs/iac/plans-repo.md §7.
   const managedRoleBindings: ResolvedManifestRoleBinding[] = [];
   const roleBindingRows = await listStackManagedRoleBindings(tx, orgId, manifest.stackName);
   // Both endpoints are raw object-id foreign-key columns, never URNs, so the id-or-urn ambiguity
@@ -1054,11 +1014,7 @@ export async function computeDiffForManifest(
   // its output well-formed, which would otherwise hide the manifest bug behind a plausible plan.
   assertProjectionsUnique(resolvedManifest);
 
-  // §9 — STACK THEFT IS A 409, NOT AN INTERNAL ERROR. `computePlanDiff` throws a typed
-  // `StackOwnershipConflictError` when the manifest names an object another stack manages; without
-  // this mapping it would surface as a 500 and read as a server fault rather than the deliberate
-  // refusal it is. Adoption of an UNMANAGED object is untouched and stays legal — that is how an
-  // existing estate comes under IaC in the first place.
+  // §9 — STACK THEFT IS A 409, NOT AN INTERNAL ERROR. See docs/iac/plans-repo.md §8.
   const diff = computeDiffOrConflict(resolvedManifest, {
     existingObjects,
     managedRelationships,
@@ -1521,15 +1477,7 @@ export async function prepareApplyChecks(
     return resolution;
   }
 
-  // ROLE BINDING ENDPOINTS. A binding names two objects and OWNS NEITHER — the subject and the
-  // scope almost always live outside this stack — so they are resolved here rather than falling
-  // out of the object loop above, which only walks objects the manifest DECLARES. Without this
-  // `endpointId` throws at apply and the whole plan 500s, which is exactly what it did.
-  //
-  // No authorization check is attached: writing a binding is not writing the subject or the scope,
-  // and demanding `object:write` on them would refuse every legitimate grant to a user this stack
-  // does not manage. The authority question is the subset rule, which
-  // `createStackManagedRoleBinding` asks at the moment of the write.
+  // ROLE BINDING ENDPOINTS. See docs/iac/plans-repo.md §9.
   for (const entry of diff.roleBindings ?? []) {
     if (entry.action === "noop") continue;
     await resolveEndpoint(entry.subjectUrn);
@@ -1675,11 +1623,7 @@ export async function prepareApplyChecks(
     if (entry.action === "noop") continue;
     const component = await resolveEndpoint(entry.componentUrn);
     checks.push({ permission: "object:write", scopeObjectId: component.scopeObjectId });
-    // RESOLVED BUT NOT CHECKED. `endpointId` throws an INTERNAL error for a URN this pass did not
-    // resolve, and the deployment-target may legitimately belong to another stack — so a placement
-    // at a foreign target used to fail apply with "internal: could not resolve object id". No
-    // `object:write` is pushed for it deliberately: ownership follows the COMPONENT (decision Q4),
-    // and demanding write on the target would hand every deployment-target owner a veto.
+    // RESOLVED BUT NOT CHECKED. See docs/iac/plans-repo.md §10.
     await resolveEndpoint(entry.deploymentTargetUrn);
   }
 
@@ -1846,20 +1790,7 @@ export async function executePlanDiff(
     });
   }
 
-  // OWNERSHIP, STAMPED FOR EVERY OBJECT THIS MANIFEST DECLARES (drizzle/0068). One statement, and
-  // one rule: a stack owns exactly the rows its manifest declares, plus the rows it already owned.
-  //
-  // `noop` counts, and that is the case worth stating. A declared object that happens to be
-  // byte-identical to what is stored is still an object this stack declares — skipping it because
-  // "nothing changed" would leave it undeletable by the stack that owns it, which is the escape
-  // direction of the very defect this replaces, arrived at by accident. Under the old label scheme
-  // this was accidentally handled: adopting an object rewrote its labels, so it was never a noop on
-  // the apply that adopted it. Ownership is now explicit rather than a side effect of a label merge,
-  // so it has to be said.
-  //
-  // `delete` entries are excluded by construction — they are not in this list — and ownership is
-  // never CLEARED here: a row leaves a stack by being pruned, not by being disowned into an orphan
-  // no stack could ever clean up.
+  // OWNERSHIP, STAMPED FOR EVERY OBJECT THIS MANIFEST DECLARES. See docs/iac/plans-repo.md §11.
   await stampObjectStackOwnership(
     tx,
     orgId,
@@ -1923,19 +1854,7 @@ export async function executePlanDiff(
       }))
   );
 
-  // -----------------------------------------------------------------------------------------
-  // C1 — projection rows. These run AFTER object creates (a binding needs its deployment-target /
-  // a mapping needs its component to exist) and BEFORE object deletes. The delete ordering is
-  // load-bearing, not cosmetic: `deleteObject` is a SOFT delete, and both projection tables are
-  // keyed on the object id with no `deleted_at` of their own. Prune the object first and its rows
-  // become permanently unreachable garbage — invisible to every list query (they filter on a live
-  // target) and outside every future plan's ownership pool (which is built from LIVE labelled
-  // objects), so nothing would ever remove them.
-  //
-  // Deletes before creates/updates, mirroring the relationship ordering above and for the same
-  // reason: `UNIQUE (org_id, target_object_id, type)` means two bindings swapping Types in one plan
-  // would collide if the creates ran first.
-  // -----------------------------------------------------------------------------------------
+  // C1 — projection rows. See docs/iac/plans-repo.md §12.
 
   for (const entry of diff.sourceMappings ?? []) {
     if (entry.action !== "delete") continue;
@@ -2186,13 +2105,7 @@ export async function executePlanDiff(
     });
   }
 
-  // ROLLOUTS AND CONVERGENCE (D12/D25(b); migration 0106) — the writes that end the drop. Deletes
-  // first, then upserts, mirroring the hook block above so a same-key delete+create in one plan
-  // cannot land in the order that leaves nothing behind.
-  //
-  // `update` IS APPLIED HERE TOO, unlike hooks, which have no update action: a rollout's identity is
-  // `(component, targetClass)` and the strategy is its VALUE, so a changed strategy is one row
-  // changing. Treating it as a delete+create would imply a window with no strategy at all.
+  // ROLLOUTS AND CONVERGENCE. See docs/iac/plans-repo.md §13.
   for (const entry of diff.rollouts ?? []) {
     if (entry.action !== "delete") continue;
     await deleteComponentRollout(tx, orgId, endpointId(entry.componentUrn), entry.targetClass);
@@ -2206,23 +2119,7 @@ export async function executePlanDiff(
       rollout: entry.rollout
     });
   }
-  // -----------------------------------------------------------------------------------------
-  // ROLE BINDINGS AND ORG ROLES (drizzle/0108) — through the REAL doors, never around them
-  // -----------------------------------------------------------------------------------------
-  // Every refusal the typed route enforces applies here unchanged, because this calls the same
-  // functions: the no-escalation subset rule, `bindable_at`, D5's Administrator deprecation, the
-  // administrative floor on delete, and the org advisory lock. That is deliberate and is the whole
-  // reason this is not a direct insert — an IaC path that wrote `role_bindings` itself would be a
-  // second door with its own drift, and the guard census this milestone paid for would be wrong.
-  //
-  // THE APPLYING PRINCIPAL IS `actorObjectId`, which for a config-source sync is the TEAM object
-  // (ADR-0046 §1 / D9). So a team's own repo cannot grant that team authority it does not already
-  // hold — the subset rule refuses it. Stated because the symptom (an apply refusing a line the
-  // author believes correct) is otherwise hard to attribute.
-  //
-  // ROLES BEFORE BINDINGS on the create side: a binding may name a role this same manifest
-  // authors, and `getRoleByName` has to find it. Deletes run in the opposite order for the mirror
-  // reason — the role delete door refuses while a binding still points at the role.
+  // ROLE BINDINGS AND ORG ROLES. See docs/iac/plans-repo.md §14.
   for (const entry of diff.roleBindings ?? []) {
     if (entry.action !== "delete") continue;
     await deleteStackManagedRoleBinding(tx, {

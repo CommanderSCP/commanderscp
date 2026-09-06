@@ -138,12 +138,7 @@ export function frequentIntervalSeconds(env: NodeJS.ProcessEnv = process.env): n
 /** M14.4 — the SPARSE safety-net cadence default (owner decision D1, 2026-07-24): 15 minutes. */
 export const FEDERATION_SYNC_SPARSE_INTERVAL_DEFAULT_SECONDS = 900;
 
-/**
- * M14.4 — the SPARSE cadence CEILING: 12 hours. REQUIRED, not decorative. pg-boss asserts
- * `singletonSeconds <= archiveSeconds` (12h by default), so a "daily" sparse floor would THROW at
- * runtime the moment such a value reached pg-boss. The cap makes an over-large operator value
- * clamp instead of breaking the loop.
- */
+/** M14.4 — the SPARSE cadence CEILING: 12 hours. See docs/federation/federation-sync.md §1. */
 export const FEDERATION_SYNC_SPARSE_INTERVAL_MAX_SECONDS = 43_200;
 
 /**
@@ -191,26 +186,7 @@ export interface PeerCadenceInputs {
  *  it". Anything that invalidates poke-mode in practice reports `"poll"`. */
 export type PeerSyncCadence = "poke" | "poll";
 
-/**
- * M14.4 — the EFFECTIVE cadence for one peer. A peer is on the sparse (`"poke"`) cadence ONLY when
- * ALL of the following hold; any one of them failing keeps it on the frequent poll:
- *
- *  1. `pokeMode` is set for the peer (the local operator opted in);
- *  2. **D2, SELF-PROVING SPARSE** — a poke from that peer has ACTUALLY been received at least once
- *     (`lastPokeReceivedAt`). Poke-mode is TWO independent flags on TWO instances; if the outpost's
- *     is set and the commander's is not, nothing pokes and the frequent poll would silently drop to
- *     a 15-minute staleness with no error anywhere. Requiring PROOF that pokes arrive closes that
- *     unilateral-sparse footgun: an unproven peer keeps polling, so the misconfiguration costs
- *     nothing but the poll it was already paying;
- *  3. **D4, RUNTIME CERT MATERIAL** — this instance has outbound client-cert material. `pokeMode` is
- *     only mTLS-checked at PAIR time; if the cert material later disappears, the poke SENDER goes
- *     inert and the dialer fail-closes, so the poke path is dead while the flag still says sparse.
- *     Both halves of poke-mode must fail the same way, so no certs ⇒ frequent;
- *  4. **the reconnect leg** — the last pull ATTEMPT succeeded. A failing peer (commander down,
- *     network partition, refused bundle) returns to the frequent cadence until ONE pull succeeds,
- *     which re-arms sparse. This is the "pull-on-(re)connect" half of the decided reliability model,
- *     expressed as a pure function of two timestamps (no counters — replica-safe).
- */
+/** M14.4 — the EFFECTIVE cadence for one peer. See docs/federation/federation-sync.md §2. */
 export function peerSyncCadence(
   peer: Pick<
     FederationPeerRow,
@@ -711,15 +687,7 @@ export async function wakeFederationSyncNow(boss: PgBoss, orgId?: string): Promi
   });
 }
 
-/**
- * The `reason` a tick carries. An INTERVAL tick carries none (the self-reschedule sends `{}`), so
- * `reason === undefined` is exactly "this is a scheduled tick".
- *
- *  - `"poke"` — the contentless poke's wake ({@link wakeFederationSyncNow}): FORCES, does NOT
- *    re-schedule (it rides alongside the interval chain, which is still pending).
- *  - `"startup"` — the pull-on-(re)connect tick fired by {@link startFederationSyncLoop}: FORCES
- *    (see {@link FEDERATION_SYNC_STARTUP_REASON}) and DOES re-schedule (it bootstraps the chain).
- */
+/** The `reason` a tick carries. See docs/federation/federation-sync.md §3. */
 export const FEDERATION_SYNC_POKE_REASON = "poke";
 
 /**
@@ -788,23 +756,7 @@ export async function startFederationSyncLoop(
   await boss.createQueue(FEDERATION_SYNC_QUEUE);
   await boss.work(FEDERATION_SYNC_QUEUE, async (jobs: { data?: FederationSyncJobData }[]) => {
     if (stopped) return;
-    // TWO INDEPENDENT FLAGS — see the module header's table. pg-boss hands the handler a BATCH.
-    //
-    //  FORCE: a POKE job or a STARTUP job bypasses the due-gate (otherwise a poke pulls nothing,
-    //  and a restart pulls nothing for any peer that had already been attempted).
-    //
-    //  RESCHEDULE: owed by every NON-POKE job. A poke rides ALONGSIDE the interval chain (its
-    //  pending interval job is untouched and still fires), so re-scheduling on a poke would insert
-    //  an EXTRA pending tick — pg-boss computes the singleton slot from now() AT INSERT, so a poke
-    //  landing in a different slot is not deduped and poke traffic would make the "sparse" loop
-    //  non-deterministically denser. A STARTUP job, by contrast, is the tick that BOOTSTRAPS the
-    //  chain and MUST re-schedule.
-    //
-    //  Keying the re-schedule on "the batch contains a non-poke job" rather than on "no poke is
-    //  present" is the batchSize>1 hardening: pg-boss 10.4.2 defaults batchSize to 1, so a poke and
-    //  an interval tick cannot arrive together today — but if this queue ever took a larger batch,
-    //  a mixed batch would CONSUME the interval job and skip its re-schedule, permanently killing
-    //  the self-rescheduling chain until process restart.
+    // TWO INDEPENDENT FLAGS. See docs/federation/federation-sync.md §4.
     const batch = jobs ?? [];
     const pokeJobs = batch.filter((job) => job.data?.reason === FEDERATION_SYNC_POKE_REASON);
     const startupJobs = batch.filter((job) => job.data?.reason === FEDERATION_SYNC_STARTUP_REASON);

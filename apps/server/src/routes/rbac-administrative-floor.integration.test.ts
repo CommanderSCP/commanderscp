@@ -799,15 +799,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
   });
 
   it("D7: an EMPTY group is acknowledged with `[]`, and an OMITTED field is still refused", async () => {
-    // THE INTERESTING BOUNDARY. `[]` is the legitimate seat-the-team-later flow AND the exploit's
-    // step 2, and no membership-shape-blind rule separates them — which is why the owner ruled for
-    // an informed grant rather than a refusal. `[]` is admitted because acknowledging zero is a TRUE
-    // statement at the moment of the grant, and because seating the team afterwards runs §2a's
-    // subset rule at the choke point: an empty group can only be filled by a principal who already
-    // holds everything it carries.
-    //
-    // `undefined` and `[]` are therefore NOT the same value here — "I did not look" versus "I looked
-    // and it is empty" — and this case measures both against the same empty team.
+    // THE INTERESTING BOUNDARY. See docs/routes/rbac-administrative-floor.integration.test.md §1.
     const org = await createTestOrg(server, "d7-empty");
     const roleId = await ownerRoleId(org.adminToken);
     const emptyTeam = await mkObject(org.orgId, "team", "d7-empty");
@@ -989,11 +981,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect((await bindings(org.adminToken)).map((b) => b.id)).toContain(bootstrapBinding);
     expect((await call("GET", org.adminToken, "/api/v1/roles")).statusCode).toBe(200);
 
-    // ------------------------------------------------------------------------------------------
-    // THE ADMISSION PAIR — the identical verb on the identical binding, differing ONLY in whether
-    // a principal that can actually sign in survives. Without it the refusal above passes just as
-    // well against a floor that refuses every revoke of an org-root Owner binding.
-    // ------------------------------------------------------------------------------------------
+    // THE ADMISSION PAIR. See docs/routes/rbac-administrative-floor.integration.test.md §2.
     const real = await createTestUser(server, org, []);
     const realBound = await call("POST", org.adminToken, "/api/v1/role-bindings", {
       subjectId: real.objectId,
@@ -1259,12 +1247,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect(hidden.acknowledgementComplete).toBe(false);
     expect(hidden.acknowledgementRequired).toBe(true);
 
-    // ------------------------------------------------------------------------------------------
-    // THE ADMISSION PAIR — the caller who NEEDS the preview is not the caller who is refused by it.
-    // Same door, same subject, same verb; the only difference is where their `audit:read` is bound.
-    // A plain org-root VIEWER, deliberately, rather than the bootstrap Owner: the claim being
-    // measured is about the org-root ARM, not about being an administrator.
-    // ------------------------------------------------------------------------------------------
+    // THE ADMISSION PAIR. See docs/routes/rbac-administrative-floor.integration.test.md §3.
     const orgReader = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
     expect(
       (await call("GET", orgReader.token, `/api/v1/objects/user/${insider.objectId}`)).statusCode,
@@ -1470,12 +1453,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect((await bindings(org.adminToken)).map((b) => b.id)).toContain(bootstrapBinding);
     expect((await call("GET", org.adminToken, "/api/v1/roles")).statusCode).toBe(200);
 
-    // ------------------------------------------------------------------------------------------
-    // THE ADMISSION PAIR — the identical revoke, the identical phantom, the identical role and
-    // scope. The ONLY difference is which org the `users` row naming it belongs to. Without this,
-    // the refusal above passes just as well against a floor that stopped counting credentials at
-    // all, or against one that refuses every org-root Owner revoke.
-    // ------------------------------------------------------------------------------------------
+    // THE ADMISSION PAIR. See docs/routes/rbac-administrative-floor.integration.test.md §4.
     await giveCredential(org, phantom);
     const admitted = await call(
       "DELETE",

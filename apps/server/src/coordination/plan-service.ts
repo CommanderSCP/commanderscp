@@ -151,18 +151,7 @@ export async function compileAndPersistPlan(
   });
   const changeType = typeOf(changeRow?.properties as Record<string, unknown> | undefined);
 
-  // THE CHANGE'S OWN DECLARED COUPLINGS (ADR-0028), off the row already in hand — no second query.
-  // They exist here for ONE reason: `compileStages`'s co-placed cycle refusal has to see what the
-  // RUNTIME HOLD enforces, and the hold enforces declarations independently of whether any
-  // `depends_on` edge survives. `loadDependsOnEdges` above cannot supply that half — it filters
-  // `deleted_at IS NULL`, and `materialiseStageDependencyEdges` never re-mints an edge whose
-  // tombstone still occupies the unique key — so a mutual declaration with one deleted edge compiled
-  // clean and then wedged in `executing` forever. See `coPlacedCycle`.
-  //
-  // `malformed` is deliberately NOT passed. A malformed entry is unsatisfiable and holds every target
-  // (`stage-dependency-hold.ts`'s `undeclarable` branch), which is its own failure mode with its own
-  // remedy; it is not a CYCLE and this check must not start reporting it as one. Propose-time Zod
-  // validation makes such a row unreachable through the API in the first place.
+  // THE CHANGE'S OWN DECLARED COUPLINGS. See docs/coordination/plan-service.md §1.
   const { stageDependencies: declaredStageDependencies } = stageDependenciesOf(
     changeRow?.properties as Record<string, unknown> | undefined
   );
@@ -401,13 +390,7 @@ function toChangeWaveTargetShape(
  * claim "evaluated, nothing held" about targets a standing freeze may well cover when their turn
  * comes (`ChangeWaveSchema.heldTargetCount`'s absent-vs-zero rule; M25.UI review minor finding 4).
  */
-/** THE ONE WAVE ADMISSION CURRENTLY GOVERNS — first wave not yet terminal. Shared by
- *  `resolveWaveTargetFreezeHolds` (which only ever evaluates THIS wave's targets) and
- *  `toChangePlanShape`'s `heldTargetCount` emission, so the two cannot disagree about which wave
- *  that is. EXPORTED: `campaign-plan-service.ts`'s `resolveActiveCampaignWaveFreezeHolds` uses the
- *  SAME selector over campaign waves (structurally compatible — both a raw `campaign_waves` row
- *  and the wire `CampaignWave` shape carry a bare `status` string), so "which wave admission
- *  governs" cannot drift between the change and campaign sides. */
+/** THE ONE WAVE ADMISSION CURRENTLY GOVERNS. See docs/coordination/plan-service.md §2. */
 export function activeWaveOf<W extends { status: string }>(waves: W[]): W | undefined {
   return waves.find((w) => w.status !== "succeeded" && w.status !== "skipped");
 }
@@ -604,12 +587,7 @@ async function resolveWaveTargetFreezeHolds(
     targetObjectIds: activeWaveTargetIds
   });
 
-  // D7'S ROLLBACK EXEMPTION, MIRRORED (M25.UI review finding 3). `reconcile.ts`'s actuator
-  // (`!( rollbackExemptible(frozen.freezes) && rollbackHasSomethingToUndoAt(...) )`) lets a
-  // rollback's trigger through an org-tier freeze for a target the original change actually
-  // dispatched. Without the same check here, `explain` reports that target `held` by the very
-  // freeze reconcile has already stepped around — a target sitting in `triggering` backoff after
-  // a real dispatch, described as still waiting on a freeze it was exempted from.
+  // D7'S ROLLBACK EXEMPTION, MIRRORED. See docs/coordination/plan-service.md §3.
   const rollbackOfObjectId = candidates.rollbackOfObjectId;
   const isRollback = rollbackOfObjectId !== null;
 

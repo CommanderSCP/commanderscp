@@ -769,12 +769,7 @@ describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
   });
 
   it("omits the collection when empty — and THAT is why deleting your only declaration retracts nothing", () => {
-    // Do not "fix" this to emit `producers: []`. An empty array is a PRESENT collection, which the
-    // server reads as "I manage producers and declare none" and therefore PRUNES; an absent key
-    // means UNMANAGED. Emitting `[]` here would make every stack that ever dropped a
-    // `producesDependency(...)` call retract that coordinate back to a public index on the next
-    // apply — the accepted cost documented on `Stack.addDependencyProducer` runs in this direction
-    // precisely so the catastrophic one cannot.
+    // Do not "fix" this to emit `producers: []`. See docs/iac/construct.test.md §1.
     const { stack, component } = fixture("producer-none");
     const withDeclaration = (() => {
       component.producesDependency({ ecosystem: "npm", coordinate: "@acme/lib" });
@@ -852,11 +847,7 @@ describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
   });
 
   it("omits the collection when empty — and THAT is why deleting your only rung disables nothing", () => {
-    // Do not "fix" this to emit `governanceMoveRungs: []`. An empty array is a PRESENT collection,
-    // which the server reads as "I manage rungs and declare none" and therefore DISABLES every rung
-    // on a container this stack owns. An absent key means UNMANAGED. Emitting `[]` here would
-    // un-govern a subtree on the next apply of every stack that ever declared a rung and later
-    // dropped it — and the symptom would be moves quietly succeeding, which nothing surfaces.
+    // Do not "fix" this to emit `governanceMoveRungs: []`. See docs/iac/construct.test.md §2.
     const { stack, service } = fixture("rung-none");
     stack.addGovernanceMoveRung(service);
     expect(stack.synth().governanceMoveRungs).toHaveLength(1);
@@ -1122,15 +1113,7 @@ describe("@scp/iac: construct-path in synth errors (D16(5))", () => {
   });
 });
 
-/**
- * TWO CONSTRUCTS, ONE URN — the case-folding collision `Stack.synth()` refuses.
- *
- * Found by `products.test.ts`'s fast-check generator (id pair `("F", "f")`, CI seed 1953244992):
- * `urn.ts`'s `slugify` lowercases, so sibling ids differing only in case derive ONE URN while the
- * tree treats them as two constructs. Nothing downstream could catch it — the manifest schema has
- * no cross-entry constraint and the server diffs BY URN, so the second entry silently became an
- * update of the first and one declared object never existed.
- */
+/** TWO CONSTRUCTS, ONE URN. See docs/iac/construct.test.md §3. */
 describe("Stack.synth: two objects may not claim one URN", () => {
   it("refuses ids differing only in CASE, naming both construct paths", () => {
     const stack = new Stack("collide");

@@ -309,13 +309,7 @@ function leaseLost(orgId: string, claim: RelayBuildClaim): AutoRelayOutcome {
   return { changeObjectId: claim.changeObjectId, outcome: "lease-lost", detail, decisionId: null };
 }
 
-/**
- * One org's auto-relay sweep. Exported for the integration suite (the 13.1b DoD is asserted through
- * it); production reaches it via {@link runAutoRelaySweep}.
- *
- * `multiTenantInstance` is threaded from the caller (which already enumerated orgs) rather than
- * re-counted here — see the drop-resolution guard below for why it matters.
- */
+/** One org's auto-relay sweep. See docs/federation/auto-relay.md §1. */
 export async function autoRelayOrgTick(
   db: Db,
   orgId: string,
@@ -461,11 +455,7 @@ export async function autoRelayOrgTick(
         config
       });
     } catch (err) {
-      // ONE BAD CHANGE NEVER BRICKS THE TICK (the inbox loop's containment rule). A throw here means
-      // the build did NOT complete, so nothing was published and recording a failure is the truth. A
-      // 400 is a DETERMINISTIC input problem (`buildRelayTarball`'s "no verified manifest" / "empty
-      // authorized set" refusals) — retrying it changes nothing, so it exhausts at once. Everything
-      // else (a missing/unpinned skopeo, a dead registry surfacing as a throw) gets the budget.
+      // ONE BAD CHANGE NEVER BRICKS THE TICK. See docs/federation/auto-relay.md §2.
       const deterministic = err instanceof ProblemError && err.status === 400;
       const reason = describeError(err);
       try {
@@ -624,11 +614,7 @@ export async function startAutoRelayLoop(
   await boss.createQueue(AUTO_RELAY_QUEUE);
   await boss.work(AUTO_RELAY_QUEUE, async (jobs: { data?: AutoRelayJobData }[]) => {
     if (stopped) return;
-    // A POKE WAKE DOES NOT RE-SCHEDULE (the M14.4 rule, verbatim): pg-boss computes a singleton slot
-    // from now() AT INSERT, so a wake landing in a different slot than the already-pending interval
-    // tick is not deduped and would leave TWO pending ticks. Keyed on "the batch contains a non-poke
-    // job" rather than "no poke present", so a batchSize>1 queue could never consume the interval
-    // job and skip its re-schedule.
+    // A POKE WAKE DOES NOT RE-SCHEDULE. See docs/federation/auto-relay.md §3.
     const batch = jobs ?? [];
     const reschedule =
       batch.length === 0 || batch.some((job) => job.data?.reason !== AUTO_RELAY_POKE_REASON);

@@ -239,11 +239,7 @@ export interface EvaluateWaveGateContext {
   pipelineHooks?: Omit<PipelineHookGateContext, "orgId"> | undefined;
 }
 
-/**
- * The wave-boundary counterpart (DESIGN §9.3). Always governance-evaluated (module doc comment —
- * unlike lifecycle edges, waiting at a wave boundary can never deadlock the engine: reconcile
- * retries every tick, and an approval/control can resolve independently of this specific check).
- */
+/** The wave-boundary counterpart (DESIGN §9.3). See docs/coordination/gates.md §1. */
 export async function evaluateWaveGate(
   tx: TenantTx,
   ctx: EvaluateWaveGateContext,
@@ -277,24 +273,7 @@ export async function evaluateWaveGate(
     isRollback: ctx.isRollback ?? false
   });
 
-  // ============================================================================================
-  // THE THIRD CONTRIBUTOR — declared pipeline hooks (increment 8)
-  // ============================================================================================
-  // ADDED BESIDE the other two, never replacing either: the verdict below is the AND of the
-  // orchestrator's answer (policies, controls, approvals, freezes) and this one. A component that
-  // declares no hooks contributes `allowed: true` with an empty entry list and changes nothing.
-  //
-  // EVALUATED EVEN WHEN THE ORCHESTRATOR ALREADY BLOCKED, deliberately. The Decision must explain
-  // EVERY reason the wave is not moving, or an operator clears the policy block and discovers a
-  // second one they were never told about — one round trip per contributor. The cost is bounded by
-  // `evaluatePipelineHookGate`'s inertness gate (two indexed existence reads for an org that
-  // declares nothing).
-  //
-  // `awaiting` / `no_source` / `window_not_covered` BLOCK AND KEEP BLOCKING, and that is safe here
-  // rather than a deadlock: this gate is re-evaluated on EVERY tick while the wave stays `pending`
-  // (only the transition fires once — `gate-orchestrator.ts`: "waiting at a wave boundary can never
-  // deadlock the engine"), so an in-flight suite that finishes, or a first alarm report that
-  // arrives, is noticed within a tick with no scheduler and no status flip.
+  // THE THIRD CONTRIBUTOR. See docs/coordination/gates.md §2.
   const hookGate = ctx.pipelineHooks
     ? await evaluatePipelineHookGate(tx, { orgId: ctx.orgId, ...ctx.pipelineHooks })
     : undefined;
@@ -311,11 +290,7 @@ export async function evaluateWaveGate(
       topologyObjectId: ctx.topologyObjectId,
       waveIndex: ctx.waveIndex,
       explicitGatesBound: explicitlyBound.length,
-      // NOTHING HERE IS DERIVED FROM A CLOCK — every entry field is an id, a declared number, or an
-      // instant read straight off a stored row (see `PipelineHookGateEntry`). That is what keeps a
-      // re-evaluated block byte-identical on every tick so `insertDecisionIfChanged` suppresses it,
-      // which is ADR-0024's 1.44 GB/day contract. Omitted entirely when no hook context was
-      // supplied, so an unchanged campaign-side Decision keeps exactly the bytes it had.
+      // NOTHING HERE IS DERIVED FROM A CLOCK. See docs/coordination/gates.md §3.
       ...(hookGate ? { pipelineHooks: hookGate.entries } : {})
     },
     // The hook contributor's sentence is ADDED under its own key, always. `summary` is additionally

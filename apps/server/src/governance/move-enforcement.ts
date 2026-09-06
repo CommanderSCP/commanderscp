@@ -149,14 +149,7 @@ export interface GovernanceMoveEnforcement {
   rungs: GovernanceMoveRung[];
 }
 
-/**
- * THE INSTANCE RUNG — no row means DISABLED, decided here and nowhere else.
- *
- * Byte-for-byte the reasoning `dependencies/subscription-resolution.ts`'s
- * `readInstanceSubscriptionUnlock` carries: re-deriving "absent = off" in a route is how the API and
- * the doors come to disagree about a deployment nobody has configured — the loudest possible bug in
- * the safest-sounding line of code.
- */
+/** THE INSTANCE RUNG. See docs/governance/move-enforcement.md §1. */
 export async function readInstanceMoveRung(
   tx: TenantTx
 ): Promise<{ enabled: boolean; updatedAt: string | null }> {
@@ -295,14 +288,7 @@ export interface GovernanceMoveAdmitsInput {
 }
 
 /**
- * THE DOOR CHECK. Fail-closed, called AFTER the door's own `object:write`/`relationship:write` pair,
- * and a no-op — one cheap singleton read plus at most two chain walks — on every deployment with no
- * rung set, which is all of them until an operator sets one.
- *
- * ORs enforcement over the MOVED object's chain and the DESTINATION's chain (the monotone rule), then
- * demands `governance:move` at BOTH ends. The org root is NOT exempt at either end — see the module
- * header for why the custody exemption in `containment-parent-authz.ts` does not transfer.
- *
+ * THE DOOR CHECK. See docs/governance/move-enforcement.md §2.
  * @throws 403 with the single refusal sentence of proposal §9.2.
  */
 export async function assertGovernanceMoveAdmits(
@@ -350,12 +336,7 @@ export async function assertGovernanceMoveAdmits(
   });
 }
 
-// ---------------------------------------------------------------------------------------------
-// The rung write verbs. Authorization and the Decision/audit pair live one module over
-// (`governance/move-rung-write.ts`, shared by the HTTP door and the IaC apply door — the follow-up
-// named in proposal §9.6 Q4, now built); what lives HERE is the SHAPE of an enablement and the
-// monotone refusal, so no door can disagree with another about either.
-// ---------------------------------------------------------------------------------------------
+// The rung write verbs. See docs/governance/move-enforcement.md §3.
 
 export interface EnableGovernanceMoveRungInput {
   orgId: string;

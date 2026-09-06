@@ -716,17 +716,7 @@ export function DeclareFreezeForm({
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// Platform freezes card (M25.UI increment 3) — READ-ONLY. `apps/server/src/routes/
-// instance-freezes.ts`'s module doc states the reason at length: WRITE is operator-only, gated on
-// `SCP_OPERATOR_TOKEN` presented as `x-scp-operator-token` — a deployment-level credential this
-// browser session never holds and must never be asked to type into a form (same posture as
-// `admin-governance.tsx`'s instance rung — see that file's "NO BROWSER WRITE HERE, DELIBERATELY"
-// comment, mirrored below). READ is tenant-facing (`GET /v1/instance/freezes` needs no operator
-// token): a platform freeze is the one freeze a tenant cannot author and by default cannot
-// override, so a tenant that cannot even SEE it cannot be told why its release stopped (charter
-// principle 6) — hence a card at all, where the sibling instance-scan-floors doors have none yet.
-// -------------------------------------------------------------------------------------------
+// Platform freezes card (M25.UI increment 3) — READ-ONLY. See docs/web/routes/setup.md §1.
 
 /** WHERE a platform freeze applies, in one structural phrase — never a raw `match` dump. Mirrors
  *  `freeze-hold.ts`'s server-side `freezeAddress` idiom, at the UI's own altitude: this is
@@ -737,12 +727,7 @@ export function platformFreezeMatchLabel(match: InstanceFreeze["match"]): string
   return `${match.environment} (every region)`;
 }
 
-/**
- * One platform freeze, read-only. `freezeWindowStatus`/`freezeStatusBadge` above are reused
- * UNCHANGED — `InstanceFreeze` carries the identical `startsAt`/`endsAt`/`liftedAt` shape `Freeze`
- * does, so a second copy of the same window arithmetic is not needed and would be exactly the kind
- * of drift risk this codebase's census discipline exists to catch.
- */
+/** One platform freeze, read-only. See docs/web/routes/setup.md §2. */
 export function PlatformFreezeRow({
   freeze,
   now
@@ -909,12 +894,7 @@ export function SetupPage(): React.JSX.Element {
     createFreeze.mutate(buildCreateFreezePayload(freezeForm));
   }
 
-  /**
-   * Lift, scoped per row. `variables` is read back for the error case so a refusal renders under
-   * the row it belongs to: `freeze:write` is checked AT EACH FREEZE'S OWN SCOPE, so a caller can
-   * legitimately be allowed to lift one freeze in this list and refused another, and a single
-   * card-level error banner would attribute the refusal to whichever row was clicked last.
-   */
+  /** Lift, scoped per row. See docs/web/routes/setup.md §3. */
   const liftFreeze = useMutation({
     mutationFn: ({ id, reason }: { id: string; reason: string }) =>
       client.freezes.lift(id, { reason }),
