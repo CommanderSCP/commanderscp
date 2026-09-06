@@ -197,9 +197,7 @@ describe("M22.1b: scan_findings persisted, at both verdict producers", () => {
     );
   }
 
-  // ===========================================================================================
   // PRODUCER B — the commander's own managed scan (federation/promotion-scan-step.ts)
-  // ===========================================================================================
 
   it("P1: a managed trivy verdict PERSISTS its findings, class O, and says so in evidence", async () => {
     const { changeId } = await proposeArtifactChange(IMAGE_DIGEST, "image");

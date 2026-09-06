@@ -185,9 +185,7 @@ export interface AutoRelaySweepOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-// -------------------------------------------------------------------------------------------------
 // Terminal bookkeeping — every write FENCED on the claim (see relay-builds-repo.ts's rule 1).
-// -------------------------------------------------------------------------------------------------
 
 /**
  * One failed attempt: record the verdict and schedule the next one, or go TERMINAL `exhausted`.
@@ -577,9 +575,7 @@ export async function runAutoRelaySweep(
   }
 }
 
-// -------------------------------------------------------------------------------------------------
 // The loop (the interval FLOOR) + the poke wake (the optimization).
-// -------------------------------------------------------------------------------------------------
 
 /** The routing marker on a poke-driven tick — a marker, not content (the poke stays contentless:
  *  WHICH promotions are owed is discovered by the sweep, exactly as on an interval tick). */

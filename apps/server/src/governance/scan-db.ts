@@ -372,9 +372,7 @@ export async function readScanDbStatus(
   };
 }
 
-// -------------------------------------------------------------------------------------------
 // Populating the cache — the atomic swap shared by refresh + operator-load
-// -------------------------------------------------------------------------------------------
 
 /**
  * Build a fresh DB directory in staging, VALIDATE it (trivy.db present + readable metadata + a
@@ -456,9 +454,7 @@ async function extractDbFilesInto(archivePath: string, destDbDir: string): Promi
   }
 }
 
-// -------------------------------------------------------------------------------------------
 // Connected refresh — operator-invoked skopeo pull of the upstream OCI trivy-db
-// -------------------------------------------------------------------------------------------
 
 /** The upstream OCI trivy-db (proposal §13.3b). Overridable for a mirror, but the host must still be
  *  in SCP_ARTIFACT_OCI_REGISTRY_HOSTS. */
@@ -526,9 +522,7 @@ export async function refreshScanDbConnected(cacheDir: string): Promise<TrivyDbM
   }
 }
 
-// -------------------------------------------------------------------------------------------
 // Air-gap operator-load — verify a cosign-signed DB blob, then install it
-// -------------------------------------------------------------------------------------------
 
 function normalizeSha256(raw: string): string | null {
   const v = raw.trim().toLowerCase();

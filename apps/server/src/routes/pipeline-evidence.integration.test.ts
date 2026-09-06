@@ -177,9 +177,7 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
   const declareHook = (input: Parameters<typeof upsertHook>[2]) =>
     withTenantTx(server.deps.db, org.orgId, (tx) => upsertHook(tx, org.orgId, input));
 
-  // -------------------------------------------------------------------------------------------
   // PROPERTY 1 — a valid testRun lands bound to the right subject, AND a gate reads it
-  // -------------------------------------------------------------------------------------------
 
   it("persists a testRun bound to the submitted subject, and it FEEDS A GATE that was blocking before it", async () => {
     const component = await createTestComponent(admin, {
@@ -251,9 +249,7 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     expect(after.entries[0]!.satisfied).toBe(true);
   });
 
-  // -------------------------------------------------------------------------------------------
   // PROPERTY 2 — an EMPTY alarm list over a named window is an affirmative claim of quiet
-  // -------------------------------------------------------------------------------------------
 
   it("records `alarms: []` over a named window as an AFFIRMATIVE quiet claim — a bake gate reads it as quiet, where no report at all reads as no_source", async () => {
     const component = await createTestComponent(admin, {
@@ -355,9 +351,7 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     expect(rows).toHaveLength(1);
   });
 
-  // -------------------------------------------------------------------------------------------
   // PROPERTY 4 — the producer is the AUTHENTICATED subject, not anything the caller can influence
-  // -------------------------------------------------------------------------------------------
 
   it("stamps the PERSISTED producer from the authenticated subject — a forged producer claim in the body changes nothing", async () => {
     const component = await createTestComponent(admin, {
@@ -413,9 +407,7 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     expect(secondRow.producerSubjectId).toBe(impostor.objectId);
   });
 
-  // -------------------------------------------------------------------------------------------
   // PROPERTY 5 — authorized at the SUBJECT'S TARGET, not at the org root
-  // -------------------------------------------------------------------------------------------
 
   it("a caller authorized only at ANOTHER target cannot submit for this one — with a positive control at the target it does hold", async () => {
     const mine = await createTestComponent(admin, { name: `mine-${randomUUID().slice(0, 8)}` });

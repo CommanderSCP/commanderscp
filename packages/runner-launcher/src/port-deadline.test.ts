@@ -32,9 +32,7 @@ import type { KubernetesApiRequest, KubernetesRunnerIo, RunnerSpec } from "./ind
  * THE HANG IS MODELLED WITH A HANDLE, AND THAT IS LOAD-BEARING. See {@link neverSettles}.
  */
 
-// ==================================================================================================
 // THE DOCKER SEAM — a child that can be made to ignore its own `timeout`, which is the whole point.
-// ==================================================================================================
 
 interface DockerCall {
   args: string[];
@@ -104,9 +102,7 @@ const {
   withStepBound
 } = await import("./index.js");
 
-// ==================================================================================================
 // A HANG THAT KEEPS THE LOOP ALIVE — see `withStepBound`'s doc for why this is not a detail.
-// ==================================================================================================
 
 const heldHandles: ReturnType<typeof setInterval>[] = [];
 /**
@@ -128,9 +124,7 @@ function hold(): void {
   heldHandles.push(setInterval(() => undefined, 20));
 }
 
-// ==================================================================================================
 // A MINIMAL CLUSTER — just enough to reach copy-in, with every operation RECORDED.
-// ==================================================================================================
 
 const NAMESPACE = "scp";
 const WORKSPACE_ROOT = "/scp-workspace";

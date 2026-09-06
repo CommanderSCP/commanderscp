@@ -395,9 +395,7 @@ export function RegisterStepGeneric({
   );
 }
 
-// -----------------------------------------------------------------------------------------------
 // Step 2 — enumerate: the run-time config fields (owner/repo/…) PLUS the connectivity check
-// -----------------------------------------------------------------------------------------------
 
 export function EnumerateStepGeneric({
   connectable,
@@ -497,9 +495,7 @@ export function EnumerateStepGeneric({
   );
 }
 
-// -----------------------------------------------------------------------------------------------
 // Step 3 — review and import (B4: per-type sections + per-object skip, WHEN safe)
-// -----------------------------------------------------------------------------------------------
 
 type ProposalObject = DiscoveryProposal["objects"][number];
 

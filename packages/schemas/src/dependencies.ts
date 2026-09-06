@@ -75,9 +75,7 @@ export const DependencyCoordinateSchema = z.string().min(1).max(512);
  */
 export const DependencyMajorLineSchema = z.string().min(1).max(64);
 
-/**
- * One MAJOR LINE of one dependency. Identity is `(orgId, ecosystem, coordinate, major)`.
- */
+/** One MAJOR LINE of one dependency. Identity is `(orgId, ecosystem, coordinate, major)`. */
 export const DependencyLineSchema = z.object({
   id: z.string().uuid(),
   orgId: z.string().uuid(),

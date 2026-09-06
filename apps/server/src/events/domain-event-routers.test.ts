@@ -135,9 +135,7 @@ const discovered = await Promise.all(
   })
 );
 
-// -------------------------------------------------------------------------------------------
 // The composition root, as text — the one link that cannot be imported
-// -------------------------------------------------------------------------------------------
 
 /**
  * The text between `startPgBoss(` and its matching `)`, by balanced-paren scan rather than a

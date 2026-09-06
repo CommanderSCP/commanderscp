@@ -378,9 +378,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     });
   }
 
-  // ===========================================================================================
   // A1 / A2 — THE INSTALLATION PROOF, once per call site
-  // ===========================================================================================
 
   it("A1: a grant approved AFTER the change already failed its gate makes the NEXT prewarm pass — the lifecycle-edge actuator", async () => {
     // ADR-0033 §10's prescribed proof, verbatim: "grant an exclusion after a change has already
@@ -468,9 +466,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     expect(rows.every((r) => r.gateKind === "wave_boundary")).toBe(true);
   });
 
-  // ===========================================================================================
   // A3 / A4 — THE OTHER HALF: a lever that pulls itself every tick is a different production bug
-  // ===========================================================================================
 
   it("A3: an UNCHANGED exclusion set re-runs NOTHING — a stable set settles after one run", async () => {
     // The counterweight to A1, and it is not politeness. The gate this rides on is evaluated on
@@ -586,9 +582,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     expect(await runsFor(org, change.id)).toHaveLength(2);
   });
 
-  // ===========================================================================================
   // A5 — THE M22.0a CASE: an expiry only binds if a LATER crossing re-asks
-  // ===========================================================================================
 
   it("A5: a grant valid during validating and EXPIRED before the production wave does not let that wave through", async () => {
     // The DoD case that proves the cache key carries GATE IDENTITY. The lifecycle-edge run below is
@@ -682,9 +676,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     expect(evidenceOf(after[1]!).exclusions?.appliedCount).toBe(0);
   });
 
-  // ===========================================================================================
   // A7 — the hash describes the SET, and says so
-  // ===========================================================================================
 
   it("A7: two changes resolving the SAME set record the SAME hash, and a different set records a different one", async () => {
     // What the recorded value MEANS, pinned at the real gate rather than in a unit test over a

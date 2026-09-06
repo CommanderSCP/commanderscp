@@ -138,9 +138,7 @@ export const HOOK_RUN_EXECUTOR_TYPE = DEFAULT_BINDING_TYPE;
  */
 export const HOOK_RUN_EXECUTOR_LANE: ExecutorLane = "test";
 
-// ---------------------------------------------------------------------------------------------
 // Identity and the idempotency key
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The tuple the `pipeline_hook_runs_identity` UNIQUE constraint enforces, and the tuple the
@@ -255,9 +253,7 @@ export function hookRunBindingCarrier(
   return run.targetObjectId ?? run.componentObjectId;
 }
 
-// ---------------------------------------------------------------------------------------------
 // 0b. The D23 capture — three facts that must ALL be present, or nothing
-// ---------------------------------------------------------------------------------------------
 
 /**
  * THE PIN A RUN IS CAPTURED AT, or `null`.

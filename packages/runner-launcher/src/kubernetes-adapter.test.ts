@@ -408,9 +408,7 @@ const sequenceOf = (ops: RecordedOp[]) =>
     o.kind === "request" ? `${o.step} ${o.method} ${o.path!.split("?")[0]}` : `${o.step} ${o.kind}`
   );
 
-// ==================================================================================================
 // SELECTION — the field that decides which adapter runs, and the module cycle it rides through
-// ==================================================================================================
 
 describe("M23.2 adapter selection: explicit operator config, never detection", () => {
   it("AN UNSET `runnerLauncher` IS DOCKER — every deployment that does not opt in is unchanged", () => {
@@ -714,9 +712,7 @@ describe("M23.2: identity, attribution and the value that cannot be honoured", (
   });
 });
 
-// ==================================================================================================
 // THE FAILURE KINDS — through the PORT's one classifier, not a second one
-// ==================================================================================================
 
 describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () => {
   const terminatedPod = (state: unknown) => ({
@@ -1867,9 +1863,7 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
   });
 });
 
-// ==================================================================================================
 // STDOUT / STDERR — the port has two fields and Kubernetes has one stream
-// ==================================================================================================
 
 describe("M23.2: the merged log lands in `stdout`, and that is a decision", () => {
   it("ON SUCCESS the whole merged log is `stdout` — which is what `runnerOutcomeDetail` records", async () => {
@@ -1901,9 +1895,7 @@ describe("M23.2: the merged log lands in `stdout`, and that is a decision", () =
   });
 });
 
-// ==================================================================================================
 // THE PER-RUN SECRET — a declared capability that is OFF
-// ==================================================================================================
 
 describe("M23.4: `secretEnv` is a GRANTED capability — the credential travels as a Secret the Job owns", () => {
   const withSecret = spec({
@@ -2151,9 +2143,7 @@ describe("M23.4: `secretEnv` is a GRANTED capability — the credential travels 
   });
 });
 
-// ==================================================================================================
 // THE NAME CONFLICT — a typed 409 where Docker had a stderr substring
-// ==================================================================================================
 
 describe("M23.2: a run that lost its name tears down NOTHING", () => {
   it("A 409 ON THE JOB POST IS `AlreadyExists`, and no DELETE follows it", async () => {
@@ -2249,9 +2239,7 @@ describe("M23.2: a run that lost its name tears down NOTHING", () => {
   });
 });
 
-// ==================================================================================================
 // COPY-OUT — the two asymmetries M23.1 refused to normalise
-// ==================================================================================================
 
 describe("M23.2: `copyOut.when` and `copyOut.onFailure` are the caller's, unchanged", () => {
   it("`when: 'on-success'` SKIPS the copy-out after a failed run", async () => {
@@ -2422,9 +2410,7 @@ describe("M23.2: `reap()` removes foreign, expired Jobs and nothing else", () =>
   });
 });
 
-// ==================================================================================================
 // THE ORDERING CONFORMANCE SUITE — inherited, not re-derived
-// ==================================================================================================
 
 /**
  * THE KUBERNETES SUBSTRATE.

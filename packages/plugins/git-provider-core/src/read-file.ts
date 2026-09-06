@@ -440,9 +440,7 @@ export function decodeBoundedBase64(input: DecodeBoundedBase64Input): ReadFileAt
   };
 }
 
-// -------------------------------------------------------------------------------------------
 // URL safety — `path` and `ref` are caller-supplied and get interpolated into a REST path
-// -------------------------------------------------------------------------------------------
 
 /**
  * Rejects a repo path that must never reach a URL. This is not defensive decoration: every adapter

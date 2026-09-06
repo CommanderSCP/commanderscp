@@ -85,9 +85,7 @@ describe("lineAcceptsVersion — a release must be proven to be ON THIS LINE", (
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // `tag_pattern` HAS ONE MEANING, AND BOTH WRITERS USE IT
-  // -----------------------------------------------------------------------------------------
 
   it("an `-alpine` line REFUSES the plain flavour — and the plain line refuses `-alpine`", () => {
     // THE DEFECT THIS PINS: internal detection ignored `tag_pattern` entirely, so an image line

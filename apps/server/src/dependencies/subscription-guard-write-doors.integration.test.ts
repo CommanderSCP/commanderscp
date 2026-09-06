@@ -205,9 +205,7 @@ describe("ADR-0032 §6a: every local write door refuses a group-scoped opt-out (
     ).toEqual(clean.effects);
   });
 
-  // -------------------------------------------------------------------------------------------
   // DOOR 2 — hand-fill. The one that the `federationImport` exemption would otherwise swallow.
-  // -------------------------------------------------------------------------------------------
 
   it("DOOR 2: hand-fill refuses it — a local operator action does not get the import exemption", async () => {
     const peer = await pairCommanderPeer();
@@ -272,9 +270,7 @@ describe("ADR-0032 §6a: every local write door refuses a group-scoped opt-out (
     expect(merged.overlays).toHaveLength(0);
   });
 
-  // -------------------------------------------------------------------------------------------
   // DOOR 4 — the generic `/objects/{type}` route. VERIFIED, not assumed.
-  // -------------------------------------------------------------------------------------------
 
   it("DOOR 4: the generic /objects/policy route still refuses the TYPE outright, before any document check", async () => {
     // `routes/objects-generic.ts`'s `assertNotGovernanceManagedObjectType` is the pre-existing

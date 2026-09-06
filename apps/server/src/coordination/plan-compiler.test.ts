@@ -248,9 +248,7 @@ describe("coordination/plan-compiler — explicit topology mode", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // Property-based tests (fast-check) — BUILD_AND_TEST.md §8 M3 DoD: "toposort property tests".
-// -------------------------------------------------------------------------------------------
 
 /**
  * Generates a random DAG (never a cycle by construction: edges only point to LOWER indices) over

@@ -219,9 +219,7 @@ export function parseDeliveryS3Credential(
   return { accessKeyId, secretAccessKey };
 }
 
-// -------------------------------------------------------------------------------------------------
 // The relay tarball format (`scp-relay-<sourceChangeObjectId>.tar.gz`) — the CDS channel artifact.
-// -------------------------------------------------------------------------------------------------
 
 export const RELAY_BUNDLE_VERSION = "scp-relay-bundle/v1";
 
@@ -905,9 +903,7 @@ export async function buildRelayTarball(
   return { refused: false, tarballPath: finalTarballPath, artifacts, decisionId };
 }
 
-// -------------------------------------------------------------------------------------------------
 // DESTINATION SIDE — importRelayTarball (pipeline step 6). Runs at the receiving outpost.
-// -------------------------------------------------------------------------------------------------
 
 export interface ImportRelayTarballInput {
   orgId: string;

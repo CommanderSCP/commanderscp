@@ -92,9 +92,7 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
     await server?.close();
   });
 
-  // ---------------------------------------------------------------------------------------
   // H3 — the "as of ⟨bundle⟩" identifier names a SYNC IMPORT, or nothing.
-  // ---------------------------------------------------------------------------------------
 
   it("H3: a confirmed import/PROMOTION row does NOT become the 'as of ⟨bundle⟩' identifier", async () => {
     const peer = await pairFresh({ baseUrl: "https://p.example.test" });
@@ -169,9 +167,7 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
     expect(entry?.lastExportedBundleChecksum).toBe("outbound-not-inbound");
   });
 
-  // ---------------------------------------------------------------------------------------
   // H4 — `transportMode` describes CONFIG, and says nothing about reachability.
-  // ---------------------------------------------------------------------------------------
 
   it("H4: an http baseUrl PLUS a deliveryTarget is NOT reported as air-gap — it is declared unknown", async () => {
     const peer = await pairFresh({
@@ -247,9 +243,7 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
     expect(entry?.unknownFields ?? []).not.toContain("lastExportedThroughSequence");
   });
 
-  // ---------------------------------------------------------------------------------------
   // N8 (review round 5) — THE SAME TRAP, IN THE HELPER H3 NOW MAKES TWO FIELDS DEPEND ON.
-  // ---------------------------------------------------------------------------------------
 
   it("N8: one confirmed import/sync row with a NULL confirmed_at does not make the peer read 'never synced'", async () => {
     const peer = await pairFresh({ baseUrl: "https://p.example.test" });

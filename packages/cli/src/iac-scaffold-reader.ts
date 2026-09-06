@@ -9,9 +9,7 @@
 
 import type { GraphObject } from "@scp/schemas";
 
-// -------------------------------------------------------------------------------------------
 // `scp iac scaffold --from <execution-system-urn>` (§7/D1/ADR-0047)
-// -------------------------------------------------------------------------------------------
 
 /** Maps a live `execution-system` object's stored `properties.kind` (set at `scp connect`) to the
  *  discovery plugin module that reads it — the exact mapping the CLI's own `connect` flow already

@@ -409,9 +409,7 @@ describe("list doors filter rows by readable scope (role-model §8.2, step 2.5b)
     }
   });
 
-  // ---------------------------------------------------------------------------------------------
   // The documented interaction, pinned rather than left to be discovered
-  // ---------------------------------------------------------------------------------------------
 
   it("includeDeleted and a narrowed scope do not compose — the descend walks LIVE rows only", async () => {
     expect(await placements(orgRootToken, "&includeDeleted=true")).toContain(ids.placeDeleted);

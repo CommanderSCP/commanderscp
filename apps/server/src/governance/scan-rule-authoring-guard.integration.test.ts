@@ -95,9 +95,7 @@ describe("M22.8 scan-rule authoring guard", () => {
     );
   });
 
-  // -----------------------------------------------------------------------------------------
   // G2 — THE CHOKE-POINT PROOF. The same document, a different door.
-  // -----------------------------------------------------------------------------------------
 
   it("G2 refuses the same document through IaC apply — the door a route-level install would miss", async () => {
     const stackName = `guard-iac-${randomUUID().slice(0, 8)}`;
@@ -147,9 +145,7 @@ describe("M22.8 scan-rule authoring guard", () => {
     await expectRefused(admin.plans.apply(plan.id), "requires no control");
   }, 120_000);
 
-  // -----------------------------------------------------------------------------------------
   // G3/G4 — "names no SCAN control" is about the BINDING, not about naming something.
-  // -----------------------------------------------------------------------------------------
 
   it("G3 accepts a scanThreshold policy that requires a control bound to the scan-verdict plugin", async () => {
     const scanControlId = await control("scan", "scan-result-control");
@@ -171,9 +167,7 @@ describe("M22.8 scan-rule authoring guard", () => {
     );
   });
 
-  // -----------------------------------------------------------------------------------------
   // G5/G6 — the two deliberate NON-refusals.
-  // -----------------------------------------------------------------------------------------
 
   it("G5 accepts a policy naming an UNBOUND control — absence of a binding is never proof of inertness", async () => {
     // A control object and its binding are two API calls. Refusing here would make policy authoring
@@ -199,9 +193,7 @@ describe("M22.8 scan-rule authoring guard", () => {
     );
   });
 
-  // -----------------------------------------------------------------------------------------
   // G7 — THE UPDATE HALF. An enforceable rule must not be able to become inert by PATCH.
-  // -----------------------------------------------------------------------------------------
 
   it("G7 refuses a PATCH that strips the requireControls out from under an accepted ceiling", async () => {
     const scanControlId = await control("patch-scan", "scan-result-control");

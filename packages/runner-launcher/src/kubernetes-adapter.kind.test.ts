@@ -975,9 +975,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     }
   }, 120_000);
 
-  // ================================================================================================
   // M23.5 — THE POD SPEC, AND THE THREE VERDICTS A FAKE CANNOT PRODUCE
-  // ================================================================================================
 
   it("PASS 20: THE SUITE HEALS THE DEBRIS A SIGTERM LEAVES — which `reap()` may not touch", async () => {
     /**

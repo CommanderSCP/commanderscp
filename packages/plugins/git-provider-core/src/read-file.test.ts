@@ -39,9 +39,7 @@ function decodeInput(overrides: Partial<DecodeBoundedBase64Input> = {}): DecodeB
   };
 }
 
-// -------------------------------------------------------------------------------------------
 // resolveMaxBytes — the bound is structural, not advisory
-// -------------------------------------------------------------------------------------------
 
 describe("resolveMaxBytes", () => {
   it("defaults to DEFAULT_MAX_FILE_BYTES when nothing was requested", () => {
@@ -66,9 +64,7 @@ describe("resolveMaxBytes", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // base64DecodedByteLength — the pre-decode measurement the size refusal rests on
-// -------------------------------------------------------------------------------------------
 
 describe("base64DecodedByteLength", () => {
   it("matches the real decoded length for payloads at each padding length (0, 1, 2 '=')", () => {

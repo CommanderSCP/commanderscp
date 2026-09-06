@@ -916,9 +916,7 @@ export async function ingestComponentManifests(
     scope: prepared.scope
   });
 
-  // -----------------------------------------------------------------------------------------
   // PHASE 2 — NO TRANSACTION IS OPEN HERE.
-  // -----------------------------------------------------------------------------------------
   interface ReadManifest {
     readonly path: string;
     readonly declarations: readonly DeclaredDependency[];

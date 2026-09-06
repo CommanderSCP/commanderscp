@@ -132,9 +132,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
     );
   }
 
-  // ------------------------------------------------------------------------------------------
   // §9.1 — the facet
-  // ------------------------------------------------------------------------------------------
 
   it("carries the substrate facet on a PLACED stage and on an UNPLACED stage — read, never inferred", async () => {
     // The facet lives on the target's `properties` (migration 0065 types it as optional strings)
@@ -214,9 +212,7 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
     ).rejects.toMatchObject({ status: 400 });
   });
 
-  // ------------------------------------------------------------------------------------------
   // §9.2 — the registry
-  // ------------------------------------------------------------------------------------------
 
   it("registry: `none` when the component has no `publishes_to` edge — every identity field null", async () => {
     const component = await createOrphanComponent(server, org, uniq("no-registry"));

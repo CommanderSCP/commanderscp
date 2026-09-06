@@ -213,9 +213,7 @@ function rbacDiff(
   return problems;
 }
 
-// ==================================================================================================
 // M23.6 CLAUSE 5, WIDENED FROM ONE RULE TO THE WHOLE CHART — WHAT `helm install` ACTUALLY GRANTS
-// ==================================================================================================
 /**
  * `rbacDiff` above is real and fires in both directions, but it is true of ONE Role. The clause is
  * "the chart grants exactly what the adapter calls, and no more", and that is a statement about the
@@ -499,9 +497,7 @@ function federationRoleViolations(role: string, docs: K8sDoc[]): string[] {
   return violations;
 }
 
-// ==================================================================================================
 // M23.6 CLAUSE 6 — THE SOCKET INVARIANT, ENFORCED BY RENDERING EVERY COMBINATION
-// ==================================================================================================
 /**
  * THE INVARIANT M23 MUST NOT BREAK, in BUILD_AND_TEST.md's own words: "**no Docker socket is mounted
  * into any pod, ever** — not behind a value, not behind a `managedIac.enabled` opt-in, not 'for

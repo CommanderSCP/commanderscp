@@ -106,9 +106,7 @@ describe("the containment-parent invariant at the org root, and on the create pa
     return { status: res.statusCode, body: res.body };
   }
 
-  // -----------------------------------------------------------------------------------------------
   // R1 — the org root is not a source container that can lose custody
-  // -----------------------------------------------------------------------------------------------
 
   interface RootSourceFixture {
     org: TestOrg;
@@ -244,9 +242,7 @@ describe("the containment-parent invariant at the org root, and on the create pa
     expect((after.json() as { domainId: string | null }).domainId).toBe(sourceDomainId);
   });
 
-  // -----------------------------------------------------------------------------------------------
   // R2 — a CREATE under an unrooted parent is the same unreachable row, through a different verb
-  // -----------------------------------------------------------------------------------------------
 
   interface UnrootedFixture {
     org: TestOrg;

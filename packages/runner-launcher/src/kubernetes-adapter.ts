@@ -110,9 +110,7 @@ const debug = debuglog("scp-runner-launcher");
  *    {@link KubernetesRunnerLauncherConfig.perRunSecrets}.
  */
 
-// ==================================================================================================
 // THE TWO CONTRACT DECISIONS THIS ADAPTER HAD TO TAKE, NAMED SO THEY ARE MUTATABLE
-// ==================================================================================================
 
 /**
  * KUBERNETES HANDS BACK ONE STREAM; THE PORT HAS TWO FIELDS. THIS IS WHICH ONE GETS IT.
@@ -198,9 +196,7 @@ export const RUNNER_RUN_ID_LABEL = "scp.launcher.run-id";
  */
 export const RUNNER_LAUNCHER_DEADLINE_ANNOTATION = "scp.launcher.deadline";
 
-// ==================================================================================================
 // THE SEAM — one injected object, the exact analogue of `dockerBinary` + `execFile`
-// ==================================================================================================
 
 /** One request this adapter makes of the Kubernetes API server. Its `step` and `timeoutMs` are
  *  {@link KubernetesIoOp}'s — the same two fields every verb on this port carries. */
@@ -420,9 +416,7 @@ export const RUNNER_CONTAINER_NAME = "runner";
 /** The volume name every runner Job mounts its workspace subpaths from. */
 export const RUNNER_WORKSPACE_VOLUME_NAME = "workspace";
 
-// ==================================================================================================
 // NAMES AND PATHS — derived, never invented, and every one of them bounded
-// ==================================================================================================
 
 /** The Job's `metadata.name`. THE SAME STRING the Docker adapter uses for `--name`, which is exactly
  *  what `RunnerSpec.runId`'s doc promised: "the Kubernetes adapter (M23.2) puts the same string in
@@ -519,9 +513,7 @@ function logRequestPath(ns: string, podName: string, maxBuffer: number): string 
   return `${PODS_PATH(ns)}/${podName}/log?container=${RUNNER_CONTAINER_NAME}&limitBytes=${maxBuffer + 1}`;
 }
 
-// ==================================================================================================
 // THE RBAC CONTRACT — WHAT THIS ADAPTER ASKS FOR, AS DATA, SO THE CHART CAN BE DIFFED AGAINST IT
-// ==================================================================================================
 /**
  * M23.6 clause 5: "the chart grants exactly what the adapter calls, and no more".
  *
@@ -633,9 +625,7 @@ export function kubernetesRbacRequirement(
   return verb === null ? null : { apiGroup, resource, verb };
 }
 
-// ==================================================================================================
 // KUBERNETES-SHAPED VALIDATION — the refusals the Docker adapter had no need of
-// ==================================================================================================
 
 /** A label VALUE the API server accepts. Empty is legal; 63 characters is the ceiling. */
 const K8S_LABEL_VALUE = /^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$/;
@@ -690,9 +680,7 @@ export function kubernetesObjectUid(res: KubernetesApiResponse): string | undefi
   }
 }
 
-// ==================================================================================================
 // THE POD'S TERMINAL STATE -> THE PORT'S FAILURE KINDS
-// ==================================================================================================
 
 /** The slice of a pod this adapter reads. Everything else in the object is ignored. */
 interface PodView {
@@ -2572,9 +2560,7 @@ export function jobManifest(
   };
 }
 
-// ==================================================================================================
 // THE PRODUCTION TRANSPORT — plain `fetch` + the projected service-account token (owner decision 7)
-// ==================================================================================================
 
 /** Where a projected service-account token and the cluster CA are mounted in every pod. */
 export const K8S_SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
@@ -2629,9 +2615,7 @@ export function createFetchKubernetesIo(opts: {
   };
 }
 
-// ==================================================================================================
 // ADAPTER SELECTION — the field M23.1 said would land here, and the three layers it moves through
-// ==================================================================================================
 
 /**
  * THE SELECTING RESOLVER — one switch on an EXPLICIT operator setting, never an auto-detection.

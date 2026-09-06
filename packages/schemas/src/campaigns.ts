@@ -786,9 +786,7 @@ export const CampaignExplainResponseSchema = z.object({
 });
 export type CampaignExplainResponse = z.infer<typeof CampaignExplainResponseSchema>;
 
-// ===========================================================================================
 // M25.5 — `GET /campaigns/{id}/adoption`, the READ surface over the same one predicate
-// ===========================================================================================
 
 /**
  * THREE VALUES, AND THE THIRD IS NOT A DEGRADED SECOND. `unknown` means "the named evidence source

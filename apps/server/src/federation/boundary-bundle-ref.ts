@@ -82,9 +82,7 @@ export function withoutBoundaryBundleChecksums(
   return rest;
 }
 
-// ---------------------------------------------------------------------------------------------
 // §9.4 (pipeline-substrate-registry-scan.md) — WHAT THE COMMANDER SIGNED, persisted at export.
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The `sourceRef` key holding one record PER EXPORT of this change: the peer it was addressed to,
@@ -169,9 +167,7 @@ export function withPromotionExport(
   return base;
 }
 
-// ---------------------------------------------------------------------------------------------
 // THE SERVER-OWNED `sourceRef` KEYS — what a caller may NOT plant.
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Both keys above are written by exactly one server-side writer (`changes-repo.ts::

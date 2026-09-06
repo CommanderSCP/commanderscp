@@ -209,8 +209,7 @@ export interface SourceMappingSpec {
    *  colliding as one.
    *  @default undefined — matches any ref. */
   readonly refPattern?: string;
-  /** Which pipeline of the component this source drives (ADR-0007).
-   *  @default "configuration" */
+  /** Which pipeline of the component this source drives (ADR-0007). @default "configuration" */
   readonly type?: ExecutorType;
   /** Declared reach of the repo (pipeline-substrate-registry-scan.md §10.6): `global` (shared across
    *  domains, tracked at the commander) | `domain` (tracked only in one domain). A label read by
@@ -234,8 +233,7 @@ export interface SourceMappingSpec {
  * any other incomplete binding.
  */
 export interface ExecutorBindingSpec {
-  /** Which pipeline this binding drives (ADR-0007).
-   *  @default "configuration" */
+  /** Which pipeline this binding drives (ADR-0007). @default "configuration" */
   readonly type?: ExecutorType;
   /** @default undefined — required together with `pluginInstanceId` for an INLINE binding; omit
    *  both for an execution-system-backed one. */
@@ -250,8 +248,7 @@ export interface ExecutorBindingSpec {
   readonly secretRefs?: Record<string, string>;
   /** @default undefined */
   readonly allowedHosts?: string[];
-  /** Executor-specific target identifier (e.g. an Argo CD Application name).
-   *  @default undefined */
+  /** Executor-specific target identifier (e.g. an Argo CD Application name). @default undefined */
   readonly externalRef?: string;
   /** A registered `execution-system` construct/reference, or its id/URN (Mode A). When set, module,
    *  instance id, config and credentials all resolve from that system — declare none of them here.

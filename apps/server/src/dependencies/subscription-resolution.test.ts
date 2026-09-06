@@ -89,9 +89,7 @@ function permutations<T>(items: T[]): T[][] {
 }
 
 describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
-  // -----------------------------------------------------------------------------------------
   // (1) ABSENT NEVER MEANS ENABLED
-  // -----------------------------------------------------------------------------------------
 
   it("(1) absent never means enabled — no contributions at all resolves NOT enabled", () => {
     const result = resolve([]);
@@ -158,9 +156,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     ).toBe(true);
   });
 
-  // -----------------------------------------------------------------------------------------
   // (2) THE INSTANCE LEVEL UNLOCKS AND NEVER ACTIVATES (ADR-0006)
-  // -----------------------------------------------------------------------------------------
 
   it("(2) the instance level UNLOCKS and NEVER ACTIVATES — unlocked with no enabling contribution is NOT enabled", () => {
     const result = resolve([], UNLOCKED);
@@ -193,9 +189,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     expect(resolve(everyTier, UNLOCKED).enabled).toBe(true);
   });
 
-  // -----------------------------------------------------------------------------------------
   // (3) A DISABLE ALWAYS WINS
-  // -----------------------------------------------------------------------------------------
 
   it("(3) one disable defeats FOUR enables, and the disable may sit at ANY tier", () => {
     const enables = [
@@ -228,9 +222,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     ).toBe(true);
   });
 
-  // -----------------------------------------------------------------------------------------
   // (4) ORDER-INDEPENDENCE
-  // -----------------------------------------------------------------------------------------
 
   it("(4) the whole result — verdict, settings AND explanation — is identical under every permutation", () => {
     const candidates = [
@@ -406,9 +398,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     ).toBe("auto_merge");
   });
 
-  // -----------------------------------------------------------------------------------------
   // Malformed and conditional contributions — the two "admitted to neither side" paths
-  // -----------------------------------------------------------------------------------------
 
   it("a malformed effect enables nothing, throws nothing, and is REPORTED rather than dropped", () => {
     const broken: DependencySubscriptionCandidate = {
@@ -560,9 +550,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     expect(resolve([enable("component")]).enabled).toBe(true);
   });
 
-  // -----------------------------------------------------------------------------------------
   // Explainability — "WHICH level turned this off?" (charter principle 6)
-  // -----------------------------------------------------------------------------------------
 
   it("carries every level's contribution, so a caller can name the level that turned it off", () => {
     const result = resolve([
@@ -583,9 +571,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     expect(result.contributions.filter((c) => c.contributed === "enable")).toHaveLength(2);
   });
 
-  // -----------------------------------------------------------------------------------------
   // The gate is untouched (ADR-0032 §3a consequence 4)
-  // -----------------------------------------------------------------------------------------
 
   it("an unrecognised effect shape leaves gate enforcement untouched — mergeContributorEffects ignores it", () => {
     // `dependencySubscription` is deliberately NOT in `policy-model.ts`'s `PolicyEffect` union: that

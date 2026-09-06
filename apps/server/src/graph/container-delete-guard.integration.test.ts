@@ -85,9 +85,7 @@ describe("container delete guard (proposal §9.3, all three dependent routes)", 
     return { id: service.json().id as string, componentId: component.json().id as string };
   }
 
-  // ---------------------------------------------------------------------------------------------
   // The widening (m7)
-  // ---------------------------------------------------------------------------------------------
 
   it("refuses deleting a service with components, NAMING them and the route", async () => {
     const { id, componentId } = await makeService("svc-with-comps");
@@ -175,9 +173,7 @@ describe("container delete guard (proposal §9.3, all three dependent routes)", 
     expect(deleted.status, deleted.body).toBe(200);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // THE CARVE-OUTS (m8) — what the suite protects now that the asymmetry is gone
-  // ---------------------------------------------------------------------------------------------
 
   it("a federation IMPORT delete with children still lands — refusing it would wedge a peer's bundle", async () => {
     // The authoritative domain already deleted this object; a receiver that refuses the journal

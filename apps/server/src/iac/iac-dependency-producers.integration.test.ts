@@ -126,9 +126,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
     return plan;
   };
 
-  // -------------------------------------------------------------------------------------------
   // (1) THE RULING — an absent collection is UNMANAGED, not empty
-  // -------------------------------------------------------------------------------------------
 
   describe("(1) an ABSENT producers key manages NOTHING", () => {
     it("a stack with a STANDING declaration, whose manifest omits the key, plans NO producer entries and the declaration survives apply", async () => {
@@ -176,9 +174,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (2) WIRING — the plan SHOWING a create and the apply PERFORMING one are two claims
-  // -------------------------------------------------------------------------------------------
 
   describe("(2) WIRING", () => {
     it("apply WRITES the declaration — delete the producer loops in executePlanDiff and this goes red", async () => {
@@ -225,9 +221,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (3) THE WHOLE ACT — the row is the least of it
-  // -------------------------------------------------------------------------------------------
 
   describe("(3) IaC performs the WHOLE verb, not just the row write", () => {
     it("declaring through IaC CLEARS a poisoned public head, and retracting through IaC clears the internal one", async () => {
@@ -359,9 +353,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (4) THE MEMBER QUESTION — a PRESENT collection is authoritative over its own members
-  // -------------------------------------------------------------------------------------------
 
   describe("(4) a PRESENT producers collection IS authoritative over its members", () => {
     it("removing entry B from [A, B] prunes B and leaves A — the key stays present, so the prune runs", async () => {
@@ -393,9 +385,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (5) OWNERSHIP — including the transfer, which is this collection's own hazard
-  // -------------------------------------------------------------------------------------------
 
   describe("(5) ownership", () => {
     it("a stack cannot declare a producer on a component it does not manage", async () => {
@@ -482,9 +472,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (6) COMMANDER-ONLY — IaC apply is a SECOND door into a commander-only table
-  // -------------------------------------------------------------------------------------------
 
   describe("(6) commander-only", () => {
     let outpost: ListeningTestServer;
@@ -537,9 +525,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (7) THE WINDOW BETWEEN PLAN AND APPLY — the stored diff is a CLAIM about who holds a coordinate
-  // -------------------------------------------------------------------------------------------
 
   /**
    * `dependency_line_producers` is keyed on the COORDINATE and upserted, so it can change hands with
@@ -779,9 +765,7 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (9) A HOLDER THAT CANNOT BE NAMED IS STILL A HOLDER
-  // -------------------------------------------------------------------------------------------
 
   /**
    * A tombstoned producer component leaves its declaration STANDING — `deleteObject` is a soft

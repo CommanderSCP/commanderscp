@@ -731,9 +731,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     expect((await admin.changes.accept(change.id)).state).toBe("accepted");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (c) The instance-scoped floors apply to EVERY org on the deployment.
-  // -----------------------------------------------------------------------------------------
 
   it("(c) the instance-scoped floors (platform + trust domain) apply to EVERY org on the deployment — and tighten a per-binding config threshold that would otherwise have passed", async () => {
     await setInstanceFloors({ platform: { maxHigh: 0 } });
@@ -991,9 +989,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     }
   });
 
-  // -----------------------------------------------------------------------------------------
   // Regression guard: with NO tier contributing, the M17.1 behaviour is byte-for-byte unchanged.
-  // -----------------------------------------------------------------------------------------
 
   it("with no tier contributing a ceiling, the gate threads nothing and the control falls back to its per-binding config.threshold (M17.1, unchanged)", async () => {
     await setInstanceFloors({});

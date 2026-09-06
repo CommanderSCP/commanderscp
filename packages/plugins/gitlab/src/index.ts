@@ -90,9 +90,7 @@ import {
  * uncertain it is flagged as an assumption rather than invented.
  */
 
-// -------------------------------------------------------------------------------------------
 // Config + auth (Personal Access Token — `PRIVATE-TOKEN: <PAT>`)
-// -------------------------------------------------------------------------------------------
 
 export interface GitlabConfig {
   /** The GitLab instance base URL, e.g. `https://gitlab.example.com` (NO trailing slash, NO
@@ -216,9 +214,7 @@ async function api(
   return { status: response.status, body: response.body, headers: response.headers ?? {} };
 }
 
-// -------------------------------------------------------------------------------------------
 // Webhook verification (fail-closed) — GitLab's PLAINTEXT X-Gitlab-Token shared secret.
-// -------------------------------------------------------------------------------------------
 
 /**
  * GitLab authenticates webhook deliveries with a PLAINTEXT shared-secret TOKEN carried verbatim in

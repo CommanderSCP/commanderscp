@@ -192,9 +192,7 @@ export function isPlacementCompatible(type: ExecutorType, kind: InfraKind): bool
   return ARTIFACT_INFRA_COMPATIBILITY[type].includes(kind);
 }
 
-// ---------------------------------------------------------------------------------------------
 // Workflow identity (D11, D15b, D23)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * WHAT A TEST HOOK POINTS AT — and why it is never a bare template name.
@@ -253,9 +251,7 @@ export const CapturedWorkflowRefSchema = WorkflowRefSchema.extend({
 });
 export type CapturedWorkflowRef = z.infer<typeof CapturedWorkflowRefSchema>;
 
-// ---------------------------------------------------------------------------------------------
 // Hook kinds and manifest entries (D11, D21)
-// ---------------------------------------------------------------------------------------------
 
 export const PipelineHookKindSchema = z.enum([
   "postMerge",
@@ -382,9 +378,7 @@ export const ManifestPipelineHookSchema = z.discriminatedUnion("kind", [
 ]);
 export type ManifestPipelineHook = z.infer<typeof ManifestPipelineHookSchema>;
 
-// ---------------------------------------------------------------------------------------------
 // Rollout (D12, D15c)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * D12's authority split, DECLARED BY THE PLUGIN and read from the binding — never assumed per
@@ -434,9 +428,7 @@ export const ManifestRolloutSchema = z.object({
 });
 export type ManifestRollout = z.infer<typeof ManifestRolloutSchema>;
 
-// ---------------------------------------------------------------------------------------------
 // Convergence (D25)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * D25(b) — when a configuration pipeline places at an infrastructure PRODUCT, a change in that
@@ -462,9 +454,7 @@ export const ManifestConvergenceSchema = z.object({
 });
 export type ManifestConvergence = z.infer<typeof ManifestConvergenceSchema>;
 
-// ---------------------------------------------------------------------------------------------
 // Wave-document gates (§14 resolution 5) — vocabulary and entry shape only.
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The gate kinds a wave document's native `gates` field may name.
@@ -495,9 +485,7 @@ export const WaveGateSchema = z.object({
 });
 export type WaveGate = z.infer<typeof WaveGateSchema>;
 
-// ---------------------------------------------------------------------------------------------
 // Evidence (D21(b), D23, §14 resolution 8)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * WHAT A PIECE OF EVIDENCE IS ABOUT — and why it must be bound to bytes or to a commit.
@@ -651,9 +639,7 @@ export const SubmitPipelineEvidenceResponseSchema = z.object({
 });
 export type SubmitPipelineEvidenceResponse = z.infer<typeof SubmitPipelineEvidenceResponseSchema>;
 
-// ---------------------------------------------------------------------------------------------
 // Freshness — the Decision `inputContext` shape (§14 build verification 2)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * WHAT A HOOK'S DECISION RECORDS, AND WHY `now` IS NOT IN IT.
@@ -729,9 +715,7 @@ export const ContinuousTestHoldSchema = z.object({
 });
 export type ContinuousTestHold = z.infer<typeof ContinuousTestHoldSchema>;
 
-// ---------------------------------------------------------------------------------------------
 // Artifact-class verification (D13)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * D13 — a pipeline DECLARES its artifact class, and the declaration is then VERIFIED against what

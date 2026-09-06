@@ -181,9 +181,7 @@ function redactSecrets(text: string, secretValues: string[]): string {
   return out;
 }
 
-// -----------------------------------------------------------------------------------------
 // Dedup cache — see module doc. Backed by the server-provided durable `statePath` (MAJOR #4).
-// -----------------------------------------------------------------------------------------
 
 interface RunOutcome {
   externalId: string;

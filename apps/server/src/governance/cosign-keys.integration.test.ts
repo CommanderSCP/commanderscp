@@ -54,9 +54,7 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
     return { gen, calls: () => n };
   }
 
-  // -----------------------------------------------------------------------------------------
   // (a) Generated ONCE and race-safe.
-  // -----------------------------------------------------------------------------------------
   it("provisions exactly one keypair per org even under concurrent first-use (race-safe)", async () => {
     const org = (await createTestOrg(server, "cosign-race")).orgId;
     const { gen, calls } = countingFakeGenerator();
@@ -90,9 +88,7 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
     expect(calls()).toBe(before);
   });
 
-  // -----------------------------------------------------------------------------------------
   // (b) RLS org-isolation — one org cannot read another org's cosign key row.
-  // -----------------------------------------------------------------------------------------
   it("RLS isolates each org's key row (org B cannot read org A's cosign private key)", async () => {
     const a = countingFakeGenerator();
     const b = countingFakeGenerator();
@@ -138,9 +134,7 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
     await raw.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (c) THE EXFILTRATION GUARD — a secretRef naming the cosign key resolves to NOTHING.
-  // -----------------------------------------------------------------------------------------
   it("resolveSecretRefs cannot reach the cosign private key (dedicated table is structurally unreachable)", async () => {
     const org = (await createTestOrg(server, "cosign-exfil")).orgId;
     const masterKey = server.deps.config.secretsMasterKey;
@@ -196,9 +190,7 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
     expect(inSecrets.rows[0]!.n).toBe("1");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (d) The private key is NEVER handed out by the public accessor / any API.
-  // -----------------------------------------------------------------------------------------
   it("the public-key accessor returns ONLY the public half, never the private key", async () => {
     const org = (await createTestOrg(server, "cosign-pub")).orgId;
     const { gen } = countingFakeGenerator();
@@ -213,9 +205,7 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
     expect(JSON.stringify(pub)).not.toContain("PRIVATE");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (e) VALIDITY — the generated/stored keypair actually WORKS (real cosign, keyful/offline).
-  // -----------------------------------------------------------------------------------------
   it("the stored keypair round-trips sign -> verify via cosign (proves the key is real)", async () => {
     // A FRESH org (never provisioned with a fake generator elsewhere in this suite) so the REAL
     // generator actually runs and a genuine cosign keypair is what lands in the table.

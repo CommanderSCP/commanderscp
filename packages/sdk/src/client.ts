@@ -753,9 +753,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
   // M0 legacy /objects/service (unchanged contract — DESIGN.md additive-only-within-v1)
-  // -----------------------------------------------------------------------------------------
 
   readonly objects = {
     service: {
@@ -803,9 +801,7 @@ export class ScpClient {
     } while (cursor);
   }
 
-  // -----------------------------------------------------------------------------------------
   // Runtime type registry (DESIGN.md §4.1)
-  // -----------------------------------------------------------------------------------------
 
   readonly typeRegistry = {
     objectTypes: {
@@ -1302,9 +1298,7 @@ export class ScpClient {
     upsert: upsertServiceAccountByUrnRequest
   });
 
-  // -----------------------------------------------------------------------------------------
   // Named graph queries + generic traverse (DESIGN.md §5)
-  // -----------------------------------------------------------------------------------------
 
   readonly graph = {
     query: async (name: NamedGraphQuery, params: GraphQueryParams): Promise<GraphQueryResult> => {
@@ -1423,9 +1417,7 @@ export class ScpClient {
     } while (cursor);
   }
 
-  // -----------------------------------------------------------------------------------------
   // Personal Access Tokens (M2 step 2 Part A, BUILD_AND_TEST.md §8 M2 item 3)
-  // -----------------------------------------------------------------------------------------
 
   readonly pats = {
     /** `token` in the response is shown ONCE — it cannot be retrieved again after this call returns. */
@@ -1537,9 +1529,7 @@ export class ScpClient {
     }
   };
 
-  // -----------------------------------------------------------------------------------------
   // Instance-tier operator credentials (role-model.md §5 step 9)
-  // -----------------------------------------------------------------------------------------
 
   readonly operatorCredentials = {
     /**

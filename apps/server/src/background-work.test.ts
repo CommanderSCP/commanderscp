@@ -270,9 +270,7 @@ describe("BACKGROUND_LOOPS accounts for every background loop in the tree", () =
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // 3+4. Every registered loop RUNS — and obeys its guard — through the real registry path
-// -------------------------------------------------------------------------------------------
 
 /** The queue each loop creates when it is allowed to run. Written out rather than imported as a set
  *  of constants ON PURPOSE: this is the ORACLE. Importing `RECONCILE_QUEUE` here would make the
@@ -438,9 +436,7 @@ describe("startBackgroundLoops — the runner", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // The one remaining link that is TEXT, and what it does and does not prove
-// -------------------------------------------------------------------------------------------
 
 describe("the composition root calls the registry (SOURCE CENSUS — main.ts cannot be imported)", () => {
   const mainTs = readStripped(join(SRC_DIR, "main.ts"));

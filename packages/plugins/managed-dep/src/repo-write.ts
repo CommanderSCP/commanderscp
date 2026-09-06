@@ -347,9 +347,7 @@ export async function revokeScopedRepoToken(
   }
 }
 
-// -------------------------------------------------------------------------------------------
 // The authored prose. Composed HERE from the descriptor, never supplied by a caller.
-// -------------------------------------------------------------------------------------------
 
 /**
  * The commit subject and pull-request body are DERIVED, not passed in.

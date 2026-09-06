@@ -267,9 +267,7 @@ describe("stage-shaped compilation + malformed-topology loudness", () => {
     expect(plan.waves.map((w) => w.targets.length)).toEqual([2, 2]);
   });
 
-  // -------------------------------------------------------------------------------------------
   // §1.5 / §11 — the malformed-topology property, all three instances
-  // -------------------------------------------------------------------------------------------
 
   it("REFUSES a malformed `waves` (not an array) instead of silently compiling one wave", async () => {
     // Written by SURGERY, not the API, and that is the honest reachability story: the registered

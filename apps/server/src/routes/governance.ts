@@ -238,9 +238,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
   const typed = app.withTypeProvider<ZodTypeProvider>();
   const gateDeps: GateDeps = { sandbox: deps.celSandbox!, host: null };
 
-  // -----------------------------------------------------------------------------------------
   // Control bindings + runs (DESIGN §10.2)
-  // -----------------------------------------------------------------------------------------
 
   typed.route({
     method: "PUT",
@@ -437,9 +435,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
     }
   });
 
-  // -----------------------------------------------------------------------------------------
   // Approvals (DESIGN §10.2 — N-of-M quorum)
-  // -----------------------------------------------------------------------------------------
 
   typed.route({
     method: "GET",
@@ -665,9 +661,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
     }
   });
 
-  // -----------------------------------------------------------------------------------------
   // Freezes (DESIGN §10.3)
-  // -----------------------------------------------------------------------------------------
 
   typed.route({
     method: "POST",

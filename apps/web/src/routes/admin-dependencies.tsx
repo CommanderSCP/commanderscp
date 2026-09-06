@@ -166,9 +166,7 @@ function RefusalAlert({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // The blast-radius report — shared by both dialogs. READ off the verb response, never derived.
-// -------------------------------------------------------------------------------------------
 
 /**
  * Per covered line: its major, the head that stood BEFORE (what the write clears — `headCleared`
@@ -700,9 +698,7 @@ export function RetractDialogBody({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // The table and the view (provider-free), and the page (hooks).
-// -------------------------------------------------------------------------------------------
 
 /** The dialog descriptions — Radix portals them away from a static render, so they are strings. */
 export const DIALOG_COPY = {

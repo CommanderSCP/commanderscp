@@ -257,9 +257,7 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     expect(res.status, res.body).toBe(403);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // THE DOORS — an Operator is refused, an Administrator is admitted (m1, m2, m3, m4)
-  // ---------------------------------------------------------------------------------------------
 
   it("PATCH /services/{id} (typed door) refuses an Operator under an enabled rung, and admits an Administrator", async () => {
     const f = await makeFixture("gm-typed-patch");
@@ -526,9 +524,7 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     expect(res.status, res.body).toBe(404);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // THE INSTANCE RUNG — it ACTIVATES (owner decision Q1-A), and only an operator may set it
-  // ---------------------------------------------------------------------------------------------
 
   it("the INSTANCE rung activates enforcement with NO org rung set, and no org can disable it (m6)", async () => {
     const f = await makeFixture("gm-instance");

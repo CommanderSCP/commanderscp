@@ -137,9 +137,7 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (a)-(c) THE FAIL-OPEN, CLOSED.
-  // -----------------------------------------------------------------------------------------
 
   it("(a) a group-scoped CONSTRAINT applies to a NON-MEMBER when the target's service is owned by the group", async () => {
     const policy = await groupScopedPolicy("owner-half-non-member", [
@@ -228,9 +226,7 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
     expect(hit!.matchedAt.via).toBe("ownerGroup");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (d)-(e) THE NEGATIVE CONTROLS — the acting half is untouched, in both directions.
-  // -----------------------------------------------------------------------------------------
 
   it("(d) NEGATIVE CONTROL: it still applies to a MEMBER — the acting half is untouched", async () => {
     await groupScopedPolicy("acting-half-member", [{ requireControls: ["security-scan"] }]);
@@ -273,9 +269,7 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
     ).toBeUndefined();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (f)-(g) THE LIVE EXPOSURE — the shipped M17.5 scan-requirement gate (ADR-0016).
-  // -----------------------------------------------------------------------------------------
 
   /** The real firing set for a match set, through the real condition evaluator. */
   async function firedFor(matched: MatchedPolicy[]) {
@@ -358,9 +352,7 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
     expect(contribution?.objectTypeId).toBe("service");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (h) Ownership is graph data — revoking it revokes the governance.
-  // -----------------------------------------------------------------------------------------
 
   it("(h) a soft-deleted `owns` edge stops conferring the group's governance", async () => {
     const service = await admin.object("service").create({ name: "temp-owned-svc" });

@@ -1271,9 +1271,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(overrideEvents.length).toBeGreaterThanOrEqual(2); // one per overridden freeze
   });
 
-  // -----------------------------------------------------------------------------------------
   // Group-scoped policy (DESIGN §7's member_of expansion, reused for policy scope).
-  // -----------------------------------------------------------------------------------------
 
   it("a group-scoped policy fires for a member_of subject and does not fire for a non-member", async () => {
     const org = await createTestOrg(server, "group-scope");

@@ -324,9 +324,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     if (scratch) await rm(scratch, { recursive: true, force: true });
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // Harness — exporter-side build/push/sign + fixtures (same shapes as the M15.5(c) suite).
-  // ---------------------------------------------------------------------------------------------
 
   async function pushImage(
     host: string,
@@ -600,9 +598,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     });
   }
 
-  // ---------------------------------------------------------------------------------------------
   // (1a) The CLI-path baseline fixture — the identical-outcomes reference.
-  // ---------------------------------------------------------------------------------------------
 
   it("CLI baseline: manual promotion import + relay-tarball import at the outpost succeed (the reference outcomes)", async () => {
     manualImage = await pushImage(srcHost, SRC_REPO, "manual-artifact");
@@ -656,9 +652,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     });
   }, 300_000);
 
-  // ---------------------------------------------------------------------------------------------
   // (1b) The loop path — same fixture shape, unattended, identical outcomes.
-  // ---------------------------------------------------------------------------------------------
 
   it("loop path: a promotion .scpbundle + relay tarball dropped in the outpost inbox auto-import in ONE tick with outcomes identical to the CLI baseline", async () => {
     loopImage = await pushImage(srcHost, SRC_REPO, "loop-artifact");
@@ -782,9 +776,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     expect(cursorAfter.sequence).toBe(bundle.header.throughSequence);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // (2) Idempotency — the ledger dedupe.
-  // ---------------------------------------------------------------------------------------------
 
   it("a second tick over the same inbox is a no-op: no new changes, no new Decisions (re-processing an already-imported file is idempotent)", async () => {
     const decisionsBefore = await decisionCount(outpost);
@@ -929,9 +921,7 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     }
   }, 240_000);
 
-  // ---------------------------------------------------------------------------------------------
   // (4) Tamper refused (retrans AND outpost, identical to CLI), loop continues.
-  // ---------------------------------------------------------------------------------------------
 
   let tamperedTarballPath = "";
 

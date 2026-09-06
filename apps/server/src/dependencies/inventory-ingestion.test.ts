@@ -299,9 +299,7 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // M21.7 — the stamp projection: which of THREE meanings an empty inventory has
-  // -----------------------------------------------------------------------------------------
   describe("projectIngestionStamp — an empty inventory has three meanings and this picks one", () => {
     const read = (path: string, declared: number, unresolved = 0): IngestedManifest => ({
       path,

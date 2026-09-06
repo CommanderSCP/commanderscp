@@ -211,9 +211,7 @@ describe("a containment write that changes which policies reach an object", () =
     return { org, governedServiceId, ungovernedServiceId, componentId, edgeId, policyName };
   }
 
-  // ===========================================================================================
   // CASE 1 — ROUTE 2, the `contains` edge. THE RESIDUAL, end to end.
-  // ===========================================================================================
 
   it("CASE 1: an Operator with relationship:write and NO policy:write moves a component out of a governed service — the move SUCCEEDS, and it is now recorded", async () => {
     const e = await seedEstate("reach-route2");
@@ -258,9 +256,7 @@ describe("a containment write that changes which policies reach an object", () =
     expect(reasons.join(" ")).toContain("no longer governed by");
   });
 
-  // ===========================================================================================
   // CASE 2 — the claim that a COMPONENT-scoped Operator cannot do this at all.
-  // ===========================================================================================
 
   it("CASE 2: a COMPONENT-scoped Operator is refused at BOTH ends — authority expands upward, so a component binding reaches no service", async () => {
     const e = await seedEstate("reach-component-scoped");
@@ -359,9 +355,7 @@ describe("a containment write that changes which policies reach an object", () =
     expect(await reachDecisionsFor(org, serviceId)).toEqual([]);
   });
 
-  // ===========================================================================================
   // CASE 4 — ROUTE 3, the door that writes NO containment field at all.
-  // ===========================================================================================
 
   it("CASE 4: tombstoning a CONTAINER detaches everything beneath it, and that is recorded against the container — through the `contains` route, because the `domain_id` route's delete is REFUSED outright", async () => {
     const org = await createTestOrg(server, "reach-route3");
@@ -477,9 +471,7 @@ describe("a containment write that changes which policies reach an object", () =
     expect(await reachDecisionsFor(org, serviceId)).toEqual([]);
   });
 
-  // ===========================================================================================
   // CASE 5 — the tightening direction, so a suite made of refusals cannot hide an over-broad guard.
-  // ===========================================================================================
 
   it("CASE 5: a move that ADDS governance is recorded as reach_extended, not as a loss", async () => {
     const e = await seedEstate("reach-extend");
@@ -519,9 +511,7 @@ describe("a containment write that changes which policies reach an object", () =
     expect(await reachingPolicyNames(e.org, movedId)).toContain(e.policyName);
   });
 
-  // ===========================================================================================
   // CASE 7 — ROUTE 1's SECOND WRITE SITE, which does not delegate to `updateObject`.
-  // ===========================================================================================
 
   it("CASE 7: hand-fill reconciliation re-parents a shadow onto its authoritative id, and that is recorded too", async () => {
     const org = await createTestOrg(server, "reach-handfill");

@@ -319,9 +319,7 @@ export function evaluateIngressAuthority(
   return { authorized: true };
 }
 
-// -------------------------------------------------------------------------------------------
 // Reading a version the way THIS line spells versions
-// -------------------------------------------------------------------------------------------
 
 /**
  * Which suffix class this line lives in — THE single meaning of `tag_pattern`.

@@ -230,9 +230,7 @@ describe("countContainmentDependents composes the ONE downward fragment (census 
     expect((await call("DELETE", `/api/v1/deployment-targets/${targetId}`)).status).toBe(200);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // The self-exclusion, which lives at THIS caller and not in the shared fragment
-  // ---------------------------------------------------------------------------------------------
 
   it("a self-parented legacy row is not its own dependent — but its live children still are", async () => {
     const selfParented = await created("/api/v1/domains", { name: uniq("self-domain") });

@@ -641,9 +641,7 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(await storedOverrides(org, campaignId)).toHaveLength(0);
   });
 
-  // ===========================================================================================
   // THE BROAD FORM, AND WHAT A MOVE DOES TO WAIVERS ALREADY IN FORCE
-  // ===========================================================================================
 
   /**
    * OMITTING `targets` WAIVES EVERY DECLARED TARGET — and it is still not `deadline --clear`: the

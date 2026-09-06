@@ -342,9 +342,7 @@ export function RegisterStep({
   );
 }
 
-// ---------------------------------------------------------------------------------------------
 // Step 2 — enumerate (and the only real connectivity check there is)
-// ---------------------------------------------------------------------------------------------
 
 /** One row per proposed object type, so the review screen describes the proposal it actually got. */
 export function proposalTypeCounts(proposal: DiscoveryProposal): Array<[string, number]> {
@@ -442,9 +440,7 @@ export function ReviewStep({ proposal }: { proposal: DiscoveryProposal }): React
   );
 }
 
-// ---------------------------------------------------------------------------------------------
 // The result — hazard 3 lives here
-// ---------------------------------------------------------------------------------------------
 
 /*
  * `ImportSummary` IS GONE WITH THE WRITE IT SUMMARISED (ADR-0047). It counted the objects,

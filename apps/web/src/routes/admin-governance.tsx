@@ -89,9 +89,7 @@ import type { ReadState } from "./component-dependencies";
  * never while pending, and a failed read shows the diagnosis instead of a table.
  */
 
-// -------------------------------------------------------------------------------------------
 // Refusal rendering — shared by the org switch, the enable dialog and every row's Disable.
-// -------------------------------------------------------------------------------------------
 
 /** Every governance:move write refusal the server sends already NAMES what is needed (403:
  *  "…lacks 'policy:write' at scope '…'"; 409: "…is also enabled at <tier> '<name>' above it…") —
@@ -165,9 +163,7 @@ const selectClass = cn(
   focusRing
 );
 
-// -------------------------------------------------------------------------------------------
 // Tier badge — six-tone system, neutral (a tier is a fact, not a status).
-// -------------------------------------------------------------------------------------------
 
 function TierBadge({ tier }: { tier: GovernanceMoveTier }): React.JSX.Element {
   return (
@@ -238,9 +234,7 @@ export function OrgRungSwitch({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // One enabled (containment_domain | service | assembly) rung — the table row.
-// -------------------------------------------------------------------------------------------
 
 function RungRow({
   rung,
@@ -481,9 +475,7 @@ export function EnableDialogBody({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // The page's whole rendering off already-loaded reads, and the page (hooks).
-// -------------------------------------------------------------------------------------------
 
 export function GovernanceView({
   orgId,

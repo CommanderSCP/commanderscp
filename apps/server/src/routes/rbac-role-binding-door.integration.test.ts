@@ -774,9 +774,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     }
   });
 
-  // =============================================================================================
   // 2b. THE SAME CLAUSE ON DELETE — the half that is easy to leave out
-  // =============================================================================================
 
   it("DELETE is refused when the binding OUTRANKS the caller", async () => {
     // WITHOUT THE SUBSET RULE ON DELETE, A SUBJECT REVOKES THE BINDING THAT OUTRANKS THEM: the

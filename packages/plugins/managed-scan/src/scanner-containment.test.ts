@@ -87,9 +87,7 @@ function sweep(paths: string[]): { path: string; text: string }[] {
   return read;
 }
 
-// -------------------------------------------------------------------------------------------------
 // DETECTOR 1 — a Dockerfile that PROVISIONS a scanner (installs it, or copies one in).
-// -------------------------------------------------------------------------------------------------
 
 /** Scanner provisioning tokens: the binaries themselves and the packages that carry them. */
 const SCANNER_PROVISION = /\b(trivy|oscap|openscap|openscap-scanner|scap-security-guide)\b/i;

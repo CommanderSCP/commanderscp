@@ -224,9 +224,7 @@ export const RollbackChangeRequestSchema = z.object({
 });
 export type RollbackChangeRequest = z.infer<typeof RollbackChangeRequestSchema>;
 
-// -------------------------------------------------------------------------------------------
 // Decision records (DESIGN §10.4)
-// -------------------------------------------------------------------------------------------
 
 export const DecisionSchema = z.object({
   id: z.string().uuid(),
@@ -745,9 +743,7 @@ export const ChangeExplainResponseSchema = z.object({
 });
 export type ChangeExplainResponse = z.infer<typeof ChangeExplainResponseSchema>;
 
-// -------------------------------------------------------------------------------------------
 // Change sources / webhook ingress (DESIGN §8 "persist-then-process", §9.2 correlation)
-// -------------------------------------------------------------------------------------------
 
 export const SourceMappingSchema = z.object({
   id: z.string().uuid(),

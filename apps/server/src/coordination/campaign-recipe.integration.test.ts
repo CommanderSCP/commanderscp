@@ -153,9 +153,7 @@ describe("campaign recipes: verbatim to the executor, or refused with a decision
         .orderBy(decisions.createdAt, decisions.id)
     );
 
-  // =============================================================================================
   // A — THE CHANNEL. This is the increment; if it regresses, everything else here is decoration.
-  // =============================================================================================
   it("carries the recipe's parameters to the executor VERBATIM, and uses the recipe's kind", async () => {
     const app = await component("py3");
     const change = await release("py3", app.id, PY3_RECIPE);
@@ -236,9 +234,7 @@ describe("campaign recipes: verbatim to the executor, or refused with a decision
     expect(Object.prototype.hasOwnProperty.call(fired[0]!, "parameters")).toBe(false);
   });
 
-  // =============================================================================================
   // C — THE CAPABILITY REFUSAL. Zero trigger() calls is the assertion the DoD names.
-  // =============================================================================================
   it("REFUSES a recipe the bound executor cannot serve: zero trigger() calls, terminal row, resolvable decision_id", async () => {
     // `argocd`'s real declared set, so the case is exercised against a shape production produces
     // rather than an invented one. It is DISJOINT from `workflow_dispatch`.
@@ -293,9 +289,7 @@ describe("campaign recipes: verbatim to the executor, or refused with a decision
     expect(await blockDecisions(change.id)).toEqual([]);
   });
 
-  // =============================================================================================
   // D — A RECIPE THAT DOES NOT PARSE IS A REFUSAL, NEVER AN ABSENCE.
-  // =============================================================================================
   it("REFUSES an unparseable recipe rather than degrading to a bare sync", async () => {
     // Reaches the actuator through a door the authoring guard deliberately does not cover: a change
     // is not guarded (a 400 on the promotion path is DEFERRED AND RETRIED FOREVER by
@@ -316,9 +310,7 @@ describe("campaign recipes: verbatim to the executor, or refused with a decision
     expect(blocked[0]!.verdict).toBe("block");
   });
 
-  // =============================================================================================
   // E — OQ-5: A RECIPE MAY NOT DRIVE ONE OF COMMANDERSCP'S OWN ACTUATORS.
-  // =============================================================================================
   /**
    * The hazard M25.4 CREATED and this refusal closes. `managed-dep` truthfully declares
    * `triggerKinds: ["custom"]`, so the capability check above passes it — and reconcile would then
@@ -369,9 +361,7 @@ describe("campaign recipes: verbatim to the executor, or refused with a decision
     }
   });
 
-  // =============================================================================================
   // F — THE FAN-OUT. One authored intent, N targets: the "1-click" claim itself.
-  // =============================================================================================
   it("copies the campaign's recipe onto EVERY member change it fans out — the '1-click' claim itself", async () => {
     const targets = await Promise.all([component("fan-a"), component("fan-b"), component("fan-c")]);
     const campaign = await admin.campaigns.propose({

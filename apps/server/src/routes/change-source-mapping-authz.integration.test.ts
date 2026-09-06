@@ -383,9 +383,7 @@ describe("source-mapping write doors are scoped at the component, credential doo
     expect(asNarrow.status, asNarrow.body).toBe(404);
   });
 
-  // -------------------------------------------------------------------------------------------
   // The doors §8.6 excludes — org-root `object:write`/`object:read`, deliberately
-  // -------------------------------------------------------------------------------------------
 
   it("the credential doors still demand org-root authority: a component-bound admin is refused at every one", async () => {
     const key = `cred-${randomUUID().slice(0, 8)}`;

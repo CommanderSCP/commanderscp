@@ -141,9 +141,7 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
 
   const uniq = (p: string) => `${p}-${randomUUID().slice(0, 8)}`;
 
-  // ---------------------------------------------------------------------------------------------
   // Probes — the two production walks, and the test-side model.
-  // ---------------------------------------------------------------------------------------------
 
   /** The UPWARD walk at ONE object. Throws `walkDepthExceeded` (409) rather than returning false
    *  when a refusal cannot be trusted (ADR-0037) — the depth cases below depend on that. */

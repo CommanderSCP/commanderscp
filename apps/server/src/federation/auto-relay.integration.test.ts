@@ -312,9 +312,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     if (scratch) await rm(scratch, { recursive: true, force: true });
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // Harness — the exporter side (identical shapes to the M13.1a/M15.5(c) suites).
-  // ---------------------------------------------------------------------------------------------
 
   async function pushImage(
     host: string,
@@ -551,9 +549,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     };
   }
 
-  // ---------------------------------------------------------------------------------------------
   // Assertion helpers — DB/FS state only.
-  // ---------------------------------------------------------------------------------------------
 
   async function ledgerRow(domain: IsolatedDomain, changeObjectId: string) {
     return withTenantTx(domain.db, domain.orgId, (tx) =>

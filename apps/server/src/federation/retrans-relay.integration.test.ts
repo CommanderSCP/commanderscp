@@ -344,9 +344,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     if (scratch) await rm(scratch, { recursive: true, force: true });
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // Harness — the exporter's build executor side: push + cosign-sign artifacts at the SOURCE.
-  // ---------------------------------------------------------------------------------------------
 
   /** Minimal OCI image push over the distribution API (Basic auth when `auth` is given —
    *  `user:password`, for the authed registry). Returns the digest-pinned reference. */
@@ -493,9 +491,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     return res.status === 200;
   }
 
-  // ---------------------------------------------------------------------------------------------
   // Commander-side (A) promotion machinery — change + scan evidence + export.
-  // ---------------------------------------------------------------------------------------------
 
   /** Propose a change at A tracking `imageDigest` (+ optional sbom), seed its passing digest-bound
    *  scan (the M17.3 E6 export gate), and sync A's graph to B and C so the target resolves. */
@@ -702,9 +698,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     expect(gate.blocked).toBe(false);
   }, 240_000);
 
-  // ---------------------------------------------------------------------------------------------
   // (b) TAMPER NEVER CROSSES.
-  // ---------------------------------------------------------------------------------------------
 
   it("a tampered artifact at the source (signed by the WRONG key) refuses the relay with a block Decision + audit — and NOTHING reaches the destination registry", async () => {
     // Real signature, WRONG key — a forged/substituted build — attached under the LEGACY
@@ -771,9 +765,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     expect(await registryHasDigest(destHost, "scp/tamper-check", goodImage.digest)).toBe(false);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // (c) ALLOWLIST — refused BEFORE any dial.
-  // ---------------------------------------------------------------------------------------------
 
   it("a source host outside SCP_ARTIFACT_OCI_REGISTRY_HOSTS is refused before any dial (zero requests to the decoy)", async () => {
     const before = forbiddenHits;
@@ -790,9 +782,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     expect(forbiddenHits).toBe(before); // the guard fired BEFORE any dial — the decoy saw nothing.
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // (d) ROLE — the ADR-0004 arm: only a retrans-role instance relays.
-  // ---------------------------------------------------------------------------------------------
 
   it("a non-retrans instance refuses to run the relay", async () => {
     // The refusal is a 409 ProblemError whose `detail` names the required role (the message
@@ -811,9 +801,7 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     });
   }, 60_000);
 
-  // ---------------------------------------------------------------------------------------------
   // (e) CREDS — vaulted, per-registry, never logged (ADR-0019 §3).
-  // ---------------------------------------------------------------------------------------------
 
   it("the destination push credential is resolved from the secrets vault against an auth-requiring registry, and never leaks into logs, Decisions, or audit events", async () => {
     // Without the credential, the push is refused by the registry (proves auth is really on).

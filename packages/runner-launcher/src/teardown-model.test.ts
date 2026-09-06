@@ -177,9 +177,7 @@ function expectSweepSettledBeforeTheWindow(deadlineAt: number): void {
   ).toStrictEqual([]);
 }
 
-// ==================================================================================================
 // THE COUNTERS — one per adapter kind, each driven to a run whose budget is ALREADY SPENT.
-// ==================================================================================================
 
 async function countDockerPostDeadline(): Promise<number> {
   effects.length = 0;

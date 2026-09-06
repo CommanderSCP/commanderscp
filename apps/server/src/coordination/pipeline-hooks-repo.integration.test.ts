@@ -391,9 +391,7 @@ describe("pipeline hooks + evidence storage", () => {
     expect(rows).toHaveLength(2);
   });
 
-  // -------------------------------------------------------------------------------------------
   // Window queries and the round trip into the verdict function
-  // -------------------------------------------------------------------------------------------
 
   it("alarmReportsInWindow returns OVERLAPPING reports and excludes non-overlapping ones", async () => {
     const s = await subject(admin, "window");

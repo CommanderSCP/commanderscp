@@ -2974,9 +2974,7 @@ describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () 
     expect(blocked.decisionId).toBeTruthy();
   });
 
-  // ------------------------------------------------------------------------------------------
   // ADR-0045 D2a — the D2/D3 artifact-identity collision converges by ADOPTION, never drops.
-  // ------------------------------------------------------------------------------------------
 
   it("(h) D2a: promotion-import-mint THEN ordinary sync of the exporter's own copy converges to ONE object, adopted origin, no entry_dropped", async () => {
     const digest = "sha256:" + "6".repeat(64);

@@ -389,9 +389,7 @@ describe("a containment move may not build a cycle, and is authorized at both en
     expect((after.json() as { domainId: string | null }).domainId).toBe(org.orgId);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // C2 — the SOURCE container is the other end of a move
-  // ---------------------------------------------------------------------------------------------
 
   interface SourceFixture {
     org: TestOrg;

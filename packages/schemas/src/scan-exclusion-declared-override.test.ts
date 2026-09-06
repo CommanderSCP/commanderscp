@@ -57,9 +57,7 @@ const declared = (...pairs: Array<[string, string]>): ScanDeclaredFacts => ({
   declarations: pairs.map(([key, value]) => ({ key, value }))
 });
 
-// ===========================================================================================
 // M22.5 — `declared_fact`
-// ===========================================================================================
 
 describe("M22.5 — declared_fact needs BOTH halves of the clause and a matching declaration", () => {
   const EGRESS_NONE: ScanExclusionClause = {
@@ -274,9 +272,7 @@ describe("M22.5 — the request body is STRICT even though the registry schema i
   });
 });
 
-// ===========================================================================================
 // M22.6 — `approved_override`
-// ===========================================================================================
 
 describe("M22.6 — approved_override joins a finding to a live grant, exactly", () => {
   const OVERRIDE: ScanExclusionClause = { class: "approved_override" };

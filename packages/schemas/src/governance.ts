@@ -115,9 +115,7 @@ export const ControlBindingSchema = z.object({
 });
 export type ControlBinding = z.infer<typeof ControlBindingSchema>;
 
-// -------------------------------------------------------------------------------------------
 // Approvals (DESIGN §10.2 — N-of-M quorum)
-// -------------------------------------------------------------------------------------------
 
 export const ApprovalRequestStatusSchema = z.enum(["pending", "satisfied"]);
 
@@ -178,9 +176,7 @@ export const CastApprovalVoteRequestSchema = z.object({
 });
 export type CastApprovalVoteRequest = z.infer<typeof CastApprovalVoteRequestSchema>;
 
-// -------------------------------------------------------------------------------------------
 // Freezes (DESIGN §10.3)
-// -------------------------------------------------------------------------------------------
 
 export const FreezeSchema = z.object({
   id: z.string().uuid(),

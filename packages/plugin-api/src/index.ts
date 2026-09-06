@@ -397,9 +397,7 @@ export interface ExecutorPlugin {
   removeSchedule?(ctx: PluginContext, scheduleId: string): Promise<void>;
 }
 
-// -------------------------------------------------------------------------------------------
 // ControlPlugin (DESIGN.md §10.2) — M4 implements; contract shape fixed now.
-// -------------------------------------------------------------------------------------------
 
 export interface ControlRequest {
   changeId: string;
@@ -468,9 +466,7 @@ export interface NotificationPlugin {
   send(ctx: PluginContext, msg: NotificationMessage): Promise<DeliveryResult>;
 }
 
-// -------------------------------------------------------------------------------------------
 // FederationTransportPlugin (DESIGN.md §13) — M6 implements.
-// -------------------------------------------------------------------------------------------
 
 export interface JournalSegment {
   originDomainId: string;
@@ -507,9 +503,7 @@ export interface FederationTransportPlugin {
   importBundle(ctx: PluginContext, bundle: BundleRef): Promise<ImportReport>;
 }
 
-// -------------------------------------------------------------------------------------------
 // DiscoveryPlugin (DESIGN.md §11) — M7 implements (GitHub repo/topology scan).
-// -------------------------------------------------------------------------------------------
 
 /**
  * THE MEMBERSHIP EDGE A DISCOVERY PLUGIN EMITS IS `contains`, POINTING SERVICE -> COMPONENT.

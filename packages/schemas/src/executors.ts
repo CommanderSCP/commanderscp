@@ -324,9 +324,7 @@ export const RegionalExecutorViewSchema = z.object({
 });
 export type RegionalExecutorView = z.infer<typeof RegionalExecutorViewSchema>;
 
-// -------------------------------------------------------------------------------------------
 // Notification bindings (DESIGN §11 NotificationPlugin — an org's configured channels).
-// -------------------------------------------------------------------------------------------
 
 export const NotificationSeveritySchema = z.enum(["info", "warning", "critical"]);
 export type NotificationSeverity = z.infer<typeof NotificationSeveritySchema>;
@@ -356,9 +354,7 @@ export const NotificationBindingListResponseSchema =
   cursorPageResponseSchema(NotificationBindingSchema);
 export type NotificationBindingListResponse = z.infer<typeof NotificationBindingListResponseSchema>;
 
-// -------------------------------------------------------------------------------------------
 // Secrets (write-only — a value is never readable back through the API once stored).
-// -------------------------------------------------------------------------------------------
 
 export const PutSecretRequestSchema = z.object({ value: z.string().min(1) });
 export type PutSecretRequest = z.infer<typeof PutSecretRequestSchema>;

@@ -235,9 +235,7 @@ describe("writing an object's containment parent is authorized at the destinatio
     expect(await readDomainId(f.org, f.movableId)).toBe(f.homeDomainId);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // B2 — `null` is "unspecified", never "detach"
-  // ---------------------------------------------------------------------------------------------
 
   it("PATCH {domainId: null} does not detach the object — it stays reachable from the org root", async () => {
     const f = await makeFixture("detach-patch-typed");

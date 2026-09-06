@@ -135,9 +135,7 @@ export const deviceAuthRequests = pgTable("device_auth_requests", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
 
-// -------------------------------------------------------------------------------------------
 // Runtime type registry (DESIGN.md §4.1)
-// -------------------------------------------------------------------------------------------
 
 export const objectTypes = pgTable("object_types", {
   id: text("id").primaryKey(),
@@ -160,9 +158,7 @@ export const relationshipTypes = pgTable("relationship_types", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
 
-// -------------------------------------------------------------------------------------------
 // The graph (DESIGN.md §4.1)
-// -------------------------------------------------------------------------------------------
 
 export const objects = pgTable(
   "objects",
@@ -348,9 +344,7 @@ export const relationships = pgTable(
   ]
 );
 
-// -------------------------------------------------------------------------------------------
 // RBAC (DESIGN.md §7)
-// -------------------------------------------------------------------------------------------
 
 export const roles = pgTable(
   "roles",
@@ -1046,9 +1040,7 @@ export const changeWaveTargets = pgTable(
   ]
 );
 
-// -------------------------------------------------------------------------------------------
 // Idempotency-Key replay (DESIGN.md §6)
-// -------------------------------------------------------------------------------------------
 
 // -------------------------------------------------------------------------------------------
 // M4 Governance Engine (DESIGN.md §10, BUILD_AND_TEST.md §8 M4). Hand-authored grants/RLS in

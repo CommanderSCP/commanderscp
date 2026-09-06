@@ -807,9 +807,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     expect(await bumpChangesFor(repo)).toHaveLength(0);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // 2b. ONE BUMP CHANGE PER (COMPONENT, MANIFEST) — the fixture whose absence hid a blocker
-  // ---------------------------------------------------------------------------------------------
 
   /**
    * A dependency LINE EXISTS TO BE DECLARED BY MANY COMPONENTS — that is the entire point of the
@@ -952,9 +950,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     expect(String(authored.deliveryReason)).toMatch(/auto_merge was asked for/);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // 2b. THE AUTO-MERGE LINK — the SECOND look, driven through the real ingress and the real gate
-  // ---------------------------------------------------------------------------------------------
 
   /**
    * ==============================================================================================

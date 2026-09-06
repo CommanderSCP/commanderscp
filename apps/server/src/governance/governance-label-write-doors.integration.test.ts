@@ -592,9 +592,7 @@ describe("governance labels: the namespace is enforced at every local write door
     expect(created.id).toBeTruthy();
   });
 
-  // ---------------------------------------------------------------------------------------------
   // PART D — the OTHER label-keyed decision: which journal entries leave this security domain.
-  // ---------------------------------------------------------------------------------------------
 
   it("CASE D1: pairing a peer with a `custom` scope keyed on an ordinary label is refused", async () => {
     const domainId = asTrustDomainId(randomUUID());

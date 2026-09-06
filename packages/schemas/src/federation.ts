@@ -886,9 +886,7 @@ export const ImportBundleResponseSchema = z.object({
 });
 export type ImportBundleResponse = z.infer<typeof ImportBundleResponseSchema>;
 
-// -------------------------------------------------------------------------------------------
 // Promotion Bundles (DESIGN §13 federated change promotion).
-// -------------------------------------------------------------------------------------------
 
 export const PromotionApprovalEvidenceSchema = z.object({
   record: z.object({

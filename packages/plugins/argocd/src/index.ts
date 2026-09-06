@@ -107,9 +107,7 @@ function parseAppName(externalId: string): string {
  *  cleanly rather than silently re-deploying the broken revision as a "successful rollback". */
 const ROLLBACK_UNAVAILABLE_PREFIX = `argocd-rollback-unavailable${REF_DELIMITER}`;
 
-// -----------------------------------------------------------------------------------------
 // ArgoCD REST shapes (subset — only the fields this plugin reads/sends)
-// -----------------------------------------------------------------------------------------
 
 // A single managed-resource entry in the Application's `status.resources[]`. For an app-managed
 // Argo Rollout there is one entry with kind=Rollout, group=argoproj.io, whose `health.status` is

@@ -1040,9 +1040,7 @@ export const ScanVendorLatestFactsSchema = z.object({
 });
 export type ScanVendorLatestFacts = z.infer<typeof ScanVendorLatestFactsSchema>;
 
-// ===========================================================================================
 // M22.5 (owner decision D2) — WHAT THE COMPONENT DECLARED, and the write door that bounds it.
-// ===========================================================================================
 
 /** The `component.properties` key the declarations live under. ONE constant, because the migration's
  *  JSON Schema, the request-body validator and the gate-time reader must name the same key — three
@@ -1095,9 +1093,7 @@ export const ScanDeclaredFactsSchema = z.object({
 });
 export type ScanDeclaredFacts = z.infer<typeof ScanDeclaredFactsSchema>;
 
-// ===========================================================================================
 // M22.6 (owner decisions D3/D4) — THE APPROVED OVERRIDE, as the gate resolved it.
-// ===========================================================================================
 
 /**
  * ONE standing grant, already filtered to `approved` and already inside its expiry window by the
@@ -1170,9 +1166,7 @@ export const ScanApprovedOverridesSchema = z.object({
 });
 export type ScanApprovedOverrides = z.infer<typeof ScanApprovedOverridesSchema>;
 
-// -------------------------------------------------------------------------------------------
 // The override request as a GRAPH OBJECT (charter principle 2) and its API surface.
-// -------------------------------------------------------------------------------------------
 
 /** The registered `object_types.id`. ONE constant: the migration, the governance-managed set, the
  *  repo and the resolver must all name the same type, and four string literals is how one of them

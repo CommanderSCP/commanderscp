@@ -530,9 +530,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect(stillWorks.statusCode, stillWorks.body).toBe(200);
   });
 
-  // =============================================================================================
   // §2a's MEMBER-SHAPE HALF — §2b's refusals, on the JOIN path
-  // =============================================================================================
 
   it("§2b's refusals apply on the JOIN path when the joining subject is itself a group", async () => {
     // §2a as first shipped asked only about the ACTOR: does the actor hold what the joiner would
@@ -642,9 +640,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect(inherited.statusCode, inherited.body).toBe(200);
   });
 
-  // =============================================================================================
   // D7 — THE ACKNOWLEDGEMENT (owner ruling 2026-08-27)
-  // =============================================================================================
 
   it("D7: a grant to a group is refused without an acknowledgement and admitted with the right one", async () => {
     const org = await createTestOrg(server, "d7-basic");
@@ -881,9 +877,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect(admitted.statusCode, admitted.body).toBe(200);
   });
 
-  // =============================================================================================
   // THE FLOOR'S ANCHOR — a principal that can AUTHENTICATE, not a graph object of a principal type
-  // =============================================================================================
 
   /** The bootstrap admin's own org-root binding — the one the brick chain revokes. */
   async function ownBindingIdOf(orgToken: string, subjectObjectId: string): Promise<string> {
@@ -1096,9 +1090,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect((await call("GET", saToken, "/api/v1/roles")).statusCode).toBe(200);
   });
 
-  // =============================================================================================
   // THE PREVIEW MUST NOT TELL A CALLER ANYTHING THEY COULD NOT ALREADY READ
-  // =============================================================================================
 
   it("grant-preview is anchored to the SUBJECT, not to a scope the caller chooses", async () => {
     // THE DEFECT: the preview took a `scopeObjectId` and admitted a holder of `audit:read`
@@ -1239,9 +1231,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect(listed.statusCode, listed.body).toBe(200);
     expect(listed.body).not.toContain(insider.objectId);
 
-    // ------------------------------------------------------------------------------------------
     // THE REFUSAL — a 200 that carries no identity at all, and a COUNT that says somebody is there.
-    // ------------------------------------------------------------------------------------------
     const filtered = await call(
       "GET",
       teamScoped.token,
@@ -1414,9 +1404,7 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     ).toBe(200);
   });
 
-  // =============================================================================================
   // THE TENANT BOUNDARY ON THE FLOOR'S FIFTH INPUT — `users` CARRIES NO RLS
-  // =============================================================================================
 
   it("a `users` row in ANOTHER org naming this org's phantom is not this org's administrator", async () => {
     // `principalsReachedBy` LEFT JOINs `users` to decide `credentialed`, and `users` is auth

@@ -132,9 +132,7 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
     await expect(admin.object("change").delete(legit.id)).rejects.toMatchObject({ status: 403 });
   });
 
-  // -----------------------------------------------------------------------------------------
   // ADR-0028 — the declared STAGE DEPENDENCIES, which mint a `depends_on` edge.
-  // -----------------------------------------------------------------------------------------
 
   it("SECURITY: a stage dependency naming a component OUTSIDE the actor's authority is refused, and mints NO edge", async () => {
     // The `targets` check above passes cleanly here — the actor owns its target and its domain — so

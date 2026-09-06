@@ -276,9 +276,7 @@ describe("HIGH: the SIZE of the bound, not merely that a bound was applied", () 
   });
 });
 
-// ==================================================================================================
 // M23.5 VERIFICATION PASS 18 — THE KIND THAT REFUSES TO GUESS, AND THE ORDER THAT PROTECTS IT
-// ==================================================================================================
 
 describe("`outcome-unknown` is decided BEFORE every test that would infer a verdict", () => {
   const unknown = (over: { deadlineExceeded?: boolean; killed?: boolean } = {}) =>

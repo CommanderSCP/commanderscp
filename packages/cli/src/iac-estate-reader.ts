@@ -52,9 +52,7 @@ function deploymentTargetId(placement: GraphObject): string {
   return id;
 }
 
-// -------------------------------------------------------------------------------------------
 // `scp iac export --scope <service-urn>` (§9/D5)
-// -------------------------------------------------------------------------------------------
 
 /** Mirrors `apps/server/src/dependencies/manifest-reader.ts`'s `GIT_PROVIDER_MODULES` — the three
  *  git-hosting `source_mappings.sourceKind` values this platform's own adapters carry. Duplicated

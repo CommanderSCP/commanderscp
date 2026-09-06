@@ -211,9 +211,7 @@ export function policyWriteRefusal(error: unknown): { message: string; decisionI
   return { message: queryErrorMessage(error) };
 }
 
-// -------------------------------------------------------------------------------------------
 // Rendering vocabulary — the reason enums mapped onto Badge tones. READ, never derived.
-// -------------------------------------------------------------------------------------------
 
 const ROW_REASON_BADGE: Record<
   ComponentDependencyInventoryRow["subscription"]["reason"],
@@ -1070,9 +1068,7 @@ export function BumpsSection({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // The "Produces" strip (dependency-subscription-ui.md §12.4, owner decision 2026-08-18 Q2).
-// -------------------------------------------------------------------------------------------
 
 /**
  * "This component is the declared producer of `npm @acme/lib`, … — Admin › Dependencies." Rendered

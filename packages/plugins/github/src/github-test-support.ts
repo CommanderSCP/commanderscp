@@ -99,9 +99,7 @@ export function createRealHttpClient(): ScopedHttpClient {
   };
 }
 
-// -------------------------------------------------------------------------------------------
 // Test RSA keypair (memoized — generated once per test-file process, not per test) + JWT check
-// -------------------------------------------------------------------------------------------
 
 let cachedKeyPair: { privateKeyPem: string; publicKeyPem: string } | undefined;
 

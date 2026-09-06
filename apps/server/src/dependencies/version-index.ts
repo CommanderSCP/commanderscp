@@ -139,9 +139,7 @@ export function resolveIndexInstanceConfig(
   };
 }
 
-// -------------------------------------------------------------------------------------------
 // Ranking — the ONE place a version order is computed
-// -------------------------------------------------------------------------------------------
 
 /** Why a head could not be picked even though an index answered. Each is a distinct operator
  *  action, which is the whole reason they are not one value. */
@@ -242,9 +240,7 @@ export function selectLineHead(
   return { head: best, considered, skipped, offLine };
 }
 
-// -------------------------------------------------------------------------------------------
 // Asking an index — plugin first, operator-loaded feed second, unavailable last
-// -------------------------------------------------------------------------------------------
 
 /** Where an answer came from, carried into the Decision so "why does this line say that?" is
  *  answerable from the record alone (charter principle 6). */

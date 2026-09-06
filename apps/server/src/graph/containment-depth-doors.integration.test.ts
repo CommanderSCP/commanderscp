@@ -154,9 +154,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect(Math.max(...chain.map((e) => e.depth))).toBe(CONTAINMENT_WALK_MAX_DEPTH);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // D1 — createObject domain_id
-  // ---------------------------------------------------------------------------------------------
 
   it("D1: a domain created under a hop-ten domain is refused; under hop nine it lands", async () => {
     const org = await createTestOrg(server, "depth-d1-domain");
@@ -268,9 +266,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect(ok.status, ok.body).toBe(200);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // D2 — updateObject domain_id MOVE, the subtree counted
-  // ---------------------------------------------------------------------------------------------
 
   it("D2: moving a domain with a three-deep subtree under hop seven is refused NAMING the subtree; under hop six it lands and every row stays readable", async () => {
     const org = await createTestOrg(server, "depth-d2-subtree");
@@ -461,9 +457,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect(Math.max(...chain.map((e) => e.depth))).toBe(CONTAINMENT_WALK_MAX_DEPTH);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // D3 — the `contains` edge
-  // ---------------------------------------------------------------------------------------------
 
   it("D3: a component attached to a hop-ten container is refused; attached to a hop-nine one it lands", async () => {
     const org = await createTestOrg(server, "depth-d3-attach");
@@ -603,9 +597,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect(ok.status, ok.body).toBe(201);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // D4 — the placement pair
-  // ---------------------------------------------------------------------------------------------
 
   it("D4: a placement of a hop-ten COMPONENT is refused (route 3); of a hop-nine one it lands", async () => {
     const org = await createTestOrg(server, "depth-d4-component");
@@ -691,9 +683,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     ).toBe(200);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // D4's ONE bypass — federation hand-fill (closed 2026-08-18)
-  // ---------------------------------------------------------------------------------------------
 
   it("hand-fill: a placement cannot be hand-filled at all (fifth pair-bound door) — the one path that used to plant a hop-eleven placement past D4; a non-pair-bound hand-fill through the same paired peer still lands", async () => {
     const org = await createTestOrg(server, "depth-handfill");

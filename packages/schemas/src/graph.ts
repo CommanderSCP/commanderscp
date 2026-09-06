@@ -356,9 +356,7 @@ export const ObjectListQuerySchema = z.object({
 });
 export type ObjectListQuery = z.infer<typeof ObjectListQuerySchema>;
 
-// ---------------------------------------------------------------------------------------------
 // Placements (ADR-0026 D2/D3/D14, post-import-configuration.md §3)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * `POST /placements` — one component at one deployment target.
@@ -459,9 +457,7 @@ export type RelationshipListResponse = z.infer<typeof RelationshipListResponseSc
 
 export const RelationshipIdParamSchema = z.object({ id: z.string().uuid() });
 
-// ---------------------------------------------------------------------------------------------
 // Named graph queries + generic traverse (DESIGN.md §5)
-// ---------------------------------------------------------------------------------------------
 
 export const NamedGraphQuerySchema = z.enum([
   "owners-of",
@@ -536,9 +532,7 @@ export const SubgraphResultSchema = z.object({
 });
 export type SubgraphResult = z.infer<typeof SubgraphResultSchema>;
 
-// ---------------------------------------------------------------------------------------------
 // Graph integrity (`GET /api/v1/graph/integrity`)
-// ---------------------------------------------------------------------------------------------
 
 /** One live edge whose `from` and/or `to` object is soft-deleted. */
 export const DanglingRelationshipSchema = z.object({

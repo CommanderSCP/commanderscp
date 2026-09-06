@@ -203,9 +203,7 @@ const JOB_GUARDS: readonly { name: string; guard: Guard }[] = [
   }, new Map<Guard, string[]>())
 ].map(([guard, names]) => ({ name: names.join(" + "), guard }));
 
-// -------------------------------------------------------------------------------------------
 // THE CENSUS — what background loops EXIST, and is every one of them accounted for?
-// -------------------------------------------------------------------------------------------
 
 const SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

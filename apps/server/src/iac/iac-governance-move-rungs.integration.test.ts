@@ -107,9 +107,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
   const enforcedAt = async (urn: string): Promise<boolean> =>
     (await admin.governanceMove.enforcement("service", urn)).enforced;
 
-  // -------------------------------------------------------------------------------------------
   // (1) THE RULING — an absent collection is UNMANAGED, not empty
-  // -------------------------------------------------------------------------------------------
 
   describe("(1) an ABSENT governanceMoveRungs key manages NOTHING", () => {
     it("a stack with a STANDING rung, whose manifest omits the key, plans NO rung entries and the rung survives apply", async () => {
@@ -152,9 +150,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (2) WIRING — the plan SHOWING a create and the apply PERFORMING one are two claims
-  // -------------------------------------------------------------------------------------------
 
   describe("(2) WIRING", () => {
     it("apply ENABLES the rung — delete the rung loops in executePlanDiff and this goes red", async () => {
@@ -187,9 +183,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (3) THE WHOLE ACT — a rung write is a row PLUS a Decision PLUS an audit event
-  // -------------------------------------------------------------------------------------------
 
   describe("(3) the apply performs the WHOLE act, not the row", () => {
     it("records its own Decision and audit event, so the Decision log still answers 'every rung ever enabled'", async () => {
@@ -235,9 +229,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (4) IDEMPOTENCE — re-applying is the ordinary case, not an edge case
-  // -------------------------------------------------------------------------------------------
 
   describe("(4) re-applying the same manifest is a noop", () => {
     it("the second plan says noop, and the rung is neither re-created nor disturbed", async () => {
@@ -271,9 +263,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (5) THE MEMBER QUESTION — a PRESENT collection is authoritative over its own members
-  // -------------------------------------------------------------------------------------------
 
   describe("(5) removing ONE entry from a PRESENT collection disables THAT rung", () => {
     it("dropping B from [A, B] disables B and leaves A enforced", async () => {
@@ -305,9 +295,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (6) AUTHORITY — `policy:write` at-or-above the subject, against the REAL applying principal
-  // -------------------------------------------------------------------------------------------
 
   /**
    * `Operator` IS THE RIGHT PRINCIPAL, and the two cases are one pair on purpose. Operator carries
@@ -399,9 +387,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (7) THE MONOTONE REFUSAL — an enablement above cannot be undone below
-  // -------------------------------------------------------------------------------------------
 
   describe("(7) a disable under an ENABLED upper rung fails the apply 409", () => {
     it("dropping the lower entry while the parent domain's rung stands is refused, naming the upper rung", async () => {
@@ -452,9 +438,7 @@ describe("iac: governance:move rungs (ADR-0038 §2)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (8) THE POINT — a rung written by IaC feeds the SAME lattice the doors consult
-  // -------------------------------------------------------------------------------------------
 
   /**
    * This is the case the whole increment exists for. Everything above proves a row was written with

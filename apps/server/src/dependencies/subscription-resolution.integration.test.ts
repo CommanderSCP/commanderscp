@@ -188,9 +188,7 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (1) The substrate — migration 0062's table, its default, and its two write barriers
-  // -----------------------------------------------------------------------------------------
 
   describe("(1) the instance unlock substrate", () => {
     it("ships EMPTY, and no row reads as LOCKED — absent never means enabled", async () => {
@@ -262,9 +260,7 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (2) The policy document schema — 0062's second half
-  // -----------------------------------------------------------------------------------------
 
   describe("(2) the `dependencySubscription` policy effect validates", () => {
     it("accepts a well-formed effect on a real `policy` object, and refuses the shapes that would fail open", async () => {
@@ -424,9 +420,7 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (3) The work-list — derived from the resolution, never filtered beside it
-  // -----------------------------------------------------------------------------------------
 
   describe("(3) the ingestion work-list", () => {
     beforeAll(async () => {
@@ -547,9 +541,7 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (4) Tier labels over a REAL containment chain — derived from typeId, never from position
-  // -----------------------------------------------------------------------------------------
 
   describe("(4) tier labels and a higher-tier opt-out", () => {
     let chainComponent: string;

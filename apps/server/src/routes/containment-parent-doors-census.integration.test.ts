@@ -79,9 +79,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     return (res.json() as { domainId: string | null }).domainId;
   }
 
-  // -----------------------------------------------------------------------------------------
   // PUT /components/{urn} — the door the sibling file misses, on both branches
-  // -----------------------------------------------------------------------------------------
 
   it("PUT /components/{urn} — the update branch — refuses a move into a domain the actor holds nothing at", async () => {
     const org = await createTestOrg(server, "put-cmp-move");
@@ -138,9 +136,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect(await readComponentDomainId(org, componentId)).toBe(org.orgId);
   });
 
-  // -----------------------------------------------------------------------------------------
   // The create doors — `null` means the same thing at every one of them
-  // -----------------------------------------------------------------------------------------
 
   it("POST /components {domainId: null} creates an org-root child, not an orphan", async () => {
     const org = await createTestOrg(server, "post-cmp-null");
@@ -207,9 +203,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect(generic.json().domainId).toBe(org.orgId);
   });
 
-  // -----------------------------------------------------------------------------------------
   // The COORDINATION create doors — same wire `null`, four more handlers
-  // -----------------------------------------------------------------------------------------
 
   async function readObjectDomainId(
     org: TestOrg,
@@ -270,9 +264,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     );
   });
 
-  // -----------------------------------------------------------------------------------------
   // IaC apply — the ninth door, and the only one that authorizes through a drained check list
-  // -----------------------------------------------------------------------------------------
 
   it("POST /plans/{id}/apply refuses a manifest that re-parents an object into a domain the actor holds nothing at", async () => {
     const org = await createTestOrg(server, "iac-move");
@@ -324,9 +316,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect((after.json() as { domainId: string | null }).domainId).toBe(homeDomainId);
   });
 
-  // -----------------------------------------------------------------------------------------
   // A soft-deleted container is the same unreachable row, reached through a different value
-  // -----------------------------------------------------------------------------------------
 
   it("a SOFT-DELETED domain is refused as a containment parent — moving under a tombstone is the same detach", async () => {
     const org = await createTestOrg(server, "deleted-parent");
@@ -369,9 +359,7 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect(created.status, created.body).toBe(400);
   });
 
-  // -----------------------------------------------------------------------------------------
   // The new refusal: a containment cycle has no org-root ancestor
-  // -----------------------------------------------------------------------------------------
 
   it("an object cannot be made its own containment parent", async () => {
     const org = await createTestOrg(server, "self-parent");

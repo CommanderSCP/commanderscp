@@ -68,9 +68,7 @@ afterEach(() => {
   expect(pending, `unconsumed nock interceptors after test: ${pending.join(", ")}`).toEqual([]);
 });
 
-// -------------------------------------------------------------------------------------------
 // verifyGithubWebhookSignature — pure function, no HTTP/nock involved at all.
-// -------------------------------------------------------------------------------------------
 
 describe("verifyGithubWebhookSignature", () => {
   const secret = "test-webhook-secret";
@@ -747,9 +745,7 @@ describe("abort()", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // observe() — polling fallback, and its poll-vs-push equivalence with mapGithubWebhookEventToHint.
-// -------------------------------------------------------------------------------------------
 
 describe("observe() polling fallback", () => {
   it("maps recent commits and workflow runs to well-formed ExecutorEvents with populated correlation", async () => {
@@ -1840,9 +1836,7 @@ describe("readFileAtRef()", () => {
     expect((result as { detail: string }).detail).toContain("content type 'submodule'");
   });
 
-  // -----------------------------------------------------------------------------------------
   // Two documented promises that no test held (M21.2 review, MINOR 6).
-  // -----------------------------------------------------------------------------------------
 
   it("NEVER fabricates `blobSha` — a response without one comes back without one", async () => {
     // read-file.ts's `ReadFileAtRefFound.blobSha` says "never fabricated when it did not"; a

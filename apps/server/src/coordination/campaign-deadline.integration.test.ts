@@ -232,9 +232,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     };
   }
 
-  // ===========================================================================================
   // W — THE ACTUATOR (proposal §4.3, actuator-table row 12). THE MUTATION TARGET.
-  // ===========================================================================================
 
   /**
    * TWO TARGETS, A PAST DEADLINE, ONE OF THEM ADOPTED — and the shape of the fixture is dictated by
@@ -404,9 +402,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     ).toHaveLength(0);
   });
 
-  // ===========================================================================================
   // THE PREDICATE OVER THE **REAL** RESOLUTION CORE — all three verdicts, real PostgreSQL
-  // ===========================================================================================
 
   /**
    * `campaign-deadline-lock.test.ts` stubs `evaluateCampaignAdoption` to exercise the predicate's
@@ -457,9 +453,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     ]);
   });
 
-  // ===========================================================================================
   // FAIL OPEN, LOUDLY (§4.2)
-  // ===========================================================================================
 
   /**
    * A MALFORMED BAG LOCKS NOTHING AND SAYS SO. The departure from `stage-dependency-hold.ts`'s
@@ -527,9 +521,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     expect((read.json() as { deadline: unknown }).deadline).toBeNull();
   });
 
-  // ===========================================================================================
   // THE ESCAPE HATCH — `POST /campaigns/{id}/deadline`, set / move / CLEAR
-  // ===========================================================================================
 
   /**
    * CLEARING THE DEADLINE UNLOCKS EVERY TARGET, on the next tick, with no unlock verb. This is what
@@ -725,9 +717,7 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     expect(await storedDeadlineOf(org, campaign.id as string)).toEqual(deadline);
   });
 
-  // ===========================================================================================
   // THE WIDENING GATE — owner ruling 2026-08-25 (decision D1, option b-i)
-  // ===========================================================================================
 
   /**
    * THE BYPASS THIS CLOSES, stated as the test's premise rather than left in a commit message.

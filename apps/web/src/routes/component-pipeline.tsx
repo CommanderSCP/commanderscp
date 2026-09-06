@@ -3510,9 +3510,7 @@ export function RegistryNodeForTest({
   );
 }
 
-/* ------------------------------------------------------------------------------------------------
- * SCAN & SIGN — commander only
- * ---------------------------------------------------------------------------------------------- */
+/* SCAN & SIGN — commander only */
 
 /** The E6 verdict as the tile words it — `not_run` reads as "not run", the others verbatim. */
 function exportGateLabel(gate: ComponentPipelineArtifact["exportGate"]): string {

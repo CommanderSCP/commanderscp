@@ -225,9 +225,7 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
         .orderBy(decisions.createdAt, decisions.id)
     );
 
-  // ===========================================================================================
   // A — `dependency`: every verdict, and the two absences that must never become `adopted`
-  // ===========================================================================================
 
   /**
    * THE CASE THE WHOLE FEATURE IS SHAPED AROUND. "Never ingested" and "declares nothing" are
@@ -583,9 +581,7 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     expect(result.verdict).not.toBe("adopted");
   });
 
-  // ===========================================================================================
   // D — CONSUMER 1: THE ACTUATOR. `adopted` => terminalize, and NO member change is proposed.
-  // ===========================================================================================
 
   /**
    * MUTATION-PROVEN. Deleting the `adopted => terminalize, skip proposeChange` branch from
@@ -723,9 +719,7 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     expect(await decisionsOfKind(org, campaignId, CAMPAIGN_ADOPTION_DECISION_KIND)).toHaveLength(0);
   });
 
-  // ===========================================================================================
   // E — CONSUMER 2: the read surface, over the SAME predicate
-  // ===========================================================================================
 
   it("E1: GET /campaigns/{id}/adoption reports the per-target verdict, the evidence source and the observations", async () => {
     const { org, componentId } = await fixture("adopt-e1");

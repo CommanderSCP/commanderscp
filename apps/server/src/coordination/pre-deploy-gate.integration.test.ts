@@ -313,9 +313,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     };
   }
 
-  // ---------------------------------------------------------------------------------------------
   // SCP-side helpers: the post-import change shape + the reconcile tick + assertion queries.
-  // ---------------------------------------------------------------------------------------------
 
   /** A change exactly as M17.4(a)'s `applyPromotionImport` leaves one: `sourceRef` carrying the
    *  verified `promotionManifest` + typed `artifacts[]` authorized set, `importedFromDomain` set. */
@@ -498,9 +496,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(passAudit[0]!.rowHash).toEqual(expect.any(String));
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // (b) TAMPERED image — bytes present, signature from the WRONG key -> BLOCK, deploy never fires.
-  // ---------------------------------------------------------------------------------------------
   it("(b) TAMPERED: an image signed by the wrong key is BLOCKED with a Decision; re-ticks append nothing", async () => {
     // A real registry-attached signature exists — made with the ATTACKER's key, not the exporter's
     // E5-distributed one. (The wrong-digest variant is equivalent: a substituted digest has no
@@ -523,9 +519,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect((await changeRow(changeId)).state).toBe("coordinated");
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // (c) BAD blob signatureRef — blob present, origin signature does not verify -> BLOCK.
-  // ---------------------------------------------------------------------------------------------
   it("(c) BAD BLOB SIGNATURE: a blob whose signatureRef fails cosign verify-blob is BLOCKED", async () => {
     const blob = await serveSignedBlob(
       "bad-sig-sbom",
@@ -549,9 +543,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(reason).toMatch(/blob .*verification failed|byte verification failed/i);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // (d) MISSING bytes — the operator never side-loaded them -> BLOCK (fail-closed), both kinds.
-  // ---------------------------------------------------------------------------------------------
   it("(d) MISSING: authorized artifacts whose bytes are absent from the reachable registry are BLOCKED fail-closed", async () => {
     // An authorized digest the registry has never seen (metadata imported, bytes never loaded)...
     const absentImageRef = `${registryHost}/scp/never-loaded@sha256:${"0".repeat(64)}`;
@@ -725,9 +717,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(reason).toMatch(/SCP_ARTIFACT_OCI_REGISTRY_HOSTS unset/i);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // Fail-closed key anomaly: manifest-carrying change, but the peer has NO registered cosign key.
-  // ---------------------------------------------------------------------------------------------
   it("FAIL-CLOSED KEY ANOMALY: a manifest-carrying change whose peer has no cosign key is BLOCKED, not waved through", async () => {
     const image = await pushImage("scp/keyless-img", "keyless");
     signImage(image.ref, exporterKey.keyPath); // even a GOOD signature can't be verified without the key
@@ -749,9 +739,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     expect(reason).toMatch(/no exporter cosign public key/i);
   }, 120_000);
 
-  // ---------------------------------------------------------------------------------------------
   // SCOPE — only manifest-carrying changes are gated (ADR-0013 domain-local exemption).
-  // ---------------------------------------------------------------------------------------------
   it("SCOPE (e1): a domain-local change with no manifest deploys normally, completely ungated", async () => {
     // An ordinary local change — no import, no manifest. Nothing in its registry/bytes world exists
     // (the artifact digest below is pure fiction), and the gate must never even look.

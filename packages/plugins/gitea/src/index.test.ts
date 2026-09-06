@@ -49,9 +49,7 @@ afterEach(() => {
   expect(pending, `unconsumed nock interceptors after test: ${pending.join(", ")}`).toEqual([]);
 });
 
-// -------------------------------------------------------------------------------------------
 // verifyGiteaWebhookSignature — bare-hex X-Gitea-Signature (NO sha256= prefix). Pure function.
-// -------------------------------------------------------------------------------------------
 
 describe("verifyGiteaWebhookSignature (bare-hex X-Gitea-Signature)", () => {
   const secret = "gitea-webhook-secret";
@@ -163,9 +161,7 @@ describe("mapGiteaWebhookEventToHint", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() — workflow_dispatch (Gitea Actions, ASSUMED shapes; the token-auth header is real).
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() — workflow_dispatch", () => {
   it("dispatches, correlates the newest run, returns action_run::<id>, and carries the token auth header", async () => {
@@ -286,9 +282,7 @@ describe("trigger() — workflow_dispatch", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() idempotency
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() idempotency — in-memory dedup cache", () => {
   it("a second trigger() with the SAME idempotencyKey returns the SAME ref and never re-dispatches", async () => {
@@ -482,9 +476,7 @@ describe("abort()", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // observe() — commits + runs + PACKAGE pushes (artifactDigest), and poll-vs-push equivalence.
-// -------------------------------------------------------------------------------------------
 
 describe("observe() polling — commits, runs, and package pushes", () => {
   function nockCommitsAndRuns(

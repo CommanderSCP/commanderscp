@@ -54,9 +54,7 @@ const withFacts = (
 
 const VENDOR: ScanExclusionClause = { class: "vendor_latest" };
 
-// ===========================================================================================
 // M22.3 — `no fix available`: pure data over the retained fields, no join of any kind.
-// ===========================================================================================
 
 describe("M22.3 — no_fix_available reads FixedVersion's ABSENCE and nothing else", () => {
   it("excludes a finding with NO FixedVersion and keeps one that has a fix", () => {
@@ -137,9 +135,7 @@ function parseOne(vuln: Record<string, unknown>): ScanFinding {
   return first;
 }
 
-// ===========================================================================================
 // M22.4 — the vendor rule's key and the purl→ecosystem read.
-// ===========================================================================================
 
 describe("M22.4 — the join key is canonicalised ONCE, per ecosystem's own rule", () => {
   it("folds python by PEP 503 and NOTHING ELSE", () => {

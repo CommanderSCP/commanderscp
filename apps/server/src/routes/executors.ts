@@ -131,9 +131,7 @@ async function bindTargetToExecutionSystem(
 export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
-  // -----------------------------------------------------------------------------------------
   // Plugin manifests (static catalog — no runtime hot-loading, DESIGN §11)
-  // -----------------------------------------------------------------------------------------
 
   typed.route({
     method: "GET",
@@ -153,9 +151,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
-  // -----------------------------------------------------------------------------------------
   // Secrets (write-only — encrypted at rest, secrets/crypto.ts; never readable back)
-  // -----------------------------------------------------------------------------------------
 
   typed.route({
     method: "PUT",
@@ -258,9 +254,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
     }
   });
 
-  // -----------------------------------------------------------------------------------------
   // Executor bindings (DESIGN §12 — a Component/DeploymentTarget bound to a plugin instance)
-  // -----------------------------------------------------------------------------------------
 
   typed.route({
     method: "PUT",

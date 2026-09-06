@@ -369,9 +369,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     );
   }
 
-  // ===========================================================================================
   // THE GATE PATH — resolution in gate-orchestrator, application in the plugin.
-  // ===========================================================================================
 
   it("G1: with NOTHING admitted anywhere, a no-fix HIGH still counts and the gate still BLOCKS — byte-identical to pre-M22.2", async () => {
     const org = await createTestOrg(server, "excl-none");

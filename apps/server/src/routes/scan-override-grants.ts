@@ -251,9 +251,7 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
     }
   });
 
-  // -----------------------------------------------------------------------------------------
   // APPROVE / DENY / REVOKE — one handler shape, three verdicts.
-  // -----------------------------------------------------------------------------------------
 
   /** The one act. Extracted so approve, deny and revoke cannot drift on the two things that must
    *  never differ between them: the `policy:write`-at-the-tier check, and the Decision + audit event

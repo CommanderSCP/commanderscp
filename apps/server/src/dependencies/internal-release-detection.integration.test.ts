@@ -416,9 +416,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     };
   }
 
-  // -----------------------------------------------------------------------------------------
   // (1) A rollback is not a release — with the forward control
-  // -----------------------------------------------------------------------------------------
 
   it("records the head for a FORWARD accept, and records NOTHING for a rollback of it", async () => {
     const producer = await createOrphanComponent(server, org, `producer-${uuidv7()}`);
@@ -457,9 +455,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     ).toBe("1.2.3");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (2) prod is a deployment-target property, and only prod counts
-  // -----------------------------------------------------------------------------------------
 
   it("does NOT record a release to a non-prod deployment-target", async () => {
     const producer = await createOrphanComponent(server, org, `gamma-producer-${uuidv7()}`);
@@ -503,9 +499,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     expect((await headOf(lineId))?.latestVersion).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (3) no produced line ⇒ a no-op, and no Decision at all
-  // -----------------------------------------------------------------------------------------
 
   it("is a NO-OP, with no Decision written, for a component that produces no declared line", async () => {
     const producer = await createOrphanComponent(server, org, `no-producer-${uuidv7()}`);
@@ -754,9 +748,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     expect((await headOf(lineId))?.latestVersion).toBe("5.3.0");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (5) a language version comes from the producer's own manifest
-  // -----------------------------------------------------------------------------------------
 
   it("reads a language version out of the producer's manifest, at the released commit", async () => {
     const producer = await createOrphanComponent(server, org, `npm-producer-${uuidv7()}`);
@@ -792,9 +784,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     ).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (6) undeterminable ⇒ record NOTHING, and say why
-  // -----------------------------------------------------------------------------------------
 
   it("records NOTHING and states the reason when the version cannot be determined", async () => {
     const producer = await createOrphanComponent(server, org, `undeterminable-${uuidv7()}`);
@@ -851,9 +841,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     expect((await headOf(lineId))?.latestVersion).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // Write amplification — the reason every verdict goes through insertDecisionIfChanged
-  // -----------------------------------------------------------------------------------------
 
   it("appends NO second Decision when the same accept is delivered twice", async () => {
     const producer = await createOrphanComponent(server, org, `redelivery-${uuidv7()}`);
@@ -905,9 +893,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     expect((await headOf(lineId))?.latestVersion).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // THE MANIFEST FETCH HOLDS NO DATABASE CONNECTION (M21.4 MINOR C)
-  // -----------------------------------------------------------------------------------------
 
   it("does its manifest reads OUTSIDE any transaction — a one-connection pool still serves the reader", async () => {
     const producer = await createOrphanComponent(server, org, `outside-tx-${uuidv7()}`);
@@ -981,9 +967,7 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     }
   }, 60_000);
 
-  // -----------------------------------------------------------------------------------------
   // THE WIRING (M21.4 BLOCKER A + BLOCKER B)
-  // -----------------------------------------------------------------------------------------
 
   /**
    * EVERY TEST ABOVE CALLS `detectInternalReleases` DIRECTLY, AND NOTHING IN PRODUCTION DID.

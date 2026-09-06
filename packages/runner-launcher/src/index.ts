@@ -11,9 +11,7 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
-// ==================================================================================================
 // THE ONE PROCESS SPAWNER, AND THE LEDGER THAT MAKES "NOTHING WAS SPAWNED" AN ASSERTION
-// ==================================================================================================
 /**
  * M23.6 CLAUSE 1 — "no plugin spawns a Docker CLI on the Kubernetes path", stated as a test that
  * "asserts the injected process spawner was NEVER called … asserted on the recorded spawn (argv),
@@ -644,9 +642,7 @@ export interface KubernetesLauncherSettings {
  */
 export type ResolveRunnerLauncher = (config: RunnerLauncherConfig) => RunnerLauncher;
 
-// ==================================================================================================
 // PER-RUN IDENTITY — the caller's name for the run, and the container name derived from it.
-// ==================================================================================================
 
 /**
  * What a {@link RunnerSpec.runId} must look like: lowercase RFC-1123-ish, so the SAME string can be
@@ -712,9 +708,7 @@ export function runnerContainerName(runId: string): string {
   return `${RUNNER_CONTAINER_NAME_PREFIX}${runId}`;
 }
 
-// ==================================================================================================
 // THE ERROR — nothing leaves this package carrying a secret or a raw argv.
-// ==================================================================================================
 
 /** Which part of the launch failed. A superset of the five lifecycle steps; see `RunnerStepKind`. */
 export type RunnerLaunchStep =
@@ -831,9 +825,7 @@ export class RunnerLaunchError extends Error {
   }
 }
 
-// ==================================================================================================
 // THE DIAGNOSIS AN OPERATOR READS — four ways to fail that used to be one empty string.
-// ==================================================================================================
 
 /**
  * `code` on a maxBuffer overflow. Node's own constant name, and the PRODUCT's copy of it: the table
@@ -947,9 +939,7 @@ export const RUNNER_OUTCOME_UNKNOWN_CODE = "ERR_SCP_RUNNER_OUTCOME_UNKNOWN";
  */
 export const RUNNER_NEVER_STARTED_CODE = "RunnerContainerNeverStarted";
 
-// --------------------------------------------------------------------------------------------
 // THE ONE BOUND, CHOSEN ONCE, HERE — and it keeps BOTH ENDS.
-// --------------------------------------------------------------------------------------------
 
 /**
  * THE TOTAL BUDGET FOR ANY OPERATOR-FACING `detail` THIS PACKAGE PRODUCES OR ACCEPTS (MEDIUM, M23.0
@@ -2901,9 +2891,7 @@ export function runnerOutcomeDetail(result: RunnerResult): BoundedDetail {
   return result.succeeded ? boundDetail(result.stdout) : result.failure.detail;
 }
 
-// ==================================================================================================
 // THE ONE FAILURE A TEARDOWN MUST NEVER ANSWER — a `create` that lost the NAME to somebody else.
-// ==================================================================================================
 
 /**
  * Does this `create` rejection mean THE NAME WAS ALREADY TAKEN?
@@ -2981,9 +2969,7 @@ async function writeSecretEnvFile(
  */
 export const RUNNER_REMOVE_TIMEOUT_MS = 30_000;
 
-// ==================================================================================================
 // THE PORT'S OWN DEADLINE — M23.5. THE ENFORCEMENT IS HERE, NOT IN WHOEVER IMPLEMENTS THE ADAPTER.
-// ==================================================================================================
 
 /**
  * WHY THIS SECTION EXISTS, stated as the measurement rather than as a principle.
@@ -3267,9 +3253,7 @@ export function createRunDeadline(args: {
   };
 }
 
-// ==================================================================================================
 // THE TEARDOWN MODEL — M23.5 HIGH-2. What happens after the deadline, per adapter, as a NUMBER.
-// ==================================================================================================
 
 /** The adapters this package ships. Also the key of every per-adapter quantity below. */
 export type RunnerLauncherKind = "docker" | "kubernetes";
@@ -3427,9 +3411,7 @@ export const RUNNER_REAP_HEADROOM_MS = 90_000;
 /** The Docker adapter's default CLI. Server-injected in production; this is the unit-test fallback. */
 export const DEFAULT_DOCKER_BINARY = "docker";
 
-// ==================================================================================================
 // THE REAPER'S LABELS AND IDENTITY — M23.1 PHASE 4. See {@link RunnerLauncher.reap} for the defect.
-// ==================================================================================================
 
 /** Presence of this label is what `reap()` filters `docker ps -a` on — every container this
  *  package ever creates carries it, so a container with no `scp.launcher.*` labels at all (created

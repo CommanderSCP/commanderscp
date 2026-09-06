@@ -425,9 +425,7 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
   // finds four where the prose says five should learn why here.
   // -------------------------------------------------------------------------------------------
 
-  // -------------------------------------------------------------------------------------------
   // DOOR 3 — the generic `/objects/{type}` family. Listed as closed; MEASURED closed, all verbs.
-  // -------------------------------------------------------------------------------------------
 
   it("DOOR 3: every write verb of /objects/{type} refuses the governance types", async () => {
     const cases: Array<{ method: "POST" | "PATCH" | "PUT" | "DELETE"; url: string }> = [
@@ -449,9 +447,7 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     }
   });
 
-  // -------------------------------------------------------------------------------------------
   // DOOR 4 — IaC plan + apply. Listed as closed; MEASURED closed.
-  // -------------------------------------------------------------------------------------------
 
   it("DOOR 4: IaC apply refuses an Operator's manifest that declares a policy, and writes nothing", async () => {
     const stackName = `gov-doors-${randomUUID().slice(0, 8)}`;

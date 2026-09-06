@@ -786,9 +786,7 @@ function MergeComponentCard({
   );
 }
 
-// -------------------------------------------------------------------------------------------
 // Governed-here line (governance-reach-on-containment-move.md §9.4 Q4 follow-up).
-// -------------------------------------------------------------------------------------------
 
 /** Sentence-case labels for the rung tiers a UI ever needs to name (admin-governance.tsx's
  *  `CONTAINER_TIERS` covers the same three plus its own "Org root" spelling for the switch; this is
@@ -874,9 +872,7 @@ export function GovernedHereLineForObject({
   return <GovernedHereLine enforcement={query.data} />;
 }
 
-// -------------------------------------------------------------------------------------------
 // Delete… (owner decision 2026-08-18: every registry type, confirm + rendered refusal).
-// -------------------------------------------------------------------------------------------
 
 /** Verbatim server sentence for a delete refusal — the container-delete guard's 409 (children,
  *  placements, named with a remedy) or a plain 403 both carry the whole explanation in

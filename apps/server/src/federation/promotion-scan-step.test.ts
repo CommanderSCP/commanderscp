@@ -158,9 +158,7 @@ describe("parseOscapResult — fail-closed on malformed input", () => {
   });
 });
 
-// =================================================================================================
 // 13.3a — THE MACHINE-IMAGE ARM (`trivy-vm`): the two seams a new scan method can silently escape.
-// =================================================================================================
 
 /**
  * SEAM 1 — DISPATCH CONTAINMENT. The server decides WHICH method to hand the orchestrator; the

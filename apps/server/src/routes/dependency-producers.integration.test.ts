@@ -237,9 +237,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (1) WIRING — the gate that exists because the bug WAS a function with no caller
-  // -----------------------------------------------------------------------------------------
 
   describe("(1) WIRING", () => {
     it("the declare route is REGISTERED — delete the registration in app.ts and this goes red", async () => {
@@ -269,9 +267,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (2) THE VERB: authority, the FK constraint, and the provenance that must not be forgeable
-  // -----------------------------------------------------------------------------------------
 
   describe("(2) the declare verb", () => {
     it("the declaring principal is the AUTHENTICATED SUBJECT, and a body field cannot forge it", async () => {
@@ -516,9 +512,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (3) DECLARING CLEARS THE HEAD — the direction that undoes a poisoning
-  // -----------------------------------------------------------------------------------------
 
   describe("(3) declaring clears the observed head", () => {
     it("CLEARS a poisoned public head, so the declaration actually undoes the confusion it exists to prevent", async () => {
@@ -678,9 +672,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (4) RETRACTING — the direction that is a SECURITY fix, not a wedge fix
-  // -----------------------------------------------------------------------------------------
 
   describe("(4) the retract verb", () => {
     it("CLEARS the internal head, because a stale head is an input to a security gate and not merely a wedge", async () => {
@@ -760,9 +752,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (5) NEW MAJOR — the whole reason the grain is the COORDINATE
-  // -----------------------------------------------------------------------------------------
 
   describe("(5) a brand-new major of a declared coordinate", () => {
     it("is NOT handed to a public index — the hole per-line grain re-armed at every major bump", async () => {
@@ -897,9 +887,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (6) DECLARED, NEVER INFERRED — an absence, pinned as one
-  // -----------------------------------------------------------------------------------------
 
   describe("(6) declared, never inferred", () => {
     it("NO ingestion module can write a producer — a source-level census, because the property is an ABSENCE", async () => {
@@ -959,9 +947,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (7) CAPABILITY, END TO END — the acceptance test that was impossible by construction
-  // -----------------------------------------------------------------------------------------
 
   describe("(7) CAPABILITY: an internal release reaches a subscriber's bump candidate", () => {
     it("declare -> real prod release -> internal head -> a subscribed component is a bump candidate", async () => {

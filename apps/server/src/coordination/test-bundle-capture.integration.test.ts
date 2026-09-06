@@ -477,9 +477,7 @@ describe("D23 test bundle: report -> capture -> evidence -> gate", () => {
     expect(gate.entries[0]).toMatchObject({ hookId, outcome: "awaiting", satisfied: false });
   }, 60_000);
 
-  // -------------------------------------------------------------------------------------------
   // 4b. The derivation's refusals, stated one at a time
-  // -------------------------------------------------------------------------------------------
 
   it("deriveCapturedWorkflow refuses each missing fact INDIVIDUALLY, and refuses a non-canonical one — no partial pin exists", () => {
     const full = {

@@ -83,9 +83,7 @@ import {
  * regardless.
  */
 
-// -------------------------------------------------------------------------------------------
 // Config + auth (GitHub App JWT -> installation access token)
-// -------------------------------------------------------------------------------------------
 
 export interface GithubConfig {
   appId: string;

@@ -98,9 +98,7 @@ export type ReadFilesAtRefHook = (
   request: ReadTreeAtRefRequest
 ) => Promise<ReadTreeAtRefResult>;
 
-// -------------------------------------------------------------------------------------------
 // Bounds — axes 2-4. Axis 1 (per-file bytes) is `read-file.ts`'s existing `resolveMaxBytes`.
-// -------------------------------------------------------------------------------------------
 
 /** Default cap on matched files per call. Sized for what this capability is FOR (ADR-0032-style
  *  manifest ingestion across a monorepo's components) — dozens to low hundreds of manifests, not
@@ -196,9 +194,7 @@ export function assertNonEmptyGlobs(provider: string, globs: string[]): void {
   }
 }
 
-// -------------------------------------------------------------------------------------------
 // GitProviderTreeBoundError — the typed, loud failure axes 2-4 produce.
-// -------------------------------------------------------------------------------------------
 
 export type TreeReadBound = "maxFiles" | "maxTotalBytes" | "maxEntriesScanned";
 

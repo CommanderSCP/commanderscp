@@ -62,9 +62,7 @@ afterEach(() => {
   expect(pending, `unconsumed nock interceptors after test: ${pending.join(", ")}`).toEqual([]);
 });
 
-// -------------------------------------------------------------------------------------------
 // verifyGitlabWebhookToken — PLAINTEXT X-Gitlab-Token (NOT an HMAC). Pure function.
-// -------------------------------------------------------------------------------------------
 
 describe("verifyGitlabWebhookToken (plaintext X-Gitlab-Token equality)", () => {
   const secret = "gitlab-webhook-secret";
@@ -97,9 +95,7 @@ describe("verifyGitlabWebhookToken (plaintext X-Gitlab-Token equality)", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // mapGitlabWebhookEventToHint — pure function (X-Gitlab-Event names + GitLab payload paths).
-// -------------------------------------------------------------------------------------------
 
 describe("mapGitlabWebhookEventToHint", () => {
   it("maps a Push Hook to repo (path_with_namespace) / checkout_sha / ref", () => {
@@ -162,9 +158,7 @@ describe("mapGitlabWebhookEventToHint", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() — create pipeline (GitLab returns the pipeline id SYNCHRONOUSLY; no poll-to-correlate).
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() — create pipeline (synchronous id, no correlation poll)", () => {
   it("POSTs the pipeline on the URL-encoded project id, returns pipeline::<id> DIRECTLY, and carries the PRIVATE-TOKEN header", async () => {
@@ -252,9 +246,7 @@ describe("trigger() — create pipeline (synchronous id, no correlation poll)", 
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() idempotency — the core's dedup cache still wraps GitLab's own triggerCI.
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() idempotency", () => {
   it("a second trigger() with the SAME idempotencyKey returns the SAME ref and never re-creates", async () => {
@@ -310,9 +302,7 @@ describe("trigger() idempotency", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // status() — GitLab's SINGLE pipeline status enum → phase.
-// -------------------------------------------------------------------------------------------
 
 describe("status() — single GitLab pipeline status enum", () => {
   async function statusFor(pipelineStatus: string) {

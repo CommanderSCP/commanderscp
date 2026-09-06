@@ -140,9 +140,7 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (A) THE DOOR — the three refusals hand-fill used to bypass, now reachable through it too.
-  // -----------------------------------------------------------------------------------------
 
   it("hand-fill CANNOT plant an `outpost` object naming an UNPAIRED domain (was 201)", async () => {
     const commanderPeer = await pairPeerViaApi("commander");
@@ -232,9 +230,7 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     expect(ordinary.provenance).toBe("manual");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (B) THE AMPLIFIERS — deterministic resolution, and authority over last-write-wins.
-  // -----------------------------------------------------------------------------------------
 
   it("with an OLDER duplicate present, GET/PATCH resolve to the LOCAL-ORIGIN row — authority, not row order (was an ORDER-BY-less LIMIT 1)", async () => {
     const peer = await pairPeerViaApi("outpost");
@@ -355,9 +351,7 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     expect(listed[0]?.unknownFields).toContain("trustTier");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (C) RECOVERY — from the wedged state, not merely prevention of it.
-  // -----------------------------------------------------------------------------------------
 
   it("RECOVERY (wedged: local + shadow): reconcile REMOVES the shadow and the peer is manageable again", async () => {
     const peer = await pairPeerViaApi("outpost");

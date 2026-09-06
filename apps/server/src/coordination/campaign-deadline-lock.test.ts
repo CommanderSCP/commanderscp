@@ -356,11 +356,7 @@ describe("evaluateCampaignDeadlineLock — the predicate", () => {
   });
 });
 
-/**
- * ================================================================================================
- * M25.6b — THE PER-TARGET WAIVER, INSIDE THE SAME PREDICATE
- * ================================================================================================
- */
+/** M25.6b — THE PER-TARGET WAIVER, INSIDE THE SAME PREDICATE */
 describe("evaluateCampaignDeadlineLock — the M25.6b override branch", () => {
   function evaluateWith(
     deadline: CampaignDeadline,

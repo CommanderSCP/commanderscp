@@ -158,9 +158,7 @@ describe("M22.8 component scan-requirements read surface", () => {
     });
   }
 
-  // -----------------------------------------------------------------------------------------
   // R1 — NOTHING AUTHORED. The shipped default, and the state no other surface can show.
-  // -----------------------------------------------------------------------------------------
 
   it("R1 with nothing authored: no ceiling, every exclusion class present, admitted by nobody and effective nowhere", async () => {
     const { admin, component } = await orgWithChain("m22-8-baseline");
@@ -200,9 +198,7 @@ describe("M22.8 component scan-requirements read surface", () => {
     ]);
   });
 
-  // -----------------------------------------------------------------------------------------
   // R2 — the ceiling and its contributors, at their real tiers.
-  // -----------------------------------------------------------------------------------------
 
   it("R2 reports the resolved per-severity MIN and names every contributing tier", async () => {
     const { admin, service, component } = await orgWithChain("m22-8-ceiling");
@@ -236,9 +232,7 @@ describe("M22.8 component scan-requirements read surface", () => {
     ).toContain("svc-ceiling");
   });
 
-  // -----------------------------------------------------------------------------------------
   // R3 — THE PROMISE. Reads write nothing; `policy-evaluate` writes on every call.
-  // -----------------------------------------------------------------------------------------
 
   it("R3 writes NO Decision — where POST /policy-evaluate writes one per call", async () => {
     const { org, admin, service, component } = await orgWithChain("m22-8-nodecision");
@@ -271,9 +265,7 @@ describe("M22.8 component scan-requirements read surface", () => {
     ).toBeGreaterThan(afterChange);
   });
 
-  // -----------------------------------------------------------------------------------------
   // R4 — THE MONOTONE AND, read off the surface: an org-level admission is not enough.
-  // -----------------------------------------------------------------------------------------
 
   it("R4 EVERY rung above must consent: org alone reaches nothing, and each rung added reaches exactly one level further", async () => {
     const { admin, org, containmentDomain, component } = await orgWithChain("m22-8-and");
@@ -332,9 +324,7 @@ describe("M22.8 component scan-requirements read surface", () => {
     expect(other.effectiveAtTiers).toEqual([]);
   });
 
-  // -----------------------------------------------------------------------------------------
   // R5 — a clause that survives the AND is reported with the chain that admitted it.
-  // -----------------------------------------------------------------------------------------
 
   it("R5 reports a surviving clause with its full admitting chain, and drops one whose class nobody admits", async () => {
     const { admin, org, containmentDomain, service, component } =
@@ -373,9 +363,7 @@ describe("M22.8 component scan-requirements read surface", () => {
     ).toEqual(["platform", "trust_domain", "org", "containment_domain"]);
   });
 
-  // -----------------------------------------------------------------------------------------
   // R6 — THE OPPOSITE SIGNS. One document, one unevaluated condition, two different answers.
-  // -----------------------------------------------------------------------------------------
 
   it("R6 an unevaluated CEL condition STILL sets its ceiling but yields NO exclusion clause", async () => {
     const { admin, org, containmentDomain, service, component } = await orgWithChain("m22-8-signs");
@@ -432,9 +420,7 @@ describe("M22.8 component scan-requirements read surface", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // R7 — authorization is the ordinary object read, on the component itself.
-  // -----------------------------------------------------------------------------------------
 
   it("R7 refuses a caller with no read authority on the component, and 404s an unknown component", async () => {
     const { admin, component } = await orgWithChain("m22-8-authz");

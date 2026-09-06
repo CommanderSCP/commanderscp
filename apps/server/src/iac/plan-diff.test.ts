@@ -833,9 +833,7 @@ describe("iac/plan-diff: isStackManaged / managedLabels", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // C1 — sourceMappings / executorBindings (docs/proposals/post-import-configuration.md §8)
-// -------------------------------------------------------------------------------------------
 
 type ManifestMapping = ResolvedManifest["sourceMappings"][number];
 type ManifestBinding = ResolvedManifest["executorBindings"][number];

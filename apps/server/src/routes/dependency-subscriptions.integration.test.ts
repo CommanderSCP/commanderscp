@@ -144,9 +144,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (1) The operator write — the whole reason this resource is split in two
-  // -----------------------------------------------------------------------------------------
 
   describe("(1) PUT the instance unlock is OPERATOR-only", () => {
     it("REFUSES the org's bootstrap admin with no operator token — negative control: the SAME request with the operator token succeeds", async () => {
@@ -334,9 +332,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // (4) Reading a component's enablement is reading the component
-  // -----------------------------------------------------------------------------------------
 
   describe("(4) the resolution read is authorized at the component", () => {
     it("REFUSES a principal with no read on the component — negative control: the admin reads it", async () => {
@@ -437,9 +433,7 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
       expect(response.ref).toBe("refs/heads/release-1");
     });
 
-    // ---------------------------------------------------------------------------------------
     // THE SUCCESS PATH — never driven before, so the whole projection below was unexercised
-    // ---------------------------------------------------------------------------------------
     describe("a run that actually reads manifests", () => {
       const BACKFILL_REPO = "acme/backfill";
       /** Swapped onto `deps.pluginHost` for these tests only: the route resolves the host per

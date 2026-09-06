@@ -314,9 +314,7 @@ esac
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (0) The index subprocesses have a LIFECYCLE (M21.4 MINOR E)
-  // -----------------------------------------------------------------------------------------
 
   /**
    * A DAILY JOB THAT NEVER STOPS WHAT IT STARTS ACCUMULATES WITH TENANCY.
@@ -371,9 +369,7 @@ esac
     expect(host.live, "a failing sweep still tears down its subprocesses").toEqual(new Set());
   });
 
-  // -----------------------------------------------------------------------------------------
   // (4) The air-gap asymmetry — images work, language ecosystems report unavailable
-  // -----------------------------------------------------------------------------------------
 
   it("air-gap: with only a local registry configured, IMAGE detection works and the four language ecosystems report UNAVAILABLE", async () => {
     const results = await pollOrgDependencyVersions(server.deps.db, org.orgId, {
@@ -416,9 +412,7 @@ esac
     }
   });
 
-  // -----------------------------------------------------------------------------------------
   // (2) The work-list is the resolution, not a filter
-  // -----------------------------------------------------------------------------------------
 
   it("a component whose subscription is not enabled, and an opted-out line, are NEVER polled", async () => {
     const results = await pollOrgDependencyVersions(server.deps.db, org.orgId, {
@@ -558,9 +552,7 @@ esac
     expect(row?.latestDigest).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // The head is a HEAD — an index that goes backwards does not drag it back
-  // -----------------------------------------------------------------------------------------
 
   it("an index that no longer offers the head does NOT walk the line backwards", async () => {
     // Runs against the state the test above left: this line's head is 4.17.22. A feed regenerated
@@ -672,9 +664,7 @@ esac
     ).toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (5) The ingress split — an internal line is never polled
-  // -----------------------------------------------------------------------------------------
 
   it("an INTERNAL line is NEVER asked of an index, while a third-party line IS", async () => {
     // THE FAILURE THIS PINS IS DEPENDENCY CONFUSION. `@acme/internal-lib` is published by this org
@@ -776,9 +766,7 @@ esac
     expect(internalRow?.latestVersion, "a stranger's 9.9.9 never reached this line").toBeNull();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (6) THE RACE ACROSS THE TRANSACTION BOUNDARY — rule 0 at the write door
-  // -----------------------------------------------------------------------------------------
 
   /**
    * REPLAY OF THE MEASURED RACE, at the seam where the interleaving is exact.

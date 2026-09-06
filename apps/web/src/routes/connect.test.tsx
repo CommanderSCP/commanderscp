@@ -138,9 +138,7 @@ function withQueryClient(node: React.ReactElement): React.ReactElement {
   return <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>;
 }
 
-// -------------------------------------------------------------------------------------------
 // B1 — the connectable set is DERIVED, not hardcoded
-// -------------------------------------------------------------------------------------------
 
 describe("connectableKinds: derived from the server's own manifest catalog", () => {
   it("includes argocd/gitea/gitlab and excludes github (no tokenSecretKey)", () => {
@@ -190,9 +188,7 @@ describe("runConfigFields: per-run config, never the system-level fields", () =>
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // B4 — target rows, and where skip is (and is not) safely offered
-// -------------------------------------------------------------------------------------------
 
 describe("groupObjectsByType", () => {
   it("groups a deployment-target apart from components, in first-seen order", () => {
@@ -375,9 +371,7 @@ describe("EnumerateStepGeneric: run config assembly", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // The page: only server-known kinds get the real wizard
-// -------------------------------------------------------------------------------------------
 
 // The manifest catalog is SEEDED directly into the QueryClient cache rather than awaited through
 // `listManifestsSpy`'s promise: TanStack Query batches its post-fetch notification outside a plain

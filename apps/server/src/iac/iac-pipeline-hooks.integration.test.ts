@@ -198,9 +198,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
 
   const componentUrnOf = (stackName: string) => `urn:scp:${stackName}:component:api`;
 
-  // -------------------------------------------------------------------------------------------
   // (1) WIRING — the plan SHOWING a create and the apply PERFORMING one are two claims
-  // -------------------------------------------------------------------------------------------
 
   describe("(1) a manifest declaring hooks CREATES them, and re-applying is a no-op", () => {
     it("all four kinds land as rows the gate can read, and the second apply says noop and touches nothing", async () => {
@@ -299,9 +297,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (2) THE MEMBER QUESTION — a PRESENT collection is authoritative over its own members
-  // -------------------------------------------------------------------------------------------
 
   describe("(2) removing ONE entry from a PRESENT collection prunes THAT hook", () => {
     it("dropping B from [A, B] plans a visible delete line, removes B, and leaves A armed", async () => {
@@ -347,9 +343,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (3) THE RULING — an absent collection is UNMANAGED, not empty
-  // -------------------------------------------------------------------------------------------
 
   describe("(3) an ABSENT pipelineHooks key manages NOTHING", () => {
     it("a stack with STANDING hooks, whose manifest omits the key, plans NO hook entries and every hook survives apply", async () => {
@@ -394,9 +388,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (4) PRESENT-BUT-EMPTY IS A DELIBERATE STATEMENT — and it is the OPPOSITE of absent
-  // -------------------------------------------------------------------------------------------
 
   /**
    * The pair (3)+(4) is the whole ruling, and neither half means anything alone. (3) alone would be
@@ -439,9 +431,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (5) IDENTITY — a changed hook is a delete PLUS a create, never a silent in-place edit
-  // -------------------------------------------------------------------------------------------
 
   describe("(5) a CHANGED hook is a delete plus a create", () => {
     it("renaming the hookId plans both lines, and the old row is gone while the new one is armed", async () => {
@@ -506,9 +496,7 @@ describe("iac: pipeline hooks (D11/D21, migration 0096)", () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------
   // (6) OWNERSHIP AND AUTHORITY — a stack may not configure a component it does not own
-  // -------------------------------------------------------------------------------------------
 
   describe("(6) a hook on a component this stack does not own is REFUSED", () => {
     it("declaring one against another stack's component fails plan-compute 400, and writes nothing", async () => {

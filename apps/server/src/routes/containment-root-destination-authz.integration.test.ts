@@ -276,9 +276,7 @@ describe("moving an object BACK to the top level — the destination-side org-ro
     expect((after.json() as { domainId: string | null }).domainId).toBe(f.org.orgId);
   });
 
-  // -----------------------------------------------------------------------------------------------
   // The controls — what makes the four cases above a CHECK that was narrowed, not a check deleted
-  // -----------------------------------------------------------------------------------------------
 
   it("the exemption is the ORG ROOT and nothing else — a move into an unheld ordinary container is still refused", async () => {
     // Widen the exemption from "the org root" to "any destination" — or just delete the destination

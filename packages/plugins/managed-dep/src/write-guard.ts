@@ -87,9 +87,7 @@ import {
  * one. {@link assertWriteBranch} adds the three rules a BRANCH NAME needs on top of a ref's.
  */
 
-// -------------------------------------------------------------------------------------------
 // Refusals — structured, because a refusal must be assertable without pinning its wording
-// -------------------------------------------------------------------------------------------
 
 /**
  * Why a proposed repository write was refused. Every one of these is a REFUSAL, not a validation
@@ -183,9 +181,7 @@ function refuse(reason: RepoWriteRefusalReason, message: string, cause?: unknown
   throw new RepoWriteRefusal(reason, message, cause);
 }
 
-// -------------------------------------------------------------------------------------------
 // URL safety on the write path — the READ path's asserts, reused verbatim
-// -------------------------------------------------------------------------------------------
 
 /**
  * Runs the read path's own `assertSafeRepo` and re-throws its refusal with a write-path reason
@@ -348,9 +344,7 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// -------------------------------------------------------------------------------------------
 // WHAT MAY BE EDITED — lockfiles, manifests, and the component's own declared set
-// -------------------------------------------------------------------------------------------
 
 /**
  * Lockfile basenames, refused outright.
@@ -526,9 +520,7 @@ export function manifestParserFor(ecosystem: DependencyEcosystem, path: string):
   return matcher.parser;
 }
 
-// -------------------------------------------------------------------------------------------
 // WHICH LINE CARRIES THE DECLARED VERSION — the anchor, derived from the same bytes
-// -------------------------------------------------------------------------------------------
 
 /**
  * The line a bump must edit, when the coordinate is not written on it.
@@ -661,9 +653,7 @@ export function assertDeclaredManifest(
   }
 }
 
-// -------------------------------------------------------------------------------------------
 // THE MANIFEST-ONLY PROOF
-// -------------------------------------------------------------------------------------------
 
 /**
  * Per-process HMAC key for {@link ManifestEditProof}. Minted at import, never exported, never
@@ -1169,9 +1159,7 @@ function truncate(value: string, max = 120): string {
   return value.length <= max ? value : `${value.slice(0, max)}…`;
 }
 
-// -------------------------------------------------------------------------------------------
 // Bounds on the text SCP writes into a repo alongside the manifest edit
-// -------------------------------------------------------------------------------------------
 
 export const MAX_COMMIT_MESSAGE_CHARS = 4096;
 export const MAX_PR_TITLE_CHARS = 250;

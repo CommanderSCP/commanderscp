@@ -161,9 +161,7 @@ describe("normalizeCorrelation", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() dedup / idempotency — in-memory
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() idempotency (in-memory dedup)", () => {
   it("a second trigger() with the SAME idempotencyKey returns the SAME ref and never re-calls triggerCI", async () => {
@@ -205,9 +203,7 @@ describe("trigger() idempotency (in-memory dedup)", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // trigger() dedup / idempotency — file-backed (crash-safe: re-reads from disk each call)
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() idempotency (file-backed dedup)", () => {
   let dir: string;

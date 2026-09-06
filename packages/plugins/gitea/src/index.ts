@@ -85,9 +85,7 @@ import {
  * uncertain it is flagged as an assumption rather than invented.
  */
 
-// -------------------------------------------------------------------------------------------
 // Config + auth (Personal Access Token — `Authorization: token <PAT>`)
-// -------------------------------------------------------------------------------------------
 
 export interface GiteaConfig {
   /** The Gitea instance base URL, e.g. `https://gitea.example.com` (NO trailing slash, NO
@@ -194,9 +192,7 @@ async function api(
   return { status: response.status, body: response.body, headers: response.headers ?? {} };
 }
 
-// -------------------------------------------------------------------------------------------
 // Webhook signature verification (fail-closed) — Gitea's BARE-HEX X-Gitea-Signature.
-// -------------------------------------------------------------------------------------------
 
 /** Gitea signs webhook deliveries as an HMAC-SHA256 of the RAW request body, emitted as a **bare
  *  hex string** in `X-Gitea-Signature` — with NO `sha256=` prefix (this is the concrete reason the

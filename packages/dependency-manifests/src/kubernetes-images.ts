@@ -810,9 +810,7 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext, underImageKey
     return; // nothing image-shaped in this mapping
   }
 
-  // -----------------------------------------------------------------------------------------
   // THE VERSION — the reference's own tag wins; otherwise the sibling `tag:` key.
-  // -----------------------------------------------------------------------------------------
   if (refTag === undefined && tag.kind === "unresolved") {
     pushUnresolved(
       tag,

@@ -379,9 +379,7 @@ export function campaignDetailRow(c: Campaign): Record<string, string> {
   };
 }
 
-// -------------------------------------------------------------------------------------
 // M6 Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN.md §13) — row formatters.
-// -------------------------------------------------------------------------------------
 
 /**
  * One paired peer as a `scp federation peers` table row.
@@ -2526,9 +2524,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // -------------------------------------------------------------------------------------
   // pat (Personal Access Tokens — BUILD_AND_TEST.md §8 M2 item 3)
-  // -------------------------------------------------------------------------------------
   const patCmd = program.command("pat").description("Manage Personal Access Tokens");
 
   patCmd
@@ -2933,9 +2929,7 @@ export function buildProgram(): Command {
       );
     });
 
-  // -------------------------------------------------------------------------------------
   // type-registry (DESIGN.md §4.1)
-  // -------------------------------------------------------------------------------------
   const typeRegistryCmd = program
     .command("type-registry")
     .description("Manage the runtime type registry");
@@ -3045,9 +3039,7 @@ export function buildProgram(): Command {
       }));
     });
 
-  // -------------------------------------------------------------------------------------
   // object (generic — works for ANY registered type, built-in or custom)
-  // -------------------------------------------------------------------------------------
   const objectCmd = program
     .command("object")
     .description("Manage graph objects of any registered type");
@@ -3492,9 +3484,7 @@ export function buildProgram(): Command {
   registerTypedResourceCrud(program, "user", (c) => c.users);
   registerTypedResourceCrud(program, "service-account", (c) => c.serviceAccounts);
 
-  // -------------------------------------------------------------------------------------
   // graph (named queries + traverse — DESIGN.md §5)
-  // -------------------------------------------------------------------------------------
   const graphCmd = program.command("graph").description("Run graph queries");
 
   graphCmd

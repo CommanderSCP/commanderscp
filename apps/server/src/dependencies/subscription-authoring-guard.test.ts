@@ -100,9 +100,7 @@ describe("group-scoped dependency-subscription effects are refused at authoring 
     expect(err.detail).toMatch(/objectRef/);
   });
 
-  // ----------------------------------------------------------------------------------------
   // NEGATIVE CONTROLS — everything the guard must NOT touch.
-  // ----------------------------------------------------------------------------------------
 
   it("PERMITS an opt-out AND an enable at objectRef or selector scope — those do not depend on who is asking", () => {
     // The direction axis widened; the SCOPE axis did not. Both of these are the ordinary way to

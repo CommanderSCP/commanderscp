@@ -129,9 +129,7 @@ import type { MatchedPolicy } from "../governance/policy-model.js";
  * is tabular at all.
  */
 
-// -------------------------------------------------------------------------------------------
 // The pure merge — no database, no I/O, total and order-independent
-// -------------------------------------------------------------------------------------------
 
 /**
  * A `dependencySubscription` effect on a policy document — the authoring surface (`effects: [{
@@ -422,9 +420,7 @@ export function mergeDependencySubscription(
   };
 }
 
-// -------------------------------------------------------------------------------------------
 // THE COMPONENT-LEVEL GATE — "may this component's manifests be FETCHED at all?" (M21.2 ingestion)
-// -------------------------------------------------------------------------------------------
 
 /**
  * ADR-0032 §6's chain has three levels, and they do not all answer the same question:

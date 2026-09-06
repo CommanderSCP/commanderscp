@@ -81,9 +81,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     await server?.close();
   });
 
-  // ---------------------------------------------------------------------------------------------
   // ROUTE 1 — the `domain_id` parent, across every door that accepts one.
-  // ---------------------------------------------------------------------------------------------
 
   it("POST /objects/{type} — a child of a domain-local container is domain-local without saying so", async () => {
     const res = await post("/api/v1/objects/service", {
@@ -148,9 +146,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     expect(JSON.parse(res.body).domainLocal).toBe(true);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // ROUTE 2 — the `contains` parent. The edge does not exist when `createObject` runs.
-  // ---------------------------------------------------------------------------------------------
 
   it("POST /components — a component created into a domain-local SERVICE inherits", async () => {
     const service = await admin
@@ -188,9 +184,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     expect(JSON.parse(res.body).domainLocal).toBe(false);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // THE INDUCTION — the property that makes one hop sufficient.
-  // ---------------------------------------------------------------------------------------------
 
   it("INDUCTION: a GRANDCHILD is domain-local, because the intermediate was stamped at its own create", async () => {
     // domain(local) -> service(inherits) -> component(inherits from the service).
@@ -213,9 +207,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     expect(JSON.parse(component.body).domainLocal).toBe(true); // step
   });
 
-  // ---------------------------------------------------------------------------------------------
   // THE REFUSAL — an explicit opt-out inside a local subtree.
-  // ---------------------------------------------------------------------------------------------
 
   it("an explicit domainLocal:false inside a domain-local container is REFUSED, not silently overridden", async () => {
     // Both silent options are worse than a 400. Honouring the `false` puts a federating object inside
@@ -241,9 +233,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     expect(JSON.parse(res.body).domainLocal).toBe(false);
   });
 
-  // ---------------------------------------------------------------------------------------------
   // M20.7 (ADR-0031 §6c) — WHY, not just whether. Three exhaustive states, no discriminator field.
-  // ---------------------------------------------------------------------------------------------
 
   it("PROVENANCE: an INHERITED object names the container it inherited from, with a resolvable urn", async () => {
     const res = await post("/api/v1/objects/service", {

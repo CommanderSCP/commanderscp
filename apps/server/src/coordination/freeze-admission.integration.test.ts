@@ -301,9 +301,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
         .orderBy(decisions.createdAt, decisions.id)
     );
 
-  // ============================================================================================
   // A — THE ACTUATOR. Delete the `continue` in reconcile's per-target loop and this goes red.
-  // ============================================================================================
   it("A: a freeze at ONE deployment-target holds that region and SHIPS the other three", async () => {
     const app = await fourRegionComponent("regions");
     const change = await release("regions", [app.id]);
@@ -392,9 +390,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(row!.reconcileBlockedAt).toBeNull();
   });
 
-  // ============================================================================================
   // E — ALL-FROZEN IS STILL A WHOLE-WAVE BLOCK, deliberately kept.
-  // ============================================================================================
   it("E: when EVERY target is frozen the wave is blocked at the gate, exactly as before", async () => {
     const app = await fourRegionComponent("allfrozen");
     const change = await release("allfrozen", [app.id]);
@@ -423,9 +419,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(await decisionsOfKind(change.id, "freeze_admission")).toHaveLength(0);
   });
 
-  // ============================================================================================
   // D5 — `atomic: true` restores the union. The escape hatch for coupled targets.
-  // ============================================================================================
   it("D5: an `atomic` freeze over ONE region still parks every sibling", async () => {
     const app = await fourRegionComponent("atomic");
     const change = await release("atomic", [app.id]);
@@ -485,9 +479,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(firedFor(app.at(amer))).toBe(0);
   });
 
-  // ============================================================================================
   // SET EQUALITY — the property `checkFreeze`'s swap rests on, against real containment walks.
-  // ============================================================================================
   it("set equality: unionFreezes(freezesByTarget(T)) is the same set as activeFreezesForScopes(containmentScopeIds(T))", async () => {
     // `gate-orchestrator.ts` replaced the second expression with the first, and its comment claims
     // they are equal BY CONSTRUCTION — `containmentScopeIds` IS the union of the per-target
@@ -587,9 +579,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(withFreeze.executes).toBeGreaterThanOrEqual(placements.length);
   });
 
-  // ============================================================================================
   // D7 — ROLLBACKS ARE EXEMPT, in BOTH directions. A change that newly PERMITS.
-  // ============================================================================================
   it("D7: a rollback triggers into an active freeze, and the same wave non-rollback is held", async () => {
     const app = await componentAt("rollback", [amer]);
     // A topology naming ONLY amer, so the rollback's wave has exactly one target and every target
@@ -736,9 +726,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(wave.heldTargetCount ?? 0).toBe(0);
   });
 
-  // ============================================================================================
   // D7 AT THE TIER BOUNDARY (M25.3) — the exemption stops above org, measured at the EXECUTOR.
-  // ============================================================================================
   it("D7 does not carry above org: a rollback is NOT triggered into an active PLATFORM freeze, and ships the moment it is lifted", async () => {
     const app = await componentAt("platform-rollback", [amer]);
     const soloTopology = await admin.object("release-topology").create({
@@ -1408,9 +1396,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     ).toBeGreaterThan(apacBefore);
   });
 
-  // ============================================================================================
   // D7'S QUALIFIER — a rollback is exempt where there is something to roll back, and only there.
-  // ============================================================================================
   it("D7 qualifier: a rollback is NOT exempt at a target the original never dispatched", async () => {
     // The composition per-target admission makes reachable for the first time: the freeze holds
     // `amer` and the siblings SHIP, so one of them can fail, so a rollback can be minted over ALL
@@ -1453,9 +1439,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     ).toBeGreaterThan(apacFired);
   });
 
-  // ============================================================================================
   // HOLD -> RELEASE (§1.5) — the clearing counterpart ADR-0028 does not have.
-  // ============================================================================================
   it("release: when the window closes the hold is cleared with an `allow` row, exactly once", async () => {
     const app = await fourRegionComponent("release");
     const change = await release("release", [app.id]);
@@ -1562,9 +1546,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     ).toHaveLength(1);
   });
 
-  // ============================================================================================
   // A DEAD TARGET IS NOT HELD — terminalizing it is PROGRESS.
-  // ============================================================================================
   it("tombstone: a frozen target whose object was deleted terminalizes instead of being held", async () => {
     // FOUR regions, not one: a solo-target wave under a freeze is the ALL-FROZEN case, so the gate
     // blocks it whole and the actuator is never reached at all. The defect lives on the PARTIAL
@@ -1639,9 +1621,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     ).toEqual([app.at(amer)]);
   });
 
-  // ============================================================================================
   // §1.8 HONESTY — the lever works and the signal must not be missing.
-  // ============================================================================================
   it("service board: a REGION freeze appears on the rows it actually holds", async () => {
     const service = await admin.services.create({
       name: `board-svc-${randomUUID().slice(0, 8)}`

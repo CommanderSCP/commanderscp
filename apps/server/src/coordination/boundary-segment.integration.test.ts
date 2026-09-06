@@ -293,9 +293,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
       (row) => runPreDeployArtifactGate(outpost.db, outpost.orgId, row, reader)
     );
 
-  // -------------------------------------------------------------------------------------------
   // (1) THE REAL TRANSFER, both sides — and the commander's honest silence about validation.
-  // -------------------------------------------------------------------------------------------
 
   it("surfaces a REAL transfer per change on BOTH sides, joined by the real bundle checksum", async () => {
     const { commanderChangeId, bundle } = await promoteBlobChange();
@@ -349,9 +347,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     );
   }, 240_000);
 
-  // -------------------------------------------------------------------------------------------
   // (2) A REAL validation outcome at the receiving outpost — and STILL nothing at the commander.
-  // -------------------------------------------------------------------------------------------
 
   it("surfaces a REAL `verified` outcome at the receiving outpost — while the commander still says 'not reported'", async () => {
     const { commanderChangeId, bundle, blob } = await promoteBlobChange();
@@ -378,9 +374,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     );
   }, 240_000);
 
-  // -------------------------------------------------------------------------------------------
   // (3) A REFUSED validation is surfaced as a refusal — never as unknown, never as a pass.
-  // -------------------------------------------------------------------------------------------
 
   it("surfaces a REFUSED validation with its decision_id, and the commander still says 'not reported'", async () => {
     const { commanderChangeId, bundle } = await promoteBlobChange();
@@ -418,9 +412,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     );
   }, 240_000);
 
-  // -------------------------------------------------------------------------------------------
   // (4) A DOMAIN-LOCAL change has NO segment — absent, not a fabricated empty pass.
-  // -------------------------------------------------------------------------------------------
 
   it("returns NO segment for a domain-local change — absent, not an empty pass", async () => {
     const targetId = await createReplicatedTarget();
@@ -600,9 +592,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     expect(after[2]!.checksum).toBe(again.checksum);
   }, 240_000);
 
-  // -------------------------------------------------------------------------------------------
   // (5) THE DoD's EXPLICIT ASSERTION, restated over everything the suite observed.
-  // -------------------------------------------------------------------------------------------
 
   it("EXPLICIT DoD ASSERTION: in NO scenario did a commander-side segment report the validate phase as verified", () => {
     // Guards against the whole file silently degrading into vacuity (e.g. every scenario failing to

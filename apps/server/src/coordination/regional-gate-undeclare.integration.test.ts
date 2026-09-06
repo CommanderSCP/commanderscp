@@ -168,9 +168,7 @@ describe("M15.6: un-declaring a region is an authority act, not a field edit", (
     await admin.executors.putBinding(apac.id, { executionSystemId: apacSys.id });
   }, 60_000);
 
-  // -------------------------------------------------------------------------------------------
   // The control: the constraint being evaded is real and fires.
-  // -------------------------------------------------------------------------------------------
 
   it("CONTROL: a declared, unbound region target is refused — the gate this guard protects fires", async () => {
     const amer = await createRegionTarget("amer");
@@ -187,9 +185,7 @@ describe("M15.6: un-declaring a region is an authority act, not a field edit", (
     });
   }, 90_000);
 
-  // -------------------------------------------------------------------------------------------
   // The three measured evasion vectors, each at a real door, each as the target's own owner.
-  // -------------------------------------------------------------------------------------------
 
   it("V1: the owner cannot remove 'properties.region' — and the gate still fires afterwards", async () => {
     const target = await createRegionTarget("emea");
@@ -257,9 +253,7 @@ describe("M15.6: un-declaring a region is an authority act, not a field edit", (
     expect(err.status).toBe(403);
   }, 60_000);
 
-  // -------------------------------------------------------------------------------------------
   // The guard must not over-fire — these are the controls that fail if the namespace is too wide.
-  // -------------------------------------------------------------------------------------------
 
   it("DECLARE-IS-FREE: the owner may ADD a region declaration (a declaration only ever adds constraint)", async () => {
     const plain = await admin.object("deployment-target").create({

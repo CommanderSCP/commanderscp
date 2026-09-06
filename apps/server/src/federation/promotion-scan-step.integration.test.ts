@@ -655,9 +655,7 @@ describe.runIf(await dockerAvailable())(
       expect(await managedRunsFor(changeId)).toHaveLength(0);
     }, 60_000);
 
-    // -------------------------------------------------------------------------------------------
     // (d) FAIL-CLOSED — an ExecutorType with NO assigned scanner produces NO evidence ⇒ E6 refuses.
-    // -------------------------------------------------------------------------------------------
     it("(d) an artifact whose type has NO scanner assigned produces no managed evidence → E6 REFUSES (fail-closed)", async () => {
       // `configuration` resolves to `[]` in the seeded scanner registry (no managed scanner).
       const changeId = await proposeArtifactChange(cleanDigest, cleanRepo, "configuration");

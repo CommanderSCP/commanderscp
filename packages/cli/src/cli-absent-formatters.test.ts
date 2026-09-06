@@ -168,9 +168,7 @@ describe("campaignDetailRow: an absent topologyVersion is blank, never the word 
   });
 });
 
-// -------------------------------------------------------------------------------------
 // M25.6a — campaignDetailRow.deadline / .adoptionSignal
-// -------------------------------------------------------------------------------------
 describe("campaignDetailRow: an absent deadline is blank, never the word `undefined`", () => {
   it("prints empty cells when the key is OMITTED (an older server, or a client ahead of one)", () => {
     const row = campaignDetailRow(without(baseCampaign(), "deadline"));
@@ -192,9 +190,7 @@ describe("campaignDetailRow: an absent deadline is blank, never the word `undefi
     expect(campaignDetailRow(baseCampaign({ deadline: null })).deadline).toBe("");
   });
 
-  // -----------------------------------------------------------------------------------
   // M25.6b — campaignDetailRow.deadlineOverrides
-  // -----------------------------------------------------------------------------------
   it("blanks the waiver cell for an absent, null or waiver-less deadline — never `undefined`", () => {
     const at = "2026-12-31T23:59:59.000Z";
     expect(campaignDetailRow(without(baseCampaign(), "deadline")).deadlineOverrides).toBe("");
@@ -237,9 +233,7 @@ describe("campaignDetailRow: an absent deadline is blank, never the word `undefi
   });
 });
 
-// -------------------------------------------------------------------------------------
 // cli.ts:275 / :295 / :301 / :302 — federationStatusRow
-// -------------------------------------------------------------------------------------
 describe("federationStatusRow: never invents a sync position or a backlog", () => {
   it(":275 an OMITTED lastAppliedSequence reads `never synced`, not `seq undefined`", () => {
     const row = federationStatusRow(without(basePeerStatus(), "lastAppliedSequence"));

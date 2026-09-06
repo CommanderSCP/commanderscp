@@ -285,9 +285,7 @@ export async function detectInternalReleases(
   orgId: string,
   input: DetectInternalReleasesInput
 ): Promise<InternalReleaseOutcome> {
-  // ---------------------------------------------------------------------------------------
   // PHASE 1 — everything the derivation can learn from this domain's own records.
-  // ---------------------------------------------------------------------------------------
   const prepared = await withTenantTx(db, orgId, async (tx) => {
     const [change] = await tx
       .select({
@@ -502,9 +500,7 @@ export async function detectInternalReleases(
     ).resolved;
   }
 
-  // ---------------------------------------------------------------------------------------
   // PHASE 3 — the writes, back inside a transaction.
-  // ---------------------------------------------------------------------------------------
   return withTenantTx(db, orgId, async (tx) => {
     const recorded: RecordedInternalRelease[] = [];
     for (const item of pending) {

@@ -279,9 +279,7 @@ export interface GitProviderAdapter {
   readFilesAtRef(ctx: PluginContext, request: ReadTreeAtRefRequest): Promise<ReadTreeAtRefResult>;
 }
 
-// -------------------------------------------------------------------------------------------
 // Factory — assembles the provider-neutral ExecutorPlugin around an adapter.
-// -------------------------------------------------------------------------------------------
 
 async function observe(
   adapter: GitProviderAdapter,

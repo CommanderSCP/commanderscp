@@ -74,9 +74,7 @@ describe("mergeIngestionStamp — the row is per component, the evidence is per 
     lastAttemptAt: new Date(over.lastAttemptAt)
   });
 
-  // -------------------------------------------------------------------------------------------
   // DEFECT 1 — a pass that reached no repository may not revise the manifest verdict
-  // -------------------------------------------------------------------------------------------
   it("a refusal with NO repository writes NOTHING over the standing evidence", () => {
     // `null` is the whole answer: not a restatement of the stored row, not an advanced
     // `last_attempt_at`. The timestamp is in that list on purpose — it is what a reader means by
@@ -185,9 +183,7 @@ describe("mergeIngestionStamp — the row is per component, the evidence is per 
     expect(merged.outcome).toBe("ok");
   });
 
-  // -------------------------------------------------------------------------------------------
   // ORDERING — per repository for the slice, per component for the row-level fields
-  // -------------------------------------------------------------------------------------------
   it("an OLDER pass over the same repository does not replace a newer slice", () => {
     const merged = fold(
       stored({
@@ -246,9 +242,7 @@ describe("mergeIngestionStamp — the row is per component, the evidence is per 
     expect(merged.outcome).toBe("unreadable");
   });
 
-  // -------------------------------------------------------------------------------------------
   // `not_enabled` — a fact about the component, not about a path
-  // -------------------------------------------------------------------------------------------
   it("a closed gate overrides the computed outcome while it is the latest word", () => {
     const merged = fold(
       stored({
@@ -304,9 +298,7 @@ describe("mergeIngestionStamp — the row is per component, the evidence is per 
     expect(merged.detail).toBeNull();
   });
 
-  // -------------------------------------------------------------------------------------------
   // The empty readings, which are the three meanings the table exists to separate
-  // -------------------------------------------------------------------------------------------
   it("a pass that LOOKED and found nothing is `ok` + 0 — 'genuinely declares nothing'", () => {
     const merged = fold(
       stored({

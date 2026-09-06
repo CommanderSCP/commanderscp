@@ -931,9 +931,7 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     expect(rows).toHaveLength(1);
   });
 
-  // -------------------------------------------------------------------------------------------
   // Ordering — the disjointness the terminalization arithmetic depends on
-  // -------------------------------------------------------------------------------------------
 
   it("ORDERING: a target that is both frozen and probe-held records the FREEZE, not the probe", async () => {
     // MUTATION TARGET (b). Only one `continue` can fire per target, so the three hold sets are

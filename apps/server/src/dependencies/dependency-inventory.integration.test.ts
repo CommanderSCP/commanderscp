@@ -934,9 +934,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(withoutPattern.tagPattern).toBe("-alpine");
   });
 
-  // -----------------------------------------------------------------------------------------
   // (c) The URN-collision case — the reason the inventory is a table at all
-  // -----------------------------------------------------------------------------------------
 
   it("treats '@acme/lib', 'acme/lib' and 'acme-lib' as THREE lines, which one URN could not", () => {
     // The hazard, asserted rather than remembered: `deriveUrn`'s slug collapses all three into one
@@ -1280,9 +1278,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // ADR-0032 §5 and §3 — the two boundaries that are not visible in any single query
-  // -----------------------------------------------------------------------------------------
 
   it("mints NO relationship — package dependencies never become a depends_on edge", async () => {
     const componentId = await componentIn(clientA, "no-edge");

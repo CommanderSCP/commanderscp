@@ -639,9 +639,7 @@ async function evaluateControl(
   };
 }
 
-// ===========================================================================================
 // CONSUMER 2 — the read surface, over the SAME predicate
-// ===========================================================================================
 
 /** `objects.id` is `uuid`, so a non-UUID string handed to `inArray` is a Postgres cast error rather
  *  than an empty result — which would take out the whole request for one un-normalised target. */

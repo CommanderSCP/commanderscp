@@ -193,9 +193,7 @@ describe("M22.9: GET /control-runs/{id}/findings, over real HTTP", () => {
     await webhook?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // The route under test — spoken to as a client would, with no SDK in the way.
-  // -----------------------------------------------------------------------------------------
 
   async function getFindings(
     token: string | null,
@@ -213,9 +211,7 @@ describe("M22.9: GET /control-runs/{id}/findings, over real HTTP", () => {
     return { status: response.status, body: (await response.json()) as Record<string, unknown> };
   }
 
-  // -----------------------------------------------------------------------------------------
   // Fixtures — the M22.9 admission write door and the real gate.
-  // -----------------------------------------------------------------------------------------
 
   async function admitAtInstance(cls: string) {
     for (const tier of ["platform", "trust_domain"] as const) {

@@ -159,9 +159,7 @@ export interface InboxSweepOptions {
   relayConfig?: RelayConfig;
 }
 
-// -------------------------------------------------------------------------------------------------
 // Ledger (federation_inbox_files) — content-identity dedupe, insert-only.
-// -------------------------------------------------------------------------------------------------
 
 async function ledgerHas(
   tx: TenantTx,
@@ -212,9 +210,7 @@ async function insertLedgerRow(
     .onConflictDoNothing();
 }
 
-// -------------------------------------------------------------------------------------------------
 // Per-file terminal outcomes — each in ONE tx (ledger + audit + any loop-level Decision together).
-// -------------------------------------------------------------------------------------------------
 
 /** Terminal refusal: the underlying path's Decision when it wrote one (identical to the CLI
  *  outcome), else the loop's own `federation-inbox-ingest` block Decision — an unattended refusal
@@ -737,9 +733,7 @@ async function processRelayTarballFile(
   }
 }
 
-// -------------------------------------------------------------------------------------------------
 // The tick — per org, then every org (mirrors observe.ts's sweep shape).
-// -------------------------------------------------------------------------------------------------
 
 /** Bundles BEFORE tarballs (a tarball's change comes from its bundle — same-tick completion for
  *  the common both-dropped-together case), each group in stable name order, junk last. */

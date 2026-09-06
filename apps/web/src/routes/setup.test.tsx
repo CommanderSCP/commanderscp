@@ -52,9 +52,7 @@ function elementByTestId(html: string, testId: string): string {
   throw new Error(`unbalanced <${tag}> around data-testid="${testId}"`);
 }
 
-// -------------------------------------------------------------------------------------------
 // Checklist: the honesty math (pure), then the rendering (real destinations + no fabricated 0s).
-// -------------------------------------------------------------------------------------------
 
 describe("buildChecklistRows — the honesty math behind every count", () => {
   it("a row whose call hasn't answered yet reports an UNDEFINED count, never a fabricated 0", () => {
@@ -472,9 +470,7 @@ describe("DeclareFreezeForm — exactly CreateFreezeRequest's fields, nothing in
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // FreezeRow — the window-edit control (M25.UI increment 3, PATCH /freezes/{id}).
-// -------------------------------------------------------------------------------------------
 
 describe("FreezeRow — 'Adjust window'", () => {
   const ROW_FREEZE: Freeze = {

@@ -461,9 +461,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
   // The cleanup path — the part that has never run on dirty data anywhere else.
-  // -----------------------------------------------------------------------------------------
 
   describe("cleanup path: the migration re-run against a hand-built DIRTY database", () => {
     it("collapses duplicate built-ins lowest-id-wins, repoints their bindings, collapses the duplicate bindings that repoint MANUFACTURES, and deletes inert-effect rows", async () => {
@@ -604,9 +602,7 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
       }
     });
 
-    // ---------------------------------------------------------------------------------------
     // §1a — the refusal. The case the "lowest id wins is provably harmless" argument missed.
-    // ---------------------------------------------------------------------------------------
 
     /** `roles.permissions` for `Owner` EXACTLY as 0002:220-222 writes it — the literal a re-run of
      *  that seed puts on disk today, copied here so this fixture is the real producer and not a

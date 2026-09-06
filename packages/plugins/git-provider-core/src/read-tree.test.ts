@@ -74,9 +74,7 @@ describe("assertNonEmptyGlobs", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // Bound resolvers — same clamp shape as `read-file.ts`'s `resolveMaxBytes`, tested per bound.
-// -------------------------------------------------------------------------------------------
 
 describe("resolveMaxFiles / resolveMaxTotalBytes / resolveMaxEntriesScanned", () => {
   it("default when unset, undefined, zero, negative, NaN or non-finite", () => {
@@ -201,9 +199,7 @@ describe("createTreeScanAccumulator", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // createTreeReadAccumulator — axis 3 (maxTotalBytes), enforced as each file finishes decoding.
-// -------------------------------------------------------------------------------------------
 
 describe("createTreeReadAccumulator", () => {
   it("does not throw while the running total stays at or under the bound", () => {

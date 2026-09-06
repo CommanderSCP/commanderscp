@@ -54,9 +54,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     expect(reread.domainId).toBe(parent.id);
   });
 
-  // -----------------------------------------------------------------------------------------
   // (b) M20.5 locality inheritance crosses the domain rung.
-  // -----------------------------------------------------------------------------------------
 
   it("M20.5: a child domain created under a domainLocal:true parent inherits locality, without saying so", async () => {
     const parent = await admin

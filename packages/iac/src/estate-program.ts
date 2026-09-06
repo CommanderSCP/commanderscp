@@ -189,9 +189,7 @@ const INFRA_KIND_INFO: Record<
   queue: { className: "Queue", fromUrn: Queue.fromUrn }
 };
 
-// -------------------------------------------------------------------------------------------
 // The interpreter — `--format json`'s path, and the "expected" half of the round-trip test.
-// -------------------------------------------------------------------------------------------
 
 export interface BuiltEstateProgram {
   readonly manifest: DesiredStateManifest;

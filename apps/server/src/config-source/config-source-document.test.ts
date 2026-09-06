@@ -64,9 +64,7 @@ describe("config-source document", () => {
     expect(stackTeams).toEqual({});
   });
 
-  // ============================================================================================
   // EXACTLY ONE ADDRESSING FORM — the rule migration 0100 refuses to put on the wire
-  // ============================================================================================
 
   it("refuses NEITHER `repo` nor `repoPattern` — it would match no repository and never sync", () => {
     expect(
@@ -129,9 +127,7 @@ describe("config-source document", () => {
     ).toMatch(/config-source 'payments-fleet'/);
   });
 
-  // ============================================================================================
   // THE DELEGATION SURFACE — what the authority check must cover
-  // ============================================================================================
 
   it("delegatedTeamRefs covers the default team AND every stackTeams value, deduped and sorted", () => {
     const doc = parseConfigSourceDocument(

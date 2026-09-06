@@ -58,9 +58,7 @@ const TRAVERSAL_PATH = "a/../../../../etc/passwd";
 /** Route TERMINATION — the second half of the M21.2 `repo` hole, which traversal alone misses. */
 const QUERY_REPO = "acme/widgets?x=";
 
-// -------------------------------------------------------------------------------------------
 // Before the session exists: `repo` reaches the token-mint body AND every route below it
-// -------------------------------------------------------------------------------------------
 
 describe("withRunCredential — an adversarial repo is refused before the credential is minted", () => {
   it.each([
@@ -83,9 +81,7 @@ describe("withRunCredential — an adversarial repo is refused before the creden
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // Inside the session: every remaining caller-supplied string, on every operation that splices one
-// -------------------------------------------------------------------------------------------
 
 interface SessionCase {
   label: string;
@@ -242,9 +238,7 @@ describe("the session's write operations REFUSE adversarial strings before issui
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // The descriptor half — the same strings, refused a second time, one layer earlier
-// -------------------------------------------------------------------------------------------
 
 /**
  * `parseBumpDescriptor` validates the SAME strings with the SAME asserts before a provider arm is

@@ -557,9 +557,7 @@ describe("a tag that moves while its digest stays", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // The proof is a control, not a label
-// -------------------------------------------------------------------------------------------
 
 describe("ManifestEditProof", () => {
   it("accepts the content it was minted for", () => {
@@ -769,9 +767,7 @@ describe("the three reasons that had no test", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // URL safety on the write path — the read path's asserts, reused
-// -------------------------------------------------------------------------------------------
 
 describe("write-path URL safety inherits the read path's asserts", () => {
   it("REFUSES a traversal repo, path and base ref", () => {
@@ -796,9 +792,7 @@ describe("write-path URL safety inherits the read path's asserts", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
 // M21.7 — `locateVersionLine`, the anchor derivation, and the gate that catches a wrong SELECTION
-// -------------------------------------------------------------------------------------------
 
 /** The adversarial values file of `split-shape-image-bumps.md` §7, byte-identical to the one
  *  `bump-edit.test.ts` uses — the derivation and the refusal must agree about which line is line 7. */

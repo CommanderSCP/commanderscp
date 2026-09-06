@@ -57,9 +57,7 @@ const ociLine = (over: Partial<VendorInventoryRow> = {}): VendorInventoryRow => 
   ...over
 });
 
-// ===========================================================================================
 // The freshness bound is DERIVED, never spelled
-// ===========================================================================================
 
 describe("the staleness bound is derived from the poll interval, never hardcoded", () => {
   it("moves with SCP_DEPENDENCY_VERSION_POLL_INTERVAL_SECONDS", () => {

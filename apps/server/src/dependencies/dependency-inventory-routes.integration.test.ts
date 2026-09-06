@@ -255,9 +255,7 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
   // (1) DELETE-THE-WIRING — both routes answer through the app
-  // -----------------------------------------------------------------------------------------
   describe("(1) the routes are registered", () => {
     it("GET /components/{id}/dependency-inventory answers 200 through the app, carrying the REQUIRED dependencyManagement envelope", async () => {
       const { status, body } = await getInventory(component, org.adminToken);

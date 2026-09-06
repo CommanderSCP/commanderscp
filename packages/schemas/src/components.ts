@@ -18,9 +18,7 @@ import {
 } from "./supply-chain.js";
 import { PromotionManifestSchema } from "./federation.js";
 
-// ---------------------------------------------------------------------------------------------
 // COMPONENT PIPELINE (coordination-ui-views.md §2, as corrected 2026-08-03)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * WHO MAINTAINS A PLACE — the federation domain that owns the deployment-target, and therefore the

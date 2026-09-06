@@ -287,9 +287,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     ).rejects.toBeInstanceOf(ScpApiError);
   });
 
-  // ============================================================================================
   // C — THE POINT OF THE TIER: an org that declared nothing is still blocked.
-  // ============================================================================================
   it("C: a platform freeze blocks a wave in an org that has declared no freeze of its own", async () => {
     const env = uniq("c-env");
     const prod = await stage(env, "amer");
@@ -326,9 +324,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     expect(released.verdict, "a lift retires it on every path at once").toBe("allow");
   });
 
-  // ============================================================================================
   // D — ADDRESSING AT BOTH WIDTHS, and D5 per-target admission at the platform tier.
-  // ============================================================================================
   it("D: environment alone reaches every region of it; environment+region reaches exactly one and admits its siblings", async () => {
     const env = uniq("d-env");
     const amer = await stage(env, "amer");
@@ -379,9 +375,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     await admin.instanceFreezes.lift(narrow.key, { reason: "D: cleanup" }, OPERATOR_TOKEN);
   });
 
-  // ============================================================================================
   // E — THE OVERRIDE RULING. BOTH DIRECTIONS, SAME ACTOR.
-  // ============================================================================================
   it("E: an org-root Owner with freeze:override CANNOT override a non-overridable platform freeze, and CAN once the operator admits it", async () => {
     const env = uniq("e-env");
     const prod = await stage(env, "amer");
@@ -615,9 +609,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     ).rejects.toBeInstanceOf(ScpApiError);
   });
 
-  // ============================================================================================
   // I — THE D7 ROLLBACK EXEMPTION STOPS AT THE TIER BOUNDARY. Both directions, one freeze apart.
-  // ============================================================================================
   it("I: a rollback wave is exempt from an ORG freeze and is NOT exempt from a platform freeze", async () => {
     const env = uniq("i-env");
     const prod = await stage(env, "amer");
@@ -677,9 +669,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     ).toBe("allow");
   });
 
-  // ============================================================================================
   // G — RLS AND GRANTS UNDER A REAL LEAST-PRIVILEGED PRINCIPAL.
-  // ============================================================================================
   describe("G: the two barriers, measured as `scp_app` and not as the Testcontainers superuser", () => {
     it("scp_app can SELECT instance_freezes and cannot INSERT, UPDATE or DELETE", async () => {
       const key = uniq("g-probe");

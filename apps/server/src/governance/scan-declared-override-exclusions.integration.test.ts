@@ -387,9 +387,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     });
   }
 
-  // ===========================================================================================
   // M22.5 — the component-declared fact
-  // ===========================================================================================
 
   it("D1: an ADMITTED declared_fact clause plus a matching component declaration excludes at the real gate, and the DECLARED VALUE lands verbatim in evidence AND in the Decision", async () => {
     await admitAtInstance("declared_fact");
@@ -549,9 +547,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     expect(ok.properties).toMatchObject({ security: { declarations: { egress: "none" } } });
   });
 
-  // ===========================================================================================
   // M22.6 — the override request
-  // ===========================================================================================
 
   it("O1: a RAISED and APPROVED grant excludes exactly its finding, and evidence names the grant, its authority and its expiry", async () => {
     await admitAtInstance("approved_override");

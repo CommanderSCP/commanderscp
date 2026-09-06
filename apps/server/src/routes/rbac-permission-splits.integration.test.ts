@@ -170,9 +170,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
     await server?.close();
   });
 
-  // =============================================================================================
   // SPLIT 1 — `secret:write` SUBSTITUTES `object:write` at the three credential doors (§1.3d)
-  // =============================================================================================
 
   it("the credential doors refuse org-root `object:write` alone — this is the breaking change", async () => {
     // THE PRINCIPAL IS THE ONE THE SPLIT EXISTS TO STOP: org-root `Operator`, which holds
@@ -236,9 +234,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
     expect(put.body).toContain("secret:write");
   });
 
-  // =============================================================================================
   // SPLIT 2 — `scan:override` is ADDED to the decide door's `policy:write` (§1.3e, ruling D3)
-  // =============================================================================================
 
   it("RAISING a scan override request still works on `object:write` at the component — no regression", async () => {
     // The half that must NOT change. A `requested` grant authorizes nothing until it is signed, so
@@ -418,9 +414,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
     expect(revoke.statusCode, revoke.body).toBe(200);
   });
 
-  // =============================================================================================
   // SPLIT 3 — `change:accept` is ADDED at every target of accept/rollback, and NOT to cancel
-  // =============================================================================================
 
   it("accept and rollback refuse an org-root `object:write` holder — the intentional breakage", async () => {
     // `operator` is org-root `Operator`: `object:write` at the org root satisfies the WIDE arm of
@@ -508,9 +502,7 @@ describe("RBAC permission splits + purpose roles (drizzle/0099)", () => {
     expect(res.body).toContain(otherComponent);
   });
 
-  // =============================================================================================
   // THE SEEDED DATA — asserted as SETS, so a later migration appending to the wrong role fails here
-  // =============================================================================================
 
   describe("the roles table after drizzle/0099", () => {
     /** Every built-in role row (`org_id IS NULL`), name -> its permission SET and `bindable_at`. */

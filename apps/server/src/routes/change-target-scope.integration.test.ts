@@ -395,9 +395,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
     }
   });
 
-  // ---------------------------------------------------------------------------------------
   // The PURE-WIDENING control — an org-root Owner does everything exactly as before
-  // ---------------------------------------------------------------------------------------
 
   it("an org-root Owner reads, explains, cancels and rollbacks exactly as before", async () => {
     const changeId = await propose("owner-control", [componentA, componentB]);
@@ -632,9 +630,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
     expect(theirs.statusCode).toBe(403);
   });
 
-  // ---------------------------------------------------------------------------------------
   // Decisions — the DISJUNCTION, not a re-scope (role-model.md §8.6)
-  // ---------------------------------------------------------------------------------------
 
   it("the `audit:read` wide arm narrows NOBODY who can exist — every role with object:read has it", async () => {
     // ============================================================================================
@@ -755,9 +751,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
     expect(unfilteredComponentAdmin.statusCode).toBe(403);
   });
 
-  // ---------------------------------------------------------------------------------------
   // The subject arm has to be REAL for the dominant subject — a CHANGE
-  // ---------------------------------------------------------------------------------------
 
   it("GET /decisions/:id — a Decision about a CHANGE is readable at the change's TARGETS", async () => {
     // Almost every Decision in this system is about a change, and a change's containment chain
@@ -850,9 +844,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
     }
   });
 
-  // ---------------------------------------------------------------------------------------
   // §8.4's dedupe — "read `targetObjectIdsOf`, dedupe, `authorize` at each"
-  // ---------------------------------------------------------------------------------------
 
   it("a repeated target is authorized ONCE — the checked set is deduped", async () => {
     // A change may legitimately name the same object twice. Without the dedupe a write door runs
@@ -882,9 +874,7 @@ describe("change doors are scoped to the change's targets, not to the org root",
     expect(allowed.statusCode).toBe(200);
   });
 
-  // ---------------------------------------------------------------------------------------
   // THE ORG-ROOT ARM — the widening is a DISJUNCTION, and this is the case that proves it
-  // ---------------------------------------------------------------------------------------
 
   it("an org-root Owner still reaches a change whose target's ancestors are ALL tombstoned", async () => {
     // ======================================================================================

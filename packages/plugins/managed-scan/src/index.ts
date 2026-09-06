@@ -262,9 +262,7 @@ async function runScanContainer(
   });
 }
 
-// -----------------------------------------------------------------------------------------
 // ExecutorPlugin — NO new verb (charter principle 1). observe() is inert; trigger() runs one scan.
-// -----------------------------------------------------------------------------------------
 
 // Synchronous-trigger outcome cache, keyed by externalId (in-memory — a scan is a fresh,
 // stateless, read-only analysis per promotion journey; there is no cross-restart idempotency to
