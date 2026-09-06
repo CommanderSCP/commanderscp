@@ -84,10 +84,6 @@ describe("M22.8 scan-rule authoring guard", () => {
     );
   }
 
-  // -----------------------------------------------------------------------------------------
-  // G1 — the default first-time SecOps document.
-  // -----------------------------------------------------------------------------------------
-
   it("G1 refuses a scanThreshold policy that requires no control at all", async () => {
     await expectRefused(createPolicy([{ scanThreshold: { maxHigh: 0 } }]), "requires no control");
   });

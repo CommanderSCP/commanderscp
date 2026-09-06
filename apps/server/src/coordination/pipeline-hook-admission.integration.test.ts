@@ -293,10 +293,6 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     expect(await waveTargetStatus(changeId, firstPlacement)).toBe("succeeded");
   }
 
-  // -------------------------------------------------------------------------------------------
-  // PART 2 — the per-target `continuous` hold
-  // -------------------------------------------------------------------------------------------
-
   it("property 1: a STALE continuous probe HOLDS the target, and fresh green RELEASES it", async () => {
     const topology = await oneWaveTopology([gamma]);
     const app = await componentAt("stale", [gamma]);
@@ -462,10 +458,6 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     };
     expect(ctx.held.map((h) => h.targetObjectId)).toEqual([app.at(gamma)]);
   });
-
-  // -------------------------------------------------------------------------------------------
-  // PART 1 — the wave-boundary gate contributor
-  // -------------------------------------------------------------------------------------------
 
   it("property 4: a FAILED postDeploy result blocks the wave's exit — the next wave stays `pending`", async () => {
     const topology = await sequentialTopology([gamma, prod]);
@@ -818,10 +810,6 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
     }
   });
 
-  // -------------------------------------------------------------------------------------------
-  // The terminalization arithmetic
-  // -------------------------------------------------------------------------------------------
-
   it("property 7: an ALREADY-FAILED wave whose only remaining targets are held still terminalizes — and does not terminalize while a sibling is genuinely in flight", async () => {
     // TWO ASSERTIONS, ONE FIXTURE, because they are the two halves of the same arithmetic and the
     // second is the one that catches a missing `nonTerminalTargets++`:
@@ -885,10 +873,6 @@ describe("pipeline hooks: wave-boundary gate and per-target hold (increment 8)",
       0
     );
   });
-
-  // -------------------------------------------------------------------------------------------
-  // Persist-on-change
-  // -------------------------------------------------------------------------------------------
 
   it("property 8: two consecutive evaluations against unchanged evidence produce a byte-identical `inputContext`", async () => {
     // ADR-0024's contract, asserted TWICE and in two different ways, because the failure is silent:

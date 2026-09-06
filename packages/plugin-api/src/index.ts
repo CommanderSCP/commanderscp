@@ -16,10 +16,6 @@
 
 export * from "./dedup-cache.js";
 
-// -------------------------------------------------------------------------------------------
-// Shared: PluginContext and its injected accessors
-// -------------------------------------------------------------------------------------------
-
 export interface Logger {
   debug(msg: string, meta?: Record<string, unknown>): void;
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -78,7 +74,6 @@ export interface ScopedHttpClient {
 /** Thrown by a `ScopedHttpClient.request()` call whose `maxResponseBytes` bound was exceeded. */
 export interface ScopedHttpResponseTooLargeError extends Error {
   responseTooLarge: true;
-  /** The bound that was exceeded (echoes `ScopedHttpRequest.maxResponseBytes`). */
   limitBytes: number;
   url: string;
 }
@@ -212,7 +207,6 @@ export interface ExecutorEventCorrelation {
 
 export interface ExecutorEvent {
   kind: ExecutorEventKind;
-  /** ISO 8601. */
   occurredAt: string;
   correlation: ExecutorEventCorrelation;
   /** The provider-native payload, kept verbatim for audit/debugging — never parsed by the host. */
@@ -730,7 +724,6 @@ export interface PluginManifest {
   id: string;
   kind: PluginKind;
   version: string;
-  /** JSON Schema validating this plugin instance's `config`. */
   configSchema: Record<string, unknown>;
   requiredCapabilities?: string[];
 }

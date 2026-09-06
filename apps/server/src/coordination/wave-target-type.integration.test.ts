@@ -250,7 +250,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
     const rolled = rollbackTargets.filter((t) => t.targetObjectId === componentId);
     // Length FIRST: `[].every(...)` is true, so without this the two assertions below would pass
     // vacuously in exactly the case worth catching — the rollback never getting a plan at all.
-    expect(rolled).toHaveLength(2); // the original's wave target + the rollback's
+    expect(rolled).toHaveLength(2);
     // Both the original and its rollback drove the infrastructure pipeline — no config trigger anywhere.
     expect(rolled.every((t) => t.type === "infrastructure")).toBe(true);
     expect(rolled.every((t) => t.executorPluginId === "inf-pipeline")).toBe(true);
@@ -500,7 +500,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
     const noExecEvent = audit.find((e) => e.action === "change.wave_target.no_executor");
     expect(noExecEvent).toBeDefined();
     expect(noExecEvent!.decisionId).toBe(blockDecision!.id);
-    expect(noExecEvent!.rowHash).toEqual(expect.any(String)); // linked into the org's hash chain.
+    expect(noExecEvent!.rowHash).toEqual(expect.any(String));
 
     // 4. The change is PARKED: still `executing` (never succeeded/accepted), reconcile_blocked_at set.
     const row = await changeRow(change.id);
@@ -528,7 +528,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
     expect(targets).toHaveLength(1);
     expect(targets[0]!.status).not.toBe("no_executor");
     expect(["triggered", "observing", "succeeded"]).toContain(targets[0]!.status);
-    expect(targets[0]!.executorPluginId).toBe("fake-executor"); // the shared default fallback.
+    expect(targets[0]!.executorPluginId).toBe("fake-executor");
 
     // No block Decision, no no_executor audit, and NOT parked.
     const changeDecisions = await decisionsForChange(change.id);
@@ -552,7 +552,7 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
       type: "image"
     });
 
-    await tick(); // first block
+    await tick();
     await tick(); // parked change is excluded from the sweep — must not re-emit anything
     await tick();
 

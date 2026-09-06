@@ -41,10 +41,6 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (a) create-under-domain, round-tripped.
-  // -----------------------------------------------------------------------------------------
-
   it("a domain object may be created with domainId set to another domain's id, and round-trips", async () => {
     const parent = await admin.object("domain").create({ name: uniq("parent-domain") });
     const child = await admin

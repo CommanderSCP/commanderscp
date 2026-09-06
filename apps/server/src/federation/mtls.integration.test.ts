@@ -520,7 +520,7 @@ describe.skipIf(!opensslAvailable())("in-app federation mTLS (M9.3, ADR-0001)", 
 
   it("mTLS DISABLED (default): plain HTTP works, no client certificate required — no regression", async () => {
     // No CA/certs needed at all for this scenario — the peer just needs a placeholder public key.
-    const setup = await bootServer(); // {} -> federationServerMtls unset
+    const setup = await bootServer();
     const testServerLike: TestServer = {
       app: setup.app,
       deps: setup.deps,

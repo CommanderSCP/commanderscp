@@ -150,7 +150,6 @@ describe("/federation: a body that fails contract validation must reach the oper
     expect(notice.getAttribute("data-error-kind")).toBe("contract");
     // the OPERATION — the thing no call-site census could have produced
     expect(notice.textContent).toContain("GET /federation/status");
-    // the FIELD that was missing
     expect(notice.textContent).toContain("recentTransfers");
     // and it is legible AS a contract/version-skew failure, not as a network or permission fault
     expect(notice.textContent).toMatch(/contract/i);

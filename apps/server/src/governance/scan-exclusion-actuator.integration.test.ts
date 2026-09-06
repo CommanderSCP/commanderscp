@@ -211,10 +211,6 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     await trivy?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixtures
-  // -----------------------------------------------------------------------------------------
-
   async function buildChain(org: TestOrg, admin: ScpClient, label: string) {
     const containmentDomain = await admin.object("domain").create({ name: `dom-${label}` });
     const service = await admin
@@ -617,7 +613,6 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     await requireScanControl(admin, "gate-expired", component.id, control.id);
     const change = await proposeStaticChange(org, component.id, "act-expired");
 
-    // THE VALIDATING CROSSING, with the grant live.
     await prewarmTick(org, change.id, component.id);
     const validating = await runsFor(org, change.id);
     expect(validating).toHaveLength(1);
@@ -632,7 +627,6 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
       `);
     });
 
-    // THE PRODUCTION WAVE, weeks later.
     const wave = await waveTick(org, change.id, component.id, 1);
     expect(wave.verdict).toBe("block");
 
@@ -652,10 +646,6 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     const stored = await admin.scanOverrideGrants.listForComponent(component.id);
     expect(stored[0]?.status).toBe("approved");
   });
-
-  // ===========================================================================================
-  // A6 — THE LEVER PULLS BOTH WAYS
-  // ===========================================================================================
 
   it("A6: REVOKING a grant re-blocks a change whose gate had already passed — the actuator tightens as well as loosens", async () => {
     // The security half, and the one an actuator built only for the happy path would miss. Without

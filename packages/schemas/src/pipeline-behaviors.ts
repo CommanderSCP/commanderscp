@@ -371,7 +371,6 @@ export const ManifestBakeAlarmsHookSchema = z.object({
   hookId: z.string().min(1).max(200),
   /** How long the target must stay alarm-free after its deploy before the wave may exit. */
   quietWindowSeconds: z.number().int().positive(),
-  /** ABSENT = every wave, exactly as on `postDeploy`. */
   stage: z.string().min(1).optional()
 });
 
@@ -453,7 +452,6 @@ export type ManifestRollout = z.infer<typeof ManifestRolloutSchema>;
  */
 export const ManifestConvergenceSchema = z.object({
   componentUrn: UrnSchema,
-  /** The infrastructure product whose membership drives convergence. */
   targetUrn: UrnSchema,
   converge: z.boolean(),
   /** REQUIRED, and not defaulted on the wire. `z.default()` would emit a JSON Schema that is
@@ -643,7 +641,6 @@ export const SubmitPipelineEvidenceResponseSchema = z.object({
   kind: z.enum(["testRun", "alarmState"]),
   /** ALWAYS `pushed` on this route — a constant, not a field the request could steer. */
   source: z.literal("pushed"),
-  /** The authenticated subject, stamped server-side at insert. */
   producerSubjectId: z.string().uuid(),
   /** The resolved subject coordinates the row was keyed by, so a reporter can see that its URNs
    *  landed where it meant them to rather than discovering weeks later that its evidence was filed
@@ -773,7 +770,6 @@ export const ArtifactClassVerificationSchema = z.object({
   declared: ExecutorTypeSchema,
   /** What build evidence says was actually produced. `null` = nothing to check yet. */
   observed: ArtifactClassSchema.nullable(),
-  /** Which evidence answered. `null` alongside a `null` `observed`. */
   evidenceSource: z.enum(["buildReport"]).nullable(),
   verdict: z.enum(["match", "mismatch", "unverified"])
 });

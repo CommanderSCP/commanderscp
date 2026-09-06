@@ -10,7 +10,6 @@ export interface BundleImage {
   name: string;
   /** The image reference `build-bundle` was pointed at (e.g. "scp:dev", "postgres:16"). Informational — NOT trusted for verification; the digest is. */
   sourceRef: string;
-  /** Where `skopeo copy`'s source transport pulled from. */
   sourceType: "docker-daemon" | "docker";
   /** Path, relative to the bundle root, of this image's OCI-layout directory. */
   ociPath: string;

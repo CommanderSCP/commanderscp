@@ -316,10 +316,6 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     });
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // The generated estate.
-  // ---------------------------------------------------------------------------------------------
-
   /** Every object the fixture generated, with the depth it was built at (for legality only — the
    *  walks derive their own). */
   interface Built {
@@ -347,7 +343,6 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
   let subjects: Record<string, string>;
   /** The scoped subjects' allow/deny roots, as the fixture INTENDED them — model (3)'s seed. */
   let intendedRoots: Record<string, { allow: string[]; deny: string[] }>;
-  /** A client for the pagination principal. */
   let pageClient: ScpClient;
 
   const viewerAt = async (...scopes: { scope: string; effect?: "allow" | "deny" }[]) =>
@@ -531,7 +526,6 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
     }
     page = { service: pageService, readable, unreadable };
 
-    // ---- subjects ----------------------------------------------------------------------------
     const generatedRoot = pick(built.filter((b) => b.kind !== "placement"));
     const denyAllow = route.domain;
     const denyRoot = route.service;
@@ -1053,7 +1047,6 @@ describe("upward and downward containment are exact inverses (role-model.md §8.
       ).toBe(true);
       expect(hinted.has(chain[0]!), "control: the hint excludes rows ABOVE it").toBe(false);
 
-      // The exception itself.
       expect(unhinted.has(pastBound), "unhinted: 11 hops below the binding, past the bound").toBe(
         false
       );

@@ -96,7 +96,6 @@ beforeAll(() => {
     })
     .persist();
 
-  // abort(): cancel ANY correlated run id (path regex).
   nock(executorConfig.apiBaseUrl ?? "https://api.github.com")
     .matchHeader("authorization", executorAuthHeader)
     .post(
@@ -105,7 +104,6 @@ beforeAll(() => {
     .reply(202)
     .persist();
 
-  // observe(): commits + runs polling fallback.
   nock(executorConfig.apiBaseUrl ?? "https://api.github.com")
     .matchHeader("authorization", executorAuthHeader)
     .get(`/repos/${executorConfig.owner}/${executorConfig.repo}/commits`)
@@ -119,7 +117,6 @@ beforeAll(() => {
     .reply(200, { workflow_runs: [] })
     .persist();
 
-  // -- Discovery suite fixtures. --
   nockInstallationToken(discoveryConfig, { persist: true });
   const discoveryAuthHeader = `Bearer ${installationTokenFor(discoveryConfig)}`;
   nock(discoveryConfig.apiBaseUrl ?? "https://api.github.com")

@@ -121,9 +121,6 @@ describe("mergeIngestionStamp — the row is per component, the evidence is per 
     expect(merged.detail).toBe("no repo was named");
   });
 
-  // -------------------------------------------------------------------------------------------
-  // DEFECT 2 — per-repository slices
-  // -------------------------------------------------------------------------------------------
   it("a pass over one repository replaces its OWN slice and keeps the other's", () => {
     const merged = fold(
       stored({

@@ -1059,10 +1059,6 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (8) The read
-  // -----------------------------------------------------------------------------------------
-
   describe("(8) the list read", () => {
     it("returns this org's declarations, narrows VERBATIM, and carries the dependencyManagement envelope", async () => {
       const producer = await createOrphanComponent(server, org, `list-producer-${uuidv7()}`);
@@ -1115,10 +1111,6 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       expect(stored).toHaveLength(1);
     });
   });
-
-  // -----------------------------------------------------------------------------------------
-  // Fixture: the real prod release path
-  // -----------------------------------------------------------------------------------------
 
   const placedPairs = new Set<string>();
 

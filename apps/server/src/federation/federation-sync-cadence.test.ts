@@ -170,7 +170,6 @@ describe("M14.4 isPeerDue — the due-gate truth table", () => {
     expect(peerSyncCadence(neverSucceeded, inputs)).toBe("poll");
     expect(isPeerDue(neverSucceeded, T0, inputs)).toBe(true);
 
-    // One success re-arms sparse.
     expect(peerSyncCadence(pulledOk(120, proven), inputs)).toBe("poke");
     expect(isPeerDue(pulledOk(120, proven), T0, inputs)).toBe(false);
   });

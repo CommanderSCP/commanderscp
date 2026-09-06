@@ -708,10 +708,6 @@ async function runEditorContainer(
   });
 }
 
-// -------------------------------------------------------------------------------------------
-// ExecutorPlugin — four verbs, no more.
-// -------------------------------------------------------------------------------------------
-
 interface RunOutcome {
   succeeded: boolean;
   /** {@link BoundedDetail}, NOT `string` — see `@scp/runner-launcher`'s `RUNNER_DETAIL_MAX_CHARS`.

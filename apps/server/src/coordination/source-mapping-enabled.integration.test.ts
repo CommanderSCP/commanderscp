@@ -68,18 +68,16 @@ describe("source mapping: enabled (the pause switch, migration 0063)", () => {
     });
     expect(declaredOff.enabled).toBe(false);
 
-    // Flip the declared-off one ON.
     const flippedOn = await admin.changeSources.setMappingEnabled(sourceKind, declaredOff.id, true);
     expect(flippedOn.enabled).toBe(true);
     expect(flippedOn.id).toBe(declaredOff.id);
 
-    // And flip the default-on one OFF.
     const flippedOff = await admin.changeSources.setMappingEnabled(sourceKind, byDefault.id, false);
     expect(flippedOff.enabled).toBe(false);
 
     const listed = await admin.changeSources.listMappings(sourceKind);
     const byRepo = new Map(listed.items.map((m) => [m.repoPattern, m.enabled]));
-    expect(byRepo.get("acme/default-on")).toBe(false); // flipped off above
+    expect(byRepo.get("acme/default-on")).toBe(false);
     expect(byRepo.get("acme/declared-off")).toBe(true); // flipped on above
   });
 

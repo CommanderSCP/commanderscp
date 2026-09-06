@@ -147,9 +147,9 @@ describe("RBAC evaluator: inheritance + deny-override matrix", () => {
     const user = await makeSubject("user", "matrix-narrow-viewer");
     await bind(user.id, "Viewer", serviceId);
 
-    expect(await can(user.id, "object:read", serviceId)).toBe(true); // at the scope itself
-    expect(await can(user.id, "object:read", domainId)).toBe(false); // not upward
-    expect(await can(user.id, "object:read", orgRootId)).toBe(false); // not to the root
+    expect(await can(user.id, "object:read", serviceId)).toBe(true);
+    expect(await can(user.id, "object:read", domainId)).toBe(false);
+    expect(await can(user.id, "object:read", orgRootId)).toBe(false);
     expect(await can(user.id, "object:read", siblingDomainId)).toBe(false); // not sideways
   });
 
@@ -158,8 +158,8 @@ describe("RBAC evaluator: inheritance + deny-override matrix", () => {
     await bind(user.id, "Viewer", orgRootId, "allow");
     await bind(user.id, "Viewer", serviceId, "deny");
 
-    expect(await can(user.id, "object:read", serviceId)).toBe(false); // denied at the leaf
-    expect(await can(user.id, "object:read", domainId)).toBe(true); // deny does not radiate up
+    expect(await can(user.id, "object:read", serviceId)).toBe(false);
+    expect(await can(user.id, "object:read", domainId)).toBe(true);
     expect(await can(user.id, "object:read", orgRootId)).toBe(true);
   });
 
@@ -194,7 +194,7 @@ describe("RBAC evaluator: inheritance + deny-override matrix", () => {
     await memberOf(group.id, team.id);
     await bind(team.id, "Viewer", domainId);
 
-    expect(await can(user.id, "object:read", serviceId)).toBe(true); // via nested membership + containment
+    expect(await can(user.id, "object:read", serviceId)).toBe(true);
     expect(await can(user.id, "object:read", siblingDomainId)).toBe(false);
   });
 
@@ -242,7 +242,6 @@ describe("RBAC evaluator: inheritance + deny-override matrix", () => {
     expect(await can(user.id, "role_binding:write", serviceId)).toBe(false);
     // Not a permission any role grants at all — fails closed rather than erroring open:
     expect(await can(user.id, "made:up-permission" as Permission, serviceId)).toBe(false);
-    // And a subject with no bindings whatsoever:
     const nobody = await makeSubject("user", "matrix-nobody");
     expect(await can(nobody.id, "object:read", orgRootId)).toBe(false);
   });

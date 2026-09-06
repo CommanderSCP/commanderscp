@@ -162,10 +162,6 @@ export const DEPENDENCY_BUMP_GATE_QUEUE = "dependency-bump-gate";
  *  compares the previous verdict on, so it must be a constant. */
 export const DEPENDENCY_BUMP_MERGE_DECISION_KIND = "dependency_bump_merge";
 
-// -------------------------------------------------------------------------------------------
-// The router
-// -------------------------------------------------------------------------------------------
-
 /** What {@link observedBumpRouter} puts on {@link DEPENDENCY_BUMP_GATE_QUEUE}. */
 export interface BumpGateJob {
   orgId: string;
@@ -197,10 +193,6 @@ export function observedBumpRouter(): DomainEventRouter {
     }
   };
 }
-
-// -------------------------------------------------------------------------------------------
-// The job
-// -------------------------------------------------------------------------------------------
 
 export type BumpGateRefusal =
   /** SCP recorded no authorship for this change — so whatever `source_ref` claims, this instance did
@@ -256,7 +248,6 @@ export interface BumpGateOutcome {
    *  subscription could never merge — see the module doc). */
   gateEvaluated: boolean;
   merged: boolean;
-  /** Absent exactly when `merged` is true. */
   refusal?: BumpGateRefusal;
   /** The sentence an operator can act on. Recorded on the Decision. */
   detail: string;
@@ -630,10 +621,6 @@ async function recordMergeVerdict(
     );
   });
 }
-
-// -------------------------------------------------------------------------------------------
-// The loop
-// -------------------------------------------------------------------------------------------
 
 export interface BumpGateLoopHandle {
   stop(): Promise<void>;

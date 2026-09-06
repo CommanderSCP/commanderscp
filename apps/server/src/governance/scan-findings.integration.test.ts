@@ -140,10 +140,6 @@ describe("M22.1b: scan_findings persisted, at both verdict producers", () => {
     await domain?.close();
   });
 
-  // -------------------------------------------------------------------------------------------
-  // Fixtures
-  // -------------------------------------------------------------------------------------------
-
   async function proposeArtifactChange(
     digest: string,
     type: "image" | "rpm"
@@ -387,7 +383,6 @@ describe("M22.1b: scan_findings persisted, at both verdict producers", () => {
     expect(outcome.refused, outcome.refused ? outcome.reason : "expected export").toBe(false);
     if (outcome.refused) throw new Error(outcome.reason);
 
-    // The findings ARE on disk locally...
     const run = await managedRunFor(changeId);
     expect(await findingsOf(run.id)).toHaveLength(1);
 

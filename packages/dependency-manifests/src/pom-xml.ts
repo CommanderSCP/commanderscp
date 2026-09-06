@@ -54,7 +54,6 @@ function decodeEntities(text: string): string {
     .replace(/&amp;/g, "&");
 }
 
-/** One `<dependency>` element's collected child text. */
 interface RawDependency {
   groupId?: string;
   artifactId?: string;
@@ -243,7 +242,6 @@ function assignChild(dep: RawDependency, name: string, value: string): void {
 
 /** `[1.0,2.0)`, `(,1.0]`, `[1.0,)` — a Maven version RANGE, as opposed to the usual soft pin. */
 const MAVEN_RANGE_RE = /^[[(].*[\])]$/;
-/** `${anything}` anywhere in the version text. */
 const INTERPOLATION_RE = /\$\{[^}]*\}/;
 
 /**

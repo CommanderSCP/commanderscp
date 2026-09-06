@@ -128,7 +128,6 @@ describe("canonicalizeSourceRef: the report body's supply-chain fields become ca
       sbom: { format: "cyclonedx", digest: "v1.2.3", location: "x" }
     };
     const hint = extractHint("terraform", {}, bad);
-    // No TYPED reference is minted from it...
     expect(hint.sbom).toBeUndefined();
     const sourceRef = canonicalizeSourceRef(bad, hint);
     // ...and nothing throws. `sourceRef.sbom` is left UNSET so the M17.3 contract ("sbom, when

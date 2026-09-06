@@ -14,7 +14,6 @@ describe("ScanMethodSchema", () => {
   it("accepts trivy, openscap and trivy-vm", () => {
     expect(ScanMethodSchema.safeParse("trivy").success).toBe(true);
     expect(ScanMethodSchema.safeParse("openscap").success).toBe(true);
-    // 13.3a machine-image arm.
     expect(ScanMethodSchema.safeParse("trivy-vm").success).toBe(true);
   });
 

@@ -45,7 +45,6 @@ export type TomlValue =
 
 /** One assignment, with the full dotted path of the table it appeared in. */
 export interface TomlEntry {
-  /** e.g. `["project", "optional-dependencies"]`. */
   readonly path: readonly string[];
   readonly key: string;
   readonly value: TomlValue;
@@ -204,7 +203,6 @@ function readString(r: Reader): string {
 
 const BARE_KEY_RE = /[A-Za-z0-9_-]/;
 
-/** A dotted key: `a.b."c d"` -> ["a","b","c d"]. */
 function readKey(r: Reader): string[] {
   const parts: string[] = [];
   for (;;) {
@@ -239,7 +237,7 @@ function readValue(r: Reader): TomlValue {
     r.skip(1);
     const items: TomlValue[] = [];
     for (;;) {
-      r.skipTrivia(); // arrays may span lines and carry comments
+      r.skipTrivia();
       if (r.atEnd()) throw new ManifestParseError("unterminated TOML array");
       if (r.peek() === "]") {
         r.skip(1);

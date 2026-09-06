@@ -147,7 +147,7 @@ describe("§7.5 lost-tail simulation: a rolled-back exporter tail refuses a pull
       ownJournalTail(tx, domainA.orgId)
     );
     expect(cursorAfter.sequence).toBe(tailAfterResync.sequence);
-    expect(cursorAfter.sequence).toBeLessThan(cursorBefore.sequence); // no longer stranded ahead
+    expect(cursorAfter.sequence).toBeLessThan(cursorBefore.sequence);
 
     // And a forward pull no longer refuses (the divergence is gone).
     await expect(

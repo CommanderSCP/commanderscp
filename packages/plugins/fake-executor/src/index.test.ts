@@ -149,7 +149,7 @@ describe("FakeExecutorPlugin (unit, in-memory state)", () => {
     await sleep(30);
     const statusA = await plugin.status(ctx, refA);
     const statusB = await plugin.status(ctx, refB);
-    expect(statusA.phase).toBe("succeeded"); // unaffected target still auto-succeeds
+    expect(statusA.phase).toBe("succeeded");
     expect(statusB.phase).toBe("failed"); // forced target stays failed deterministically
   });
 

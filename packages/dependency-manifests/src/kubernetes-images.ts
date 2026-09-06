@@ -268,7 +268,6 @@ function lineStartsOf(content: string): number[] {
   return starts;
 }
 
-/** 1-based line of a byte offset. */
 function lineOf(lineStarts: readonly number[], offset: number): number {
   let low = 0;
   let high = lineStarts.length - 1;

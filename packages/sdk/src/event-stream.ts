@@ -31,7 +31,6 @@ export interface EventStreamOptions {
   signal?: AbortSignal;
   /** Base delay before reopening. Also the floor between any two connections. Default 3000ms. */
   retryDelayMs?: number;
-  /** Ceiling for the exponential backoff. Default 30000ms. */
   maxRetryDelayMs?: number;
   /**
    * Give up after this many consecutive reconnects that delivered no event, rethrowing the last

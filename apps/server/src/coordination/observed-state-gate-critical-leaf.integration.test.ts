@@ -373,7 +373,7 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
     // THE LEVER, NOT THE SIGNAL. This is the real gate function over the real row: a length
     // assertion on `row.observedState` is blind to the defect, because the defect made the row
     // SMALLER while changing which key was in it.
-    expect(row.status).not.toBe("succeeded"); // else the universal test short-circuits the gate
+    expect(row.status).not.toBe("succeeded");
     const verdict = stageDependencyVerdict(
       { dependsOn: "dependency-b", minWeight: 50 },
       { status: row.status, observedState: row.observedState, lastObservedAt: row.lastObservedAt },
@@ -392,7 +392,7 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
     // possible — see `observedImagesOf`.
     expect(recorded.length).toBeGreaterThan(1);
     const kept = recorded.filter((r) => r.startsWith("ghcr.io/"));
-    expect(kept.length).toBeLessThan(IMAGE_REF_COUNT); // the list really was cut
+    expect(kept.length).toBeLessThan(IMAGE_REF_COUNT);
 
     // THE POSITIVE CONTROL FIRST: a coordinate whose ref survived the cut still determines a
     // version. Without this, an implementation that refused everything would pass the arm below.

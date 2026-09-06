@@ -39,7 +39,7 @@ function classifyIpv4(ip: string): IpClass {
   if (parts.length !== 4 || parts.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return "public";
   const [a, b] = parts as [number, number, number, number];
   if (a === 127) return "loopback";
-  if (a === 169 && b === 254) return "linkLocal"; // incl. 169.254.169.254 cloud metadata
+  if (a === 169 && b === 254) return "linkLocal";
   if (a === 0) return "unspecified";
   if (a === 10) return "private";
   if (a === 172 && b >= 16 && b <= 31) return "private";
@@ -69,7 +69,7 @@ export function classifyIp(rawIp: string): IpClass {
   ) {
     return "linkLocal"; // fe80::/10
   }
-  if (ip.startsWith("fc") || ip.startsWith("fd")) return "private"; // fc00::/7 unique-local
+  if (ip.startsWith("fc") || ip.startsWith("fd")) return "private";
   return "public";
 }
 
@@ -176,7 +176,6 @@ export interface EgressPinRegistry {
   /** Pins `target.hostname` to `target.ips`; call the returned release once the response body is
    *  fully read (the connection is long since established by then). */
   pin(target: VerifiedEgressTarget): () => void;
-  /** `net.LookupFunction`-shaped — pass as an undici Agent's `connect.lookup`. */
   lookup: LookupFunction;
 }
 

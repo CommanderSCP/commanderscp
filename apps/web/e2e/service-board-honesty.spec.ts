@@ -87,7 +87,6 @@ function boardPayload(
         // `src/routes/service-board-honesty.test.tsx`. `[]` claims "no pipelines", which is a fact the
         // renderer handles, rather than smuggling in pipeline state this test does not assert.
         pipelines: [],
-        // Nothing declared unknown: these empties ARE observations.
         unknownFields: []
       },
       {
@@ -189,7 +188,6 @@ test("service board: an unobservable field renders as an explicit unknown, never
   await expect(drivenRow).toHaveCount(1);
   await expect(replicaRow).toHaveCount(1);
 
-  // 1. The not-driven-here row is LABELLED as such.
   await expect(replicaRow.getByTestId("board-not-driven-here")).toBeVisible();
 
   // 2. Every field the server declared unobservable renders the explicit marker — lifecycle state,

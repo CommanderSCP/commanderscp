@@ -1000,7 +1000,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
   const seenMappingPrunes = new Set<string>();
   for (const managed of mappingPrunes) {
     const key = sourceMappingKey(managed);
-    if (seenMappingPrunes.has(key)) continue; // duplicate rows collapse to one delete entry
+    if (seenMappingPrunes.has(key)) continue;
     seenMappingPrunes.add(key);
     sourceMappingEntries.push({
       kind: "source-mapping",

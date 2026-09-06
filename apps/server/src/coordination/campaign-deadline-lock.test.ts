@@ -85,7 +85,6 @@ const DEADLINE_AT = "2026-12-31T23:59:59.000Z";
 const DEADLINE = { at: DEADLINE_AT } as const;
 const AT = new Date(DEADLINE_AT);
 
-/** One stored waiver, as `POST /campaigns/{id}/deadline-override` writes it. */
 function waiver(targetObjectId: string, until?: string) {
   return {
     targetObjectId,

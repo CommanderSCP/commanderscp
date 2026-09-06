@@ -86,7 +86,7 @@ describe("approval-quorum eligibility resolves BUILT-IN role names only", () => 
     const roleRows = await admin.query(
       `SELECT id, org_id FROM roles WHERE name = 'Approver' ORDER BY org_id NULLS FIRST`
     );
-    expect(roleRows.rowCount).toBe(2); // the built-in singleton AND the org's impostor
+    expect(roleRows.rowCount).toBe(2);
     const bindingRows = await admin.query(
       `SELECT id FROM role_bindings WHERE role_id = $1 AND subject_id = $2`,
       [customRoleId, impostor.objectId]

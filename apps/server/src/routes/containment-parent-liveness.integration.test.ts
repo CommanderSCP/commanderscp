@@ -104,7 +104,6 @@ describe("updateObject validates that a new containment parent is still live", (
     serviceId: string;
     serviceUrn: string;
     serviceName: string;
-    /** Live when the plan is computed. */
     domainId: string;
     planId: string;
   }
@@ -173,10 +172,6 @@ describe("updateObject validates that a new containment parent is still live", (
     });
     expect(res.statusCode, res.body).toBe(200);
   }
-
-  // -------------------------------------------------------------------------------------------
-  // THE GAP
-  // -------------------------------------------------------------------------------------------
 
   it("POST /plans/{id}/apply refuses a stored move onto a parent soft-deleted since plan time", async () => {
     const f = await makePlannedMove("liveness-iac-toctou");

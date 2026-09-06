@@ -241,7 +241,6 @@ describe("the producer-declaration CLI formatters", () => {
     expect(dependencyProducerOpenBumpRow(bump).url).toBe("-");
     expect(dependencyProducerOpenBumpRow(bump).bump).toBe("2.1.0 -> 2.7.0");
 
-    // NEGATIVE CONTROL: a recorded URL is printed verbatim.
     expect(
       dependencyProducerOpenBumpRow({ ...bump, pullRequestUrl: "https://example.test/pr/7" }).url
     ).toBe("https://example.test/pr/7");

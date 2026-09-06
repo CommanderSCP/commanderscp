@@ -90,16 +90,16 @@ const AUTO_ON_CAP_3: NodeJS.ProcessEnv = {
 const MAX_ATTEMPTS_UNDER_TEST = 3;
 
 describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + cosign + skopeo)", () => {
-  let commander: IsolatedDomain; // A — the exporter
-  let retrans: IsolatedDomain; // B — the CDS-boundary staging node under test
-  let outpost: IsolatedDomain; // C — the receiving destination
+  let commander: IsolatedDomain;
+  let retrans: IsolatedDomain;
+  let outpost: IsolatedDomain;
 
   let srcRegistry: StartedTestContainer;
   let destRegistry: StartedTestContainer;
   let srcHost: string;
   let destHost: string;
 
-  let blobServer: Server; // source-side blob byte channel (SBOM + sig)
+  let blobServer: Server;
   let blobBaseUrl: string;
   const blobStore = new Map<string, Buffer>();
   let destBlobServer: Server;
@@ -121,7 +121,6 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
   /** Fixture tarballs built by DIRECT `buildRelayTarball` calls (the high-side fixture) — kept out
    *  of `autoDropDir` so "the sweep dropped nothing" stays a statement about the sweep. */
   let fixtureOutDir: string;
-  /** Where the high-side fixture's validate-and-forward hop drops. */
   let forwardOutDir: string;
 
   const RETRANS_MASTER_KEY = Buffer.alloc(32, 7);
@@ -204,7 +203,6 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     process.env.SCP_ARTIFACT_BLOB_BASE_URLS = `${blobBaseUrl},${destBlobBaseUrl}`;
     process.env.SCP_ARTIFACT_INSECURE_HOSTS = `${srcHost},${destHost}`;
 
-    // Federation identities + roles.
     commanderDomainId = (
       await withTenantTx(commander.db, commander.orgId, (tx) =>
         ensureFederationSelf(tx, commander.orgId)
@@ -244,7 +242,6 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
       "--yes"
     ];
 
-    // Pairing (out-of-band key exchange, as in production).
     const commanderEd = await withTenantTx(commander.db, commander.orgId, (tx) =>
       ensureInstanceKey(tx, commander.orgId)
     );
@@ -1061,7 +1058,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     // The retry gate is a REAL interval (the first backoff step is 60s), not merely "not the past".
     expect(timing.backoffSeconds).toBeGreaterThanOrEqual(60);
     expect(timing.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
-    expect(timing.claimedUntil).toBeNull(); // the lease is released with the verdict.
+    expect(timing.claimedUntil).toBeNull();
 
     // The refusal is `buildRelayTarball`'s own block Decision — the manual path's verdict, verbatim.
     const blocks = await decisionsOf(
@@ -1127,7 +1124,6 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect(
       await decisionsOf(retrans, RETRANS_RELAY_VALIDATE_DECISION_KIND, failing.changeAtB)
     ).toHaveLength(MAX_ATTEMPTS_UNDER_TEST);
-    // Still nothing crossed.
     expect(await relayTarballs(autoDropDir)).not.toContain(tarballNameFor(failing.changeAtA));
 
     // THE BOUND, exactly: a terminal row costs NOTHING per tick, forever. Row-count deltas over the
@@ -1136,7 +1132,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     const auditAtTerminal = await auditCount(retrans);
     const idleSweeps: AutoRelayOutcome[] = [];
     for (let i = 0; i < 3; i += 1) {
-      await clearBackoff(retrans, failing.changeAtB); // even with the retry gate forced open.
+      await clearBackoff(retrans, failing.changeAtB);
       idleSweeps.push(...(await tickRetrans(AUTO_ON_CAP_3, brokenConfig)));
     }
     expect(await decisionCount(retrans)).toBe(decisionsAtTerminal);
@@ -1450,7 +1446,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
 
     const decisionsBefore = await decisionCount(retrans);
     const dropBefore = await dirEntries(autoDropDir);
-    const outcomes = await tickRetrans(AUTO_ON); // `outDir` IS set — the env fallback exists.
+    const outcomes = await tickRetrans(AUTO_ON);
 
     // NO SILENT FALLBACK, NO COST: nothing landed in the instance env dir, no verdict was written,
     // and the obligation is untouched — `attempts` still 0, so the next tick has its full budget.
@@ -1628,7 +1624,6 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
     expect(ctx.failingCount).toBe(HUGE);
     expect(ctx.authorizedArtifactCount).toBe(HUGE);
 
-    // THE SETS ARE CUT.
     const failing = ctx.failing as { type: string; digest: string; reason: string }[];
     const authorized = ctx.authorizedArtifacts as { type: string; digest: string }[];
     expect(failing.length).toBe(RELAY_FAILURE_DETAIL_LIMIT);
@@ -1710,7 +1705,7 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
   // ---------------------------------------------------------------------------------------------
 
   it("the retrans never terminated a promotion: every change this suite relayed, refused, exhausted or forwarded is in the EXACT state its import left it in (ADR-0004)", async () => {
-    expect(stateAtImport.size).toBeGreaterThanOrEqual(6); // every fixture above is covered.
+    expect(stateAtImport.size).toBeGreaterThanOrEqual(6);
     const rows = await withTenantTx(retrans.db, retrans.orgId, (tx) =>
       tx.select({ objectId: changes.objectId, state: changes.state }).from(changes)
     );

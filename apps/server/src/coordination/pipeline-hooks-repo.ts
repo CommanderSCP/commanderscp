@@ -26,10 +26,6 @@ import { enqueueProbeScheduleRetraction } from "./continuous-probe-retractions-r
  * `source` and `producerSubjectId` from the authenticated request; see those functions' docs.
  */
 
-// ---------------------------------------------------------------------------------------------
-// Hooks — the DECLARED half
-// ---------------------------------------------------------------------------------------------
-
 /** A `pipeline_hooks` row. The per-kind columns are nullable because the four kinds carry different
  *  fields (see the table's doc comment); the closed per-kind shape is Zod's job at the write door. */
 export interface PipelineHookRow {
@@ -256,10 +252,6 @@ export async function deleteHook(
     });
   return hook;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Evidence — the OBSERVED half
-// ---------------------------------------------------------------------------------------------
 
 /** Where an evidence row came from. SERVER-STAMPED at every write door and NEVER read from a request
  *  body — `SubmitPipelineEvidenceRequestSchema` deliberately has no such field. */

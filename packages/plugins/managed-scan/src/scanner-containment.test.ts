@@ -36,7 +36,6 @@ import { readStripped } from "@scp/source-census";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../../../..");
 
-/** The one place a scanner may exist. */
 const RUNNER_SCAN_PREFIX = "apps/runner-scan/";
 
 /**
@@ -48,7 +47,6 @@ const RUNNER_SCAN_PREFIX = "apps/runner-scan/";
  */
 const PRODUCT_DIRS = ["apps/", "packages/", "deploy/", "scripts/", "tools/"];
 
-/** File types that can actually EXECUTE something. */
 const EXECUTABLE_EXTENSIONS = [".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash", ".py"];
 
 function trackedFiles(): string[] {
@@ -141,8 +139,6 @@ export function invocationHits(text: string): string[] {
     .filter((line) => SHELL_INVOCATION.test(line) || NODE_SPAWN_INVOCATION.test(line));
 }
 
-// -------------------------------------------------------------------------------------------------
-
 describe("scanner containment: the scanners exist ONLY in the scp-runner-scan image", () => {
   const files = trackedFiles();
 
@@ -230,7 +226,7 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
     const hits = invocationHits(read("apps/runner-scan/run.sh"));
     const joined = hits.join("\n");
     expect(joined).toMatch(/\btrivy image\b/);
-    expect(joined).toMatch(/\btrivy vm\b/); // 13.3a — the machine-image arm
+    expect(joined).toMatch(/\btrivy vm\b/);
     expect(joined).toMatch(/\boscap xccdf eval\b/);
   });
 
@@ -280,7 +276,6 @@ describe("scanner-containment detectors actually detect (negative controls)", ()
       dockerfileScannerHits("COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy")
     ).toHaveLength(1);
     expect(dockerfileScannerHits("RUN apt-get install -y trivy")).toHaveLength(1);
-    // …and does not flag an unrelated image.
     expect(dockerfileScannerHits("RUN apt-get install -y ca-certificates curl")).toHaveLength(0);
   });
 

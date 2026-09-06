@@ -332,7 +332,6 @@ export async function reopenRelayBuild(
   `);
 }
 
-/** Read one row (tests + operator diagnostics). */
 export async function getRelayBuild(
   tx: TenantTx,
   orgId: string,
@@ -379,7 +378,6 @@ export interface RelayBuildLedgerRow {
   failedAttempts: number;
   /** ISO-8601 — the retry gate: a 'pending' row is workable only at/after this instant. */
   nextAttemptAt: string;
-  /** ISO-8601, or `null` when unclaimed. */
   claimedUntil: string | null;
   lastReason: string | null;
   lastDecisionId: string | null;

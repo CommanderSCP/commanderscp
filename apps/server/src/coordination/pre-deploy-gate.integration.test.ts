@@ -77,7 +77,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
   let registryHost: string; // host:port of the local registry the "operator side-loaded" bytes into
   let blobServer: Server;
   let blobBaseUrl: string;
-  const blobStore = new Map<string, Buffer>(); // path -> bytes; anything absent 404s (missing bytes)
+  const blobStore = new Map<string, Buffer>();
   /** A second, NOT-allowlisted HTTP endpoint modeling an internal in-cluster service a hostile
    *  bundle tries to steer the outpost's blob fetch at (SSRF axis h) — and, doubling as a decoy
    *  OCI registry host, the target of a non-allowlisted oci `location` (OCI-host axis i). Counts
@@ -692,7 +692,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     await tick();
     const { reason } = await expectBlocked(changeId, componentId);
     expect(reason).toMatch(/oci registry host not allowlisted/i);
-    expect(reason).toContain(decoyHost); // names the refused host for operator remediation
+    expect(reason).toContain(decoyHost);
     // The decoy registry was NEVER contacted — the guard fires before cosign, not after.
     expect(forbiddenHits).toBe(hitsBefore);
   }, 120_000);
@@ -871,7 +871,7 @@ describe("M17.4(b) per-artifact byte verification — the pre-deploy gate (Testc
     await tick();
     await tick();
 
-    expect((await changeRow(changeId)).state).toBe("waiting"); // still parked, still re-swept
+    expect((await changeRow(changeId)).state).toBe("waiting");
     const afterThird = await gateDecisionsFor(changeId);
     expect(afterThird).toHaveLength(1);
     expect(afterThird[0]!.id).toBe(afterFirst[0]!.id); // the SAME row, not a fresh identical one

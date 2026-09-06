@@ -35,10 +35,6 @@ const { NoBoundarySegment } = await import("../components/pipeline/BoundarySegme
 
 const CHANGE_ID = "3f1a2b3c-4d5e-4f60-9a1b-2c3d4e5f6a7b";
 
-// ---------------------------------------------------------------------------------------------
-// 1. Component-level: NoBoundarySegment's domain-local branch.
-// ---------------------------------------------------------------------------------------------
-
 describe("NoBoundarySegment: the domain-local branch names the honest reason", () => {
   it("defaults to the generic 'not yet promoted' reading when domainLocal is omitted", () => {
     const html = renderToStaticMarkup(<NoBoundarySegment />);

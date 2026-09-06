@@ -177,10 +177,6 @@ function TierBadge({ tier }: { tier: GovernanceMoveTier }): React.JSX.Element {
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// The org rung switch.
-// -------------------------------------------------------------------------------------------
-
 export function OrgRungSwitch({
   orgId,
   orgName,
@@ -320,10 +316,6 @@ function RungRow({
     </TableRow>
   );
 }
-
-// -------------------------------------------------------------------------------------------
-// Enable at… dialog.
-// -------------------------------------------------------------------------------------------
 
 export type ContainersRead = Record<ContainerTier, ReadState<readonly GraphObject[]>>;
 

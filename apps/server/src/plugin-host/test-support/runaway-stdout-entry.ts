@@ -11,7 +11,7 @@
  */
 import { encodeMessage } from "../rpc-protocol.js";
 
-const CHUNK = "x".repeat(64 * 1024); // 64KB per write, no trailing newline — ever.
+const CHUNK = "x".repeat(64 * 1024);
 
 function flood(): void {
   process.stdout.write(CHUNK, () => setImmediate(flood));

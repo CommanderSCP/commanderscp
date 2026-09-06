@@ -271,7 +271,6 @@ export async function publishDomainLocalObject(
     }
   });
 
-  // Live edges touching the object, either direction.
   const edges = await tx
     .select()
     .from(relationships)

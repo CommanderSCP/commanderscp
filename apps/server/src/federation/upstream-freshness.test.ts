@@ -348,7 +348,6 @@ describe("oldestReading — the LIMITING upstream is the oldest, full stop", () 
       [ancientAirGapped, overdueCommander]
     ]) {
       const summary = summarizeReadings(order);
-      // The label is still the true oldest bound...
       expect(summary.label.peerName).toBe("air-gapped");
       // ...and the caveat still fires for the peer that is actually late.
       expect(summary.anyStale).toBe(true);

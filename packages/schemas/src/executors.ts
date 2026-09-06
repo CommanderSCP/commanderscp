@@ -287,7 +287,6 @@ export type RegionalExecutorEnvParam = z.infer<typeof RegionalExecutorEnvParamSc
  *  binding of the requested Type. `isExpectedModule` is the per-region validity signal (bound AND
  *  the binding resolves to `argocd`). */
 export const RegionalExecutorEntrySchema = z.object({
-  /** `properties.region` on the deployment-target (e.g. "amer", "apac"). */
   region: z.string(),
   targetId: z.string().uuid(),
   targetName: z.string(),
@@ -321,7 +320,6 @@ export const RegionalExecutorViewSchema = z.object({
    *  is named in `problems`, but still deploys against its bound executor — fix it before relying on
    *  it. `problems` names each gap either way. */
   valid: z.boolean(),
-  /** Human-readable, per-gap explanations (empty when `valid`). */
   problems: z.array(z.string())
 });
 export type RegionalExecutorView = z.infer<typeof RegionalExecutorViewSchema>;
@@ -516,7 +514,6 @@ export const ScaffoldDiscoveryResponseSchema = z.object({
     z.object({
       stackName: z.string(),
       serviceName: z.string(),
-      /** The emitted `scp/stack.ts`, ready to commit. */
       source: z.string(),
       /** How many `repo` placeholders the author must fill before this will typecheck (D18). */
       placeholderCount: z.number().int()

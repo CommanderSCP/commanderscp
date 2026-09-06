@@ -127,7 +127,6 @@ describe("dependencyVersionPollRoleGuard — an UNDECLARED federation role (MINO
     for (const role of ["all", "worker"] as const) {
       const verdict = dependencyVersionPollRoleGuard({
         role,
-        // Exactly what `loadConfig` produces with SCP_FEDERATION_ROLE unset.
         federationRole: "commander",
         federationRoleDeclared: false
       });

@@ -363,10 +363,6 @@ export function ContributionsBody({
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// Header strip — the chain, honestly.
-// -------------------------------------------------------------------------------------------
-
 /** The instance line: three states off `{unlocked, updatedAt}`. `updatedAt: null` with
  *  `unlocked: false` is "never set" — a different operator situation from a deliberate re-lock. */
 export function InstanceUnlockLine({
@@ -638,10 +634,6 @@ export function OptOutDialogBody({
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// The inventory table and its empty states.
-// -------------------------------------------------------------------------------------------
-
 /**
  * What to show when there are NO rows, keyed on the ingestion stamp, then the newest ingestion
  * Decision, then nothing — never collapsing to "No dependencies" without a record that says the
@@ -864,10 +856,6 @@ function InventoryRowView({
     </TableRow>
   );
 }
-
-// -------------------------------------------------------------------------------------------
-// Bumps section.
-// -------------------------------------------------------------------------------------------
 
 /**
  * The Merge cell — READ off what is stored, never inferred: `mergedAt` (a confirmed merge) → "merged
@@ -1136,10 +1124,6 @@ export function ProducesStrip({
     </p>
   );
 }
-
-// -------------------------------------------------------------------------------------------
-// The view (provider-free) and the page (hooks).
-// -------------------------------------------------------------------------------------------
 
 type WhyTarget =
   | { kind: "gate"; contributions: readonly DependencySubscriptionContribution[] }

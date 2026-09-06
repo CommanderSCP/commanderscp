@@ -211,7 +211,6 @@ export interface GitProviderAdapter {
    *  authenticated REST calls. */
   authorize(ctx: PluginContext): Promise<Record<string, string>>;
 
-  /** Base REST URL for the adapter's own calls. */
   baseUrl(ctx: PluginContext): string;
 
   /** Where the dedup cache persists for this instance (undefined = process-in-memory). */
@@ -222,19 +221,14 @@ export interface GitProviderAdapter {
    *  204-then-poll-the-runs-list dance). Only ever called for a genuinely new idempotency key. */
   triggerCI(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef>;
 
-  /** Poll recent commits (push-equivalent) since `sinceIso`, as `ExecutorEvent[]`. */
   pollCommits(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]>;
 
-  /** Poll recent CI runs since `sinceIso`, as `ExecutorEvent[]`. */
   pollRuns(ctx: PluginContext, sinceIso?: string): Promise<ExecutorEvent[]>;
 
-  /** Status of a previously-triggered run ref. */
   getStatus(ctx: PluginContext, ref: ExternalRunRef): Promise<ExecutionStatus>;
 
-  /** Abort a previously-triggered run ref. */
   abortRun(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResult>;
 
-  /** Executor capabilities (incl. the provider's `triggerKinds`). */
   capabilities(): ExecutorCapabilities;
 
   /** Verify a webhook delivery's signature against the raw request body (fail-closed). */

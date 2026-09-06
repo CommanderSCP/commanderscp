@@ -305,10 +305,6 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     return (res.json() as { id: string }).id;
   }
 
-  // -------------------------------------------------------------------------------------------
-  // DOOR 1 — the federation overlay. THE HOLE.
-  // -------------------------------------------------------------------------------------------
-
   it("DOOR 1: an Operator cannot mint an org-wide policy through the overlay route", async () => {
     const base = await createBaseService();
     const name = `overlay-escalation-${randomUUID().slice(0, 8)}`;
@@ -747,10 +743,6 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     expect(source).toContain("federation/import-repo.ts");
     expect(source).toContain("object_upsert");
   });
-
-  // -------------------------------------------------------------------------------------------
-  // DOOR 5 — federation hand-fill.
-  // -------------------------------------------------------------------------------------------
 
   it("DOOR 5: hand-fill is out of an Operator's reach entirely — it needs federation:write", async () => {
     const name = `handfill-escalation-${randomUUID().slice(0, 8)}`;
@@ -1428,7 +1420,7 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
       let k = j === i ? from : 0;
       while (k < line.length) {
         const ch = line[k]!;
-        if (ch === "/" && line[k + 1] === "/") break; // the rest of the line is a comment
+        if (ch === "/" && line[k + 1] === "/") break;
         if (ch === '"' || ch === "'" || ch === "`") {
           // A quoted string is opaque: brackets and `//` inside it are text, not structure.
           const start = k;

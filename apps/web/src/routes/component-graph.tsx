@@ -12,7 +12,6 @@ import { GraphLegend } from "../components/graph/GraphLegend";
 import { QueryErrorNotice } from "../components/query-error";
 import { PageHeader } from "../components/ui/page-header";
 
-/** Relationship types that form the component-to-component connection topology. */
 const LINK_TYPES = ["consumes", "depends_on"];
 
 interface ComponentGraphResult {

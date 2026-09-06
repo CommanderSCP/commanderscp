@@ -86,7 +86,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
     const view = await admin.executors.getRegionalExecutors(env);
 
     expect(view.environment).toBe(env);
-    expect(view.type).toBe("configuration"); // Argo CD is GitOps sync
+    expect(view.type).toBe("configuration");
     expect(view.expectedModule).toBe("argocd");
     expect(view.valid).toBe(true);
     expect(view.problems).toEqual([]);
@@ -115,7 +115,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
     const env = `prod-gap-${randomUUID().slice(0, 6)}`;
     const amerSys = await createRegionalArgocd("argocd", "amer");
     const amer = await createRegionTarget(env, "amer");
-    const emea = await createRegionTarget(env, "emea"); // declared, but left UNBOUND
+    const emea = await createRegionTarget(env, "emea");
     await admin.executors.putBinding(amer.id, { executionSystemId: amerSys.id });
 
     const view = await admin.executors.getRegionalExecutors(env);
@@ -134,7 +134,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
   it("config surface: a region bound to a NON-argocd module is flagged (multi-region prod expects Argo CD per region)", async () => {
     const env = `prod-wrongmod-${randomUUID().slice(0, 6)}`;
     const amerSys = await createRegionalArgocd("argocd", "amer");
-    const apacSys = await createRegionalArgocd("fake-executor", "apac"); // not argocd
+    const apacSys = await createRegionalArgocd("fake-executor", "apac");
     const amer = await createRegionTarget(env, "amer");
     const apac = await createRegionTarget(env, "apac");
     await admin.executors.putBinding(amer.id, { executionSystemId: amerSys.id });
@@ -263,7 +263,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
     const env = `prod-refuse-${randomUUID().slice(0, 6)}`;
     // APAC is bound (a drivable fake-executor stand-in for its regional Argo CD); AMER is left UNBOUND.
     const apacSys = await createRegionalArgocd("fake-executor", "apac-refuse");
-    const amer = await createRegionTarget(env, "amer"); // declared region, NO binding
+    const amer = await createRegionTarget(env, "amer");
     const apac = await createRegionTarget(env, "apac");
     await admin.executors.putBinding(apac.id, { executionSystemId: apacSys.id });
 
@@ -299,13 +299,12 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
       gate: "regional_argocd_silent_deploy"
     });
 
-    // A hash-chained audit event carries that decision_id.
     const noExecEvent = (await auditFor(change.id)).find(
       (e) => e.action === "change.wave_target.no_executor"
     );
     expect(noExecEvent).toBeDefined();
     expect(noExecEvent!.decisionId).toBe(blockDecision!.id);
-    expect(noExecEvent!.rowHash).toEqual(expect.any(String)); // linked into the org's hash chain.
+    expect(noExecEvent!.rowHash).toEqual(expect.any(String));
 
     // The change is PARKED (reconcile_blocked) — never silently succeeded.
     expect((await changeRow(change.id)).reconcileBlockedAt).not.toBeNull();
@@ -334,7 +333,7 @@ describe("M15.6: multi-region Argo CD — config surface + per-region fan-out", 
       { describe: `plain target triggered against default executor`, timeoutMs: 25_000 }
     );
 
-    expect(target.executorPluginId).toBe("fake-executor"); // DEFAULT_EXECUTOR_INSTANCE_ID — unchanged.
+    expect(target.executorPluginId).toBe("fake-executor");
     expect(target.status).not.toBe("no_executor");
 
     // No block Decision from the region gate, and the change is NOT parked.

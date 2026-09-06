@@ -172,13 +172,11 @@ async function main(): Promise<void> {
     });
   }
 
-  // ---- 2. manifest.json / manifest.sh --------------------------------------------------------
   const builtAt = new Date().toISOString();
   const manifest = buildManifest(bundleImages, opts.version, builtAt);
   await writeFile(path.join(bundleRoot, "manifest.json"), renderManifestJson(manifest), "utf8");
   await writeFile(path.join(bundleRoot, "manifest.sh"), renderManifestSh(manifest), "utf8");
 
-  // ---- 3. Helm chart, compose files, docs ----------------------------------------------------
   process.stderr.write("\n-- copying helm chart, compose files, docs --\n");
   await cp(HELM_CHART_DIR, path.join(bundleRoot, "helm"), { recursive: true });
   // The bundled-backends chart + its one-command wrapper ride the bundle too: install.sh applies the
@@ -207,11 +205,9 @@ async function main(): Promise<void> {
   await copyFile(BUILD_AND_TEST_DOC, path.join(bundleRoot, "docs", "BUILD_AND_TEST.md"));
   await copyFile(DESIGN_DOC, path.join(bundleRoot, "docs", "DESIGN.md"));
 
-  // ---- 4. install.sh ---------------------------------------------------------------------------
   await copyFile(path.join(ASSETS_DIR, "install.sh"), path.join(bundleRoot, "install.sh"));
   await chmod(path.join(bundleRoot, "install.sh"), 0o755);
 
-  // ---- 5. Signing key + per-image signatures ---------------------------------------------------
   process.stderr.write("\n-- signing --\n");
   const scratchDir = await cosign.makeScratchDir();
   const key = await cosign.resolveSigningKey(scratchDir);
@@ -223,7 +219,6 @@ async function main(): Promise<void> {
     cosign.signBlobDetached(digestFile, `${digestFile}.sig`, key);
   }
 
-  // ---- 6. CHECKSUMS.txt (whole extracted-bundle integrity) --------------------------------------
   process.stderr.write("\n-- checksums --\n");
   const checksumEntries = await computeChecksums(bundleRoot);
   const checksumsPath = path.join(bundleRoot, "CHECKSUMS.txt");

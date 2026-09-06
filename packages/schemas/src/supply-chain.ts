@@ -64,7 +64,6 @@ const COUNTED_SEVERITIES = ["critical", "high", "medium", "low"] as const;
 export const ScanFindingSchema = z.object({
   /** Trivy `VulnerabilityID` (e.g. `CVE-2026-1234`). */
   vulnerabilityId: z.string().optional(),
-  /** Trivy `PkgName`. */
   pkgName: z.string().optional(),
   installedVersion: z.string().optional(),
   /** Trivy `FixedVersion`. ABSENT means upstream has shipped no fix — the "no fix available"
@@ -488,8 +487,6 @@ export type PartialScanThreshold = z.infer<typeof PartialScanThresholdSchema>;
  *  answer "WHICH tier set the ceiling that blocked me?" (charter principle 6). */
 export const ScanThresholdContributionSchema = z.object({
   tier: ScanRequirementTierSchema,
-  /** Human-legible origin of this contribution: `instance:platform:local`,
-   *  `policy:<name>@<objectId>`, … */
   source: z.string(),
   /** For org-and-below contributions, the `object_types.id` of the graph object the contributing
    *  policy matched at — recorded verbatim so the tier mapping is auditable rather than implicit. */
@@ -659,9 +656,7 @@ export const ScanDeclarationValueSchema = z
  */
 export const ScanExclusionClauseSchema = z.strictObject({
   class: ScanExclusionClassSchema,
-  /** Exact match on `ScanFinding.vulnerabilityId` (Trivy `VulnerabilityID`). */
   vulnerabilityId: z.string().min(1).optional(),
-  /** Exact match on `ScanFinding.pkgName`. */
   pkgName: z.string().min(1).optional(),
   /** Exact match on `ScanFinding.purl`, VERBATIM as the scanner emitted it — no normalization here,
    *  matching `ScanFindingSchema.purl`'s own rule that canonicalization belongs at a join where both
@@ -715,9 +710,7 @@ export type ScanExclusionEffect = z.infer<typeof ScanExclusionEffectSchema>;
  */
 export const AdmittedScanExclusionClauseSchema = z.object({
   clause: ScanExclusionClauseSchema,
-  /** The tier the CLAUSE was anchored at. */
   tier: ScanRequirementTierSchema,
-  /** Human-legible origin: `policy:<name>@<objectId>`. */
   source: z.string(),
   /** Every tier above that admitted this clause's class, with the statement that did it. */
   admittedBy: z.array(z.object({ tier: ScanRequirementTierSchema, source: z.string() }))
@@ -1202,7 +1195,6 @@ export const SCAN_OVERRIDE_GRANT_TYPE_ID = "scan_override_grant";
 export const ScanOverrideGrantStatusSchema = z.enum(["requested", "approved", "denied", "revoked"]);
 export type ScanOverrideGrantStatus = z.infer<typeof ScanOverrideGrantStatusSchema>;
 
-/** The API projection of one grant object. */
 export const ScanOverrideGrantSchema = z.object({
   id: z.string(),
   urn: z.string(),
@@ -1632,7 +1624,7 @@ export function scanExclusionClauseMatches(
   facts?: ScanExclusionFacts
 ): boolean {
   const predicate = scanExclusionClassPredicate(clause, facts);
-  if (!predicate) return false; // class not yet resolvable — NO exclusion
+  if (!predicate) return false;
   if (!predicate(finding)) return false;
   if (clause.vulnerabilityId !== undefined && finding.vulnerabilityId !== clause.vulnerabilityId)
     return false;
@@ -2011,7 +2003,6 @@ export const SbomRefSchema = z.strictObject({
   /** WHERE the document lives — an OCI referrer ref, registry URL, or artifact-store URI. SCP stores
    *  the string and never fetches it as part of persisting the reference. */
   location: z.string().min(1),
-  /** Media type of the referenced document (e.g. `application/vnd.cyclonedx+json`). */
   mediaType: z.string().optional(),
   /** The EXECUTOR's ORIGIN cosign signature over the SBOM (a `.sig` ref / OCI referrer / Rekor
    *  entry). SCP NEVER signs the SBOM — it records which origin attestation exists so a downstream
@@ -2019,7 +2010,6 @@ export const SbomRefSchema = z.strictObject({
   signatureRef: z.string().optional(),
   /** WHICH external tool produced the SBOM (e.g. `"trivy"`). Not a claim SCP produced it. */
   scanner: z.string().optional(),
-  /** That tool's reported version. */
   scannerVersion: z.string().optional(),
   /** When the producer emitted it (ISO-8601), as reported by the producer. */
   generatedAt: z.string().optional()

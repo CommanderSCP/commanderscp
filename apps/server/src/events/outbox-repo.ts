@@ -4,11 +4,8 @@ import { outbox } from "../db/schema.js";
 
 export interface OutboxEventInput {
   orgId: string;
-  /** CloudEvents 1.0 `type`, e.g. `scp.object.created`. */
   type: string;
-  /** CloudEvents `source`, e.g. `/objects/service`. */
   source: string;
-  /** CloudEvents `subject` — usually the affected object/relationship id. */
   subject?: string | null;
   data: unknown;
 }

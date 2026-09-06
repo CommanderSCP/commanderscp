@@ -1841,9 +1841,7 @@ function stepIdentity(args: string[], createIndex: number): string | undefined {
   // ordering suite tests is "each run tore down ITS OWN container" — and a teardown aimed at the
   // WRONG run's name now maps to the wrong id and fails, which is exactly what should happen.
   if (sub === "rm") return nameToId.get(String(args[2])) ?? String(args[2]);
-  // `start -a <id>`.
   if (sub === "start") return args[2];
-  // `cp <id>:<path>/. <hostDir>` out, `cp <hostDir>/. <id>:<path>` in.
   if (sub === "cp") return String(isCopyOut(args) ? args[1] : args[2]).split(":")[0];
   return undefined;
 }

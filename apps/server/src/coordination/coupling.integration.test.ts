@@ -155,7 +155,6 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
       }
     ]);
 
-    // Provide it; the waiter releases.
     const provider = await admin.changes.propose({
       name: "explain provider",
       targets: [infra.id],
@@ -359,7 +358,6 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     const infra = await createTestComponent(admin, { name: "malformed-infra" });
     const app = await createTestComponent(admin, { name: "malformed-app" });
 
-    // A well-formed waiter parks first…
     const corrupted = await admin.changes.propose({
       name: "will be corrupted",
       targets: [app.id],
@@ -533,7 +531,6 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     // A rollback change auto-accepts once its waves succeed (reconcile's completeExecution).
     await reaches(rollback.id, "accepted");
 
-    // Inherited NEITHER half of the coupling.
     const rolled = await admin.changes.get(rollback.id);
     expect(rolled.properties.requires).toBeUndefined();
     expect(rolled.properties.provides).toBeUndefined();
@@ -556,7 +553,7 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
   // -----------------------------------------------------------------------------------------
 
   it("a releasable waiter behind >BATCH_LIMIT stuck waiters still releases (round-robin bump)", async () => {
-    const STUCK_COUNT = 26; // one more than reconcile.ts's BATCH_LIMIT (25)
+    const STUCK_COUNT = 26;
     const scope = await createTestComponent(admin, { name: "starvation-scope" });
     const app = await createTestComponent(admin, { name: "starvation-app" });
 

@@ -153,7 +153,6 @@ describe("HIGH: every bounded detail is something Postgres will accept, at every
     expect(isWellFormed(unrepaired), "the pre-fix slice was well-formed — sweep is vacuous").toBe(
       false
     );
-    // …and the real function is not.
     expect(isWellFormed(boundDetail(input))).toBe(true);
   });
 

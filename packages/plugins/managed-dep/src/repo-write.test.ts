@@ -79,7 +79,7 @@ describe("the per-run repository-write credential", () => {
     expect(calls.filter((c) => c.url.endsWith("/access_tokens"))).toHaveLength(1);
 
     const second = fakeCtx(githubHandler());
-    await second.ctx.http.request; // touch, so the linter sees the binding used
+    await second.ctx.http.request;
     await writer.withRunCredential(second.ctx, "acme/widget", async () => undefined);
     expect(second.calls.filter((c) => c.url.endsWith("/access_tokens"))).toHaveLength(1);
   });

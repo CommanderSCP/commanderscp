@@ -193,9 +193,7 @@ export interface HookTriggerRequest {
     workflow: unknown;
   };
   change: { objectId: string };
-  /** `null` for `postMerge`, which is not target-specific. */
   target: { objectId: string } | null;
-  /** `null` for `postMerge`, which belongs to no wave. */
   waveIndex: number | null;
   artifactDigest: string | null;
   commitSha: string | null;

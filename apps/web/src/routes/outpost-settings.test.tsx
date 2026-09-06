@@ -89,7 +89,6 @@ describe("peer settings: the body can only carry transport fields", () => {
     const { patch } = await savePeerSettings(doors, peer, draft);
 
     expect(doors.updatePeer).toHaveBeenCalledTimes(1);
-    // THE ASSERTION THIS FILE EXISTS FOR.
     expect(doors.pair).not.toHaveBeenCalled();
 
     const [sentId, sentBody] = doors.updatePeer.mock.calls[0]!;

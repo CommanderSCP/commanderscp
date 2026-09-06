@@ -64,7 +64,6 @@ describe("Web UI session discovery (/auth/me, /auth/logout, /auth/config)", () =
   it("logout deletes the session — the token is rejected afterwards and the cookie is cleared", async () => {
     const org = await createTestOrg(server, "auth-logout");
 
-    // Confirm the token works before logging out.
     const before = await server.app.inject({
       method: "GET",
       url: "/api/v1/auth/me",

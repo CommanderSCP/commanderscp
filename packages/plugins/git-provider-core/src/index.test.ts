@@ -141,10 +141,6 @@ beforeEach(() => {
   __resetInMemoryDedupState();
 });
 
-// -------------------------------------------------------------------------------------------
-// normalizeCorrelation
-// -------------------------------------------------------------------------------------------
-
 describe("normalizeCorrelation", () => {
   it("maps every hint field onto the correlation, leaving absent fields undefined", () => {
     expect(normalizeCorrelation({ repo: "a/b", commitSha: "sha1", correlationKey: "k" })).toEqual({
@@ -261,10 +257,6 @@ describe("trigger() idempotency (file-backed dedup)", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// observe() cursor protocol + event concatenation
-// -------------------------------------------------------------------------------------------
-
 describe("observe() cursor + concatenation", () => {
   it("passes since.token as the ISO watermark to BOTH pollers and concatenates commits then runs", async () => {
     const { adapter, calls } = buildFakeAdapter();
@@ -288,10 +280,6 @@ describe("observe() cursor + concatenation", () => {
     expect(calls.pollRuns).toEqual([undefined]);
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// status/abort/describeCapabilities delegation
-// -------------------------------------------------------------------------------------------
 
 describe("verb delegation to the adapter", () => {
   it("status() delegates to adapter.getStatus with the ref", async () => {

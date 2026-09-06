@@ -59,7 +59,6 @@ beforeAll(() => {
     }))
     .persist();
 
-  // status(): ANY correlated run id reads back success.
   nock(base)
     .matchHeader("authorization", authHeader)
     .get(new RegExp(`/repos/${config.owner}/${config.repo}/actions/runs/\\d+$`))
@@ -70,14 +69,12 @@ beforeAll(() => {
     }))
     .persist();
 
-  // abort(): cancel ANY correlated run id.
   nock(base)
     .matchHeader("authorization", authHeader)
     .post(new RegExp(`/repos/${config.owner}/${config.repo}/actions/runs/\\d+/cancel$`))
     .reply(200)
     .persist();
 
-  // observe(): commits + runs + packages.
   nock(base)
     .matchHeader("authorization", authHeader)
     .get(`/repos/${config.owner}/${config.repo}/commits`)

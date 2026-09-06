@@ -123,7 +123,7 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Billing API",
           domainId: "0198f2a0-0000-7000-8000-000000000001",
           properties: { tier: "critical" },
-          labels: managedLabels(STACK), // already carries what the plan would merge in
+          labels: managedLabels(STACK),
           managedByStack: STACK
         }
       ],
@@ -358,7 +358,7 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Hand Created",
           domainId: null,
           properties: {},
-          labels: {}, // no scp:managed-by label at all
+          labels: {},
           managedByStack: null
         }
       ],

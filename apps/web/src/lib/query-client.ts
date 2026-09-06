@@ -52,7 +52,6 @@ export function registryListKey(basePath: string): unknown[] {
   return ["registry", basePath, "list"];
 }
 
-/** Query key for a single object's detail view. */
 export function registryDetailKey(basePath: string, idOrUrn: string): unknown[] {
   return ["registry", basePath, "detail", idOrUrn];
 }

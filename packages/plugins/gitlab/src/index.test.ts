@@ -388,10 +388,6 @@ describe("status() — single GitLab pipeline status enum", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// abort()
-// -------------------------------------------------------------------------------------------
-
 describe("abort()", () => {
   it("cancels a correlated pipeline", async () => {
     const { ctx, token, base, pid } = setup();
@@ -438,10 +434,6 @@ describe("abort()", () => {
     scope.done();
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// observe() — commits + pipelines, and poll-vs-push equivalence.
-// -------------------------------------------------------------------------------------------
 
 describe("observe() polling — commits and pipelines", () => {
   it("maps commits (id=sha) and pipelines to well-formed ExecutorEvents", async () => {
@@ -501,7 +493,7 @@ describe("observe() polling — commits and pipelines", () => {
       token: JSON.stringify({ push: watermark, workflow_run: watermark })
     });
 
-    expect(events.filter((e) => e.kind === "push")).toHaveLength(101); // 100 + the one after it
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(101);
     scope.done();
   });
 
@@ -524,7 +516,7 @@ describe("observe() polling — commits and pipelines", () => {
     scope
       .get(`/projects/${pid}/repository/commits`)
       .query((q) => q.page === "2")
-      .reply(200, [{ id: "c".repeat(40), created_at: "2026-06-30T00:00:00Z" }]); // pre-watermark: ends the walk
+      .reply(200, [{ id: "c".repeat(40), created_at: "2026-06-30T00:00:00Z" }]);
     scope.get(`/projects/${pid}/pipelines`).query(true).reply(200, []);
 
     const events = await plugin.observe(ctx, {
@@ -545,7 +537,7 @@ describe("observe() polling — commits and pipelines", () => {
       .get(`/projects/${pid}/repository/commits`)
       .query((q) => q.since === since && q.page === "1" && q.per_page === "100")
       .reply(200, [
-        { id: "old".padEnd(40, "0"), created_at: "2026-06-01T00:00:00Z" }, // older -> filtered
+        { id: "old".padEnd(40, "0"), created_at: "2026-06-01T00:00:00Z" },
         { id: "new".padEnd(40, "0"), created_at: "2026-07-02T00:00:00Z" }
       ]);
     // This fixture puts the NEWEST commit last (a real GitLab lists newest-first), so the
@@ -678,7 +670,7 @@ describe("discover() (DiscoveryPlugin)", () => {
       .query({ per_page: "100" })
       .reply(200, [
         { name: "service-a", path: "service-a", type: "tree" },
-        { name: "docs", path: "docs", type: "tree" }, // tree, but no marker inside -> skipped
+        { name: "docs", path: "docs", type: "tree" },
         { name: "README.md", path: "README.md", type: "blob" } // not a tree -> no sub-listing
       ]);
     nock(base)
@@ -1176,7 +1168,6 @@ describe("readFileAtRef()", () => {
         size: Buffer.byteLength(manifest, "utf8"),
         encoding: "base64",
         content: Buffer.from(manifest, "utf8").toString("base64"),
-        // no `blob_id` at all
         commit_id: COMMIT_ID
       });
 

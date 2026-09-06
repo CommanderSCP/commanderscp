@@ -141,10 +141,6 @@ describe("containment depth doors — no write may leave a live row past the bou
     expect(res.body).not.toContain("exceeds the supported containment depth");
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // The ceiling is a ceiling
-  // ---------------------------------------------------------------------------------------------
-
   it("a row at EXACTLY the bound is readable by the org admin, and its chain is complete", async () => {
     const org = await createTestOrg(server, "depth-ceiling");
     const domains = await domainChain(org, "ceiling");
@@ -303,7 +299,6 @@ describe("containment depth doors — no write may leave a live row past the bou
     expectDoorRefusal(refused, D, d7, 8);
     expect(refused.body).toContain("its own subtree is at least 3 deep");
     expect(refused.body).toContain(`depth ${8 + 3}`);
-    // Nothing moved.
     const stillRoot = await call(org.adminToken, "GET", `/api/v1/domains/${D}`);
     expect((stillRoot.json() as { domainId: string | null }).domainId).toBe(org.orgId);
 
@@ -388,7 +383,6 @@ describe("containment depth doors — no write may leave a live row past the bou
     expectDoorRefusal(refused, svcId, d8, 9);
     expect(refused.body).toContain("its own subtree is at least 2 deep");
     expect(refused.body).toContain(`depth ${9 + 2}`);
-    // Nothing moved.
     const still = await call(org.adminToken, "GET", `/api/v1/services/${svcId}`);
     expect((still.json() as { domainId: string | null }).domainId).toBe(org.orgId);
 
@@ -496,7 +490,6 @@ describe("containment depth doors — no write may leave a live row past the bou
       domainId: null
     });
     expectDoorRefusal(refused, /object '/, svc10, CONTAINMENT_WALK_MAX_DEPTH + 1);
-    // Rolled back with the refusal: no half-created component.
     const list = await call(org.adminToken, "GET", `/api/v1/components?limit=100`);
     expect(list.status, list.body).toBe(200);
     expect(JSON.stringify(list.json())).not.toContain("d3att-deep");

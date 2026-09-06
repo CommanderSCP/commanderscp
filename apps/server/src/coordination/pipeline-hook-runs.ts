@@ -67,10 +67,6 @@ import { recordTestRunEvidence } from "./pipeline-hooks-repo.js";
  * caller that genuinely only wants the database half has one, without an executor call riding along.
  */
 
-// ---------------------------------------------------------------------------------------------
-// Vocabulary
-// ---------------------------------------------------------------------------------------------
-
 /**
  * A run's status, PINNED TO `ExecutionPhase` MEMBER FOR MEMBER.
  *
@@ -197,10 +193,6 @@ export function hookRunIdempotencyKey(identity: HookRunIdentity): string {
   ].join(KEY_DELIMITER);
   return `scp-hook-${createHash("sha256").update(preimage, "utf8").digest("hex")}`;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Rows
-// ---------------------------------------------------------------------------------------------
 
 export interface PipelineHookRunRow {
   id: string;
@@ -445,7 +437,6 @@ export async function findHookRun(
   return rows[0] ? toRunRow(rows[0]) : undefined;
 }
 
-/** Every run recorded for one change, oldest first. */
 export async function listHookRunsForChange(
   tx: TenantTx,
   orgId: string,
@@ -496,11 +487,9 @@ export interface EnsureHookRunTriggeredInput {
      *  evidence's pin is this ref PLUS the built commit PLUS the reported bundle. */
     workflow?: unknown;
   };
-  /** The Change this run gates. */
   change: { objectId: string };
   /** The deployment target, or `null` for `postMerge`, which is not target-specific. */
   target: { objectId: string } | null;
-  /** `null` for `postMerge`, which belongs to no wave. */
   waveIndex: number | null;
   /** The object whose executor binding this run dispatches through, and the executor Type to resolve
    *  it on. Omit `objectId` to use the derived carrier (target, else component) — which is what a

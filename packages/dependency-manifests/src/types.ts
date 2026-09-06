@@ -133,7 +133,6 @@ export interface ComparableVersion {
   readonly raw: string;
 }
 
-/** One direct, declared dependency of a component. */
 export interface DeclaredDependency {
   readonly ecosystem: DependencyEcosystem;
   /**

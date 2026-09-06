@@ -102,11 +102,9 @@ describe("list doors filter rows by readable scope (role-model §8.2, step 2.5b)
   interface Fixture {
     domainA: string;
     domainB: string;
-    /** Under `domainA`. Holds `compA1`, whose placement is `placeA1`. */
     serviceA: string;
     /** Under `domainA`, BESIDE `serviceA` — the row a deny at `serviceA` must leave alone. */
     serviceC: string;
-    /** Under `domainB`. */
     serviceB: string;
     compA1: string;
     compC1: string;
@@ -231,10 +229,6 @@ describe("list doors filter rows by readable scope (role-model §8.2, step 2.5b)
     await server?.close();
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------------------------
-
   function inject(
     method: "GET" | "POST" | "DELETE",
     url: string,
@@ -267,10 +261,6 @@ describe("list doors filter rows by readable scope (role-model §8.2, step 2.5b)
     listedIds(`/api/v1/campaigns?limit=100${query}`, token);
 
   const problem = (res: { body: string }) => JSON.parse(res.body) as { detail?: string };
-
-  // ---------------------------------------------------------------------------------------------
-  // (a) The row filter
-  // ---------------------------------------------------------------------------------------------
 
   it("the org-root principal's page is unchanged — every row, no filter", async () => {
     expect(await placements(orgRootToken)).toEqual(
@@ -335,10 +325,6 @@ describe("list doors filter rows by readable scope (role-model §8.2, step 2.5b)
       ).toEqual([id, listed.has(id)]);
     }
   });
-
-  // ---------------------------------------------------------------------------------------------
-  // (b) `?scopeObjectId=` — the optional narrowing
-  // ---------------------------------------------------------------------------------------------
 
   it("?scopeObjectId= narrows an ORG-ROOT principal's own results to one subtree", async () => {
     expect(await placements(orgRootToken, `&scopeObjectId=${ids.serviceA}`)).toEqual(
@@ -428,7 +414,6 @@ describe("list doors filter rows by readable scope (role-model §8.2, step 2.5b)
   // ---------------------------------------------------------------------------------------------
 
   it("includeDeleted and a narrowed scope do not compose — the descend walks LIVE rows only", async () => {
-    // Unfiltered, the tombstone comes back.
     expect(await placements(orgRootToken, "&includeDeleted=true")).toContain(ids.placeDeleted);
     // Narrowed, it does not: `containmentChildrenSql` joins every child `deleted_at IS NULL`,
     // exactly as the upward walk joins every ancestor live, so a tombstoned row is below nothing.

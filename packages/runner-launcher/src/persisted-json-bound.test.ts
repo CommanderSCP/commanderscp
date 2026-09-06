@@ -273,7 +273,7 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
 
   /** All six permutations of the three fields `observedStateFrom` composes. */
   const ORDERS = [
-    ["revision", "images", "rollout"], // <- what `observedStateFrom` actually produces
+    ["revision", "images", "rollout"],
     ["revision", "rollout", "images"],
     ["images", "revision", "rollout"],
     ["images", "rollout", "revision"],

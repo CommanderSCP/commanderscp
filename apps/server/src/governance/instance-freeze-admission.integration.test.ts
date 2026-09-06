@@ -209,17 +209,11 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
       })
     );
 
-  // ============================================================================================
-  // A — WIRING. Built, and INSTALLED.
-  // ============================================================================================
   it("A: the operator door is registered on the running server (delete the app.ts line, this goes red)", async () => {
     const items = await admin.instanceFreezes.list();
     expect(Array.isArray(items)).toBe(true);
   });
 
-  // ============================================================================================
-  // B — TWO AUDIENCES, TWO CREDENTIALS. Both directions.
-  // ============================================================================================
   it("B: an org Owner cannot author a platform freeze; the operator token can — and the tenant can READ it", async () => {
     const key = uniq("b-two-credentials");
     const body: PutInstanceFreezeRequest = {
@@ -371,7 +365,6 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     ).toBe("allow");
     await admin.instanceFreezes.lift(wide.key, { reason: "D: narrowing" }, OPERATOR_TOKEN);
 
-    // --- NARROW: environment + region.
     const narrow = await platformFreeze(uniq("d-narrow"), { environment: env, region: "amer" });
     const narrowGate = await waveGate(targets, change.id);
     expect(
@@ -409,7 +402,7 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     // addressing form that reaches a component-shaped target, so it is the only form under which
     // this edge — the only edge the override loop runs on — can reach the ruling at all. Case E2
     // pins the other half of that fact. Authored and lifted inside this case, per the file header.
-    await platformFreeze(key, { allEnvironments: true }); // overridable defaults to false
+    await platformFreeze(key, { allEnvironments: true });
 
     const refused = await acceptGate(declared, change.id, owner.objectId, {
       reason: "E: incident bridge approved"
@@ -508,9 +501,6 @@ describe("instance-scoped (platform) freezes: the tier above org (M25.3)", () =>
     await admin.instanceFreezes.lift(key, { reason: "E2: cleanup" }, OPERATOR_TOKEN);
   });
 
-  // ============================================================================================
-  // F — CRITICAL #2 ACROSS THE TIER BOUNDARY.
-  // ============================================================================================
   it("F: an org freeze AND a platform freeze over one change both have to be satisfied", async () => {
     const env = uniq("f-env");
     const prod = await stage(env, "amer");

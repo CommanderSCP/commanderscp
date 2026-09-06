@@ -339,7 +339,6 @@ describe("FreezeRow — the lift claim, and the state a lift leaves behind", () 
     // and a `freeze_admission` Decision still cites this freeze's id (charter principle 6).
     expect(html).toContain("Lifted");
     expect(html).toContain("incident resolved");
-    // ...and offers no second lift.
     expect(html).not.toContain("<button");
   });
 

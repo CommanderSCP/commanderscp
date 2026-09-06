@@ -151,7 +151,6 @@ describe("RLS: adversarial cross-org probes", () => {
 
   it("relationships table fails closed the same way as objects", async () => {
     const raw = await RawScpAppClient.connect();
-    // no org context set at all
     const result = await raw.query("SELECT * FROM relationships");
     await raw.close();
     expect(result.rows).toHaveLength(0);

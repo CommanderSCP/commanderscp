@@ -70,10 +70,6 @@ import { deriveConstructUrn, slugify } from "./urn.js";
  * surface, which is exactly why nothing here needs to change for a new L3 pattern to exist.
  */
 
-// -------------------------------------------------------------------------------------------
-// Base types
-// -------------------------------------------------------------------------------------------
-
 /** Minimal construct base — just enough identity (`scope`, `id`) for deterministic URN derivation. */
 export abstract class Construct {
   constructor(
@@ -1014,10 +1010,6 @@ function executorBindingSortKey(b: ManifestExecutorBinding): string {
 function relationshipSortKey(r: ManifestRelationship): string {
   return `${r.typeId} ${r.fromUrn} ${r.toUrn}`;
 }
-
-// -------------------------------------------------------------------------------------------
-// Resource constructs
-// -------------------------------------------------------------------------------------------
 
 export interface ResourceProps {
   readonly name: string;

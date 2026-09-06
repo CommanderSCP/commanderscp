@@ -112,7 +112,6 @@ describe("components: strict create-in-service (M12 P5a)", () => {
     const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
     const urn = `urn:scp:components-strict:component:put-${randomUUID().slice(0, 8)}`;
 
-    // Create branch, no service -> 400.
     const noSvc = await server.app.inject({
       method: "PUT",
       url: `/api/v1/components/${encodeURIComponent(urn)}`,
@@ -121,7 +120,6 @@ describe("components: strict create-in-service (M12 P5a)", () => {
     });
     expect(noSvc.statusCode, noSvc.body).toBe(400);
 
-    // Create branch, with service -> 201 + edge.
     const created = await admin.components.upsertByUrn(urn, {
       name: "put-created",
       service: svc.id
@@ -257,7 +255,6 @@ describe("components: assign / atomic move into a service (M12 P5b)", () => {
     const comp = await createTestComponent(admin, { name: "typed", service: svc.id });
     const notAService = await admin.teams.create({ name: `team-${randomUUID().slice(0, 8)}` });
 
-    // service ref is a team → 400
     await expect(admin.components.setService(comp.id, notAService.id)).rejects.toMatchObject({
       status: 400
     });

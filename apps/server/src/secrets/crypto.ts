@@ -18,13 +18,13 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 const ALGORITHM = "aes-256-gcm";
 const KEY_BYTES = 32;
-const NONCE_BYTES = 12; // GCM's recommended IV length
+const NONCE_BYTES = 12;
 
 export const CURRENT_SECRETS_KEY_VERSION = 1;
 
 export interface EncryptedSecret {
-  ciphertext: string; // base64(ciphertext || authTag)
-  nonce: string; // base64
+  ciphertext: string;
+  nonce: string;
   keyVersion: number;
 }
 

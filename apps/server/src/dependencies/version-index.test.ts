@@ -291,10 +291,6 @@ describe("resolveIndexInstanceConfig — indexes are operator config, and unset 
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// queryLineHead over a fake plugin host
-// -------------------------------------------------------------------------------------------
-
 function fakeHost(
   listVersions: () => Promise<DependencyIndexResult>,
   resolveDigest?: () => Promise<

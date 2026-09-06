@@ -263,7 +263,6 @@ function widenings(
 describe("the permission drift gate (role-model.md §5 step 4)", () => {
   let server: TestServer;
   let admin: pg.Client;
-  /** Built-in roles as the migrations actually left them. */
   let builtIns: Array<{ name: string; permissions: string[] }>;
 
   beforeAll(async () => {
@@ -324,7 +323,6 @@ describe("the permission drift gate (role-model.md §5 step 4)", () => {
   });
 
   describe("(1) vs (3) — what the code DEFINES vs what the code DEMANDS", () => {
-    /** Non-test source files, read as bytes. */
     const sources = everyTypeScriptFile(SRC_ROOT)
       .filter((f) => !f.endsWith(".test.ts"))
       // `resolve.ts` is where the catalogue is DECLARED; a declaration is not a demand, and

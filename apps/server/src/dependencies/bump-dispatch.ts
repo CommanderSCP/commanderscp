@@ -153,10 +153,6 @@ export const DEPENDENCY_BUMP_QUEUE = "dependency-bump";
  *  `insertDecisionIfChanged` compares the previous verdict on, so it must be a constant. */
 export const DEPENDENCY_BUMP_DECISION_KIND = "dependency_bump_dispatch";
 
-// -------------------------------------------------------------------------------------------
-// The role guard
-// -------------------------------------------------------------------------------------------
-
 export interface BumpDispatchRoleVerdict {
   allowed: boolean;
   reason: string;
@@ -196,10 +192,6 @@ export function bumpDispatchRoleGuard(
       "into a source repository over the network, so both axes are required"
   };
 }
-
-// -------------------------------------------------------------------------------------------
-// The router
-// -------------------------------------------------------------------------------------------
 
 /** What {@link advancedLineHeadRouter} puts on {@link DEPENDENCY_BUMP_QUEUE}. */
 export interface BumpDispatchJob {
@@ -443,10 +435,6 @@ export function planBump(input: {
   return { due: true, fromVersion: declared, toVersion };
 }
 
-// -------------------------------------------------------------------------------------------
-// The job
-// -------------------------------------------------------------------------------------------
-
 export interface BumpDispatchLoopDeps {
   db: Db;
   host: PluginHost;
@@ -460,7 +448,6 @@ export interface BumpDispatchLoopDeps {
  *  integration test can assert the real function's own verdict rather than a copy of it. */
 export interface BumpDispatchOutcome {
   lineId: string;
-  /** Bumps actually dispatched to `scp-managed-dep`. */
   dispatched: {
     componentObjectId: string;
     manifestPath: string;
@@ -486,7 +473,6 @@ export async function runBumpDispatchJob(
 ): Promise<BumpDispatchOutcome> {
   const outcome: BumpDispatchOutcome = { lineId: job.lineId, dispatched: [], skipped: [] };
 
-  // ---- PHASE 1 (read) -----------------------------------------------------------------------
   const work = await withTenantTx(deps.db, job.orgId, async (tx) => {
     // RE-READ the line rather than trusting the event: at-least-once delivery means this can arrive
     // after a later observation has moved the head again, or after an operator repointed the line.
@@ -836,7 +822,6 @@ async function dispatchOneBump(
 ): Promise<void> {
   const { orgId, line, candidate, declaration, repo, baseBranch } = input;
 
-  // ---- PHASE 3 (write) -----------------------------------------------------------------------
   const prepared = await withTenantTx(deps.db, orgId, async (tx) => {
     // THE OTHER HALF OF THE DELEGATION REFUSAL — the stored verdict this job may have just written,
     // read back at the choke point immediately before SCP would write to the repository. It throws
@@ -1020,10 +1005,6 @@ async function dispatchOneBump(
     delivery: prepared.delivery.delivery
   });
 }
-
-// -------------------------------------------------------------------------------------------
-// The loop
-// -------------------------------------------------------------------------------------------
 
 export interface BumpDispatchLoopHandle {
   stop(): Promise<void>;

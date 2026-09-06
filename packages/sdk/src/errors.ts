@@ -53,9 +53,7 @@ export function reconcileStaleClaimants(err: unknown): OutpostConfig[] | null {
 export interface ResponseValidationIssue {
   /** Dot/index path INSIDE the response body, e.g. `peers.0.syncScope`. `<root>` for the body itself. */
   path: string;
-  /** Human-readable explanation from the response validator. */
   message: string;
-  /** Machine code from the response validator, e.g. `invalid_type`. */
   code?: string;
 }
 
@@ -85,13 +83,11 @@ function describeIssues(issues: readonly ResponseValidationIssue[]): string {
 export class ScpResponseValidationError extends Error {
   /** `GET /federation/status` — the OpenAPI coordinates (method + templated path) of the call. */
   readonly operation: string;
-  /** Uppercase HTTP method, e.g. `GET`. */
   readonly method: string;
   /** Templated request path as declared in the OpenAPI document, e.g. `/federation/peers/{id}`. */
   readonly path: string;
   /** HTTP status of the (successful) response whose body failed validation. */
   readonly status?: number;
-  /** Every field that failed, in the validator's order. */
   readonly issues: readonly ResponseValidationIssue[];
 
   constructor(opts: {

@@ -135,7 +135,6 @@ export function watermarkFor(marks: ObserveWatermarks, kind: string): string | u
   return ownMark(marks, kind) ?? ownMark(marks, "_legacy");
 }
 
-/** ISO-8601 lexicographic max, advanced INDEPENDENTLY per event kind. */
 export function advanceWatermarks(
   events: ExecutorEvent[],
   current: ObserveWatermarks
@@ -370,7 +369,6 @@ export async function observeOrgTick(
   }
 }
 
-/** Every org, one tick — mirrors `runReconcileSweep`. */
 export async function runObserveSweep(db: Db, host: PluginHost, masterKey: Buffer): Promise<void> {
   const orgRows = await db.select({ id: orgs.id }).from(orgs);
   for (const org of orgRows) {

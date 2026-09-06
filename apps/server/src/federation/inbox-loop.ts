@@ -341,10 +341,6 @@ function deferFile(orgId: string, fileName: string, reason: string): InboxFileOu
   return { outcome: "deferred", detail: reason, decisionId: null };
 }
 
-// -------------------------------------------------------------------------------------------------
-// Routing helpers.
-// -------------------------------------------------------------------------------------------------
-
 function isPromotionBundle(body: ImportBundleRequest): body is PromotionBundle {
   return body.header.kind === "promotion";
 }
@@ -381,10 +377,6 @@ function upstreamRelayCosignKey(peers: FederationPeerRow[]): string | null {
   if (candidates.length !== 1) return null;
   return candidates[0]!.cosignPublicKey;
 }
-
-// -------------------------------------------------------------------------------------------------
-// The per-file processor.
-// -------------------------------------------------------------------------------------------------
 
 /** Exported for the integration suite (the DoD's per-file semantics are asserted through it);
  *  production reaches it only via {@link inboxOrgTick}. */
@@ -833,7 +825,6 @@ export async function inboxOrgTick(
   return outcomes;
 }
 
-/** Every org, one tick — mirrors `runObserveSweep`. */
 export async function runInboxSweep(
   db: Db,
   masterKey: Buffer,

@@ -118,10 +118,6 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     await server?.close();
   });
 
-  // -------------------------------------------------------------------------------------------
-  // Fixture builders
-  // -------------------------------------------------------------------------------------------
-
   async function newOrg(label: string): Promise<{ org: TestOrg; admin: ScpClient }> {
     const org = await createTestOrg(server, label);
     return { org, admin: new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken }) };

@@ -262,11 +262,8 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
     // hazard that schema's own comment already records, for `domainId`/`properties`/`labels`/
     // `id`/`urn`.
     const authorizedBy = new Map<string, RegExp[]>([
-      // routes/objects-generic.ts — the parametric pair.
       ["objects-generic.ts", [/^POST \/objects\/\{type\}$/, /^PUT \/objects\/\{type\}\/\{urn\}$/]],
-      // routes/components.ts — inherited via CreateComponentRequestSchema.extend().
       ["components.ts", [/^POST \/components$/, /^PUT \/components\/\{urn\}$/]],
-      // services/objects-service.ts — BOTH shadowing forms funnel through createServiceObject.
       ["objects-service.ts", [/^POST \/(orgs\/\{org\}\/)?objects\/service$/]],
       // routes/typed-registries.ts — ONE factory generating a create/upsert pair per registered
       // type. `/services` is exercised below as its witness; enumerating all twelve types would

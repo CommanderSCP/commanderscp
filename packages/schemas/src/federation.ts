@@ -498,7 +498,6 @@ export function parseOutpostClaimantToken(token: string): OutpostClaimantToken {
  *  being discarded. The two cases are split into two fields so a caller (the CLI, and any future UI)
  *  cannot collapse them back into one indistinguishable sentence. */
 export const OutpostConfigReconcileResultSchema = z.object({
-  /** The single row that now holds the binding. */
   config: OutpostConfigSchema,
   /** The object id that was ADOPTED as this domain's own (its `provenance` cleared), or `null` when an
    *  authoritative row already existed and nothing needed adopting. */
@@ -766,7 +765,7 @@ export const FederationStatusResponseSchema = z.object({
 export type FederationStatusResponse = z.infer<typeof FederationStatusResponseSchema>;
 
 export const ExportJournalRequestSchema = z.object({
-  peer: z.string().min(1), // peer domain id or name
+  peer: z.string().min(1),
   sinceSequence: z.number().int().nonnegative().optional(),
   /** M13.2a (§13.2) — when true the server ALSO drops the exported `.scpbundle` into the peer's
    *  resolved DeliveryTarget (per-peer config, else the `SCP_RELAY_OUT_DIR` instance fallback;
@@ -981,11 +980,8 @@ export const PromotionManifestSchema = z.object({
   createdAt: z.string().datetime(),
   /** The EXPORTER's change object id — binds the manifest to this bundle's `header.sourceChangeObjectId`. */
   sourceChangeObjectId: z.string().uuid(),
-  /** The signing (exporting) domain — binds to `header.exporterDomainId`. */
   exporterDomainId: z.string().uuid(),
-  /** The addressed peer domain — binds to `header.peerDomainId`. */
   peerDomainId: z.string().uuid(),
-  /** The change URN — binds to `change.urn`. */
   changeUrn: z.string(),
   /** The full artifact digest set (oci + blob), each with its origin `signatureRef` where present.
    *  Binds the manifest to EXACTLY this bundle's artifacts — a swapped artifact set breaks the bind. */
@@ -1033,7 +1029,7 @@ export type PromotionBundle = z.infer<typeof PromotionBundleSchema>;
 
 export const ExportPromotionRequestSchema = z.object({
   peer: z.string().min(1),
-  change: z.string().min(1), // idOrUrn
+  change: z.string().min(1),
   /** M13.2a (§13.2) — when true the server ALSO drops the exported `.scpbundle` into the peer's
    *  resolved DeliveryTarget (per-peer config, else the `SCP_RELAY_OUT_DIR` instance fallback;
    *  BOTH absent refuses fail-closed). Response body unchanged (the bundle document). */
@@ -1125,9 +1121,7 @@ export type RelayImportResponse = z.infer<typeof RelayImportResponseSchema>;
 export const RelayBuildStatusSchema = z.enum(["pending", "built", "forwarded", "exhausted"]);
 export type RelayBuildStatus = z.infer<typeof RelayBuildStatusSchema>;
 
-/** One ledger row, in full. */
 export const RelayBuildSchema = z.object({
-  /** The LOCAL imported change this obligation is for. */
   changeObjectId: z.string().uuid(),
   /** The EXPORTER's change id — `text` (drizzle/0047), not `uuid`: it's authored by a foreign
    *  domain and this instance never validates its shape. */
@@ -1140,7 +1134,6 @@ export const RelayBuildSchema = z.object({
   failedAttempts: z.number().int(),
   /** The retry gate: a 'pending' row is workable only at/after this instant. */
   nextAttemptAt: z.string().datetime(),
-  /** The claiming worker's lease, or `null` when unclaimed. */
   claimedUntil: z.string().datetime().nullable(),
   lastReason: z.string().nullable(),
   /** THE OPERATOR'S WHY HANDLE: joins to `GET /decisions/{id}` for the persisted verdict behind

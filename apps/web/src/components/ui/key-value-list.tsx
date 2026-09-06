@@ -10,7 +10,6 @@ import { SectionLabel } from "./section-label";
 export interface KeyValueItem {
   label: React.ReactNode;
   value: React.ReactNode;
-  /** Full-sentence tooltip on the pair (`title` attribute). */
   tooltip?: string;
   /** Mono value type (§1.3) — URNs, ids, versions. */
   mono?: boolean;

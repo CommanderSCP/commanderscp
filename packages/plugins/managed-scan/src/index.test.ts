@@ -144,7 +144,6 @@ describe("@scp/plugin-managed-scan: container isolation", () => {
     );
     expect(cpIn).toBeDefined();
     expect(cpOut).toBeDefined();
-    // Container destroyed unconditionally.
     expect(dockerCalls.some((c) => c.args[0] === "rm" && c.args.includes("-f"))).toBe(true);
     expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");
   });

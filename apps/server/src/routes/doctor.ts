@@ -118,7 +118,6 @@ export function registerDoctorRoutes(app: FastifyInstance, deps: AppDeps): void 
         const rows = await deps.db.execute<{ in_recovery: boolean }>(
           sql`SELECT pg_is_in_recovery() AS in_recovery`
         );
-        // drizzle's node-postgres execute returns a QueryResult-like with `.rows`.
         const inRecovery = Boolean(
           (rows as unknown as { rows?: Array<{ in_recovery?: unknown }> }).rows?.[0]?.in_recovery
         );

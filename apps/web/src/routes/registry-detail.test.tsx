@@ -110,8 +110,6 @@ function rung(
   };
 }
 
-// -------------------------------------------------------------------------------------------
-
 describe("GovernedHereLine — pure rendering off an already-resolved GovernanceMoveEnforcement", () => {
   it("one rung: names its tier and name, no '+N more', links to /admin/governance", () => {
     const view = render(
@@ -252,8 +250,6 @@ describe("GovernedHereLineForObject — the query wiring", () => {
     view.unmount();
   });
 });
-
-// -------------------------------------------------------------------------------------------
 
 function graphObjectStub(): GraphObject {
   // Only `DeleteObjectDialogBody`'s `run()` return type needs satisfying — the dialog reads none

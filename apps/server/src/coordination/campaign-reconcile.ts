@@ -168,7 +168,7 @@ async function reconcileOneCampaign(
   if (!plan) {
     const properties = campaignObject.properties as Record<string, unknown>;
     const rawTargets = campaignTargetObjectIdsOf(properties);
-    if (rawTargets.length === 0) return; // shouldn't happen — proposeCampaign rejects zero targets
+    if (rawTargets.length === 0) return;
     try {
       plan = await withTenantTx(db, orgId, async (tx) => {
         // `properties.targets`/`properties.topologyObjectId` are ALREADY resolved real object ids

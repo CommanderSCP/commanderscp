@@ -27,7 +27,6 @@ import type { StageCoordinate } from "../coordination/regional-executors.js";
 export interface InstanceFreezeRow {
   /** A real uuid (uuidv7), not `platform:<key>` — see the schema mirror. */
   id: string;
-  /** The operator slug; the `PUT`/`DELETE` path segment. */
   key: string;
   name: string | null;
   startsAt: Date;

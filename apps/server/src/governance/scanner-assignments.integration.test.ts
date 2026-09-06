@@ -190,7 +190,6 @@ describe("M13.3a scanner-assignment registry (Testcontainers)", () => {
     );
     expect(err.status).toBe(403);
 
-    // The seed is unchanged after all of that.
     expect(
       (await admin.scannerAssignments.list()).find((a) => a.executorType === "image")?.methods
     ).toEqual(["trivy"]);

@@ -256,7 +256,6 @@ export function clampRunTimeoutMs(requested: number): number {
 export interface RunnerCopyIn {
   /** HOST directory. Its contents are copied, not the directory itself. */
   hostDir: string;
-  /** Absolute destination path INSIDE the container. */
   containerPath: string;
 }
 
@@ -281,7 +280,6 @@ export type RunnerCopyOutOnFailure = "swallow" | "propagate";
 export interface RunnerCopyOut {
   /** Absolute source path INSIDE the container. Its contents are copied (the trailing `/.`). */
   containerPath: string;
-  /** HOST destination directory. */
   hostDir: string;
   when: RunnerCopyOutWhen;
   onFailure: RunnerCopyOutOnFailure;
@@ -627,7 +625,6 @@ export interface KubernetesLauncherSettings {
    *  chart creates inherits from `.Values` and this one, built at runtime rather than rendered by
    *  Helm, inherited nothing of. See {@link KubernetesRunnerPodConventions}. */
   pod?: KubernetesRunnerPodConventions;
-  /** API server base. Defaults to `https://kubernetes.default.svc`. */
   apiBase?: string;
   /** THE HARNESS's SEAM, and it is `undefined` in production by construction: nothing injects it
    *  from config, so a deployment cannot supply one. The kind-based integration test builds a real
@@ -755,7 +752,6 @@ function valueOf(entry: string): string {
  * `message` is non-enumerable on `Error`, as always, and is built from the redacted argv.
  */
 export class RunnerLaunchError extends Error {
-  /** Which step rejected. */
   readonly step: RunnerLaunchStep;
   /** The container CLI that was exec'd (`""` when the failure is not an exec). */
   readonly file: string;
@@ -1653,9 +1649,9 @@ function renderedCostAtMost(value: unknown, cap: number, depth: number): number 
   if (depth >= PERSISTED_JSON_MAX_DEPTH) return over;
 
   if (Array.isArray(value)) {
-    let total = 2; // []
+    let total = 2;
     for (let i = 0; i < value.length; i++) {
-      if (i > 0) total += 1; // ,
+      if (i > 0) total += 1;
       if (total > cap) return over;
       total += renderedCostAtMost(value[i], cap - total, depth + 1);
       if (total > cap) return over;
@@ -1663,10 +1659,10 @@ function renderedCostAtMost(value: unknown, cap: number, depth: number): number 
     return total;
   }
 
-  let total = 2; // {}
+  let total = 2;
   let first = true;
   for (const [rawKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
-    if (entryValue === undefined) continue; // `JSON.stringify` omits these, and so does `walk`
+    if (entryValue === undefined) continue;
     // AND SO DOES `walk` FOR THIS ONE, for a different reason — see {@link isUnsafePersistedKey}.
     // The estimate mirrors the walk branch for branch or a field is admitted for less than it
     // costs; here the drift would be the other way (an over-estimate), but "the other way" is how
@@ -1675,7 +1671,7 @@ function renderedCostAtMost(value: unknown, cap: number, depth: number): number 
     // A key past the cap is bounded rather than stored whole, so its cost is not predictable from
     // the key itself; fall back rather than guess.
     if (rawKey.length > PERSISTED_JSON_MAX_KEY_CHARS) return over;
-    total += jsonCost(persistableText(rawKey)) + 1 + (first ? 0 : 1); // "key": plus the comma
+    total += jsonCost(persistableText(rawKey)) + 1 + (first ? 0 : 1);
     first = false;
     if (total > cap) return over;
     total += renderedCostAtMost(entryValue, cap - total, depth + 1);
@@ -2016,7 +2012,7 @@ function walkObjectFields(
   // a number that does not depend on the order the fields arrived in.
   for (let i = 0; i < entries.length; i++) {
     const [rawKey, entryValue] = entries[i]!;
-    if (entryValue === undefined) continue; // `JSON.stringify` omits these; charge nothing
+    if (entryValue === undefined) continue;
     const boundedKey = boundStringToCost(
       rawKey,
       Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS)
@@ -2032,7 +2028,7 @@ function walkObjectFields(
       collector?.set(key, { dropped: true });
       continue;
     }
-    const keyCost = jsonCost(key) + 1 + (seated.length > 0 ? 1 : 0); // "key": plus the comma
+    const keyCost = jsonCost(key) + 1 + (seated.length > 0 ? 1 : 0);
     // EVERY seated field must still be able to get what IT needs, not just this one: the guarantee
     // has to hold for the fields already seated, whose values are not walked until phase 2. What a
     // field needs is {@link admissionCost} — capped at {@link PERSISTED_JSON_MIN_LEAF} for anything
@@ -2393,7 +2389,7 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
     // `persisted-json-bound.test.ts` -> "L + 96 IS THE WHOLE LAW".
     const room = budget.left;
     const wholeCost = renderedCostAtMost(value, room, depth);
-    budget.left -= 2; // []
+    budget.left -= 2;
     // THE TAIL MARKER IS PAID FOR BEFORE THE ELEMENTS ARE OFFERED ANYTHING — see
     // {@link PERSISTED_JSON_TAIL_RESERVE}. Held back for the whole element loop and handed back
     // either to the marker or, if the list ran to the end, to the parent.
@@ -2421,7 +2417,7 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
         budget.loss.entries += value.length - i;
         return out;
       }
-      if (i > 0) budget.left -= 1; // ,
+      if (i > 0) budget.left -= 1;
       out.push(walk(value[i], budget, depth + 1));
     }
     budget.left += tailReserve; // no cut: the reserve was never needed
@@ -2433,7 +2429,7 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
   // for the measurement and for why an object's overspend compounds where an array's adds.
   const objectRoom = budget.left;
   const objectWholeCost = renderedCostAtMost(value, objectRoom, depth);
-  budget.left -= 2; // {}
+  budget.left -= 2;
   // EVERY FIELD AGAINST AN EQUAL SHARE, AND WHAT THE SATISFIED ONES DO NOT WANT RE-OFFERED TO THE
   // REST. With a single budget spent in insertion order, the first large field took the row and
   // every later key became `__scpElided` — so which leaf a gate could read was decided by
@@ -2586,7 +2582,7 @@ function boundTruncationReport(
     jsonCost(PERSISTED_JSON_ELIDED_KEY) +
     1 +
     JSON.stringify({ dropped: true, droppedFields: all.length }).length;
-  let cost = 2; // {}
+  let cost = 2;
   for (let i = 0; i < named.length; i++) {
     const [key, entry] = named[i]!;
     const price = (i > 0 ? 1 : 0) + jsonCost(key) + 1 + JSON.stringify(entry).length;
@@ -3170,7 +3166,6 @@ export interface RunDeadline {
   readonly runTimeoutMs: number;
   /** Epoch ms. `Date.now() + runTimeoutMs`, read ONCE. */
   readonly at: number;
-  /** What is left, possibly <= 0. */
   remainingMs(): number;
   /**
    * IS THE BUDGET GONE? — the ONE way anything in this package asks that question, and the reason
@@ -3325,7 +3320,6 @@ export type RunnerLauncherKind = "docker" | "kubernetes";
 export const RUNNER_POST_DEADLINE_CALLS = {
   /** `unlink` of the staged env-file in `create`'s `finally`, then `docker rm -f <name>`. */
   docker: ["secret-env unlink", "teardown rm -f"],
-  /** `DELETE …/jobs/<name>`, `DELETE …/secrets/<name>-env`, `removeDir <runRoot>`. */
   kubernetes: ["teardown DELETE job", "teardown DELETE secret", "teardown removeDir"]
 } as const satisfies Readonly<Record<RunnerLauncherKind, readonly string[]>>;
 
@@ -3656,7 +3650,7 @@ export function createDockerRunnerLauncher(
       const [id, owner, deadline] = line.split("\t");
       if (!id || owner === LAUNCHER_OWNER_ID) continue; // never my own — live or not yet torn down
       const deadlineMs = deadline ? Date.parse(deadline) : NaN;
-      if (!Number.isFinite(deadlineMs) || deadlineMs > now) continue; // missing/garbled/future -> leave it
+      if (!Number.isFinite(deadlineMs) || deadlineMs > now) continue;
       targets.push(id);
     }
 

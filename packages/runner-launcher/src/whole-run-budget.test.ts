@@ -53,7 +53,6 @@ let durations: Record<string, number> = {};
 let failures: Record<string, Error> = {};
 /** Subcommands that NEVER answer at all: no callback, ever. The `ps` arm of the reap tests. */
 let neverAnswers: Set<string> = new Set();
-/** What `reap()`'s `docker ps -a` reports. */
 let psStdout = "";
 /** Set by the first line of each test so `issuedAt` is a run-relative offset a human can read. */
 let runStartedAt = 0;
@@ -171,9 +170,7 @@ beforeEach(() => {
   runStartedAt = Date.now();
 });
 
-// ==================================================================================================
 describe("M23.1e HIGH-1: `timeoutMs` bounds the RUN, not each execFile of it", () => {
-  // ================================================================================================
   it("FOUR STEPS, EACH WELL UNDER THE PER-CALL BOUND, STILL CANNOT EXCEED THE WHOLE-RUN BUDGET", async () => {
     // THE NUMBERS ARE CHOSEN SO THAT THE ONLY THING THAT CAN FAIL IS THE PROPERTY. Every step —
     // 800ms, 800ms, 1800ms — is comfortably inside the 2000ms bound the old code handed out AFRESH
@@ -236,7 +233,7 @@ describe("M23.1e HIGH-1: `timeoutMs` bounds the RUN, not each execFile of it", (
     // actually spent". A fixed per-step decrement would leave `timeouts[1]` up around 4990 against
     // a bound of 4851 — a ~140ms gap. Three milliseconds of clock slop does not reach across it,
     // so every one of these lines still fails against the defect it was written for.
-    const CLOCK_SLOP_MS = 1; // per completed step; see above
+    const CLOCK_SLOP_MS = 1;
     expect(timeouts[1]!).toBeLessThanOrEqual(5_000 - 150 + 1 * CLOCK_SLOP_MS);
     expect(timeouts[2]!).toBeLessThanOrEqual(5_000 - 300 + 2 * CLOCK_SLOP_MS);
     expect(timeouts[3]!).toBeLessThanOrEqual(5_000 - 450 + 3 * CLOCK_SLOP_MS);
@@ -289,9 +286,7 @@ describe("M23.1e HIGH-1: `timeoutMs` bounds the RUN, not each execFile of it", (
   });
 });
 
-// ==================================================================================================
 describe("M23.1e HIGH-2: the container's stamped deadline is never in the past while run() is in flight", () => {
-  // ================================================================================================
   it("SAMPLED THROUGHOUT A RUN THAT SPENDS ITS WHOLE BUDGET, the stamp is always in the future", async () => {
     // The measured defect: managed-scan's real shape (3 copy-ins, timeoutMs 30_000, steps of 28s)
     // stamped ~t0+150000ms and returned at 168354ms — 18s in which the container was, to every peer
@@ -353,9 +348,7 @@ describe("M23.1e HIGH-2: the container's stamped deadline is never in the past w
   });
 });
 
-// ==================================================================================================
 describe("M23.1e HIGH-3: reap() cannot spend the run's budget, delay `create`, or fail the run", () => {
-  // ================================================================================================
   const FOREIGN = "22222222-2222-4222-8222-222222222222";
   const expired = (): string => new Date(Date.now() - 60_000).toISOString();
 
@@ -468,10 +461,7 @@ describe("M23.1e HIGH-3: reap() cannot spend the run's budget, delay `create`, o
   });
 });
 
-// ==================================================================================================
 describe("M23.1e: a `create` that lost the NAME tears nothing down; every other create failure still does", () => {
-  // ================================================================================================
-  /** MEASURED, Docker 29.5.2, through `promisify(execFile)`. */
   const CONFLICT_STDERR =
     'Error response from daemon: Conflict. The container name "/scp-runner-budget-probe" is ' +
     'already in use by container "fd602b921ac608a0f33551acba7943abbf2816160d30e09e3a33d8f86f1873c5". ' +
@@ -550,9 +540,7 @@ describe("M23.1e: a `create` that lost the NAME tears nothing down; every other 
   });
 });
 
-// ==================================================================================================
 describe("MEDIUM (verification pass 5): the product CEILING binds the run, not only the host budget", () => {
-  // ================================================================================================
   /**
    * WHAT WAS WRONG. `MANAGED_RUN_TIMEOUT_MAX_MS` was enforced in exactly two places — the three
    * manifests' `configSchema` (the write door, which a row stored before the ceiling existed never
@@ -695,9 +683,7 @@ describe("MEDIUM (verification pass 5): the product CEILING binds the run, not o
   });
 });
 
-// ==================================================================================================
 describe("MEDIUM (verification pass 5): a budget kill and a silent non-zero exit are DIFFERENT records", () => {
-  // ================================================================================================
   /**
    * THE DEFECT. `start` is the only step whose failure is CAPTURED rather than thrown, and the step
    * that spends essentially all of a real run's budget. Its catch kept `e.stdout`/`e.stderr` and
@@ -751,7 +737,6 @@ describe("MEDIUM (verification pass 5): a budget kill and a silent non-zero exit
       stderr: ""
     });
 
-    // THE PROPERTY.
     expect(killed.failure?.kind).toBe("budget-exhausted");
     expect(exited.failure?.kind).toBe("exit-nonzero");
     expect(

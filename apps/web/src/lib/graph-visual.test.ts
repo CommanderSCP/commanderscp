@@ -15,7 +15,6 @@ const contains = (fromId: string, toId: string) => ({
 });
 
 describe("deriveGroupIds: colour is decided at the highest level in scope", () => {
-  // org -> service -> [assembly] -> component
   const objects = [
     { id: "svc-a" },
     { id: "svc-b" },

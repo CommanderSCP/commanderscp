@@ -253,7 +253,7 @@ describe("trigger retry backoff: a refused trigger steps aside; a crashed one do
 
     const before = await targetRow(waveTargetId);
     expect(before.status).toBe("triggering");
-    expect(before.attempt).toBe(0); // nothing ever reached the executor
+    expect(before.attempt).toBe(0);
 
     // A non-refusing host: the retry should go through immediately and succeed.
     const { host, calls } = withRefusingTrigger(inner, () => false);

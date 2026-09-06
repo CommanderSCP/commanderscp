@@ -17,13 +17,11 @@ export interface StatCardProps {
   label: React.ReactNode;
   /** Emphasis value (§1.3, `tabular-nums`). Omit when the figure is not known. */
   value?: React.ReactNode;
-  /** Lucide icon at `size-5 text-slate-400`, top-right. */
   icon?: LucideIcon;
   /** Route path — makes the whole card a Link with hover + focus treatments. */
   to?: RouterLinkProps["to"];
   /** Path params for `to` when the route has dynamic segments. */
   params?: Record<string, string>;
-  /** Optional Badge slot under the value. */
   badge?: React.ReactNode;
   /** Caption-type footnote (§1.3). */
   hint?: React.ReactNode;

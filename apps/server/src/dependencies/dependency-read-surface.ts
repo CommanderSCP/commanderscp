@@ -57,10 +57,6 @@ import {
  * batched producer-name lookup, one batched Decision lookup per kind. Nothing walks.
  */
 
-// -------------------------------------------------------------------------------------------
-// The inventory
-// -------------------------------------------------------------------------------------------
-
 /**
  * The inventory page cursor — the last row's `(lineId, manifestPath)`, which is the tail of the
  * `component_dependencies` primary key and therefore a total order over one component's rows.
@@ -279,10 +275,6 @@ export async function readComponentDependencyInventory(
     nextCursor: hasMore && last ? encodeInventoryCursor(last) : null
   };
 }
-
-// -------------------------------------------------------------------------------------------
-// The bumps
-// -------------------------------------------------------------------------------------------
 
 export interface ReadComponentDependencyBumpsInput {
   orgId: string;

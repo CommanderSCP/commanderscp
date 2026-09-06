@@ -112,7 +112,6 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     serviceId: string;
     serviceUrn: string;
     otherServiceId: string;
-    /** A component contained by `serviceId`. */
     componentId: string;
     /** A component with NO container — the `POST /relationships` (contains) subject. */
     orphanComponentId: string;
@@ -121,7 +120,6 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     /** Operator at the org root: holds `object:write` + `relationship:write` EVERYWHERE, and does
      *  NOT hold `governance:move` (drizzle/0083 grants it to Administrator + Owner only). */
     operatorToken: string;
-    /** Administrator at the org root: holds `governance:move`. */
     administratorToken: string;
   }
 
@@ -187,10 +185,6 @@ describe("governance:move enforcement (proposal §9.2)", () => {
 
   const enableRung = (f: Fixture, subject: string): Promise<Response> =>
     call("PUT", f.org.adminToken, `/api/v1/governance/move-enforcement/rungs/${subject}`, {});
-
-  // ---------------------------------------------------------------------------------------------
-  // WIRING + the lattice's own reads
-  // ---------------------------------------------------------------------------------------------
 
   it("WIRING: the explain read is REGISTERED, and answers `enforced: false` on a fresh org", async () => {
     // Delete `registerGovernanceMoveRoutes(app, deps)` from `app.ts` and this 200 becomes a 404 —
@@ -280,7 +274,6 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     // The refusal NAMES the rung an operator would go and look at.
     expect(detailOf(refused)).toContain("containment_domain");
 
-    // The row did not move.
     const after = await call("GET", f.org.adminToken, `/api/v1/services/${f.serviceId}`);
     expect((after.json() as { domainId: string }).domainId).toBe(f.domainId);
 
@@ -356,7 +349,6 @@ describe("governance:move enforcement (proposal §9.2)", () => {
       { typeId: "contains", fromUrn: f.serviceUrn, toUrn: f.orphanComponentUrn }
     ];
 
-    // CREATE — a move INTO the governed subtree.
     const plan = await call("POST", f.org.adminToken, "/api/v1/plans", manifest(containsEntry));
     expect(plan.status, plan.body).toBe(201);
     const refused = await call(
@@ -367,7 +359,6 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     expect(refused.status, refused.body).toBe(403);
     expect(detailOf(refused)).toContain("is governed here");
 
-    // Nothing applied: the edge is not there.
     const noEdge = await call(
       "GET",
       f.org.adminToken,
@@ -491,14 +482,10 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     expect(detailOf(refused)).toContain("is governed here");
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // THE LATTICE IS MONOTONE
-  // ---------------------------------------------------------------------------------------------
-
   it("disabling a rung under an enabled UPPER rung is refused 409, naming it", async () => {
     const f = await makeFixture("gm-monotone");
-    expect((await enableRung(f, f.org.orgId)).status).toBe(200); // the org rung
-    expect((await enableRung(f, f.domainId)).status).toBe(200); // and one below it
+    expect((await enableRung(f, f.org.orgId)).status).toBe(200);
+    expect((await enableRung(f, f.domainId)).status).toBe(200);
 
     const refused = await call(
       "DELETE",
@@ -523,7 +510,6 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     );
     expect(lowOff.status, lowOff.body).toBe(200);
 
-    // …and the move is free again.
     const moved = await call("PATCH", f.operatorToken, `/api/v1/services/${f.serviceId}`, {
       domainId: f.otherDomainId
     });

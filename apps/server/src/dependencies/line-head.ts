@@ -74,10 +74,6 @@ import type { DependencyLine } from "@scp/schemas";
  * may simply never have been written, a caller that never looked cannot supply it either.
  */
 
-// -------------------------------------------------------------------------------------------
-// The ingress split
-// -------------------------------------------------------------------------------------------
-
 /** The identity fields any head question is asked about. */
 export type LineHeadIdentity = Pick<DependencyLine, "ecosystem" | "major" | "tagPattern">;
 
@@ -454,10 +450,6 @@ export function lineAcceptsVersion(line: LineHeadIdentity, version: string): Lin
   }
   return { accepted: true, parsed };
 }
-
-// -------------------------------------------------------------------------------------------
-// Moving the head
-// -------------------------------------------------------------------------------------------
 
 /** Why an observation does not move the head. The four acceptance reasons, the one that only exists
  *  once a head is already standing, and the two that are about WHO may write rather than about the

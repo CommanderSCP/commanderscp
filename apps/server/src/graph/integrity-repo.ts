@@ -46,7 +46,6 @@ export interface DanglingRelationship {
 }
 
 export interface OrphanProjectionRow {
-  /** `source_mappings.id` / `executor_bindings.id`. */
   id: string;
   /** The DEAD object the row hangs off, named for the operator. */
   ownerUrn: string;

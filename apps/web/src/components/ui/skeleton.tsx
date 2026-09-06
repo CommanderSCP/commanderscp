@@ -9,7 +9,6 @@ export function Skeleton({ className, ...props }: React.HTMLAttributes<HTMLDivEl
   return <div className={cn("animate-pulse rounded-md bg-slate-200", className)} {...props} />;
 }
 
-/** Table-shaped placeholder: `n` row-height bars. */
 export function SkeletonRows({ n = 3 }: { n?: number }): React.JSX.Element {
   return (
     <div className="flex flex-col gap-2" aria-hidden="true">

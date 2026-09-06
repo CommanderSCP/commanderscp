@@ -214,7 +214,7 @@ export function withFailOnceAfterRealTrigger(
       return {
         ...real,
         trigger: async (intent) => {
-          const result = await real.trigger(intent); // the real side effect fires for real.
+          const result = await real.trigger(intent);
           const targetRef = intent.targetRef ?? "";
           const shouldFaultThisCall = shouldFail(targetRef) && !faultedOnce.has(targetRef);
           calls.push({

@@ -403,7 +403,6 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
       idempotencyKey: "k2"
     });
 
-    // `workspaceDirFor` replaces every character outside [A-Za-z0-9._-] with `_`.
     const w = workspaceDir("prod_eu-west-1");
     const opts = runOpts(123_456, 16 * 1024 * 1024);
     expect(

@@ -185,15 +185,10 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
     await trivy?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixtures
-  // -----------------------------------------------------------------------------------------
-
   interface SeedLine {
     ecosystem: "npm" | "oci";
     coordinate: string;
     major: string;
-    /** What the component's manifest declares. */
     resolvedVersion?: string | null;
     resolvedDigest?: string | null;
     /** What the line's head was observed to be. `null` = never observed. */
@@ -329,8 +324,6 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
       { describe: `control ${controlId} on ${changeId} reports '${status}'`, timeoutMs: 25_000 }
     );
   }
-
-  // ===========================================================================================
 
   it("V1: an OS-package finding is excluded when the BASE IMAGE line is at its head by digest — and the gate PASSES", async () => {
     await admitVendorLatest();

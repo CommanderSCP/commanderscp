@@ -146,9 +146,7 @@ export const ManifestSourceMappingSchema = z.object({
   /** URN of the component this source drives. Must be an object THIS stack owns (see above). */
   componentUrn: UrnSchema,
   sourceKind: z.string().min(1),
-  /** Glob matched against `source_ref.repo`. */
   repoPattern: z.string().min(1).optional(),
-  /** Glob matched against `source_ref.path`. */
   pathPattern: z.string().min(1).optional(),
   /** Glob matched against the event's git ref (`refs/heads/dev`). Omitted ⇒ matches any ref. */
   refPattern: z.string().min(1).optional(),
@@ -599,10 +597,6 @@ export const DesiredStateManifestSchema = z.object({
 });
 export type DesiredStateManifest = z.infer<typeof DesiredStateManifestSchema>;
 
-// ---------------------------------------------------------------------------------------------
-// Server-side plan/apply (`apps/server/src/routes/plans.ts`)
-// ---------------------------------------------------------------------------------------------
-
 export const PlanActionSchema = z.enum(["create", "update", "delete", "noop"]);
 export type PlanAction = z.infer<typeof PlanActionSchema>;
 
@@ -810,7 +804,6 @@ export const PlanPipelineHookDiffEntrySchema = z.object({
   /** The hook's own kind — see the note above on why this is not called `kind`. */
   hookKind: PipelineHookKindSchema,
   hookId: z.string(),
-  /** `null` on `bakeAlarms`, which triggers nothing. */
   workflow: WorkflowRefSchema.nullable(),
   /** `postDeploy`/`bakeAlarms`. `null` = EVERY wave — the STRICT end, so a plan that shows `null`
    *  here is showing a gate on every wave, not an unset field. */

@@ -91,7 +91,6 @@ import {
 export type BumpDelivery = "pull_request" | "auto_merge";
 
 export interface RepoWriteTarget {
-  /** `owner/repo`, as the provider spells it. */
   repo: string;
   /** The branch the bump is based on and the pull request targets (`main`). */
   baseBranch: string;
@@ -382,10 +381,6 @@ export function bumpPullRequestBody(spec: ManifestBumpSpec, headBranch: string):
   ].join("\n");
 }
 
-// -------------------------------------------------------------------------------------------
-// The GitHub arm
-// -------------------------------------------------------------------------------------------
-
 async function githubApi(
   http: ScopedHttpClient,
   apiBaseUrl: string,
@@ -482,7 +477,6 @@ async function findOpenPullRequest(
   return undefined;
 }
 
-/** Read ONE pull request by number. */
 async function getPullRequest(
   api: GithubApi,
   repo: string,

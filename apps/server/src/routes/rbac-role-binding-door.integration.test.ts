@@ -298,7 +298,6 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   let serviceOther: string;
   let componentC: string;
 
-  /** Role id by name, from the live catalogue. */
   const roleIds = new Map<string, string>();
   /** Role permission array by name, from the live catalogue. */
   const rolePermissions = new Map<string, string[]>();
@@ -548,10 +547,6 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     await server?.close();
   });
 
-  // =============================================================================================
-  // 0. WIRING — the case `app.ts` promises exists
-  // =============================================================================================
-
   it("WIRING: the four operations are REGISTERED on the app, not merely written", async () => {
     // THE ONLY CHECK THAT WORKS for this repo's dominant failure class is deleting the wiring and
     // watching a test die. `app.ts`'s comment beside `registerRoleBindingRoutes(app, deps)` names
@@ -684,7 +679,7 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     // The admission half of the pair above, and the thing that makes the rule usable rather than
     // merely safe. Both roles are proper subsets of OrgAdmin's array, so every `hasPermission`
     // probe resolves true and the grant lands.
-    expect(missingFor("ServiceAdmin", "OrgAdmin")).not.toHaveLength(0); // OrgAdmin is strictly wider
+    expect(missingFor("ServiceAdmin", "OrgAdmin")).not.toHaveLength(0);
     expect(
       permissionsOf("ServiceAdmin").filter((p) => !permissionsOf("OrgAdmin").includes(p))
     ).toEqual([]);
@@ -933,10 +928,6 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
     expect(massRows[0]!.id).not.toBe(plantedId);
     expect((massAssign.json() as { id: string }).id).toBe(massRows[0]!.id);
   });
-
-  // =============================================================================================
-  // 4. `bindable_at` — the scope-type and subject-type refusals
-  // =============================================================================================
 
   it("a binding at a NONSENSICAL SCOPE TYPE is refused (role-model.md §1.3h)", async () => {
     // `role_bindings.scope_object_id` is a bare `uuid NOT NULL REFERENCES objects(id)` with no type
@@ -1284,7 +1275,6 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
       // prove nothing about rollback.
       expect(res.statusCode, res.body).toBe(500);
 
-      // NEITHER LANDED.
       expect(
         await bindingRows(subject.objectId, roleId("ServiceAdmin"), serviceOther),
         "the role binding survived a failure after the write — it is not in the audit event's transaction"
@@ -2153,7 +2143,6 @@ describe("the role-binding write door (role-model.md §5 step 5)", () => {
   // believe the comments. These cases fire with `Promise.all` and assert the outcome is one a SERIAL
   // execution could have produced.
 
-  /** `GET /role-bindings` as a given token, unwrapped. */
   async function listBindingsAs(token: string) {
     const res = await server.app.inject({
       method: "GET",

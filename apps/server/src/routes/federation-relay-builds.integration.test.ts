@@ -79,7 +79,6 @@ describe("GET /federation/relay-builds — the auto-relay ledger's operator tria
         sourceChangeObjectId: sourceForPending
       });
 
-      // built — seed, claim, then the SUCCESS release.
       await seedRelayBuild(tx, {
         orgId: org.orgId,
         changeObjectId: builtId,

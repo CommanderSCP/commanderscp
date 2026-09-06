@@ -309,12 +309,10 @@ function hasGlobMeta(pattern: string): boolean {
  * predicate then discards whichever reading generated paths the mapping does not cover.
  */
 export interface RepoManifestScope {
-  /** The repository this scope was derived FOR. */
   readonly repo: string;
   /** Does ANY of the component's `source_mappings` name this repository? False means this pass has
    *  no declared business in this repo — nothing is probed and nothing is pruned. */
   readonly mapped: boolean;
-  /** Directory prefixes to generate candidates under, sorted. */
   readonly prefixes: readonly string[];
   /** The path patterns of the mappings that name this repository. `null` is a mapping that
    *  constrains no path, i.e. the whole repository. */
@@ -526,7 +524,6 @@ export interface SkippedDeclaration {
 /** One dependency manifest this run read, parsed and wrote. */
 export interface IngestedManifest {
   readonly path: string;
-  /** How many declarations became `component_dependencies` rows. */
   readonly declared: number;
   /**
    * How many declarations this manifest MADE that SCP could not resolve from it — the
@@ -1044,9 +1041,6 @@ export async function ingestComponentManifests(
     });
   }
 
-  // -----------------------------------------------------------------------------------------
-  // PHASE 3 — the writes.
-  // -----------------------------------------------------------------------------------------
   return withTenantTx(db, orgId, async (tx) => {
     // ONE PASS AT A TIME PER COMPONENT. The guard below is a read-then-decide, so without this two
     // overlapping passes would both read "nothing newer" and both apply. The lock is transaction-

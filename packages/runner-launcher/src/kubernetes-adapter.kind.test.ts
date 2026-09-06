@@ -408,7 +408,6 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     // THE COPY-OUT CAME BACK: what the container wrote inside the pod is on this process's disk.
     expect(await readFile(join(outDir, "evidence.json"), "utf8")).toBe("processed\n");
 
-    // TEARDOWN REACHED THE REAL OBJECTS.
     const jobs = await kubectl("get", "jobs", "-o", "name");
     expect(jobs).not.toContain(runnerJobName("whole-run"));
     expect(await readdir(harness.workspaceHost)).not.toContain(runnerJobName("whole-run"));
@@ -1506,14 +1505,12 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
         `arm at all: ${firstPodRead}`
     ).not.toContain('"running"');
 
-    // ---- GROUND TRUTH. -------------------------------------------------------------------------
     expect(
       markerContents,
       "the runner never wrote its marker to the shared volume, so this case did not exercise the " +
         "defect at all — it must FAIL rather than pass vacuously"
     ).toBe("THE-RUNNER-RAN-AND-MUTATED");
 
-    // ---- AND THE SENTENCE THE OPERATOR READS. --------------------------------------------------
     expect(result.succeeded).toBe(false);
     const detail = result.failure!.detail;
     expect(

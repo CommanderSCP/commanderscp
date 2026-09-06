@@ -175,7 +175,6 @@ describe("campaign detail page: wave-target freeze hold (M25.UI, campaign-layer 
 
   it("the unheld sibling target in the SAME wave carries no held badge or freeze line", () => {
     const html = renderPage(explainFixture());
-    // Both target rows render...
     const rows = html.match(/data-testid="campaign-wave-target-row"/g) ?? [];
     expect(rows).toHaveLength(2);
     // ...but only ONE held badge (the frozen target's), not a fixture-wide leak onto its sibling.

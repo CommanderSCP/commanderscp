@@ -181,7 +181,7 @@ export async function recordImportExporterBindingAdvisory(
   log: { warn: (...args: [obj: Record<string, unknown>, msg: string]) => void }
 ): Promise<void> {
   if (!params.mtlsPeerDomainId) return; // mTLS not enforced on this request — nothing to bind.
-  if (params.mtlsPeerDomainId === params.exporterDomainId) return; // the common, matching case.
+  if (params.mtlsPeerDomainId === params.exporterDomainId) return;
 
   log.warn(
     { mtlsPeerDomainId: params.mtlsPeerDomainId, exporterDomainId: params.exporterDomainId },

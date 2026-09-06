@@ -490,7 +490,6 @@ describe("PipelineWaveCard: the freeze-hold field (ChangeWaveTargetSchema.hold, 
 
     // ONE badge, not two — `anyHeld` is a union, never a second "held" pill.
     expect((html.match(/pipeline-wave-target-held-badge/g) ?? []).length).toBe(1);
-    // BOTH lines present, neither one winning.
     expect(html).toContain('data-testid="pipeline-wave-target-hold"');
     expect(html).toContain("agentkit-api");
     expect(html).toContain('data-testid="pipeline-wave-target-freeze-hold"');

@@ -826,7 +826,6 @@ export interface ManifestOnlyEditInput {
    *  refuses that pairing at the descriptor and again at the splice site, and binding it here means a
    *  proof cannot be re-aimed at one either. */
   headBranch: string;
-  /** Repo-relative path of the manifest being edited. */
   path: string;
   /** Every manifest path this component's inventory declares (ADR-0032 §3 projection rows). */
   declaredManifestPaths: readonly string[];
@@ -901,11 +900,9 @@ export interface ManifestOnlyEditInput {
 export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEditProof {
   const { path, ecosystem, baseContent, newContent, coordinate } = input;
 
-  // --- Gate 1: the path -------------------------------------------------------------------
   const parser = manifestParserFor(ecosystem, path);
   assertDeclaredManifest(path, input.declaredManifestPaths);
 
-  // --- Gate 2: the content bounds ---------------------------------------------------------
   for (const [label, content] of [
     ["base", baseContent],
     ["edited", newContent]
@@ -931,7 +928,6 @@ export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEd
     );
   }
 
-  // --- Gate 3: exactly one line differs ---------------------------------------------------
   const baseLines = baseContent.split("\n");
   const newLines = newContent.split("\n");
   if (baseLines.length !== newLines.length) {
@@ -956,7 +952,6 @@ export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEd
     );
   }
 
-  // --- Gate 4: both sides parse -----------------------------------------------------------
   const baseDeps = parseOrRefuse(parser, baseContent, path, ecosystem, "unparseable_base", "base");
   const newDeps = parseOrRefuse(parser, newContent, path, ecosystem, "unparseable_edit", "edited");
 

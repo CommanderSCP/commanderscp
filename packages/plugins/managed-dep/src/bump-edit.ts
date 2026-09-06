@@ -121,9 +121,7 @@ export function isDependencyEcosystem(value: string): value is DependencyEcosyst
  */
 export interface ManifestBumpSpec {
   ecosystem: DependencyEcosystem;
-  /** The ecosystem-native coordinate, VERBATIM as `dependency_lines.coordinate` stores it. */
   coordinate: string;
-  /** Repo-relative manifest path, exactly as `component_dependencies.manifest_path` holds it. */
   manifestPath: string;
   /** What the manifest LITERALLY says today (`^1.2.3`, `v1.2.3`, `3.18-alpine`) — the string the
    *  edit replaces. Verbatim from `component_dependencies.declared_version`, which 0061 keeps
@@ -336,7 +334,6 @@ export function verifyManifestBump(
   const beforeLine = beforeLines[index] as string;
   const afterLine = afterLines[index] as string;
   if (anchor === undefined) {
-    // CLAUSE 3, unanchored and unchanged.
     if (!beforeLine.includes(spec.coordinate)) {
       return {
         ok: false,

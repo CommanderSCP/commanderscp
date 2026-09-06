@@ -80,10 +80,6 @@ export function repos(orgRelativePath: string): string {
   return orgRelativePath;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Props
-// ---------------------------------------------------------------------------------------------
-
 export interface PipelineSourceProps {
   /** The repo this pipeline releases from. REQUIRED — synth refuses a pipeline without one (D18:
    *  "the source repo is always explicit; it is never assumed"). Use `repos()` to keep it to the

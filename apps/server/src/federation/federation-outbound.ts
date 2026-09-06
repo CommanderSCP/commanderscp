@@ -75,7 +75,7 @@ export function resolveFederationClientMtls(
   const certFile = env.SCP_FEDERATION_MTLS_CERT_FILE;
   const keyFile = env.SCP_FEDERATION_MTLS_KEY_FILE;
   const caFile = env.SCP_FEDERATION_MTLS_CA_FILE;
-  if (!certFile && !keyFile) return undefined; // mTLS not configured for this deployment.
+  if (!certFile && !keyFile) return undefined;
   if (!certFile || !keyFile) {
     throw new Error(
       "federation outbound mTLS: both SCP_FEDERATION_MTLS_CERT_FILE and SCP_FEDERATION_MTLS_KEY_FILE " +

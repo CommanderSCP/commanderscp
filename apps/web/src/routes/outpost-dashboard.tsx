@@ -166,7 +166,6 @@ export function OutpostDashboardPage(): React.JSX.Element {
     .filter((b) => IAC_CAC_TYPES.has(b.type));
   const mappingsLoaded = mappingQueries.every((q) => !q.isLoading);
   const allMappings = mappingQueries.flatMap((q) => q.data?.items ?? []);
-  // Component ids placed on THIS outpost's targets.
   const placedHere = new Set(
     myTargets
       .flatMap((t) => (placementsByTarget.get(t.id) ?? []).map((p) => placementIds(p).componentId))

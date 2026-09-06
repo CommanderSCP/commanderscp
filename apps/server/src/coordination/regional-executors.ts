@@ -115,7 +115,7 @@ export async function buildRegionalExecutorView(
   const targets = await listRegionTargets(tx, orgId, environment);
   const regions: RegionalExecutorEntry[] = [];
   const problems: string[] = [];
-  const seenRegions = new Map<string, string>(); // region label -> first target name
+  const seenRegions = new Map<string, string>();
 
   for (const target of targets) {
     const binding = await getExecutorBinding(tx, orgId, target.id, type);

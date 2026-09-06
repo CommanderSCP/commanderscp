@@ -230,7 +230,6 @@ describe("M14.4 federation-sync loop — the poke wake at the pg-boss level", ()
     // against an unkeyed one.
     await seedCompletedStartupJob();
 
-    // THE RESTART.
     loop = await startFederationSyncLoop(boss, domain.db);
 
     const restartAttempt = await waitFor(async () => {

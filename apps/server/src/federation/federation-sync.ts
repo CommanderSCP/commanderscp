@@ -180,9 +180,7 @@ export function federationSyncLoopEnabled(env: NodeJS.ProcessEnv = process.env):
 
 /** Inputs to the per-peer cadence decision — all resolved once per tick by the caller. */
 export interface PeerCadenceInputs {
-  /** The frequent (poll-mode) interval in seconds. */
   frequent: number;
-  /** The sparse (poke-mode) safety-net interval in seconds. */
   sparse: number;
   /** Does THIS instance actually have outbound client-cert material right now? (owner decision D4) */
   hasClientCerts: boolean;
@@ -231,7 +229,6 @@ export function peerSyncCadence(
   return "poke";
 }
 
-/** The interval (seconds) the peer's CURRENT cadence implies. */
 export function effectivePullIntervalSeconds(
   peer: Parameters<typeof peerSyncCadence>[0],
   inputs: PeerCadenceInputs
@@ -315,7 +312,7 @@ export interface FederationSyncOptions {
  * {@link FEDERATION_CERT_WARNING_REWARN_INTERVAL_MS} for as long as the fault persists, and a
  * successful resolve clears the suppression so a recurrence warns immediately.
  */
-export const FEDERATION_CERT_WARNING_REWARN_INTERVAL_MS = 60 * 60 * 1000; // once an hour
+export const FEDERATION_CERT_WARNING_REWARN_INTERVAL_MS = 60 * 60 * 1000;
 
 let lastCertResolveWarning: string | undefined;
 let lastCertResolveWarningAt = 0;

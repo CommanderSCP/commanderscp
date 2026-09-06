@@ -250,12 +250,10 @@ export interface RecordReachChangeInput {
   orgId: string;
   actorObjectId: string;
   requestId: string;
-  /** The object whose containment parent changed. */
   subjectObjectId: string;
   route: ContainmentRoute;
   /** Route-specific detail for the Decision's `inputContext` — the old/new parent, or the edge. */
   detail: Record<string, unknown>;
-  /** The reach captured BEFORE the write, from `policyReachFor`. */
   before: Map<string, ReachedPolicy>;
   /** From the ROW, never the request — an audit segment naming a domain-local subject must not
    *  federate (ADR-0031 §2). */

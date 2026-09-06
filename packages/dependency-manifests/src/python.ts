@@ -143,7 +143,6 @@ export function parsePep508(requirement: string): ParsedRequirement | undefined 
     };
   }
 
-  // Parenthesised specifier form: `name (>=1.0)`.
   const spec = rest.startsWith("(") && rest.endsWith(")") ? rest.slice(1, -1).trim() : rest;
 
   if (spec === "") {
@@ -229,10 +228,6 @@ function toDeclared(
   };
 }
 
-// -------------------------------------------------------------------------------------------------
-// requirements.txt
-// -------------------------------------------------------------------------------------------------
-
 /**
  * Parse a `requirements.txt`.
  *
@@ -302,10 +297,6 @@ export function parseRequirementsTxt(content: string): DeclaredDependency[] {
 
   return out;
 }
-
-// -------------------------------------------------------------------------------------------------
-// pyproject.toml
-// -------------------------------------------------------------------------------------------------
 
 /** Pull the string items out of an array value, ignoring anything that is not a string. */
 function stringItems(value: TomlValue): string[] {
@@ -394,7 +385,6 @@ export function parsePyprojectToml(content: string): DeclaredDependency[] {
   const entries = scanToml(content);
   const out: DeclaredDependency[] = [];
 
-  // --- PEP 621 -----------------------------------------------------------------------------
   for (const entry of tableEntries(entries, ["project"])) {
     if (entry.key !== "dependencies") continue;
     for (const req of stringItems(entry.value)) {
@@ -424,7 +414,6 @@ export function parsePyprojectToml(content: string): DeclaredDependency[] {
     }
   }
 
-  // --- PEP 518 build requirements ----------------------------------------------------------
   for (const entry of tableEntries(entries, ["build-system"])) {
     if (entry.key !== "requires") continue;
     for (const req of stringItems(entry.value)) {
@@ -433,7 +422,6 @@ export function parsePyprojectToml(content: string): DeclaredDependency[] {
     }
   }
 
-  // --- Poetry ------------------------------------------------------------------------------
   poetryEntries(entries, ["tool", "poetry", "dependencies"], "runtime", out);
   poetryEntries(entries, ["tool", "poetry", "dev-dependencies"], "dev", out);
   // `[tool.poetry.group.<name>.dependencies]` — the group name is the 4th path segment, so the

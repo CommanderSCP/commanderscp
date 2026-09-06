@@ -22,12 +22,12 @@ function classifyIpv4(ip: string): IpClass {
   if (parts.length !== 4 || parts.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return "public";
   const [a, b] = parts as [number, number, number, number];
   if (a === 127) return "loopback";
-  if (a === 169 && b === 254) return "linkLocal"; // incl. 169.254.169.254 cloud metadata
+  if (a === 169 && b === 254) return "linkLocal";
   if (a === 0) return "unspecified";
   if (a === 10) return "private";
   if (a === 172 && b >= 16 && b <= 31) return "private";
   if (a === 192 && b === 168) return "private";
-  if (a === 100 && b >= 64 && b <= 127) return "private"; // 100.64/10 CGNAT
+  if (a === 100 && b >= 64 && b <= 127) return "private";
   return "public";
 }
 
@@ -41,8 +41,8 @@ export function classifyIp(rawIp: string): IpClass {
     return classifyIpv4(v4Suffix[1]!);
   if (ip === "::1") return "loopback";
   if (ip === "::") return "unspecified";
-  if (/^fe[89ab]/.test(ip)) return "linkLocal"; // fe80::/10
-  if (/^f[cd]/.test(ip)) return "private"; // fc00::/7
+  if (/^fe[89ab]/.test(ip)) return "linkLocal";
+  if (/^f[cd]/.test(ip)) return "private";
   return "public";
 }
 

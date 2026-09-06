@@ -137,7 +137,7 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
   it("U2: a campaign wave parked on a requireApprovals policy writes ONE gate/block Decision over 15 ticks — while still being RE-EVALUATED every tick, and resuming the moment the approval lands", async () => {
     const org = await createTestOrg(server, "campaign-flood-gate");
     const approver = await createTestUser(server, org, [{ role: "Owner", scope: org.orgId }]);
-    const condition = "change.emergency == false"; // fires; also the per-evaluation counter
+    const condition = "change.emergency == false";
 
     const service = await inject(org, "/api/v1/services", { name: "svc-camp-gate" });
     const component = await inject(org, "/api/v1/components", {

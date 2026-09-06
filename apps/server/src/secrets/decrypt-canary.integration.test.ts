@@ -63,7 +63,6 @@ describe("secrets decrypt canary (§7.3 / D6)", () => {
       server.deps.config.secretsMasterKey
     );
     expect(result.orgsEnumerated).toBeGreaterThanOrEqual(2);
-    // emptyOrg contributed nothing to orgsWithSecrets.
     expect(emptyOrg.orgId).toBeTruthy();
   });
 });

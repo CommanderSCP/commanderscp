@@ -350,7 +350,6 @@ describe("generic OIDC: Authorization Code + PKCE round-trip against Keycloak", 
     expect(afterSecondLogin).toHaveLength(1);
     expect(afterSecondLogin[0]?.id).toBe(provisionedUserId);
 
-    // The second login's session is independently valid too.
     const secondReadRes = await fetch(`${SCP_BASE_URL}/domains`, {
       headers: { cookie: secondSessionCookieHeader }
     });

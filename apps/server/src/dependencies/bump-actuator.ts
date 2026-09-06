@@ -547,7 +547,6 @@ export async function recordBumpChange(
         // branch, no pull request, and a returning push that minted an unrelated second change for
         // every component after the first, which is exactly what ADR-0032 §9 exists to prevent.
         componentObjectId: input.componentObjectId,
-        // See `RecordBumpChangeInput.lineId` — the gate job's re-resolution key.
         lineId: input.lineId,
         repo: input.repo,
         ref: authoredRef,

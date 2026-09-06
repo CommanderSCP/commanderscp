@@ -498,9 +498,9 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     const svc = await admin.services.create({ name: `equal-svc-${randomUUID().slice(0, 8)}` });
     const app = await componentAt("equal", [amer, apac, emea, govcloud], svc.id);
     const other = await componentAt("equal-other", [amer]);
-    await freezeAt(amer.id, "equal-region-freeze"); // route 4
-    await freezeAt(other.id, "equal-component-freeze"); // route 3
-    await freezeAt(svc.id, "equal-service-freeze"); // routes 3 then 2
+    await freezeAt(amer.id, "equal-region-freeze");
+    await freezeAt(other.id, "equal-component-freeze");
+    await freezeAt(svc.id, "equal-service-freeze");
 
     const targets = [
       ...[amer, apac, emea, govcloud].map((p) => app.at(p)),
@@ -1004,9 +1004,6 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     ).toEqual([frozen.id, alsoFrozen.id].sort());
   });
 
-  // ============================================================================================
-  // F — THE SECOND ACTUATOR: campaign fan-out.
-  // ============================================================================================
   it("F: a component-scoped freeze holds that campaign target's fan-out and mints the sibling's change", async () => {
     const held = await createTestComponent(admin, {
       name: `camp-held-${randomUUID().slice(0, 8)}`
@@ -1977,7 +1974,6 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
 
     await admin.freezes.lift(frozen.id, { reason: "integration: retracted" });
 
-    // (a) THE CITATION STILL RESOLVES.
     const stillThere = await admin.freezes.get(citedId);
     expect(stillThere.id).toBe(frozen.id);
     expect(stillThere.reason, "including WHY it was declared in the first place").toContain(
@@ -2091,9 +2087,9 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     // `freeze.window.shortened` on an edit that pushed the live deadline from one minute out to ten
     // — an audit record asserting the OPPOSITE direction of the governance change it describes.
     // `FOR UPDATE` parks tx2 at the READ until tx1 commits, after which it re-reads FIRST.
-    const frozen = await freezeAt(amer.id, "amer-race-freeze"); // endsAt: an hour out
-    const FIRST = new Date(Date.now() + 60_000); // a big shortening: an hour -> a minute
-    const SECOND = new Date(Date.now() + 10 * 60_000); // LONGER than FIRST, SHORTER than the original
+    const frozen = await freezeAt(amer.id, "amer-race-freeze");
+    const FIRST = new Date(Date.now() + 60_000);
+    const SECOND = new Date(Date.now() + 10 * 60_000);
 
     let second!: ReturnType<typeof updateFreezeWindow>;
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {

@@ -59,7 +59,6 @@ nock(SERVER_URL)
     return genericApplication(name);
   });
 
-// abort(): DELETE .../applications/{name}/operation — any application name.
 nock(SERVER_URL)
   .persist()
   .delete(/^\/api\/v1\/applications\/[^/]+\/operation$/)

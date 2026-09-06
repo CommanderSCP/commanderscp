@@ -60,7 +60,6 @@ export async function assertMayWriteIdentityMapping(
   check: {
     orgId: string;
     actorObjectId: string;
-    /** The group/team being mapped. */
     subjectObjectId: string;
   }
 ): Promise<void> {

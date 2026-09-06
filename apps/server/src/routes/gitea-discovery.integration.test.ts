@@ -60,7 +60,7 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → land �
         res.end(
           JSON.stringify([
             { name: "service-a", path: "service-a", type: "dir" },
-            { name: "docs", path: "docs", type: "dir" }, // no marker inside → skipped
+            { name: "docs", path: "docs", type: "dir" },
             { name: "README.md", path: "README.md", type: "file" } // not a dir → no contents call
           ])
         );

@@ -189,7 +189,7 @@ describe("IaC placements (C1)", () => {
     const [placement] = await livePlacements(comp);
 
     const { manifest: without } = baseManifest(stackName, { placements: [] });
-    const plan = await admin.plans.create(without); // computed BEFORE the binding exists
+    const plan = await admin.plans.create(without);
 
     await admin.executors.putBinding(placement!.id, {
       pluginModule: "fake-executor",
@@ -240,7 +240,7 @@ describe("IaC placements (C1)", () => {
     await apply(manifest);
     expect(await livePlacements(comp)).toHaveLength(1);
 
-    const { manifest: silent } = baseManifest(stackName); // no `placements` key at all
+    const { manifest: silent } = baseManifest(stackName);
     await apply(silent);
 
     expect(

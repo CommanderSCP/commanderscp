@@ -39,9 +39,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
   let org: TestOrg;
   let admin: ScpClient;
 
-  /** A domain-local containment DOMAIN — route 1's container. */
   let localDomainId: string;
-  /** An ordinary containment domain, the control. */
   let sharedDomainId: string;
 
   const uniq = (p: string) => `${p}-${randomUUID().slice(0, 8)}`;
@@ -205,7 +203,7 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     });
     expect(service.statusCode).toBe(201);
     const serviceObj = JSON.parse(service.body);
-    expect(serviceObj.domainLocal).toBe(true); // base: the intermediate really is stamped
+    expect(serviceObj.domainLocal).toBe(true);
 
     const component = await post("/api/v1/components", {
       name: uniq("grandchild"),

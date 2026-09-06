@@ -100,7 +100,6 @@ describe("every door that writes a caller-supplied containment parent", () => {
     const componentUrn = component.json().urn as string;
     const victimDomainId = victim.json().id as string;
 
-    // Authority over the component itself, and nowhere else.
     const mover = await createTestUser(server, org, [
       { role: "Administrator", scope: componentId }
     ]);
@@ -363,7 +362,6 @@ describe("every door that writes a caller-supplied containment parent", () => {
     });
     expect(read.statusCode, read.body).toBe(200);
 
-    // The create half of the same door agrees.
     const created = await post(org.adminToken, "/api/v1/services", {
       name: "born-under-a-tombstone",
       domainId

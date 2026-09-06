@@ -282,7 +282,7 @@ export function registerEventStreamRoute(app: FastifyInstance, deps: AppDeps): v
           return false;
         }
 
-        readMemo.delete(subjectObjectId); // re-insert so eviction order is insertion order
+        readMemo.delete(subjectObjectId);
         readMemo.set(subjectObjectId, { allowed, expiresAt: now + READ_MEMO_TTL_MS });
         while (readMemo.size > READ_MEMO_MAX_SUBJECTS) {
           const oldest = readMemo.keys().next().value;

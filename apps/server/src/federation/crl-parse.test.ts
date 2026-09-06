@@ -37,7 +37,7 @@ describe.skipIf(!opensslAvailable())("crl-parse", () => {
   });
 
   it("throws on a malformed/truncated CRL rather than silently reporting 'no expiry'", () => {
-    const garbage = Buffer.from([0x30, 0x7f, 0x01, 0x02]); // claims 0x7f bytes of content, has 2
+    const garbage = Buffer.from([0x30, 0x7f, 0x01, 0x02]);
     expect(() => parseCrlNextUpdate(garbage)).toThrow();
   });
 });

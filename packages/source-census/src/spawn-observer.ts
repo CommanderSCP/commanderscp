@@ -70,7 +70,6 @@ export interface ObservedSpawn {
   readonly via: string;
   /** The binary (or module, for `fork`) as it was passed — a rename is visible here and nowhere else. */
   readonly file: string;
-  /** The argv array, when the route carries one. */
   readonly argv: readonly string[];
 }
 

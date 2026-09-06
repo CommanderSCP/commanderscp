@@ -61,14 +61,12 @@ export type RunnerStepKind = "create" | "copy-in" | "start" | "copy-out" | "tear
  * next occurrence of a step open (issued, not settled) until released.
  */
 export interface LaunchOrderingSubstrate {
-  /** The adapter under test, wired to this substrate. */
   readonly launcher: RunnerLauncher;
   /**
    * A spec this adapter accepts. The suite overrides `copyIn`/`copyOut` and nothing else, so the
    * image, operands, network, timeouts and buffers stay the adapter's own business.
    */
   baseSpec(): RunnerSpec;
-  /** The steps ISSUED so far, in issue order. */
   issued(): RunnerStepKind[];
   /**
    * THE PER-RUN IDENTITY each issued step ADDRESSED, aligned one-for-one with {@link issued} — the

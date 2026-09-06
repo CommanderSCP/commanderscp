@@ -21,7 +21,6 @@ export interface RunResult {
 export interface RunOptions {
   /** Extra environment variables to overlay onto `process.env` for this invocation only. */
   env?: NodeJS.ProcessEnv;
-  /** Working directory for the child process. */
   cwd?: string;
   /** Print the command being run (argv only, never env values) to stderr before executing. Default true. */
   log?: boolean;

@@ -60,7 +60,6 @@ vi.mock("../lib/client", () => ({ client: {} }));
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-query")>()),
   useQuery: ({ queryKey }: { queryKey: unknown[] }) => {
-    // ["change", <what>, id] — see lib/query-client.ts.
     const data = queryKey[1] === "detail" ? explainData.current : undefined;
     return { data, isLoading: false, isError: false, error: null };
   }

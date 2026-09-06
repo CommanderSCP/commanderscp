@@ -102,7 +102,6 @@ export interface DeclaredContainmentParent {
    *  governance registries. The destination is held to the SAME bar as the object, never a weaker
    *  one. */
   permission: Permission;
-  /** The request body's `domainId`, verbatim (after `containmentDomainIdFromWire`). */
   declared: ContainmentDomainId | null | undefined;
   /**
    * The row as it stands, or `undefined` when this write CREATES it.

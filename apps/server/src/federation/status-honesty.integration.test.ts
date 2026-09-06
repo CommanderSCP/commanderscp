@@ -205,10 +205,6 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
     expect(entry?.unknownFields ?? []).not.toContain("transportMode");
   });
 
-  // ---------------------------------------------------------------------------------------
-  // H9a — DESC is NULLS FIRST in Postgres.
-  // ---------------------------------------------------------------------------------------
-
   it("H9a: one export row with a NULL through_sequence does not make the peer read 'never exported'", async () => {
     const peer = await pairFresh({ baseUrl: "https://p.example.test" });
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -257,7 +253,6 @@ describe("M16.2 review round 4: federation status honesty (Testcontainers)", () 
 
   it("N8: one confirmed import/sync row with a NULL confirmed_at does not make the peer read 'never synced'", async () => {
     const peer = await pairFresh({ baseUrl: "https://p.example.test" });
-    // A genuine, correctly-stamped confirmed sync import.
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       recordBundleTransfer(tx, {
         orgId: org.orgId,

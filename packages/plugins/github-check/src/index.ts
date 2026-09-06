@@ -51,7 +51,7 @@ import type { ControlOutcome, ControlPlugin, ControlRequest, PluginContext } fro
 export interface GithubCheckControlConfig {
   owner: string;
   repo: string;
-  apiBaseUrl?: string; // explicit override; default https://api.github.com
+  apiBaseUrl?: string;
   /** `SecretsAccessor` key holding a token scoped to read Check Runs (a fine-grained PAT with
    *  "Checks: Read-only", or a classic PAT with `repo` scope for a private repo). */
   tokenSecretKey?: string;
@@ -73,8 +73,8 @@ export interface GithubCheckControlConfig {
 
 interface GithubCheckRun {
   name?: unknown;
-  status?: unknown; // queued|in_progress|completed
-  conclusion?: unknown; // success|failure|neutral|cancelled|skipped|timed_out|action_required|stale|null
+  status?: unknown;
+  conclusion?: unknown;
   html_url?: unknown;
 }
 

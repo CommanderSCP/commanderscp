@@ -259,7 +259,6 @@ function resolvePipelineHook(hook: ManifestPipelineHook): ResolvedManifestPipeli
       return {
         ...base,
         hookKind: "bakeAlarms",
-        // `bakeAlarms` triggers nothing, so it carries no workflow.
         workflow: null,
         stage: hook.stage ?? null,
         quietWindowSeconds: hook.quietWindowSeconds
@@ -711,7 +710,7 @@ export async function computeDiffForManifest(
     // A placement-targeted row reports as its COMPONENT narrowed by the deployment-target, which is
     // exactly how a manifest declares it — so the diff keys on one identity, not two shapes.
     const targetUrn = pair ? pair.componentUrn : urnOfOwnedId(row.targetObjectId);
-    if (!targetUrn) continue; // defensive — see above
+    if (!targetUrn) continue;
     managedExecutorBindings.push({
       targetUrn,
       deploymentTargetUrn: pair ? pair.deploymentTargetUrn : null,
@@ -1134,10 +1133,6 @@ function computeDiffOrConflict(
     throw error;
   }
 }
-
-// -------------------------------------------------------------------------------------------
-// `plans` table CRUD
-// -------------------------------------------------------------------------------------------
 
 function toPlan(row: typeof plans.$inferSelect): Plan {
   return {

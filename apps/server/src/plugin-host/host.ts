@@ -117,7 +117,6 @@ export interface PluginHostOptions {
   callTimeoutMs?: number;
   /** First restart delay after a crash (ms), doubled per consecutive crash. Default 200ms. */
   restartBackoffBaseMs?: number;
-  /** Ceiling on the restart delay (ms). Default 10s. */
   maxRestartBackoffMs?: number;
   /** An instance that stays up this long before crashing again resets its backoff to the base
    *  delay — otherwise a plugin that crash-loops forever would (correctly) back off forever, but
@@ -187,7 +186,7 @@ function createLineLengthTracker(maxBytes: number): { record(chunk: Buffer): boo
     record(chunk: Buffer): boolean {
       let searchStart = 0;
       for (;;) {
-        const idx = chunk.indexOf(0x0a, searchStart); // '\n'
+        const idx = chunk.indexOf(0x0a, searchStart);
         if (idx === -1) {
           sinceNewline += chunk.length - searchStart;
           return sinceNewline > maxBytes;
@@ -389,7 +388,6 @@ export class SubprocessPluginHost implements PluginHost {
     }
   }
 
-  /** The one teardown, shared by `stop()` and `stopInstances()`. */
   private tearDown(instance: Instance, why: string): void {
     instance.stopped = true;
     if (instance.restartTimer) clearTimeout(instance.restartTimer);
@@ -497,10 +495,6 @@ export class SubprocessPluginHost implements PluginHost {
         this.call(instanceId, "readFileAtRef", { request }) as Promise<ReadFileAtRefResult>
     };
   }
-
-  // -----------------------------------------------------------------------------------------
-  // Process lifecycle
-  // -----------------------------------------------------------------------------------------
 
   private spawnInstance(instance: Instance): void {
     if (instance.stopped) return;
@@ -624,7 +618,7 @@ export class SubprocessPluginHost implements PluginHost {
       instance.child = undefined;
       this.rejectAllPending(instance, new PluginInstanceCrashedError(instance.config.id));
 
-      if (instance.stopped) return; // stop() requested this exit — no restart.
+      if (instance.stopped) return;
 
       if (!wasReady) {
         // Crashed before ever becoming ready (e.g. a bad config) — still worth retrying with
@@ -728,10 +722,6 @@ export class SubprocessPluginHost implements PluginHost {
       instance.readyWaiters.push(onReady);
     });
   }
-
-  // -----------------------------------------------------------------------------------------
-  // RPC calls
-  // -----------------------------------------------------------------------------------------
 
   /** One RPC attempt against whatever child is currently running for `instance` — does not wait
    *  for readiness and does not retry; `call()` composes this with `waitForReady`/retry. */

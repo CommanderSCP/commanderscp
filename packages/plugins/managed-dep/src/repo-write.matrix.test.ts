@@ -52,7 +52,6 @@ const writer = createGithubAppRepoWriter({
   privateKeyPem
 });
 
-/** Route traversal that re-targets the endpoint. */
 const TRAVERSAL_REF = "../../../../user";
 const TRAVERSAL_REPO = "acme/widgets/../../..";
 const TRAVERSAL_PATH = "a/../../../../etc/passwd";

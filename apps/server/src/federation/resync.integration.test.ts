@@ -54,7 +54,7 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
       ensureFederationSelf(tx, domainA.orgId)
     );
     await pair(domainA, domainB, "outpost"); // A knows B as an outpost it exports to
-    await pair(domainB, domainA, "commander"); // B knows A as its commander
+    await pair(domainB, domainA, "commander");
     const peerA = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       getPeerByIdOrName(tx, domainB.orgId, selfA.domainId)
     );
@@ -128,7 +128,6 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
       )
     ).rejects.toMatchObject({ type: "urn:scp:federation:journal_divergence" });
 
-    // THE HANDSHAKE. B signs; A verifies-and-consents-and-re-exports; B force-applies.
     const signed = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       signResyncRequest(tx, domainB.orgId, peerAIdInB)
     );
@@ -158,7 +157,6 @@ describe("federation resync: signed handshake, force-overwrite convergence, dive
     );
     expect(reconverged.properties.tier).toBe("critical");
 
-    // Both sides recorded a resync Decision.
     const bDecision = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       latestDecisionForSubjectKind(tx, domainB.orgId, peerAIdInB, FEDERATION_RESYNC_DECISION_KIND)
     );

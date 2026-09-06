@@ -57,7 +57,6 @@ describe("verifyGiteaWebhookSignature (bare-hex X-Gitea-Signature)", () => {
   const secret = "gitea-webhook-secret";
   const body = Buffer.from(JSON.stringify({ ref: "refs/heads/main" }));
 
-  /** Gitea's real signing scheme: bare hex, no prefix. */
   function sign(rawBody: Buffer, withSecret: string): string {
     return createHmac("sha256", withSecret).update(rawBody).digest("hex");
   }
@@ -97,10 +96,6 @@ describe("verifyGiteaWebhookSignature (bare-hex X-Gitea-Signature)", () => {
     expect(verifyGiteaWebhookSignature(tampered, validForOriginal, secret)).toBe(false);
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// mapGiteaWebhookEventToHint — pure function.
-// -------------------------------------------------------------------------------------------
 
 describe("mapGiteaWebhookEventToHint", () => {
   it("maps push to repo/commitSha/ref", () => {
@@ -369,10 +364,6 @@ describe("trigger() idempotency — file-backed dedup cache", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// status() — Gitea's SINGLE status enum → phase.
-// -------------------------------------------------------------------------------------------
-
 describe("status() — single Gitea status enum", () => {
   async function statusFor(runStatus: string) {
     const { config, ctx, authHeader, base } = setup();
@@ -440,10 +431,6 @@ describe("status() — single Gitea status enum", () => {
     scope.done();
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// abort()
-// -------------------------------------------------------------------------------------------
 
 describe("abort()", () => {
   it("cancels a correlated run", async () => {
@@ -550,7 +537,7 @@ describe("observe() polling — commits, runs, and package pushes", () => {
       token: JSON.stringify({ push: watermark, workflow_run: watermark })
     });
 
-    expect(events.filter((e) => e.kind === "push")).toHaveLength(101); // 100 + the one after it
+    expect(events.filter((e) => e.kind === "push")).toHaveLength(101);
     scope.done();
   });
 
@@ -818,7 +805,7 @@ describe("discover() (DiscoveryPlugin)", () => {
       .get(`/repos/${config.owner}/${config.repo}/contents/`)
       .reply(200, [
         { name: "service-a", path: "service-a", type: "dir" },
-        { name: "docs", path: "docs", type: "dir" }, // dir, but no marker file inside -> skipped
+        { name: "docs", path: "docs", type: "dir" },
         { name: "README.md", path: "README.md", type: "file" } // not a dir -> no contents/ call
       ]);
     nock(base)
@@ -1297,7 +1284,6 @@ describe("readFileAtRef()", () => {
       .query({ ref: REF_COMMIT_SHA })
       .reply(200, {
         path: "go.mod",
-        // no `sha` at all
         type: "file",
         size: Buffer.byteLength(manifest, "utf8"),
         encoding: "base64",

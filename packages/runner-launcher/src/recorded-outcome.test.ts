@@ -147,7 +147,7 @@ describe("withRecordedOutcome", () => {
       }
     );
     expect(recorded).toHaveLength(1);
-    expect(recorded[0]).toContain("HTTP 403"); // the short message is still there
+    expect(recorded[0]).toContain("HTTP 403");
     expect(recorded[0]).toContain('cannot create resource \\"jobs\\"'); // and now so is the reason
   });
 

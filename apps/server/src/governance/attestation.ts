@@ -25,7 +25,7 @@ import { canonicalJson } from "../util/canonical-json.js";
 
 export interface InstanceKeyPair {
   id: string;
-  publicKey: string; // base64
+  publicKey: string;
   privateKey: string; // base64 (PKCS8 DER) — server-side only, never sent to a client
 }
 
@@ -94,7 +94,7 @@ export interface AttestationRecord {
 
 export interface SignedAttestation {
   record: AttestationRecord;
-  signature: string; // base64
+  signature: string;
   publicKey: string; // base64 — carried alongside so verification never needs a live DB lookup
 }
 

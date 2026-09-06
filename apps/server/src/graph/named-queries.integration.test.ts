@@ -28,17 +28,14 @@ describe("named graph queries: fixture graph", () => {
 
   // Chain fixture: chain[0] depends_on chain[1] depends_on ... depends_on chain[10] (11 edges).
   let chain: GraphObject[];
-  // Cycle fixture: cycleA depends_on cycleB depends_on cycleA.
   let cycleA: GraphObject;
   let cycleB: GraphObject;
   // Containment fixture: team owns domain; service lives in that domain.
   let team: GraphObject;
   let domain: GraphObject;
   let serviceInDomain: GraphObject;
-  // Consumer fixture.
   let consumer: GraphObject;
   let consumed: GraphObject;
-  // Paths-between fixture: pathA -[depends_on]-> pathB -[consumes]-> pathC.
   let pathA: GraphObject;
   let pathB: GraphObject;
   let pathC: GraphObject;
@@ -132,7 +129,7 @@ describe("named graph queries: fixture graph", () => {
       relTypes: ["depends_on"]
     });
     const ids = result.objects.map((o) => o.id);
-    expect(new Set(ids).size).toBe(ids.length); // no duplicates
+    expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toContain(cycleB.id);
   });
 
@@ -176,7 +173,7 @@ describe("named graph queries: fixture graph", () => {
     // labeling the organization a "domain" and keying by a raw uuid — while domains-impacted rolled
     // it to the org's URN. The two "count by domain" queries disagreed; they must now agree.
     const seed = await client.object("service").create({ name: "br-seed" });
-    const orgSvc = await client.object("service").create({ name: "br-org-svc" }); // domainId → org root
+    const orgSvc = await client.object("service").create({ name: "br-org-svc" });
     // orgSvc and serviceInDomain are both impacted if seed changes (they depend_on it)
     await client.relationships.create({ typeId: "depends_on", fromId: orgSvc.id, toId: seed.id });
     await client.relationships.create({
@@ -496,8 +493,8 @@ describe("named graph queries: performance regression — high fan-in no longer 
       await bulkLoadGraph(raw, orgId, allNodeIds, edges);
 
       const targetId = layerIds[LAYERS - 1]![0]!;
-      const maxDepth = LAYERS - 1; // schema-capped at 10 (packages/schemas/src/graph.ts)
-      const expectedCount = WIDTH * (LAYERS - 1); // every node in layers 0..LAYERS-2
+      const maxDepth = LAYERS - 1;
+      const expectedCount = WIDTH * (LAYERS - 1);
 
       for (const queryName of REACHABILITY_QUERIES) {
         const params: GraphQueryRequest = {
@@ -514,7 +511,7 @@ describe("named graph queries: performance regression — high fan-in no longer 
         expect(result.objects, `${queryName} returned the wrong node set`).toHaveLength(
           expectedCount
         );
-        expect(new Set(result.objects.map((o) => o.id)).size).toBe(expectedCount); // no duplicates
+        expect(new Set(result.objects.map((o) => o.id)).size).toBe(expectedCount);
         // Comfortably fast — the old path-array implementation running this exact shape measured
         // 7+ minutes / disk exhaustion (M8 PR body); well under the 5s production
         // statement_timeout default (config.ts) proves the fix, not just a wider safety margin.

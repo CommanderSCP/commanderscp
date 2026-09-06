@@ -37,10 +37,6 @@ export const CardinalitySchema = z.enum([
 ]);
 export type Cardinality = z.infer<typeof CardinalitySchema>;
 
-// ---------------------------------------------------------------------------------------------
-// Type registry
-// ---------------------------------------------------------------------------------------------
-
 export const ObjectTypeSchema = z.object({
   id: z.string().min(1).max(100),
   orgId: z.string().uuid().nullable(),
@@ -94,10 +90,6 @@ export type CreateRelationshipTypeRequest = z.infer<typeof CreateRelationshipTyp
 
 export const RelationshipTypeListResponseSchema = cursorPageResponseSchema(RelationshipTypeSchema);
 export type RelationshipTypeListResponse = z.infer<typeof RelationshipTypeListResponseSchema>;
-
-// ---------------------------------------------------------------------------------------------
-// Objects
-// ---------------------------------------------------------------------------------------------
 
 export const GraphObjectSchema = z.object({
   id: z.string().uuid(),
@@ -385,7 +377,6 @@ export type ObjectListQuery = z.infer<typeof ObjectListQuerySchema>;
 export const CreatePlacementRequestSchema = z.strictObject({
   id: z.string().uuid().optional(),
   urn: UrnSchema.optional(),
-  /** id or URN of the component being placed. */
   component: z.string().min(1),
   /** id or URN of the deployment-target it is placed at. */
   deploymentTarget: z.string().min(1),
@@ -419,10 +410,6 @@ export const PlacementListQuerySchema = ObjectListQuerySchema.extend({
   scopeObjectId: z.string().uuid().optional()
 });
 export type PlacementListQuery = z.infer<typeof PlacementListQuerySchema>;
-
-// ---------------------------------------------------------------------------------------------
-// Relationships
-// ---------------------------------------------------------------------------------------------
 
 export const RelationshipSchema = z.object({
   id: z.string().uuid(),
@@ -501,7 +488,6 @@ export type GraphQueryRequest = z.infer<typeof GraphQueryRequestSchema>;
 export const GraphQueryResultSchema = z.object({
   query: NamedGraphQuerySchema,
   objects: z.array(GraphObjectSchema),
-  /** Populated by `blast-radius` (counts by type/domain) and `domains-impacted`. */
   counts: z.record(z.string(), z.number().int()).optional(),
   /** Populated by `paths-between`: ordered object ids per discovered path. */
   paths: z.array(z.array(z.string().uuid())).optional()

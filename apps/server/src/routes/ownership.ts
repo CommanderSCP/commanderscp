@@ -130,7 +130,6 @@ function registerOwnerSubResource(
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const target = await getObjectByIdOrUrn(tx, auth.orgId, typeId, idOrUrn);
         const owner = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.ownerIdOrUrn);
-        // BOTH endpoints (module doc — load-bearing, mirrors relationships.ts).
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -322,7 +321,6 @@ function registerRelationshipEdgeSubResource(
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         const source = await getObjectByIdOrUrn(tx, auth.orgId, typeId, idOrUrn);
         const target = await getObjectByIdOrUrnAnyType(tx, auth.orgId, request.body.targetIdOrUrn);
-        // BOTH endpoints (module doc — load-bearing, mirrors relationships.ts).
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,

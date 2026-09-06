@@ -101,7 +101,6 @@ export function parseDeliveryRoots(raw: string | readonly string[] | undefined):
     .map((r) => path.resolve(r));
 }
 
-/** The live operator-declared roots (`SCP_DELIVERY_ROOTS`). */
 export function deliveryRootsFromEnv(): string[] {
   return parseDeliveryRoots(process.env.SCP_DELIVERY_ROOTS);
 }
@@ -240,7 +239,6 @@ export interface ResolvedDeliveryTarget {
   /** True iff BOTH directions resolved. Consumers needing only one direction gate on that
    *  direction's own `problem` (via the `require*` helpers), not on `valid`. */
   valid: boolean;
-  /** Every per-gap problem (both directions), in outbound-then-inbound order. */
   problems: string[];
 }
 
@@ -754,7 +752,7 @@ export function assertDeliveryTargetRooted(
   roots?: readonly string[],
   s3Allow?: readonly DeliveryS3AllowEntry[]
 ): void {
-  if (!target) return; // tri-state clear/preserve — env-fallback, nothing to bound.
+  if (!target) return;
   if (target.provider === "s3-compatible") {
     const allow = s3Allow ?? deliveryS3EndpointsFromEnv();
     if (allow.length === 0) {

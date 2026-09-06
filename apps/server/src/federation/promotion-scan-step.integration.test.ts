@@ -232,7 +232,6 @@ describe.runIf(await dockerAvailable())(
       cleanDigest = await pushSubject(CLEAN_SRC, cleanRepo);
       dirtyDigest = await pushSubject(DIRTY_SRC, dirtyRepo);
 
-      // OpenSCAP subjects.
       oscapCleanRepo = `${registryHost}/scp/oscap-clean`;
       oscapDirtyRepo = `${registryHost}/scp/oscap-dirty`;
       oscapCleanDigest = await pushSubject(OSCAP_CLEAN_SRC, oscapCleanRepo);
@@ -567,7 +566,6 @@ describe.runIf(await dockerAvailable())(
 
       expect(outcome.refused, outcome.refused ? outcome.reason : "expected export").toBe(false);
       if (outcome.refused) throw new Error(outcome.reason);
-      // The bundle carries the promoted OCI digest.
       expect(outcome.bundle.artifactDigests).toContain(cleanDigest);
 
       // The step deposited exactly the digest-bound, self-describing evidence the gate consumed.
@@ -577,7 +575,7 @@ describe.runIf(await dockerAvailable())(
       expect(run.status).toBe("pass");
       const ev = ScanEvidenceSchema.parse(run.evidence);
       expect(ev.scanner).toBe("trivy");
-      expect(ev.artifactDigest).toBe(cleanDigest); // digest-bound to the PULL == the promoted digest
+      expect(ev.artifactDigest).toBe(cleanDigest);
       expect(ev.expectedDigest).toBe(cleanDigest);
       expect(ev.digestMatch).toBe(true);
       expect(ev.severityCounts.critical).toBe(0);
@@ -771,12 +769,12 @@ describe.runIf(await dockerAvailable())(
       const run = runs[0]!;
       expect(run.status).toBe("pass");
       const ev = ScanEvidenceSchema.parse(run.evidence);
-      expect(ev.scanner).toBe("openscap"); // self-describing: the SECOND method produced this verdict
-      expect(ev.artifactDigest).toBe(oscapCleanDigest); // digest-bound to the PULL == promoted digest
+      expect(ev.scanner).toBe("openscap");
+      expect(ev.artifactDigest).toBe(oscapCleanDigest);
       expect(ev.expectedDigest).toBe(oscapCleanDigest);
       expect(ev.digestMatch).toBe(true);
       expect(ev.severityCounts.critical).toBe(0); // XCCDF has no critical — always 0 (the mapping)
-      expect(ev.severityCounts.high).toBe(0); // clean of high-severity failed rules
+      expect(ev.severityCounts.high).toBe(0);
       expect(ev.scannerVersion).not.toBe("unknown"); // a REAL oscap ran (version stamped from the run)
     }, 180_000);
 
@@ -803,7 +801,7 @@ describe.runIf(await dockerAvailable())(
       expect(ev.scanner).toBe("openscap");
       expect(ev.digestMatch).toBe(true); // it WAS the promoted artifact — it failed on findings
       expect(ev.artifactDigest).toBe(oscapDirtyDigest);
-      expect(ev.severityCounts.high).toBeGreaterThan(0); // ≥1 high-severity failed rule
+      expect(ev.severityCounts.high).toBeGreaterThan(0);
       expect(ev.severityCounts.critical).toBe(0); // never a critical from XCCDF
     }, 180_000);
 

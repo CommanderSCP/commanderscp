@@ -154,7 +154,6 @@ describe("freezesByTarget: INERTNESS (property 1)", () => {
 
     const byTarget = await freezesByTarget(tx, "org", ["t1", "t2", "t3", "t4"], new Date());
 
-    // The answer is right...
     expect(byTarget).toEqual([
       { targetObjectId: "t1", freezes: [] },
       { targetObjectId: "t2", freezes: [] },
@@ -219,7 +218,7 @@ describe("freezesByTarget: INERTNESS (property 1)", () => {
     const { tx } = countingTx(
       [f],
       [
-        ["org", "svc-a", "t1"], // covered by f1's scope
+        ["org", "svc-a", "t1"],
         ["org", "svc-b", "t2"] // not covered
       ]
     );

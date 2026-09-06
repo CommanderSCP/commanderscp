@@ -191,7 +191,6 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
     const result = await importAtCommander(bundle);
     expect(result.appliedEntries).toBeGreaterThan(0);
 
-    // (1) nothing lands.
     expect(await commanderRowsFor(localUrn)).toHaveLength(0);
     // ...and the control did land, so the pipe demonstrably works.
     const sharedRows = await commanderRowsFor(sharedUrn);
@@ -473,7 +472,6 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
       })
     );
 
-    // Pre-condition: none of it has crossed yet.
     await importAtCommander(await exportUpward());
     expect(await commanderRowsFor(toPublish.urn)).toHaveLength(0);
 
@@ -691,7 +689,6 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
       })
     );
 
-    // Publish the CONTAINER first.
     const containerResult = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       publishDomainLocalObject(tx, {
         orgId: outpost.orgId,

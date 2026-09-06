@@ -98,10 +98,6 @@ describe("config-source document", () => {
     expect(doc.repoPattern).toBe("git.corp.example/payments/*");
   });
 
-  // ============================================================================================
-  // CONSTITUTIVE FIELDS
-  // ============================================================================================
-
   it("refuses an empty `paths` — it selects no manifest and looks exactly like a quiet repo", () => {
     expect(
       refusalDetail(() => parseConfigSourceDocument({ ...valid, paths: [] }, "config-source 'x'"))

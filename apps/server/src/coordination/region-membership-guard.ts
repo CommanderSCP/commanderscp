@@ -128,11 +128,9 @@ function withdrawnKeys(
 
 export interface UndeclareRegionCheck {
   orgId: string;
-  /** The RBAC subject performing the write (`UpdateObjectInput.actorObjectId`). */
   actorObjectId: string;
   typeId: string;
   objectId: string;
-  /** The properties as STORED on the locked row. */
   before: Record<string, unknown> | null;
   /** The properties about to be stored, or `null` when the row is being (soft-)deleted. */
   after: Record<string, unknown> | null;

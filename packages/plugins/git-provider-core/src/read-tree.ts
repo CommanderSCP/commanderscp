@@ -33,10 +33,6 @@ import type { ReadFileAtRefResult } from "./read-file.js";
  * carries `repo`/`ref` once for the whole batch (all matched files share one resolved commit).
  */
 
-// -------------------------------------------------------------------------------------------
-// Request / result vocabulary
-// -------------------------------------------------------------------------------------------
-
 export interface ReadTreeAtRefRequest {
   /** Same semantics as `ReadFileAtRefRequest.repo` — optional, defaults to the binding's own repo. */
   repo?: string;

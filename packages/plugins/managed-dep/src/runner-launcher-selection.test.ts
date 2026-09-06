@@ -477,7 +477,6 @@ console.log(
         report.detail,
         "the run never reached the default transport's token read, so nothing past construction was driven"
       ).toContain(`${K8S_SA_DIR}/token`);
-      // THE MEASUREMENT.
       expect(
         report.afterKubernetes,
         `managed-dep created a process on the Kubernetes path: ${JSON.stringify(run.spawns)}`

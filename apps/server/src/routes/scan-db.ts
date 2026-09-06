@@ -36,7 +36,6 @@ function requireCacheDir(): string {
 export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
-  // GET status — tenant-readable.
   typed.route({
     method: "GET",
     url: "/api/v1/instance/scan-db",
@@ -56,7 +55,6 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
     }
   });
 
-  // GET staleness policy — tenant-readable.
   typed.route({
     method: "GET",
     url: "/api/v1/instance/scan-db/staleness-policy",

@@ -90,7 +90,6 @@ test("Outposts: nav → list → detail, and every API call the browser makes is
     "none-recorded"
   );
 
-  // 3. DETAIL — reached from the list.
   await row.getByTestId("outpost-link").click();
   await page.waitForURL(`${baseUrl()}/federation/outposts/${peerDomainId}`);
   await expect(page.getByTestId("outpost-detail-name")).toBeVisible();

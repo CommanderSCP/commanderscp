@@ -112,7 +112,6 @@ export function parseGoMod(content: string): DeclaredDependency[] {
         const dep = parseRequireLine(trimmed, comment, i + 1);
         if (dep) out.push(dep);
       }
-      // Inside replace/exclude/retract: consume and discard.
       continue;
     }
 

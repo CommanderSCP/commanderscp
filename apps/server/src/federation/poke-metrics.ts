@@ -17,7 +17,6 @@
 export interface PokeWakeStats {
   /** Pokes that passed every gate (mTLS identity, consent, rate limit) and were acted on. */
   accepted: number;
-  /** Accepted pokes that successfully enqueued a federation-sync wake. */
   wokenSync: number;
   /** Accepted pokes that successfully enqueued an inbox wake (the air-gap leg). */
   wokenInbox: number;

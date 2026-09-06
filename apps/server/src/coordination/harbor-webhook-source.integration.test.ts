@@ -97,7 +97,6 @@ describe("harbor webhook-source: a PUSH_ARTIFACT correlates end-to-end into a Ch
     // the other coordination processing tests).
     await withTenantTx(server.deps.db, org.orgId, (tx) => processChangeSourceEvents(tx, org.orgId));
 
-    // The event was processed and produced a Change.
     const eventRow = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeSourceEvents).where(eq(changeSourceEvents.id, eventId))
     );

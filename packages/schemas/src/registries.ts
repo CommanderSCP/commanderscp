@@ -35,7 +35,6 @@ export const RegistryOwnerParamSchema = z.object({
   ownerIdOrUrn: z.string().min(1)
 });
 
-/** Path params for `DELETE /{basePath}/{idOrUrn}/consumes|depends-on/{targetIdOrUrn}`. */
 export const RegistryTargetParamSchema = z.object({
   idOrUrn: z.string().min(1),
   targetIdOrUrn: z.string().min(1)

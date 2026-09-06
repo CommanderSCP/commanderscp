@@ -130,7 +130,7 @@ describe("evaluateGovernance", () => {
       policyVersion: 1,
       name: "conditional",
       enforcement: "required",
-      condition: 'subject.labels.env == "staging"', // false — subject is env=prod in baseContext
+      condition: 'subject.labels.env == "staging"',
       effects: [{ requireControls: ["scan"] }],
       matchedAt: { objectId: "org", depth: 0, via: "unscoped" },
       emergencyPolicy: false,
@@ -148,7 +148,7 @@ describe("evaluateGovernance", () => {
       policyVersion: 1,
       name: "conditional",
       enforcement: "required",
-      condition: 'subject.labels.env == "prod"', // true
+      condition: 'subject.labels.env == "prod"',
       effects: [{ requireControls: ["scan"] }],
       matchedAt: { objectId: "org", depth: 0, via: "unscoped" },
       emergencyPolicy: false,

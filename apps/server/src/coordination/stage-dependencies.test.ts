@@ -113,7 +113,6 @@ describe("stageDependenciesOf — narrow and collect (ADR-0028)", () => {
     });
     expect(parsed.stageDependencies).toEqual([]);
     expect(parsed.malformed).toHaveLength(6);
-    // The boundaries themselves are legal.
     expect(
       stageDependenciesOf({
         stageDependencies: [

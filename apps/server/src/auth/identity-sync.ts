@@ -122,9 +122,7 @@ export function claimValuesFrom(claims: Record<string, unknown>, claimName: stri
 }
 
 export interface SyncOutcome {
-  /** Group/team object ids the principal was ADDED to. */
   joined: string[];
-  /** Group/team object ids the principal was REMOVED from. */
   left: string[];
   /** Claim values that matched no mapped group — reported, never an error. */
   unmatchedClaimValues: string[];

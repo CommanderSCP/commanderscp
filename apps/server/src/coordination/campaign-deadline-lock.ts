@@ -394,7 +394,6 @@ export async function evaluateCampaignDeadlineLock(
   return { locked };
 }
 
-/** One entry of a `campaign_deadline` Decision's `inputContext.locked`. */
 export interface LockedTargetRecord {
   targetObjectId: string;
   adoptionVerdict: CampaignAdoptionVerdict;

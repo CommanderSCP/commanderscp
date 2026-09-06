@@ -50,7 +50,6 @@ beforeAll(() => {
     .reply(201, () => ({ id: Date.now(), status: "success", sha: "a".repeat(40) }))
     .persist();
 
-  // status(): ANY correlated pipeline id reads back success.
   nock(base)
     .matchHeader("private-token", token)
     .get(new RegExp(`/projects/${pid}/pipelines/\\d+$`))
@@ -61,14 +60,12 @@ beforeAll(() => {
     }))
     .persist();
 
-  // abort(): cancel ANY correlated pipeline id.
   nock(base)
     .matchHeader("private-token", token)
     .post(new RegExp(`/projects/${pid}/pipelines/\\d+/cancel$`))
     .reply(200, { status: "canceled" })
     .persist();
 
-  // observe(): commits + pipelines.
   nock(base)
     .matchHeader("private-token", token)
     .get(new RegExp(`/projects/${pid}/repository/commits`))
@@ -80,7 +77,6 @@ beforeAll(() => {
     .reply(200, [])
     .persist();
 
-  // -- Discovery suite fixtures (GitLab repository-tree). --
   nock(discoveryBase)
     .matchHeader("private-token", token)
     .get(new RegExp(`/projects/${discoveryPid}/repository/tree`))

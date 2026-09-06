@@ -137,8 +137,8 @@ async function bootDomain(label: string, mtlsEnv: Record<string, string> = {}): 
 
 describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-domain)", () => {
   let ca: TestCa;
-  let commander: Domain; // the SENDER (dials, presents its client cert)
-  let outpost: Domain; // the RECEIVER (real mTLS listener + poke endpoint)
+  let commander: Domain;
+  let outpost: Domain;
   let commanderClientMtls: FederationClientMtls;
   let outpostUrl: string;
   let deadOutpostDomainId: TrustDomainId;
@@ -280,7 +280,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
         name: "dead-outpost",
         role: "outpost",
         publicKey: outpostKeyPub,
-        baseUrl: "https://127.0.0.1:1", // nothing listening -> ECONNREFUSED
+        baseUrl: "https://127.0.0.1:1",
         pokeMode: true
       })
     );
@@ -309,7 +309,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
     try {
       sender.onEventsRelayed([commander.orgId]);
       await sender.drain();
-      sender.onEventsRelayed([commander.orgId]); // second signal in the SAME window -> coalesced
+      sender.onEventsRelayed([commander.orgId]);
       await sender.drain();
       // Despite two signals, the receiver was woken at most once.
       expect(sends).toEqual([FEDERATION_SYNC_QUEUE]);
@@ -378,7 +378,7 @@ describe.skipIf(!opensslAvailable())("M14.3 commander poke sender (mTLS, two-dom
 
   it("INERT: with no outbound client-cert material the sender no-ops (SCOPE 5, opt-in/default-off)", async () => {
     const sender = createCommanderPokeSender(commander.db, {
-      env: {}, // no SCP_FEDERATION_MTLS_* -> not configured
+      env: {},
       mtls: null // explicitly none
     });
     try {

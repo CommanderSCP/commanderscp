@@ -67,10 +67,6 @@ import { dependencyVersionPollIntervalSeconds } from "../dependencies/version-po
  *     (ADR-0033 "Alternatives considered").
  */
 
-// -------------------------------------------------------------------------------------------
-// Freshness
-// -------------------------------------------------------------------------------------------
-
 /**
  * How many POLL CYCLES an observation may be old before it stops counting as evidence.
  *
@@ -97,10 +93,6 @@ export const VENDOR_LATEST_STALENESS_POLL_CYCLES = 3;
 export function vendorLatestStalenessBoundMs(env: NodeJS.ProcessEnv = process.env): number {
   return dependencyVersionPollIntervalSeconds(env) * 1000 * VENDOR_LATEST_STALENESS_POLL_CYCLES;
 }
-
-// -------------------------------------------------------------------------------------------
-// One (line, declaration) pair
-// -------------------------------------------------------------------------------------------
 
 /** WHY a declaration is not at its line's head. Every one of these yields NO vendor-pass; they are
  *  distinct so an operator can be told which absence stopped it rather than "not applicable". */
@@ -149,7 +141,6 @@ export interface VendorLineFacts {
   latestObservedAt: Date | null;
 }
 
-/** The declaration columns this evaluation reads. */
 export interface VendorDeclarationFacts {
   resolvedVersion: string | null;
   resolvedDigest: string | null;
@@ -217,10 +208,6 @@ export function evaluateVendorLineAtHead(
   if (order === undefined) return { atHead: false, reason: "version_not_comparable" };
   return order < 0 ? { atHead: false, reason: "behind_head" } : AT_HEAD;
 }
-
-// -------------------------------------------------------------------------------------------
-// One target's facts
-// -------------------------------------------------------------------------------------------
 
 /** One row of the inventory read: a declaration joined to the line it sits on. */
 export interface VendorInventoryRow extends VendorLineFacts, VendorDeclarationFacts {

@@ -287,10 +287,6 @@ describe("a containment write that changes which policies reach an object", () =
     expect(await reachingPolicyNames(e.org, e.componentId)).toContain(e.policyName);
   });
 
-  // ===========================================================================================
-  // CASE 3 — ROUTE 1, `objects.domain_id`.
-  // ===========================================================================================
-
   it("CASE 3: re-parenting via domainId is recorded, with the old and new parent named", async () => {
     const org = await createTestOrg(server, "reach-route1");
     const governed = await post(org.adminToken, "/api/v1/domains", { name: "route1-governed" });

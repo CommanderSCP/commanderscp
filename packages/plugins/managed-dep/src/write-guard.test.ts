@@ -37,10 +37,6 @@ import {
   type RepoWriteRefusalReason
 } from "./write-guard.js";
 
-// -------------------------------------------------------------------------------------------
-// Helpers
-// -------------------------------------------------------------------------------------------
-
 /** Runs `fn` and returns the `RepoWriteRefusal` it threw, failing the test if it threw anything
  *  else — or nothing. Returning the error (rather than asserting inside) lets each test name the
  *  exact reason it is pinning. */
@@ -237,7 +233,6 @@ describe("path gates", () => {
     expect(isLockfileName("something-lock.yaml")).toBe(true);
     expect(isLockfileName("vendor.lock")).toBe(true);
     expect(isLockfileName("packages.lock.json")).toBe(true);
-    // ...and does not over-reach onto real manifests.
     expect(isLockfileName("go.mod")).toBe(false);
     expect(isLockfileName("package.json")).toBe(false);
     expect(isLockfileName("pyproject.toml")).toBe(false);

@@ -89,7 +89,6 @@ describe("list doors: rows are scoped to the caller's authority (role-model.md Â
   let org: TestOrg;
   let admin: ScpClient;
 
-  /** Every readable/unreadable id, and the principals. */
   let domainA: string;
   let domainB: string;
   let serviceMine: string;
@@ -332,7 +331,6 @@ describe("list doors: rows are scoped to the caller's authority (role-model.md Â
         scopeObjectId: org.orgId
       };
 
-      // (1) the gate's own answer.
       const filter = await withTenantTx(server.deps.db, org.orgId, (tx) =>
         authorizeListAndScope(tx, orgRootCheck)
       );

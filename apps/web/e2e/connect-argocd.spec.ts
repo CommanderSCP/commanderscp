@@ -44,7 +44,6 @@ test("the wizard registers an Argo CD, enumerates it, and imports its Applicatio
 
   await loginAsAdmin(page);
 
-  // --- Step 1: register -----------------------------------------------------------------------
   await page.goto(`${baseUrl()}/plugins`);
   await page.getByTestId("connect-argocd-launch").click();
   await expect(page).toHaveURL(`${baseUrl()}/connect/argocd`);
@@ -68,7 +67,6 @@ test("the wizard registers an Argo CD, enumerates it, and imports its Applicatio
   await expect(page.getByTestId("argocd-system-name")).toHaveText(systemName);
   await page.getByTestId("argocd-enumerate-submit").click();
 
-  // --- Step 3: review -------------------------------------------------------------------------
   await expect(page.getByTestId("connect-argocd-review")).toBeVisible();
   // The review step describes the proposal by TYPE and count rather than listing every object: the
   // per-object list belonged to the import flow, where each row was about to become a graph write.

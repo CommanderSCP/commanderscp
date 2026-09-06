@@ -364,7 +364,6 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
       400,
       /peerDomainId|unrecognized|not allowed|additional/i
     );
-    // Neither refusal touched the object.
     const after = await admin.federation.getOutpost(peer);
     expect(after.objectId).toBe(created.objectId);
     expect(after.version).toBe(created.version);
@@ -388,10 +387,6 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
       expect(config.unknownFields).toEqual([]);
     }
   });
-
-  // ==========================================================================================
-  // THE AUTHORITY-SPLIT RULE, asserted in BOTH directions.
-  // ==========================================================================================
 
   it("AUTHORITY SPLIT ①: a CONFIG write journals one entry and leaves the peer row + key window byte-identical", async () => {
     const peerBefore = await peerRow(outpostPeerId);

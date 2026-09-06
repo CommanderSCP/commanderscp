@@ -694,7 +694,7 @@ export async function getComponentPipeline(
     if (a.wave !== null && b.wave !== null && a.wave.index !== b.wave.index) {
       return a.wave.index - b.wave.index;
     }
-    if (a.wave !== null && b.wave !== null) return 0; // within a wave, keep the document's order
+    if (a.wave !== null && b.wave !== null) return 0;
     return (targetById.get(a.deploymentTargetId)?.name ?? "").localeCompare(
       targetById.get(b.deploymentTargetId)?.name ?? ""
     );
@@ -1103,7 +1103,7 @@ async function correlatedInfraForComponent(
   // belongs to. A deployment-target id claimed by BOTH `placementByTargetId` and `hosted_on` keeps
   // its `placement` route (the more specific fact), never gets downgraded.
   const routeByTargetObjectId = new Map<string, CorrelationRoute>();
-  const deploymentTargetIdOf = new Map<string, string>(); // target_object_id -> deployment-target id
+  const deploymentTargetIdOf = new Map<string, string>();
   for (const [deploymentTargetId, placement] of placementByTargetId) {
     routeByTargetObjectId.set(deploymentTargetId, "placement");
     deploymentTargetIdOf.set(deploymentTargetId, deploymentTargetId);

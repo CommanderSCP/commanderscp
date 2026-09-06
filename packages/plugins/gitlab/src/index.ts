@@ -107,10 +107,8 @@ export interface GitlabConfig {
   /** The project's full path (`owner/repo` or `group/subgroup/repo`). Either this OR `owner`+`repo`
    *  must be present; when both are given, `projectPath` wins. URL-encoded to the REST `:id`. */
   projectPath?: string;
-  /** Convenience alternative to `projectPath`, joined as `owner/repo`. */
   owner?: string;
   repo?: string;
-  /** `SecretsAccessor` key holding the Personal Access Token. */
   tokenSecretKey?: string;
   /** Fallback for tests/fixtures only — a plaintext PAT in config (never used in production; real
    *  deployments must use `tokenSecretKey`). */
@@ -247,7 +245,6 @@ export function verifyGitlabWebhookToken(
   }
 }
 
-/** GitLab's populated shape of the provider-neutral `GitProviderEventHint`. */
 export type GitlabEventHint = GitProviderEventHint;
 
 /**
@@ -410,7 +407,6 @@ async function getStatus(ctx: PluginContext, ref: ExternalRunRef): Promise<Execu
   };
 }
 
-/** Adapter `abortRun` hook — cancels a pipeline. */
 async function abortRun(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResult> {
   const config = asConfig(ctx.config);
   if (!ref.externalId.startsWith("pipeline::")) {
@@ -445,7 +441,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   const events: ExecutorEvent[] = [];
   const repo = projectPathOf(config);
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
-  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     if (sinceIso) query.set("since", sinceIso);
@@ -474,7 +470,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
       });
     }
     if (commits.length < servedPageSize) break; // shorter than the SERVED page — the last page.
-    if (sinceMs === undefined) break; // cold start reads one page — see MAX_POLL_PAGES.
+    if (sinceMs === undefined) break;
     const last = commits[commits.length - 1];
     const oldest = last?.created_at ?? last?.committed_date;
     if (oldest && new Date(oldest).getTime() <= sinceMs) break;
@@ -503,7 +499,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
   const events: ExecutorEvent[] = [];
   const repo = projectPathOf(config);
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
-  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     if (sinceIso) query.set("updated_after", sinceIso);
@@ -984,10 +980,6 @@ export const gitlabDiscoveryPlugin: DiscoveryPlugin = { discover };
 export function createGitlabDiscoveryPlugin(): DiscoveryPlugin {
   return gitlabDiscoveryPlugin;
 }
-
-// -------------------------------------------------------------------------------------------
-// Manifest
-// -------------------------------------------------------------------------------------------
 
 // `baseUrl` is intentionally NOT in `required` (M15.3b): a Mode-A `kind=gitlab` execution-system
 // binding supplies the base URL as the injected `serverUrl` fallback instead. Neither `projectPath`

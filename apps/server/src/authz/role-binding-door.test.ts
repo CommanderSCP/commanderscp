@@ -409,7 +409,6 @@ describe("assertGrantAcknowledgesEmpoweredPrincipals — D7 (owner ruling 2026-0
     const emptyGroup = [principal({ id: "g-1", depth: 0, typeId: "group" })];
     // `[]` is a TRUE statement at the moment of the grant, and is the seat-the-team-later flow.
     expect(() => ack(group, emptyGroup, [])).not.toThrow();
-    // `undefined` is not.
     expect(refusal(() => ack(group, emptyGroup, undefined)).status).toBe(422);
   });
 

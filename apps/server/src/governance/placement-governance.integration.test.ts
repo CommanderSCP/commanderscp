@@ -364,7 +364,7 @@ describe("governance over a placement wave target (ADR-0026)", () => {
   it("a policy scoped at a DEPLOYMENT-TARGET gates every placement there — and nothing anywhere else", async () => {
     const gated = await admin.deploymentTargets.create({ name: "route4-gated-target" });
     const here = await placedComponent("route4-here", { at: gated });
-    const elsewhere = await placedComponent("route4-elsewhere"); // at the shared `place`
+    const elsewhere = await placedComponent("route4-elsewhere");
     await gatingPolicy("route4-target-gate", gated.id);
     const change = await admin.changes.propose({
       name: "route4-change",
@@ -425,7 +425,7 @@ describe("governance over a placement wave target (ADR-0026)", () => {
     // THE OWNER'S ASK, at the gate: a wave spanning the frozen region AND another one is admitted,
     // with the frozen region still reported as covered so reconcile's per-target loop withholds
     // exactly it. Before M25.2 this second call returned `block` and all four regions parked.
-    const elsewhere = await placedComponent("route4-freeze-elsewhere"); // at the shared `place`
+    const elsewhere = await placedComponent("route4-freeze-elsewhere");
     const partial = await waveGate([placement.id, elsewhere.placement.id], change.id);
     expect(
       partial.verdict,

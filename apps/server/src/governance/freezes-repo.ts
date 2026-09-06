@@ -84,7 +84,7 @@ export function assertWindowOrdered(startsAt: Date, endsAt: Date): void {
 }
 
 export async function createFreeze(tx: TenantTx, input: CreateFreezeInput): Promise<FreezeRow> {
-  assertWindowOrdered(input.startsAt, input.endsAt); // validated again at the route/schema layer; defensive here
+  assertWindowOrdered(input.startsAt, input.endsAt);
   const [row] = await tx
     .insert(freezes)
     .values({
@@ -498,7 +498,7 @@ export async function updateFreezeWindow(
       ? "shortened"
       : input.endsAt > before.endsAt
         ? "extended"
-        : "unchanged"; // equality is its own case — see `FreezeWindowDirection`
+        : "unchanged";
   const [row] = await tx
     .update(freezes)
     .set({ endsAt: input.endsAt })

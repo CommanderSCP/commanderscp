@@ -155,7 +155,7 @@ describe("recency — the LATEST answer to each question wins", () => {
     const fail = run({
       controlObjectId: control,
       createdAt: at,
-      id: nextId(), // minted after `pass`, therefore lexicographically greater
+      id: nextId(),
       status: "fail",
       evidence: { expectedDigest: DIGEST }
     });

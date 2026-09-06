@@ -169,7 +169,6 @@ describe("wave-target hold projection: ChangeWaveTargetSchema.hold / ChangeWaveS
     expect(entry.freezeId).toBe(frozen.id);
     // PROPERTY 3 — scope enriched to {objectId, name}, not a bare id.
     expect(entry.scope).toEqual({ objectId: amer.id, name: amer.name });
-    // PROPERTY 2 — one server-composed sentence, rendered verbatim.
     expect(entry.summary).toContain("amer-mixed-freeze");
     expect(entry.summary).toContain("until");
     // PROPERTY 4 — endsAt carried, not `now`.

@@ -51,7 +51,6 @@ export const VENDORED_SKOPEO_PATH = "/opt/scp/bin/skopeo";
 export const SKOPEO_BIN_ENV = "SCP_SKOPEO_BIN";
 
 export type SkopeoSource =
-  /** `SCP_SKOPEO_BIN` — an explicitly designated pinned binary. */
   | "override"
   /** The wrapper vendored into the runtime image at {@link VENDORED_SKOPEO_PATH}. */
   | "vendored"

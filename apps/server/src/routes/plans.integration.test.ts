@@ -473,7 +473,6 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     ]);
     expect(second.diff.summary).toMatchObject({ updates: 1, deletes: 0 });
     await admin.plans.apply(second.id);
-    // BOTH rows converged; the plan settles.
     expect(await liveScopes()).toEqual(["domain", "domain"]);
     const settled = await admin.plans.create(build("domain"));
     expect(settled.diff.sourceMappings?.map((m) => m.action)).toEqual(["noop"]);
@@ -541,14 +540,12 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     expect(prune.diff.summary.deletes).toBe(2);
     await admin.plans.apply(prune.id);
 
-    // This stack's rows are gone...
     const componentUrn = `urn:scp:${stackName}:component:api`;
     const component = await admin.components.get(componentUrn);
     expect(await admin.executors.listBindings(componentUrn)).toEqual([]);
     const mappings = await admin.changeSources.listMappings("github");
     expect(mappings.items.filter((m) => m.componentObjectId === component.id)).toEqual([]);
 
-    // ...and the OTHER stack's are untouched.
     const otherUrn = `urn:scp:${otherStackName}:component:api`;
     const otherComponent = await admin.components.get(otherUrn);
     expect(await admin.executors.listBindings(otherUrn)).toHaveLength(1);

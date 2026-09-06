@@ -158,7 +158,7 @@ export async function runPreDeployArtifactGate(
   // Pinned by `pre-deploy-gate.integration.test.ts` SCOPE (e1)/(e2) and by the metadata-only axis.
   // ===========================================================================================
   const manifestRef = crossBoundaryManifestOf(change);
-  if (!manifestRef) return { blocked: false }; // domain-local / no manifest — not gated.
+  if (!manifestRef) return { blocked: false };
 
   // A metadata-only promotion (no substantive bytes) has nothing to byte-verify → pass vacuously.
   if (manifestRef.artifacts.length === 0) return { blocked: false };

@@ -398,7 +398,6 @@ export function mergeDependencySubscription(
     }
   }
 
-  // THE AND, in one expression and one place.
   const enabled = input.instance.unlocked && enabledBy && !disabledBy;
 
   return {
@@ -635,10 +634,6 @@ export function mergeComponentIngestionGate(
     contributions: closed.contributions
   };
 }
-
-// -------------------------------------------------------------------------------------------
-// The database-backed half
-// -------------------------------------------------------------------------------------------
 
 /** The single source label for the instance tier, so the string a Decision explains itself with is
  *  not spelled twice. */

@@ -122,10 +122,8 @@ describe("M14.3 send-side coalesce bucket — at most one poke per window (SCOPE
     const key = "org-1:peer-1";
     // First signal in the window: allowed (leading edge → one poke).
     expect(limiter.tryConsume(key)).toBe(true);
-    // Subsequent signals in the SAME window: coalesced (dropped).
     expect(limiter.tryConsume(key)).toBe(false);
     expect(limiter.tryConsume(key)).toBe(false);
-    // A different peer has its own independent bucket.
     expect(limiter.tryConsume("org-1:peer-2")).toBe(true);
     // After the window refills, the first peer is allowed one more.
     clock += 5000;

@@ -299,7 +299,7 @@ export function freezeWindowStatus(
 export function activeAndUpcomingFreezes(freezes: Freeze[], now: Date): Freeze[] {
   return freezes
     .filter((f) => {
-      if (now.getTime() > new Date(f.endsAt).getTime()) return false; // window gone, lifted or not
+      if (now.getTime() > new Date(f.endsAt).getTime()) return false;
       return true;
     })
     .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
@@ -849,10 +849,6 @@ export function PlatformFreezeCard({
     </Card>
   );
 }
-
-// -------------------------------------------------------------------------------------------
-// The page
-// -------------------------------------------------------------------------------------------
 
 export function SetupPage(): React.JSX.Element {
   const executionSystemsQuery = useQuery({

@@ -28,7 +28,7 @@ describe("checkStaticComplexity (layer 1: static pre-validation)", () => {
   });
 
   it("rejects an expression past the max length", () => {
-    const huge = "1+".repeat(CEL_MAX_EXPRESSION_LENGTH); // way past the byte cap
+    const huge = "1+".repeat(CEL_MAX_EXPRESSION_LENGTH);
     expect(() => checkStaticComplexity(huge)).toThrow(CelSandboxError);
   });
 
@@ -247,7 +247,6 @@ describe("CelSandbox (layer 2: worker-thread isolation)", () => {
 
   it("rejects a pathologically deep evaluation context (fail-closed)", async () => {
     const sandbox = makeSandbox();
-    // Build a context nested deeper than CEL_MAX_CONTEXT_DEPTH.
     let deep: Record<string, unknown> = { leaf: true };
     for (let i = 0; i < CEL_MAX_CONTEXT_DEPTH + 5; i++) deep = { child: deep };
     const result = await sandbox.evaluate("has(subject)", { subject: deep });

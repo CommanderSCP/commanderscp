@@ -63,9 +63,8 @@ describe.skipIf(!opensslAvailable())(
     let orgId: string;
     let adminToken: string;
 
-    // The enrolled peers on the RECEIVER side.
-    let pokePeer: { domainId: string; leaf: TestLeafCert }; // receiver-side pokeMode = TRUE
-    let noPokePeer: { domainId: string; leaf: TestLeafCert }; // receiver-side pokeMode = FALSE
+    let pokePeer: { domainId: string; leaf: TestLeafCert };
+    let noPokePeer: { domainId: string; leaf: TestLeafCert };
 
     // The recording boss injected into deps — every accepted poke's wake lands here.
     let sends: Recorded[] = [];
@@ -479,7 +478,6 @@ describe.skipIf(!opensslAvailable())(
       pokeRateLimiter.reset();
     });
 
-    /** One mTLS poke from the enrolled high-side retrans. */
     async function poke(): Promise<{ status: number; json: Record<string, unknown> | undefined }> {
       return new Promise((resolve, reject) => {
         const req = https.request(

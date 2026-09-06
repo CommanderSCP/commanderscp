@@ -90,9 +90,9 @@ describe("M23.1g: what the bound removed comes back with what it kept", () => {
     const bounded = boundPersistedJson({ revision: "v1", images: ["a"], rollout: ROLLOUT }, 160);
     const stored = bounded.value as Record<string, unknown>;
     expect(stored.revision).toBe("v1"); // …the siblings really did survive, so this is not a
-    expect(stored.images).toEqual(["a"]); //  test of a budget that dropped everything
-    expect(stored.rollout).toBeUndefined(); // …the absence an operator would have to explain
-    expect(bounded.truncation?.rollout).toEqual({ dropped: true }); // …and the explanation
+    expect(stored.images).toEqual(["a"]);
+    expect(stored.rollout).toBeUndefined();
+    expect(bounded.truncation?.rollout).toEqual({ dropped: true });
 
     // AND THE NAME IS NOT RECOVERABLE FROM THE ROW. `__scpElided` is a COUNT; the report is the only
     // place the name survives, which is the whole reason it is a return value.
@@ -328,7 +328,7 @@ describe("M23.1g GATE: the bound may not remove content without emitting the sig
     };
     const bounded = boundPersistedJson(saturating, PERSISTED_JSON_MAX_CHARS);
     expect(bounded.truncation?.images?.droppedEntries).toBeGreaterThan(300);
-    expect(bounded.truncation?.revision).toBeUndefined(); // a 40-char SHA is not cut
+    expect(bounded.truncation?.revision).toBeUndefined();
     expect(bounded.truncation?.rollout).toBeUndefined(); // and the gate's leaf survives
   });
 });

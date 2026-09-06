@@ -570,7 +570,6 @@ describe("a split-shape Helm image is BUMPED, not merely detected", () => {
     const status = await plugin.status(ctx, ref);
     expect(status.phase).toBe("failed");
     expect(status.detail).toContain("anchor_not_derivable");
-    // NO CONTAINER AT ALL, and nothing written.
     expect(dockerCalls).toHaveLength(0);
     expect(calls.some((c) => c.method === "PUT" && c.url.includes("/contents/"))).toBe(false);
   });

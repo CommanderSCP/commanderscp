@@ -249,7 +249,6 @@ describe("a tombstoned wave target is never driven", () => {
       "soft-deleted"
     );
 
-    // The hash-chained audit event carries that decision_id.
     const event = (await auditFor(changeObjectId)).find(
       (e) => e.action === WAVE_TARGET_TOMBSTONED_AUDIT_ACTION
     );

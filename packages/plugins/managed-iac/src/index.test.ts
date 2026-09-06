@@ -109,7 +109,6 @@ vi.mock("node:child_process", () => {
           cb(err);
         }
       } else {
-        // cp / rm
         cb(null, { stdout: "", stderr: "" });
       }
     }
@@ -173,7 +172,6 @@ describe("@scp/plugin-managed-iac: container isolation (CRITICAL #1)", () => {
     const create = createCall();
     expect(create).toBeDefined();
     const args = create!.args;
-    // create --network none ... scp-runner-iac:vetted plan
     expect(args).toContain("--network");
     expect(args[args.indexOf("--network") + 1]).toBe("none");
     expect(args).toContain("scp-runner-iac:vetted");
@@ -292,7 +290,6 @@ describe("@scp/plugin-managed-iac: idempotency + secret redaction", () => {
       idempotencyKey: "same-key"
     });
     expect(second.externalId).toBe(first.externalId);
-    // No new `create` for the deduped call.
     expect(dockerCalls.filter((x) => x.args[0] === "create").length).toBe(createsAfterFirst);
   });
 

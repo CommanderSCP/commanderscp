@@ -88,7 +88,6 @@ describe("plans: CLI-driven no-op-on-second-apply (DoD (b))", () => {
         noops: 1
       });
 
-      // `scp plan-status` round-trips the second apply's plan id.
       const status = await cli.runJson<PlanJsonOutput>(["plan-status", secondApply.planId]);
       expect(status.status).toBe("applied");
     } finally {

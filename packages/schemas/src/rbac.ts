@@ -111,7 +111,6 @@ export const RoleBindingSchema = z.object({
 export type RoleBinding = z.infer<typeof RoleBindingSchema>;
 
 export const RoleBindingListQuerySchema = CursorPageQuerySchema.extend({
-  /** Filter to one subject's bindings. */
   subjectId: z.string().uuid().optional(),
   /** Filter to bindings written AT this exact object. Deliberately an exact match and not a
    *  containment walk: "who is bound at this service" and "whose authority reaches this service"

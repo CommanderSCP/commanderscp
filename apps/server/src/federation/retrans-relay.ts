@@ -134,7 +134,6 @@ export const RETRANS_RELAY_FORWARD_DECISION_KIND = "retrans-relay-forward";
 export interface RelayConfig {
   /** Source-side drop directory built tarballs are written into (`SCP_RELAY_OUT_DIR`). */
   outDir?: string;
-  /** Destination-side drop directory tarballs are read from (`SCP_RELAY_IN_DIR`). */
   inDir?: string;
   /** Fallback SOURCE repository (`host[:port]/path`) for OCI artifacts whose bundle carries no
    *  `location` (the export path records digests only) — pull ref = `<sourceRepo>@<digest>`
@@ -230,7 +229,6 @@ const RelayBundleArtifactSchema = z.object({
   type: z.enum(["oci", "blob"]),
   digest: z.string(),
   signatureRef: z.string().optional(),
-  /** OCI: layout dir (relative) of the image itself. */
   ociPath: z.string().optional(),
   ociTag: z.string().optional(),
   /** OCI: the registry-attached cosign signature artifact(s), each as an OCI layout + the tag it
@@ -239,7 +237,6 @@ const RelayBundleArtifactSchema = z.object({
    *  relay carries whichever exist(s) and re-creates the SAME tag(s) at the destination, keeping
    *  the receiving M17.4(b) `cosign verify` working regardless of the signing cosign's vintage. */
   ociSignatures: z.array(z.object({ tag: z.string(), path: z.string() })).optional(),
-  /** blob: byte + origin detached-signature files (relative). */
   blobPath: z.string().optional(),
   blobSigPath: z.string().optional()
 });
@@ -392,10 +389,6 @@ class RelaySourceRegistryReader extends LocationRegistryReader {
     return super.resolveBlob(artifact);
   }
 }
-
-// -------------------------------------------------------------------------------------------------
-// SOURCE SIDE — buildRelayTarball (pipeline steps 1–5).
-// -------------------------------------------------------------------------------------------------
 
 export interface BuildRelayTarballInput {
   orgId: string;

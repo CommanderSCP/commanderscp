@@ -247,10 +247,6 @@ export function BlastRadiusReport({
   );
 }
 
-// -------------------------------------------------------------------------------------------
-// Declare… dialog.
-// -------------------------------------------------------------------------------------------
-
 /** The producer picker's data — the components list as the dialog sees it. */
 export type ComponentsRead = ReadState<readonly GraphObject[]>;
 
@@ -518,10 +514,6 @@ export function DeclareDialogBody({
     </>
   );
 }
-
-// -------------------------------------------------------------------------------------------
-// Retract… dialog.
-// -------------------------------------------------------------------------------------------
 
 /**
  * The retract dialog's CONTENT, portal-free — exported for the test. Runs the preview

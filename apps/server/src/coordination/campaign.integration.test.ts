@@ -129,7 +129,7 @@ describe("campaigns (M5)", () => {
   it("compiles per-target member changes with correct wave ordering; wave 1 accepts while wave 2 is blocked by a failing required control; status aggregates; rollback reverts the accepted target", async () => {
     const infra = await createTestComponent(admin, { name: "camp-infra" });
     const app = await createTestComponent(admin, { name: "camp-app" });
-    await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra first
+    await admin.components.addDependsOn(app.id, infra.id);
 
     const failingControl = await createFailingControl(admin, org, "camp-fail-1", webhook.url);
     await requireControlOn(admin, org, "camp-fail-policy-1", app.id, failingControl.id);
@@ -283,7 +283,7 @@ describe("campaigns (M5)", () => {
 
     const infra = await createTestComponent(failAdmin, { name: "failwave-infra" });
     const app = await createTestComponent(failAdmin, { name: "failwave-app" });
-    await failAdmin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra is wave 0
+    await failAdmin.components.addDependsOn(app.id, infra.id);
 
     const campaign = await failAdmin.campaigns.propose({
       name: "patch failwave-infra then failwave-app",
@@ -475,7 +475,7 @@ describe("campaigns (M5)", () => {
     });
 
     const narrowActor = await createTestUser(server, org, [
-      { role: "Viewer", scope: org.orgId }, // POST /plans needs object:read at org root
+      { role: "Viewer", scope: org.orgId },
       { role: "Administrator", scope: ownDomain.id }
     ]);
     const narrowClient = new ScpClient({ baseUrl: server.baseUrl, token: narrowActor.token });
@@ -525,7 +525,7 @@ describe("campaigns (M5)", () => {
     // `relationships` by real object id — URN strings would never match).
     const infra = await createTestComponent(admin, { name: "camp-iac-urn-infra" });
     const app = await createTestComponent(admin, { name: "camp-iac-urn-app" });
-    await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra -> infra first
+    await admin.components.addDependsOn(app.id, infra.id);
 
     const stackName = `camp-iac-urn-${randomUUID().slice(0, 8)}`;
     const campaignUrn = `urn:scp:${stackName}:campaign:patch`;
@@ -614,7 +614,6 @@ describe("campaigns (M5)", () => {
     };
     const plan = await admin.plans.create(manifest);
     await expect(admin.plans.apply(plan.id)).rejects.toMatchObject({ status: 403 });
-    // No `coordinates` edge was created.
     const edges = await admin.relationships.list({
       fromId: campaign.id,
       typeId: "coordinates",
@@ -676,7 +675,6 @@ describe("campaigns (M5)", () => {
       })
     );
 
-    // Roll back the campaign.
     const rollbackResult = await admin.campaigns.rollback(
       campaign.id,
       "stray-edge test: revert true members only"

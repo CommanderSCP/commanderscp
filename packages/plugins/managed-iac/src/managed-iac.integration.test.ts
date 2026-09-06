@@ -165,7 +165,6 @@ describe.runIf(await dockerAvailable())(
         // Gate block, concretely proven: plan alone made no infrastructure change.
         expect(await readState(workspaceRoot)).toBeUndefined();
 
-        // ---- 2. APPROVE -> APPLY ----
         const applyRef = await plugin.trigger(ctx, {
           kind: "sync",
           targetRef: TARGET_REF,

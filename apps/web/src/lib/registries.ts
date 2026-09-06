@@ -29,17 +29,13 @@ export type RegistryClientKey =
   | "serviceAccounts";
 
 export interface RegistryConfig {
-  /** URL segment, e.g. `/deployment-targets`. */
   basePath: string;
-  /** Nav/heading label. */
   label: string;
-  /** Property name on `ScpClient` (packages/sdk/src/client.ts). */
   clientKey: RegistryClientKey;
   /** Lucide icon for this registry — drives the nav's catalog entries (design spec §3.1: Services
    *  `Layers`, Assemblies `Package`, Components `Box`) and the registry pages' empty states, so
    *  the allow-list mapping stays data-driven instead of a second hand-kept table. */
   icon: LucideIcon;
-  /** `object_types.id` this resource maps to (routes/typed-registries.ts `TYPED_REGISTRY_RESOURCES`). */
   typeId: string;
   /** Has `.addOwner()/.listOwners()/.removeOwner()` — domains/services/components/deploymentTargets only. */
   ownable: boolean;

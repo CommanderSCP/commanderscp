@@ -162,7 +162,6 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
   /** What `status()` reports for a merge run — the honest outcome the gate job records rather than
    *  assuming a dispatch means a merge. */
   let mergeRunPhase: "succeeded" | "failed" = "succeeded";
-  /** Every `readFileAtRef` the delegation probe performed. */
   const fileReads: { instanceId: string; repo?: string; path: string }[] = [];
   /** repo -> (path -> content). A path absent from the map answers `not_found`, which is what makes
    *  "this repository delegates" a property of the fixture repository rather than of a flag. */
@@ -410,7 +409,6 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
    * same line, and a second manifest in the same component, both collapsed onto one bump change.
    */
   async function subscribedComponent(options?: {
-    /** Files the fixture repository contains, e.g. a `renovate.json`. */
     files?: Record<string, string>;
     /** What `readFileAtRef` THROWS for this repository — an unreadable repository, not an empty one. */
     readFailure?: string;

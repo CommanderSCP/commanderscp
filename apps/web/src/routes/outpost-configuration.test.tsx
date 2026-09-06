@@ -759,7 +759,6 @@ describe("reconcile: the two removal outcomes are never one bucket", () => {
     expect(html).not.toContain('data-testid="reconcile-adopted"');
     expect(visibleText(html)).not.toMatch(/Adopted\s+as this domain/);
     expect(visibleText(html)).not.toMatch(/journals down to the outpost/);
-    // The other mirror: the honest branch is reached.
     expect(html).toContain('data-testid="reconcile-removed-none"');
     expect(visibleText(html)).toContain("Nothing needed removing");
   });

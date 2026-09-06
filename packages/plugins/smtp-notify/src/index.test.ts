@@ -158,7 +158,7 @@ describe("@scp/plugin-smtp-notify", () => {
   });
 
   it("does NOT attempt STARTTLS when the server doesn't advertise it", async () => {
-    activeServer = await startFakeSmtpServer(); // no STARTTLS in capabilities
+    activeServer = await startFakeSmtpServer();
     const result = await smtpNotifyPlugin.send(
       testCtx({
         host: "127.0.0.1",

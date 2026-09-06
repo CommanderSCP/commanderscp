@@ -327,7 +327,6 @@ describe("the M21.3 CLI formatters", () => {
     expect(row.delivery).toBe("-");
     expect(row.granularity).toBe("-");
 
-    // NEGATIVE CONTROL: present values are printed as themselves.
     const full = dependencySubscriptionResolutionRow(enabledResponse);
     expect(full.delivery).toBe("pull_request");
     expect(full.granularity).toBe("patch");
@@ -639,7 +638,6 @@ describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verb
     ).toBe(
       `ingestion: ok — no dependencies declared (read 2 manifest(s)) at ${at} (loop); manifests: acme/app:package.json=ok, acme/app:go.mod=ok`
     );
-    // ok + N rows: an ordinary receipt.
     expect(
       dependencyIngestionStampLine({
         lastAttemptAt: at,

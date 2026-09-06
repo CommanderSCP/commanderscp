@@ -401,7 +401,7 @@ export function loadFederationServerMtlsConfig(
   const crlFile = env.SCP_FEDERATION_SERVER_MTLS_CRL_FILE;
   const crlHardFailOnExpiry = env.SCP_FEDERATION_SERVER_MTLS_CRL_HARD_FAIL_ON_EXPIRY === "true";
 
-  if (!caFile && !certFile && !keyFile) return undefined; // in-app federation mTLS not configured.
+  if (!caFile && !certFile && !keyFile) return undefined;
   if (!caFile || !certFile || !keyFile) {
     throw new Error(
       "in-app federation mTLS: SCP_FEDERATION_SERVER_MTLS_CA_FILE, _CERT_FILE, and _KEY_FILE must " +

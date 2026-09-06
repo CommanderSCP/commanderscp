@@ -230,7 +230,6 @@ describe("loadDependencyIndexFeedBlob — verify, then install; never the other 
     expect(readDependencyIndexFeed({ SCP_DEPENDENCY_INDEX_FEED_DIR: feedDir })).toEqual({
       status: "absent"
     });
-    // And nothing was staged and left behind either.
     await expect(
       readFile(join(feedDir, `${DEPENDENCY_INDEX_FEED_FILE}.staging`))
     ).rejects.toThrow();

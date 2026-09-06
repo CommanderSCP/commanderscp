@@ -36,7 +36,7 @@ import { assertHostNotInternal } from "./egress.js";
 
 export interface SmtpNotifyConfig {
   host: string;
-  port?: number; // default 587
+  port?: number;
   /** `true` = implicit TLS from connect (typically port 465); `false`/omitted = plaintext then
    *  STARTTLS if the server advertises it (typically port 587/25). */
   implicitTls?: boolean;
@@ -92,7 +92,7 @@ function asConfig(config: unknown): SmtpNotifyConfig {
  * (metadata/link-local/loopback/private) — same class of hole as the webhook-notify one.
  */
 function checkAllowlist(host: string, allowedHosts: string[] | undefined): void {
-  if (!allowedHosts || allowedHosts.length === 0) return; // unscoped — see module/config doc.
+  if (!allowedHosts || allowedHosts.length === 0) return;
   if (!allowedHosts.includes(host)) {
     throw new Error(`smtp-notify: host '${host}' is not in the configured allowedHosts allowlist`);
   }
@@ -110,7 +110,7 @@ function readReply(socket: Socket | TLSSocket): Promise<{ code: number; lines: s
       const last = lines[lines.length - 1];
       if (!last) return;
       const isFinal = /^\d{3} /.test(last);
-      if (!isFinal) return; // still waiting on more continuation lines
+      if (!isFinal) return;
       cleanup();
       const code = Number(last.slice(0, 3));
       resolve({ code, lines });
@@ -237,7 +237,7 @@ async function send(ctx: PluginContext, msg: NotificationMessage): Promise<Deliv
       throw new Error(`smtp-notify: no verified address for host '${config.host}'`);
     }
     socket = await connectSocket(config, address);
-    await readReply(socket); // server greeting (220)
+    await readReply(socket);
     let ehlo = await expect(socket, `EHLO scp-notify`, [250]);
     const capabilities = ehlo.lines.join(" ").toUpperCase();
 

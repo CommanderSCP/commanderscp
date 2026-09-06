@@ -164,8 +164,6 @@ function startPgBossArgumentList(code: string): string {
 
 const mainCode = readStripped(MAIN_TS);
 
-// -------------------------------------------------------------------------------------------
-
 describe("the registry holds every router in the tree, exactly once (runtime identity census)", () => {
   it("registers each discovered router once — not zero times, not twice, and not a lookalike", () => {
     const registeredFactories = DOMAIN_EVENT_ROUTERS.map((entry) => entry.factory);

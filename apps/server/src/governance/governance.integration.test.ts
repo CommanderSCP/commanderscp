@@ -39,10 +39,6 @@ import {
  * exactly this).
  */
 
-// -----------------------------------------------------------------------------------------
-// Shared fixtures
-// -----------------------------------------------------------------------------------------
-
 interface TestWebhookServer {
   url: string;
   close(): Promise<void>;
@@ -212,8 +208,6 @@ async function waitForControlRun(
  *  local `sleep(graceMs); expect(state).toBe("executing")` it replaced was flaky by construction
  *  (it made the fixed grace double as the wait for the change to ARRIVE in `executing`, so a
  *  change that had not got there yet failed with the same message as one that had escaped). */
-
-// -----------------------------------------------------------------------------------------
 
 describe("governance integration (real graph, real subprocess plugin host)", () => {
   let server: ListeningTestServer;
@@ -1595,7 +1589,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       const control = await createScanControl(admin, org, {
         urnSuffix: "scan-pass",
         digest: MATCH_DIGEST,
-        severities: ["MEDIUM", "LOW"], // under the default (Critical=0, High=0) threshold
+        severities: ["MEDIUM", "LOW"],
         expectedDigest: MATCH_DIGEST
       });
       await createPolicy(admin, org, {
@@ -2105,7 +2099,7 @@ describe("governance integration: automatic rollback on wave failure", () => {
     await createPolicy(admin, org, {
       name: "auto-rollback-policy",
       urnSuffix: "auto-rollback",
-      enforcement: "advisory", // enforcement gates accept; autoRollbackOnFailure is independent of it
+      enforcement: "advisory",
       scopeObjectId: target.id,
       autoRollbackOnFailure: true
     });

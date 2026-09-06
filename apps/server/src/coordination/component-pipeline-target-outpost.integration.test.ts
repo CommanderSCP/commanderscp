@@ -555,7 +555,6 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
     expect(unplaced, "the unplaced stage is on the wire").toBeDefined();
     expect(unplaced!.outpost, "the SAME literal feeds `unplacedStages`").toEqual(expected);
 
-    // Still 1:1 per domain — self included.
     expect(await createOutpostStatus(selfDomainId), "a second self-bound object").toBe(409);
   });
 });

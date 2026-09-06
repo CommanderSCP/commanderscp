@@ -135,10 +135,6 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
     );
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // 1. THE ENABLEMENT-TIME CONFLICT REFUSAL
-  // ---------------------------------------------------------------------------------------------
-
   it("refuses to ENABLE subscriptions for a component whose repo delegates — naming the file found", async () => {
     const component = await createTestComponent(admin, {
       name: `dep-deleg-${randomUUID().slice(0, 8)}`
@@ -678,7 +674,6 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
     );
     expect(row?.processedAt).not.toBeNull();
     expect(row?.resultingChangeObjectId).toBe(changeObjectId);
-    // THE ASSERTION THAT MATTERS: nothing new was proposed.
     expect(await liveChangeCount()).toBe(before);
   });
 

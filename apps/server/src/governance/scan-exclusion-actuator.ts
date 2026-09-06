@@ -92,7 +92,6 @@ export interface ScanExclusionSetChangedInput {
   controlObjectIds: string[];
   gateKind: "lifecycle_edge" | "wave_boundary";
   gateRef: Record<string, unknown>;
-  /** The set the gate resolved on THIS pass. */
   exclusions: EffectiveScanExclusions | undefined;
 }
 

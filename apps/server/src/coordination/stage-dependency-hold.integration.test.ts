@@ -348,7 +348,6 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     const dependency = await componentAt("abandoned-dep", [gamma]);
     const dependant = await componentAt("abandoned-app", [gamma]);
 
-    // (1) The dependency's real deploy at gamma SUCCEEDS.
     const first = await release("abandoned-dep-first", [dependency.id]);
     executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
     await tick(3);
@@ -448,7 +447,6 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     const dependency = await componentAt("waiting-dep", [gamma]);
     const dependant = await componentAt("waiting-app", [gamma]);
 
-    // (1) The dependency's real deploy at gamma SUCCEEDS.
     const first = await release("waiting-dep-first", [dependency.id]);
     executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
     await tick(3);
@@ -498,7 +496,6 @@ describe("stage dependencies: the trigger hold (ADR-0028 increment 3)", () => {
     // states apart. This reads the census directly, at the one instant that distinguishes them.
     const dependency = await componentAt("coordinated-dep", [gamma]);
 
-    // (1) The dependency's real deploy at gamma SUCCEEDS.
     const first = await release("coordinated-dep-first", [dependency.id]);
     executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
     await tick(3);

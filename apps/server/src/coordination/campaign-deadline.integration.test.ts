@@ -578,7 +578,6 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     expect((blocked.json() as { status: string; deadline: unknown }).status).toBe("blocked");
     expect((blocked.json() as { deadline: unknown }).deadline).toEqual(deadline);
 
-    // THE EXIT.
     const cleared = await post(org, `/api/v1/campaigns/${campaignId}/deadline`, {
       deadline: null,
       reason: "the migration slipped; stop withholding changes while we re-plan"
@@ -790,7 +789,6 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
     const set = await asOperator({ deadline: { at: far }, reason: "this migration needs a date" });
     expect(set.statusCode, set.body).toBe(200);
 
-    // ---- SHORTEN. Likewise a tightening.
     const shortened = await asOperator({
       deadline: { at: near },
       reason: "pulling it in, the vendor shipped early"
@@ -818,7 +816,6 @@ describe("campaign deadline lock: this campaign's changes only (M25.6a / D4)", (
       "moving the deadline later releases exactly the targets a clear would"
     ).toBe(403);
 
-    // ---- CLEAR => 403. THE INVERSION ITSELF.
     const cleared = await asOperator({
       deadline: null,
       reason: "let us just drop the whole thing"

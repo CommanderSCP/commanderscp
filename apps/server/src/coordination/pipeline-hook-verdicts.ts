@@ -28,10 +28,6 @@ type ManifestPostDeployHook = z.infer<typeof ManifestPostDeployHookSchema>;
  * persist Decisions.
  */
 
-// ---------------------------------------------------------------------------------------------
-// 1. continuous — per-target hold (ManifestContinuousHookSchema)
-// ---------------------------------------------------------------------------------------------
-
 export interface ContinuousHoldVerdict {
   held: boolean;
   /** Absent when NOT held. Three distinct reasons, never collapsed: `failed` means the probe ran
@@ -88,10 +84,6 @@ export function evaluateContinuousHold(
 
   return { held: false, staleAfter: staleAfterIso, lastReportedAt };
 }
-
-// ---------------------------------------------------------------------------------------------
-// 2. bakeAlarms — the wave-boundary safety interlock (ManifestBakeAlarmsHookSchema)
-// ---------------------------------------------------------------------------------------------
 
 /** One alarm-state report, tagged with the server-stamped source it arrived from. `source` is
  *  never caller-supplied in the real system (see `AlarmStateEvidenceSchema`'s producer-stamping
@@ -242,10 +234,6 @@ export function evaluatePostDeployGate(
   if (evidence.outcome === "passed") return { outcome: "pass" };
   return { outcome: "fail" };
 }
-
-// ---------------------------------------------------------------------------------------------
-// 4. buildHookFreshnessContext — the Decision `inputContext` shape (HookFreshnessContextSchema)
-// ---------------------------------------------------------------------------------------------
 
 /** The subset of a `continuous` hook's declared shape this context needs. */
 export type FreshnessHookInput = Pick<ManifestContinuousHook, "hookId" | "maxAgeSeconds"> & {

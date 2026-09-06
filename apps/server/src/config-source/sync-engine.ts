@@ -71,7 +71,6 @@ export interface ConfigSourceSyncInput {
   /** The repo the commit landed in, as the trigger identified it. */
   repoIdentity: string;
   commitSha: string;
-  /** Paths the commit touched (`ExtractedHint.paths`). */
   changedPaths: readonly string[];
   /** Snapshotted by the caller and used for the whole run — the same rule `freezesByTarget`
    *  states for its own `now`: two manifests of one commit must not be evaluated against two
@@ -81,7 +80,6 @@ export interface ConfigSourceSyncInput {
   readManifest: (path: string) => Promise<ManifestRead>;
 }
 
-/** What one manifest path's sync attempt came to. */
 export interface ManifestSyncOutcome {
   path: string;
   /** Present once the manifest parsed far enough to name a stack. */

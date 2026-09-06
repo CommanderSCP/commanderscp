@@ -81,7 +81,6 @@ export interface ConnectDraft {
   name: string;
   serverUrl: string;
   token: string;
-  /** Blank ⇒ `defaultTokenKey(name)`, mirroring the CLI's optional `--token-key`. */
   tokenKey: string;
   allowInternalEgress: boolean;
 }
@@ -166,10 +165,6 @@ function ErrorNotice({ error, testId }: { error: unknown; testId: string }): Rea
     </p>
   );
 }
-
-// ---------------------------------------------------------------------------------------------
-// Step 1 — register
-// ---------------------------------------------------------------------------------------------
 
 export function RegisterStep({
   doors,
@@ -416,10 +411,6 @@ export function EnumerateStep({
     </Card>
   );
 }
-
-// ---------------------------------------------------------------------------------------------
-// Step 3 — review and import
-// ---------------------------------------------------------------------------------------------
 
 export function ReviewStep({ proposal }: { proposal: DiscoveryProposal }): React.JSX.Element {
   // WAS "3. Review and import", which called `discovery.accept` and wrote the whole proposal —

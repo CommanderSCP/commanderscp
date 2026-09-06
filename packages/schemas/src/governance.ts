@@ -212,7 +212,6 @@ export const FreezeSchema = z.object({
    *  response property is additive and oasdiff-safe (the rule is never to make an EXISTING required
    *  field optional). */
   liftedAt: z.string().datetime().nullable(),
-  /** The actor object that lifted it, or `null`. */
   liftedByActorId: z.string().uuid().nullable(),
   /** Why it was lifted — mandatory and non-empty whenever `liftedAt` is set, `null` otherwise. A
    *  lift is a governance LOOSENING that applies to everyone at once; `freeze:override` already
@@ -237,7 +236,7 @@ export const FreezeSchema = z.object({
 export type Freeze = z.infer<typeof FreezeSchema>;
 
 export const CreateFreezeRequestSchema = z.object({
-  scopeObjectId: z.string().min(1), // id or URN — resolved server-side
+  scopeObjectId: z.string().min(1),
   name: z.string().optional(),
   startsAt: z.string().datetime(),
   endsAt: z.string().datetime(),

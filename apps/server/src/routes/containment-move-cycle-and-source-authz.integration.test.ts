@@ -119,10 +119,6 @@ describe("a containment move may not build a cycle, and is authorized at both en
     return created.json().id as string;
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // C1 — a cycle has no org-root ancestor
-  // ---------------------------------------------------------------------------------------------
-
   it("moving an object under its own CHILD is refused — a two-hop cycle detaches both rows", async () => {
     const org = await createTestOrg(server, "cycle-one-hop");
     const parent = await makeService(org, "cycle-parent");
@@ -149,7 +145,6 @@ describe("a containment move may not build a cycle, and is authorized at both en
       200
     );
 
-    // And the row did not move.
     const after = await getService(org.adminToken, parent);
     expect((after.json() as { domainId: string | null }).domainId).toBe(org.orgId);
   });
@@ -389,7 +384,6 @@ describe("a containment move may not build a cycle, and is authorized at both en
     });
     expect(applied.statusCode, applied.body).toBe(400);
 
-    // Reachability survived the refusal.
     expect((await getService(org.adminToken, parent)).status).toBe(200);
     const after = await getService(org.adminToken, parent);
     expect((after.json() as { domainId: string | null }).domainId).toBe(org.orgId);

@@ -15,11 +15,11 @@ import { ExecutorTypeSchema } from "./executors.js";
  */
 
 export const CampaignStatusSchema = z.enum([
-  "proposed", // no plan compiled yet
+  "proposed",
   "active", // plan compiled, at least one wave in flight, none blocked/failed
   "blocked", // the active wave's boundary gate returned "block" (a policy/control did not pass)
   "failed", // a wave's member changes failed/were cancelled without recovering
-  "completed", // every wave succeeded
+  "completed",
   "partially_rolled_back", // some — but not all — accepted member changes have been rolled back
   "rolled_back" // every accepted member change has been rolled back
 ]);
@@ -580,7 +580,7 @@ export const OverrideCampaignDeadlineRequestSchema = z.object({
 export type OverrideCampaignDeadlineRequest = z.infer<typeof OverrideCampaignDeadlineRequestSchema>;
 
 export const CampaignSchema = z.object({
-  id: z.string().uuid(), // = the underlying graph object's id
+  id: z.string().uuid(),
   orgId: z.string().uuid(),
   urn: z.string(),
   name: z.string(),

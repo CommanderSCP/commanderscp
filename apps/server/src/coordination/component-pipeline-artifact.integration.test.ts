@@ -442,7 +442,6 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     await seedScan(change2.id, digest, { status: "pass", pluginModule: null });
     expect((await pipelineOf(component2.id)).artifact!.exportGate).toBe("fail");
 
-    // The admitted org-pipeline producer, same evidence, reads `pass`.
     await seedScan(change.id, digest, { status: "pass" });
     expect((await pipelineOf(component.id)).artifact!.exportGate).toBe("pass");
   });
@@ -676,7 +675,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     const digest = digestOf("8");
     const exporterDomainId = randomUUID();
     const promotedFromDomain = randomUUID();
-    const change = await proposeWith(component.id, { repo: "acme/checkout" }); // no digest yet
+    const change = await proposeWith(component.id, { repo: "acme/checkout" });
     expect(
       (await pipelineOf(component.id)).artifact,
       "nothing to pick before the stamp"
@@ -810,7 +809,6 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     expect(unparseable.signing.importedManifest).toBeNull();
     expect(unparseable.unknownFields).toEqual(["importedManifest:unparseable"]);
 
-    // An EMPTY-string signature is no signature.
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .update(changes)

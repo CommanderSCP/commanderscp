@@ -22,7 +22,6 @@ export const CursorPageQuerySchema = z.object({
 });
 export type CursorPageQuery = z.infer<typeof CursorPageQuerySchema>;
 
-/** Cursor-based pagination envelope, parameterized by item schema. */
 export function cursorPageResponseSchema<T extends z.ZodTypeAny>(item: T) {
   return z.object({
     items: z.array(item),

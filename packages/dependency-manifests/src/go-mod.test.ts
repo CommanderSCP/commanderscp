@@ -51,8 +51,8 @@ describe("parseGoMod", () => {
   const coords = deps.map((d) => d.coordinate);
 
   it("reads both the single-line and the block form of require", () => {
-    expect(coords).toContain("github.com/pkg/errors"); // single-line
-    expect(coords).toContain("github.com/spf13/cobra"); // block
+    expect(coords).toContain("github.com/pkg/errors");
+    expect(coords).toContain("github.com/spf13/cobra");
     expect(coords).toContain("k8s.io/apimachinery"); // block, after an interior comment
   });
 

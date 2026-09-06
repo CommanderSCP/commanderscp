@@ -34,9 +34,7 @@ const TAG_GENERALIZED_TIME = 0x18;
 
 interface Tlv {
   tag: number;
-  /** Offset of the first content byte. */
   contentStart: number;
-  /** Offset one past the last content byte. */
   contentEnd: number;
   /** Offset one past this whole TLV (== contentEnd; kept as a separate name for readability at
    *  call sites that advance a cursor). */
@@ -47,7 +45,7 @@ interface Tlv {
  *  if present; passes through unchanged if the input already looks like raw DER (starts with a
  *  SEQUENCE tag, 0x30, not the ASCII '-' of a PEM header). */
 function pemToDer(input: Buffer): Buffer {
-  if (input[0] === 0x30) return input; // already DER
+  if (input[0] === 0x30) return input;
   const text = input.toString("utf8");
   const base64 = text
     .replace(/-----BEGIN [^-]+-----/, "")
@@ -135,8 +133,8 @@ function parseAsn1Time(buf: Buffer, tlv: Tlv): Date {
  */
 export function parseCrlNextUpdate(pemOrDer: Buffer): Date | null {
   const der = pemToDer(pemOrDer);
-  const outer = readTlv(der, 0); // CertificateList SEQUENCE
-  const tbs = readTlv(der, outer.contentStart); // TBSCertList SEQUENCE
+  const outer = readTlv(der, 0);
+  const tbs = readTlv(der, outer.contentStart);
   let pos = tbs.contentStart;
 
   let field = readTlv(der, pos);
@@ -146,13 +144,13 @@ export function parseCrlNextUpdate(pemOrDer: Buffer): Date | null {
     pos = field.end;
     field = readTlv(der, pos); // now `signature` AlgorithmIdentifier
   }
-  pos = field.end; // past `signature` AlgorithmIdentifier
-  field = readTlv(der, pos); // `issuer` Name
   pos = field.end;
-  field = readTlv(der, pos); // `thisUpdate` Time
+  field = readTlv(der, pos);
+  pos = field.end;
+  field = readTlv(der, pos);
   pos = field.end;
 
-  if (pos >= tbs.contentEnd) return null; // nothing follows thisUpdate at all
+  if (pos >= tbs.contentEnd) return null;
   const next = readTlv(der, pos);
   if (next.tag !== TAG_UTC_TIME && next.tag !== TAG_GENERALIZED_TIME) {
     // The next field present is `revokedCertificates` (SEQUENCE, tag 0x30) or `crlExtensions`

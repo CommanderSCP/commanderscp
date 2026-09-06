@@ -265,9 +265,7 @@ afterEach(async () => {
   heldHandles.length = 0;
 });
 
-// ==================================================================================================
 describe("M23.5 HIGH-1: a Kubernetes `copyDir` that never settles cannot hold `run()` open", () => {
-  // ================================================================================================
   it("THE HUNG COPY-IN ENDS THE RUN WITHIN THE BOUND THE PORT STATES, instead of never ending it", async () => {
     const c = cluster({ hangCopyDir: true });
     const startedAt = Date.now();
@@ -383,9 +381,7 @@ describe("M23.5 HIGH-1: a Kubernetes `copyDir` that never settles cannot hold `r
   });
 });
 
-// ==================================================================================================
 describe("M23.5: the SAME port bounds the Docker adapter — one mechanism, not one per adapter", () => {
-  // ================================================================================================
   it("A `docker cp` WHOSE CHILD IGNORES SIGTERM DOES NOT HOLD `run()` OPEN EITHER", async () => {
     // Node's `execFile` timeout SIGTERMs the child and rejects only once the child exits. A child
     // wedged on a network mount takes the signal and does not exit, so `promisify(execFile)` never
@@ -432,9 +428,7 @@ describe("M23.5: the SAME port bounds the Docker adapter — one mechanism, not 
   });
 });
 
-// ==================================================================================================
 describe("M23.5: `RunDeadline.spend` — the refusal, at a boundary the process can actually land on", () => {
-  // ================================================================================================
   it("A STEP REACHED WITH LESS THAN THE MINIMUM BUDGET IS REFUSED, not issued with a doomed bound", async () => {
     // THE BOUNDARY `remaining <= 0` COULD NOT REACH, and it is the port primitive rather than an
     // adapter because the defect is in the primitive. `RunDeadline` measures the deadline with
@@ -514,9 +508,7 @@ describe("M23.5: `RunDeadline.spend` — the refusal, at a boundary the process 
   });
 });
 
-// ==================================================================================================
 describe("M23.5: `withStepBound` — the primitive both adapters are built on", () => {
-  // ================================================================================================
   it("WORK THAT IGNORES ITS BOUND IS ABANDONED AFTER EXACTLY ONE GRACE, and the message names both", async () => {
     const startedAt = Date.now();
     const err = await withStepBound({

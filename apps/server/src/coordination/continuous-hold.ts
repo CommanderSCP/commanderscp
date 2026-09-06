@@ -230,7 +230,6 @@ export function summarize(hookId: string, verdict: ContinuousHoldVerdict): strin
   }
 }
 
-/** One entry of a `continuous_test` Decision's `inputContext.held`. */
 export interface ContinuousHeldTargetRecord {
   targetObjectId: string;
   componentObjectId: string | null;

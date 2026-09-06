@@ -101,7 +101,6 @@ export interface GiteaConfig {
   serverUrl?: string;
   owner: string;
   repo: string;
-  /** `SecretsAccessor` key holding the Personal Access Token. */
   tokenSecretKey?: string;
   /** Fallback for tests/fixtures only — a plaintext PAT in config (never used in production; real
    *  deployments must use `tokenSecretKey`). */
@@ -225,7 +224,6 @@ export function verifyGiteaWebhookSignature(
   }
 }
 
-/** Gitea's populated shape of the provider-neutral `GitProviderEventHint`. */
 export type GiteaEventHint = GitProviderEventHint;
 
 /**
@@ -301,7 +299,6 @@ export function mapGiteaWebhookEventToHint(
  */
 interface GiteaActionRun {
   id: number;
-  /** unknown|waiting|running|success|failure|cancelled|skipped|blocked (Gitea ActionRunStatus). */
   status: string;
   html_url?: string;
   head_sha?: string;
@@ -319,7 +316,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   // client-side — which makes reading only the first page worse here than on github, not better:
   // every commit past the page boundary is dropped and the cursor moves on regardless. Paginated
   // (Gitea spells it `page`/`limit`) under the same budget — see MAX_POLL_PAGES.
-  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ limit: String(POLL_PAGE_SIZE), page: String(page) });
     const { status, body } = await api(
@@ -347,7 +344,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
       });
     }
     if (commits.length < servedPageSize) break; // shorter than the SERVED page — the last page.
-    if (sinceMs === undefined) break; // cold start reads one page — see MAX_POLL_PAGES.
+    if (sinceMs === undefined) break;
     const oldest = commits[commits.length - 1]?.commit?.author?.date;
     if (oldest && new Date(oldest).getTime() <= sinceMs) break;
   }
@@ -376,7 +373,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
-  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ limit: String(POLL_PAGE_SIZE), page: String(page) });
     const { status, body } = await api(
@@ -1013,7 +1010,6 @@ export function createGiteaExecutorPlugin(): ExecutorPlugin {
 // this PR's scope.
 // -------------------------------------------------------------------------------------------
 
-/** A Gitea contents-API entry — GitHub-compatible shape (`name`/`path`/`type`). */
 interface RepoContentEntry {
   name: string;
   path: string;
@@ -1094,10 +1090,6 @@ export const giteaDiscoveryPlugin: DiscoveryPlugin = { discover };
 export function createGiteaDiscoveryPlugin(): DiscoveryPlugin {
   return giteaDiscoveryPlugin;
 }
-
-// -------------------------------------------------------------------------------------------
-// Manifest
-// -------------------------------------------------------------------------------------------
 
 // `baseUrl` is intentionally NOT in `required` (M15.3b): a Mode-A `kind=gitea` execution-system
 // binding supplies the base URL as the injected `serverUrl` fallback instead. `owner`/`repo` stay

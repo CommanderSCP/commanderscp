@@ -83,7 +83,6 @@ export function matchingParen(source: string, open: number): number {
 }
 
 export interface ExportedDeclaration {
-  /** The exported name, as declared. */
   name: string;
   /** Everything after the parameter list's closing `)` — where the return type is, and therefore
    *  what a caller matches on to decide whether this declaration is of the kind it is counting. */

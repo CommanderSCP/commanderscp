@@ -161,9 +161,6 @@ describe("estate migration: export an unmanaged estate, apply it, adopt it", () 
     expect(spec.serviceUrn).toBe(service.urn);
     expect(spec.components).toHaveLength(1);
 
-    // ---------------------------------------------------------------------------------------
-    // 3. SYNTHESIZE AND APPLY what came out.
-    // ---------------------------------------------------------------------------------------
     const built = buildEstateManifest(spec);
     const plan = await applyManifest(built.manifest);
 

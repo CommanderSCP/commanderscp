@@ -184,7 +184,6 @@ export type DependencyObjectRef = z.infer<typeof DependencyObjectRefSchema>;
  * two REQUIRED properties added to a RESPONSE (oasdiff-safe — PR #222 precedent).
  */
 export const DependencyLineProducerViewSchema = DependencyLineProducerSchema.extend({
-  /** The producing component, named. Same object as `producerObjectId`. */
   producer: DependencyObjectRefSchema,
   /** The principal that asserted the declaration, named. Same object as `declaredByObjectId`. */
   declaredBy: DependencyObjectRefSchema
@@ -396,11 +395,9 @@ export type DependencySubscriptionDelivery = z.infer<typeof DependencySubscripti
  * that restated the policy document and dropped the constraint).
  */
 export const DependencySubscriptionEffectSchema = z.strictObject({
-  /** Absent = every ecosystem. */
   ecosystem: DependencyEcosystemSchema.optional(),
   /** Absent = every coordinate. Compared verbatim; see the class comment. */
   coordinate: DependencyCoordinateSchema.optional(),
-  /** Absent = every major line. */
   major: DependencyMajorLineSchema.optional(),
   /** `true` subscribes, `false` OPTS OUT. Required — absent never means enabled. */
   enabled: z.boolean(),
@@ -461,7 +458,6 @@ export type DependencySubscriptionContributed = z.infer<
 
 /** Why a found contribution was admitted to neither side of the AND. */
 export const DependencySubscriptionIgnoredReasonSchema = z.enum([
-  /** The effect did not parse against `DependencySubscriptionEffectSchema`. */
   "malformed",
   /** The contributing policy carries a CEL `condition`, and enablement resolution has no change
    *  context to evaluate one against. An unevaluable condition may never ENABLE (absent never means
@@ -481,7 +477,6 @@ export type DependencySubscriptionIgnoredReason = z.infer<
  */
 export const DependencySubscriptionContributionSchema = z.object({
   tier: DependencySubscriptionTierSchema,
-  /** Human-legible origin: `instance:dependency_subscription_unlock`, `policy:<name>@<objectId>`. */
   source: z.string(),
   /** For policy contributions, the `object_types.id` of the graph object the policy matched at —
    *  recorded verbatim, since the tier label above is DERIVED from it. */
@@ -801,9 +796,7 @@ export const DependencyInventoryBackfillComponentSchema = z.object({
    *  before this component was reached, so nothing was read and nothing was written. */
   verdict: z.enum(["not_enabled", "not_addressable", "superseded", "ingested", "not_attempted"]),
   detail: z.string(),
-  /** Dependency manifests read, parsed and written. */
   manifestsIngested: z.number().int().nonnegative(),
-  /** Declarations recorded across those manifests. */
   declarationsRecorded: z.number().int().nonnegative(),
   /**
    * Declarations DELETED because the manifest no longer declares them.
@@ -967,7 +960,6 @@ export const DependencyLineProducerVerbResponseSchema = z.object({
   coordinate: DependencyCoordinateSchema,
   /** `declare` | `retract`. Echoed so a stored response stands alone. */
   action: z.enum(["declare", "retract"]),
-  /** True when nothing was written. */
   dryRun: z.boolean(),
   /** The declaration as it now stands — `null` after a retraction, and `null` on a `dryRun` retract
    *  because the report describes the state the caller ASKED FOR. Named (the wire view). */
@@ -1110,7 +1102,6 @@ export const ComponentDependencyIngestionStampSchema = z.object({
       /** `ok` | `unreadable` | `unsupported` as the writer spells it (`IngestionStampManifest`);
        *  carried as a string so a future outcome word does not break a reader. */
       outcome: z.string(),
-      /** `component_dependencies` rows this manifest's last observation wrote. */
       rows: z.number().int().nonnegative(),
       /** When the pass that wrote this entry looked, ISO-8601. */
       at: z.string(),
@@ -1188,7 +1179,6 @@ export const ComponentDependencyInventoryRowSchema = z.object({
   line: z.object({
     id: z.string().uuid(),
     ecosystem: DependencyEcosystemSchema,
-    /** Verbatim — `@acme/lib` stays `@acme/lib`. */
     coordinate: DependencyCoordinateSchema,
     major: DependencyMajorLineSchema,
     /** `oci` only; `null` for the language ecosystems. */
@@ -1202,7 +1192,6 @@ export const ComponentDependencyInventoryRowSchema = z.object({
   resolvedDigest: z.string().nullable(),
   observedRepo: z.string().nullable(),
   observedRef: z.string().nullable(),
-  /** When the manifest was READ. */
   observedAt: z.string(),
   head: ComponentDependencyLineHeadSchema,
   /** The DECLARED producer of this line — `null` when none is declared, which is what a
@@ -1273,7 +1262,6 @@ export const ComponentDependencyBumpSchema = z.object({
   /** `owner/repo` as SCP recorded it — the authority for which repository the merge may touch. */
   repo: z.string(),
   baseBranch: z.string(),
-  /** `refs/heads/scp/dep-bump/<changeId>`. */
   authoredRef: z.string(),
   /** The pull request SCP opened; `null` until the authoring run reported one. */
   pullRequestNumber: z.number().int().nullable(),
@@ -1323,7 +1311,6 @@ export const ComponentDependencyBumpsResponseSchema = z.object({
   /** WHETHER DEPENDENCY MANAGEMENT HAPPENS ON THIS DEPLOYMENT (rule 4 above). Required. When
    *  `managedHere` is false, `rows` is not to be interpreted (nothing is ever dispatched there). */
   dependencyManagement: DependencyManagementSchema,
-  /** Newest dispatch first. */
   rows: z.array(ComponentDependencyBumpSchema),
   nextCursor: z.string().nullable()
 });

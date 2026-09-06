@@ -218,7 +218,6 @@ export function preferredObservedVersion(
 export const ComponentPipelineSourceMappingSchema = z.object({
   id: z.string().uuid(),
   sourceKind: z.string(),
-  /** The repo this rule matches. */
   repoPattern: z.string().nullable(),
   /** Path glob within the repo, or NULL meaning **the whole repo matches** — which is a much
    *  broader rule than it looks and must not render as an empty cell. Measured on the live estate:
@@ -420,7 +419,6 @@ export const ComponentPipelineStageSchema = z.object({
     /** Cluster name inside that account/region. Same reading rules as `substrate`. */
     cluster: z.string().nullable()
   }),
-  /** WHOSE DOMAIN maintains this place — see `ComponentPipelineDomainSchema`. */
   maintainedBy: ComponentPipelineDomainSchema,
   /** WHICH OUTPOST this place is part of — see `ComponentPipelineTargetOutpostSchema` (§10.2).
    *  Required: the server always resolves it (a state, never an omission), and a required additive
@@ -506,7 +504,6 @@ export type ComponentPipelineStage = z.infer<typeof ComponentPipelineStageSchema
  * case (a) ALARM — over what is really just an absence of a placement. The two must not look alike.
  */
 export const ComponentPipelineUnplacedStageSchema = z.object({
-  /** Position in the whole journey — see `ComponentPipelineStageSchema.order`. */
   order: z.number().int(),
   /** Never null: an unplaced stage exists ONLY because a wave declares it. */
   wave: ComponentPipelineWaveSchema,
@@ -586,10 +583,8 @@ export const ComponentPipelineScanRunSummarySchema = z.object({
   /** The scan METHOD (`trivy` / `trivy-vm` / `openscap`) — the managed step's `gateRef.method`
    *  when the run carries one, else the evidence's own `scanner`. */
   method: z.string(),
-  /** WHICH scanner produced the verdict, off the evidence. */
   scanner: ScanMethodSchema,
   scannerVersion: z.string(),
-  /** The digest the scanner ACTUALLY scanned (`evidence.artifactDigest`). */
   digest: z.string(),
   /** `evidence.digestMatch` — true iff the scanned digest equals the promoted one. Null only if
    *  the evidence omitted it (the schema requires it, so today never — kept nullable for an older

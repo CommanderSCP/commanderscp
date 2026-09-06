@@ -65,7 +65,6 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
    *  `scope.group` against, threaded exactly as the gate threads it. */
   let actorObjectId: string;
 
-  /** Components and lines shared by the work-list suite. */
   let subscribedComponent: string;
   let unsubscribedComponent: string;
   let lineWanted: DependencyLineKey;
@@ -395,7 +394,7 @@ describe("M21.3 dependency-subscription enablement (ADR-0032 §6, migration 0062
           actorObjectId
         })
       );
-      expect(matched.length).toBeGreaterThan(0); // the policies really did match
+      expect(matched.length).toBeGreaterThan(0);
       const merged = mergeContributorEffects(matched);
       expect(merged.requireControls).toEqual([]);
       expect(merged.requireApprovals).toEqual([]);

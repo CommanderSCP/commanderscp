@@ -55,7 +55,6 @@ export interface BehaviorHost {
   readonly stack: Stack;
   /** The pipeline's repo (D18 — always explicit on the pipeline itself). */
   readonly repo: string;
-  /** The pipeline's branch, if it declared one. */
   readonly branch?: string;
   /** The component this pipeline is attached to, or `undefined` at the shared rung. */
   readonly componentUrn?: string;

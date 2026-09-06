@@ -41,7 +41,7 @@ export const ChangeStateSchema = z.enum([
 export type ChangeState = z.infer<typeof ChangeStateSchema>;
 
 export const ChangeSchema = z.object({
-  id: z.string().uuid(), // = the underlying graph object's id (changes.object_id)
+  id: z.string().uuid(),
   orgId: z.string().uuid(),
   urn: z.string(),
   name: z.string(),
@@ -315,9 +315,7 @@ export const WaveTargetObservedSchema = z.object({
       z.object({
         /** The field is not in `observed` at all, and that is OUR doing. */
         dropped: z.boolean(),
-        /** Characters removed from strings inside this field. */
         droppedCharacters: z.number().int().nonnegative().optional(),
-        /** Array entries removed from lists inside this field. */
         droppedEntries: z.number().int().nonnegative().optional(),
         /** Object fields removed from objects inside this field. Their names are not
          *  recoverable below the root — the store keeps a count, not a list. */
@@ -783,7 +781,6 @@ export const SourceMappingSchema = z.object({
    *  otherwise match this row routes to nothing. `true` for every pre-0063 row (the default),
    *  which was already routing. */
   enabled: z.boolean(),
-  /** The timed close's bound, or null (see SetSourceMappingEnabledRequest). */
   disabledUntil: z.string().datetime().nullable(),
   /** The read-time truth the matcher acts on: `enabled`, OR a timed close whose bound has passed.
    *  Paint state from THIS. */
@@ -808,7 +805,7 @@ export const CreateSourceMappingRequestSchema = z.object({
   /** Glob matched against the event's git ref (`refs/heads/dev`), ADR-0030 §1. Omitted means "match
    *  any ref" — the pre-0057 behaviour, so an existing caller is unaffected. */
   refPattern: z.string().optional(),
-  component: z.string().min(1), // idOrUrn
+  component: z.string().min(1),
   /** The routing Type (ADR-0007). Omitted means 'configuration' (defaulted server-side in
    *  `source-mappings-repo.ts`). `.optional()` not `.default()`: a default renders the property
    *  REQUIRED in the generated SDK request type, an unnecessary extra request-shape break. */
@@ -862,7 +859,7 @@ export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingReque
  * surface) but never OVER-delete a route nobody asked to remove.
  */
 export const DeleteSourceMappingRequestSchema = z.object({
-  component: z.string().min(1), // idOrUrn
+  component: z.string().min(1),
   repoPattern: z.string().nullable(),
   pathPattern: z.string().nullable(),
   refPattern: z.string().nullable().optional(),

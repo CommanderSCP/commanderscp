@@ -52,7 +52,6 @@ export interface IsolatedDomain {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// apps/server/src/federation/test-support/isolated-domain.ts -> apps/server/drizzle (3 levels up)
 const migrationsFolder = path.resolve(__dirname, "../../../drizzle");
 
 let counter = 0;

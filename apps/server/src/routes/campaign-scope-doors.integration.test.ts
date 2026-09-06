@@ -112,7 +112,6 @@ describe("campaign get-by-id doors are scoped at the campaign (role-model §8.7 
   let serviceReader: TestUser;
   /** `Administrator` at `serviceA` — carries `object:write`, for the rollback door. */
   let serviceWriter: TestUser;
-  /** A live NON-campaign object, for the type-constraint cases. */
   let componentAId: string;
 
   beforeAll(async () => {

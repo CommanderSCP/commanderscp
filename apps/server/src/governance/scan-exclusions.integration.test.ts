@@ -238,10 +238,6 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     await trivy?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixtures
-  // -----------------------------------------------------------------------------------------
-
   async function buildChain(org: TestOrg, admin: ScpClient, label: string) {
     const containmentDomain = await admin.object("domain").create({ name: `dom-${label}` });
     const service = await admin
@@ -589,7 +585,6 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     const evidence = run.evidence as unknown as ScanEvidence;
     expect(evidence.threshold.maxHigh, "the errored ceiling still binds").toBe(9);
     expect(evidence.severityCounts.high).toBe(1);
-    // THE ARM THAT MATTERS: nothing was excluded.
     expect(run.evidence).not.toHaveProperty("exclusions");
 
     // NEGATIVE CONTROL — the same clause WITHOUT a condition does apply, so the refusal above is
@@ -827,10 +822,6 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     }
   });
 
-  // ===========================================================================================
-  // THE STORAGE CONTRACT
-  // ===========================================================================================
-
   it("G9: the admission table's class CHECK agrees with ScanExclusionClassSchema, and refuses anything else", async () => {
     // Two copies of one list is a cost migration 0074's header states rather than hides. This test
     // is what keeps them from drifting: a fifth class added to the schema and not to the CHECK would
@@ -934,7 +925,6 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     );
     expect((await admissionRows("trust_domain")).map((r) => r.class)).toEqual(["no_fix_available"]);
 
-    // ...and the total withdrawal.
     const empty = await operator.instanceScanExclusionAdmissions.put(
       "trust_domain",
       { origin: "local", classes: [] },

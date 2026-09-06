@@ -65,7 +65,6 @@ describe("placement: one component at one deployment target", () => {
       deploymentTarget: prod.id
     });
 
-    // The source of truth.
     expect(placement.typeId).toBe("placement");
     expect(placement.properties.componentId).toBe(comp.id);
     expect(placement.properties.deploymentTargetId).toBe(prod.id);
@@ -211,7 +210,6 @@ describe("placement: one component at one deployment target", () => {
       admin.placements.create({ component: comp.id, deploymentTarget: svc.id })
     ).rejects.toThrow();
 
-    // Nothing was written under either rejection.
     const all = await admin.placements.list({ deploymentTarget: tgt.id });
     expect(all.items).toHaveLength(0);
   });

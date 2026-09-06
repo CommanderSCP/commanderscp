@@ -94,9 +94,9 @@ const SRC_PULL_PASSWORD = "src-read-secret-13";
 const SRC_PULL_CRED = `puller:${SRC_PULL_PASSWORD}`;
 
 describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 registries + cosign + skopeo)", () => {
-  let commander: IsolatedDomain; // A — the exporter
-  let retrans: IsolatedDomain; // B — the CDS-boundary relay
-  let outpost: IsolatedDomain; // C — the receiving destination
+  let commander: IsolatedDomain;
+  let retrans: IsolatedDomain;
+  let outpost: IsolatedDomain;
 
   let srcRegistry: StartedTestContainer;
   let destRegistry: StartedTestContainer;
@@ -105,10 +105,10 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
   let destHost: string;
   let authedHost: string;
 
-  let blobServer: Server; // source-side blob byte channel (SBOM + sig)
+  let blobServer: Server;
   let blobBaseUrl: string;
   const blobStore = new Map<string, Buffer>();
-  let destBlobServer: Server; // destination-side blob byte channel (serves the relay's blobOutDir)
+  let destBlobServer: Server;
   let destBlobBaseUrl: string;
   let destBlobDir: string;
   let forbiddenServer: Server; // decoy host — must NEVER be dialed (axis c)
@@ -603,10 +603,6 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
     return rows.map((r) => r.action);
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // (a) FULL ROUND-TRIP — sequential steps sharing state.
-  // ---------------------------------------------------------------------------------------------
-
   it("exporter signs + exports; retrans imports (M17.4a) and the relay pulls, validates, and packages the signed tarball", async () => {
     // The "build executor" at A: image bytes in the SOURCE registry, cosign-signed with A's key;
     // SBOM blob + origin detached sig on the source blob channel.
@@ -868,7 +864,6 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
       process.stderr.write = originalWrite;
     }
     expect(result.refused).toBe(false);
-    // The push really landed, authenticated.
     expect(
       await registryHasDigest(authedHost, "scp/artifacts", goodImage.digest, DEST_PUSH_CRED)
     ).toBe(true);

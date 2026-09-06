@@ -172,7 +172,7 @@ describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", 
         },
         {
           id: "tenant-notify-empty-allowlist",
-          module: "webhook-notify", // the exact regression: empty allowedHosts (tenant default)
+          module: "webhook-notify",
           orgId: "org-1",
           scopeKey: "domain-1",
           config: { url: `${base}/hook` },
@@ -242,7 +242,7 @@ describe("SubprocessPluginHost: egress guard enforcement (M7 SSRF mitigation)", 
       await host.start([
         {
           id: "es-granted",
-          module: "webhook-notify", // tenant module, but its execution-system granted internal egress
+          module: "webhook-notify",
           orgId: "org-1",
           scopeKey: "domain-1",
           config: { url: `${base}/hook` },

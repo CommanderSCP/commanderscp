@@ -55,7 +55,6 @@ function onlyPeerEntry(body: StatusBody): JsonObject {
   return entry;
 }
 
-/** That entry's nested `peer` object. */
 function onlyPeer(body: StatusBody): JsonObject {
   return onlyPeerEntry(body).peer as JsonObject;
 }

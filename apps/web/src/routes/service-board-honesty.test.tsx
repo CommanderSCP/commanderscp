@@ -349,7 +349,6 @@ describe("service board as-of label: a snapshot is never painted as live status"
     const html = renderToStaticMarkup(
       <BoardAsOfLabel asOf={{ ...base, ageSeconds: 90, via: "live-pull", stale: false }} />
     );
-    // The number that actually governs the verdict.
     expect(html).toContain("120s");
     // ...and it is never claimed that 90s sits inside the 60s cadence.
     expect(html).not.toContain("Within commander-1&#x27;s effective sync cadence");
@@ -404,7 +403,6 @@ describe("service board as-of label: a snapshot is never painted as live status"
     delete asOf.stale;
     const html = renderToStaticMarkup(<BoardAsOfLabel asOf={asOf as ServiceBoardAsOf} />);
 
-    // the honest branch
     expect(html).toContain("no pull schedule");
     expect(html).toContain("not live status");
     // THE MUTANT'S OUTPUT — a freshness statement with nothing behind it

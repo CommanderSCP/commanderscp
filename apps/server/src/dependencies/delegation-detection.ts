@@ -347,16 +347,11 @@ function pathIsUnder(manifestPath: string, directory: string): boolean {
   return path === base || path.startsWith(`${base}/`);
 }
 
-// -------------------------------------------------------------------------------------------
-// The probe, and the Decision it records
-// -------------------------------------------------------------------------------------------
-
 export interface DelegationProbeSubject {
   /** The component whose enablement this verdict is about — the Decision's `subject_id`. */
   componentObjectId: string;
   /** The repository the component's manifests live in, as `changes.source_ref.repo` spells it. */
   repo: string;
-  /** The ref to read the configs at (`refs/heads/main`). */
   ref: string;
   /** The manifests this component is known to declare, from `component_dependencies`. Each carries
    *  its ecosystem so a narrowly-scoped delegation can be shown NOT to collide. */
@@ -376,7 +371,6 @@ export interface DelegationProbeResult {
    * readable. See {@link delegationProbeIsInconclusive}.
    */
   conclusive: boolean;
-  /** The configs found, whether or not they collide. */
   configs: DelegationConfig[];
   /** For each colliding config, which of the component's manifests it claims. */
   collisions: { configPath: string; tool: DelegationTool; manifestPaths: string[] }[];

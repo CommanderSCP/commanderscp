@@ -213,7 +213,6 @@ async function readUnlockForApi(tx: TenantTx): Promise<DependencySubscriptionUnl
 export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();
 
-  // GET the instance unlock — tenant-readable.
   typed.route({
     method: "GET",
     url: "/api/v1/instance/dependency-subscription-unlock",

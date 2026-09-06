@@ -434,7 +434,6 @@ describe("status()", () => {
 
     expect(appScope.isDone()).toBe(true);
     expect(resourceScope.isDone()).toBe(true);
-    // TERMINAL, despite the rollout being mid-canary.
     expect(result.phase).toBe("succeeded");
     expect(result.progress).toBe(1);
     // ...and the weight this snapshot freezes at is a PARTIAL one.
@@ -583,7 +582,6 @@ describe("status()", () => {
     });
 
     expect(result.observed).toBeUndefined();
-    // stateRef still captured even with no images.
     expect(result.stateRef).toBe("abc123");
   });
 
@@ -648,7 +646,6 @@ describe("status()", () => {
       step: 2,
       weight: 40
     });
-    // No regression: revision still reported.
     expect(result.stateRef).toBe("abc123");
   });
 
@@ -714,7 +711,6 @@ describe("status()", () => {
 
     expect(appScope.isDone()).toBe(true);
     expect(result.observed?.rollout).toBeUndefined();
-    // The image half of observed is unaffected.
     expect(result.observed?.images).toEqual(["ghcr.io/x/y:1.2.3"]);
   });
 
@@ -1171,7 +1167,6 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
       .get("/api/v1/applications")
       .reply(200, {
         items: [
-          // single-source
           {
             metadata: { name: "web-prod" },
             spec: { source: { repoURL: "https://github.com/acme/web", path: "deploy" } }
@@ -1194,7 +1189,7 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
     expect(web?.properties?.sourceRepo).toBe("https://github.com/acme/web");
     expect(web?.properties?.sourcePath).toBe("deploy");
 
-    expect(proposal.sourceMappings).toHaveLength(2); // web + api; cache has no source
+    expect(proposal.sourceMappings).toHaveLength(2);
     const webMap = proposal.sourceMappings?.find((m) => m.objectName === "web-prod");
     expect(webMap).toMatchObject({
       sourceKind: "github",
@@ -1215,7 +1210,6 @@ describe("discover() (M12 P3 — import an existing Argo CD)", () => {
     expect(
       proposal.sourceMappings?.find((m) => m.objectName === "api-prod")?.pathPattern
     ).toBeUndefined();
-    // The source-less app proposes no mapping.
     expect(proposal.sourceMappings?.some((m) => m.objectName === "cache")).toBe(false);
     expect(
       proposal.objects.find((o) => o.name === "cache")?.properties?.sourceRepo

@@ -140,10 +140,6 @@ describe("source-mapping write doors are scoped at the component, credential doo
     return { mine: mine.id, theirs: theirs.id };
   }
 
-  // -------------------------------------------------------------------------------------------
-  // The re-scoped doors
-  // -------------------------------------------------------------------------------------------
-
   it("PATCH .../mappings/{id}: a component-bound admin flips THEIR mapping's pause switch and not a sibling's", async () => {
     const kind = `pause-${randomUUID().slice(0, 8)}`;
     const { mine, theirs } = await seed(kind);

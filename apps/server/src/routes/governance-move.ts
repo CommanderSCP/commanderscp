@@ -299,7 +299,6 @@ export function registerGovernanceMoveRoutes(app: FastifyInstance, deps: AppDeps
     }
   });
 
-  // THE INSTANCE RUNG — tenant-readable.
   typed.route({
     method: "GET",
     url: "/api/v1/instance/governance-move-enforcement",

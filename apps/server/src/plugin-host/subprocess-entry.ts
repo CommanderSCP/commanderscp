@@ -307,7 +307,7 @@ function loadFederationMtlsMaterial(): { cert: string; key: string; ca?: string 
   const certFile = process.env.SCP_FEDERATION_MTLS_CERT_FILE;
   const keyFile = process.env.SCP_FEDERATION_MTLS_KEY_FILE;
   const caFile = process.env.SCP_FEDERATION_MTLS_CA_FILE;
-  if (!certFile && !keyFile) return undefined; // mTLS not configured for this deployment.
+  if (!certFile && !keyFile) return undefined;
   if (!certFile || !keyFile) {
     throw new Error(
       "federation-https mTLS: both SCP_FEDERATION_MTLS_CERT_FILE and SCP_FEDERATION_MTLS_KEY_FILE " +

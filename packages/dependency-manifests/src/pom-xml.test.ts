@@ -132,10 +132,10 @@ describe("parsePomXml", () => {
   it("excludes dependencyManagement, plugins, profiles, exclusions and the parent", () => {
     // Each of these is a `<dependency>`- or `<version>`-shaped element that a name-matching parser
     // reports as a dependency the module does not actually have.
-    expect(coords).not.toContain("org.testcontainers:testcontainers-bom"); // dependencyManagement
-    expect(coords).not.toContain("org.apache.maven.plugins:maven-surefire-plugin"); // build/plugins
-    expect(coords).not.toContain("org.graalvm.buildtools:native-maven-plugin"); // profiles
-    expect(coords).not.toContain("org.never:appears"); // exclusions
+    expect(coords).not.toContain("org.testcontainers:testcontainers-bom");
+    expect(coords).not.toContain("org.apache.maven.plugins:maven-surefire-plugin");
+    expect(coords).not.toContain("org.graalvm.buildtools:native-maven-plugin");
+    expect(coords).not.toContain("org.never:appears");
     expect(coords).not.toContain("org.springframework.boot:spring-boot-starter-parent"); // parent
   });
 

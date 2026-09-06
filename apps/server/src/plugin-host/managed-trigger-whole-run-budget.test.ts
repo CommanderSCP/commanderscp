@@ -33,7 +33,6 @@ import { SubprocessPluginHost } from "./host.js";
  * fast fake executor. Passing options here would delete the test.
  */
 
-/** The tenant's whole-run budget for these runs. */
 const RUN_BUDGET_MS = 7_000;
 /** What each of `create` / `cp` / `start` costs. Four such steps = 12s of work in a 7s budget. */
 const STEP_SECONDS = 3;
@@ -181,7 +180,6 @@ describe("M23.1e: a MULTI-STEP managed run through a DEFAULT-CONSTRUCTED host ca
     const fake = await makeSlowFakeDocker();
     const config = await managedIacConfig(fake, RUN_BUDGET_MS);
 
-    // THE WHOLE POINT: no options. `host-bootstrap.ts` verbatim.
     host = new SubprocessPluginHost();
     await host.start([
       {

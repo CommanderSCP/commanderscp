@@ -16,7 +16,6 @@
 // and, since this consolidation, `deploy/airgap`'s skopeo/build-bundle/verify-bundle callers too.
 export { run, which, CommandError, type RunResult, type RunOptions } from "./exec.js";
 
-// Binary resolution + provenance assertion (E1 pinned-vs-probe).
 export {
   PINNED_COSIGN_VERSION,
   PINNED_COSIGN_IMAGE,
@@ -44,7 +43,6 @@ export {
   type ResolvedSkopeo
 } from "./skopeo-bin.js";
 
-// Keyful/offline signing + verification wrapper.
 export {
   cosignAvailable,
   resolveSigningKey,

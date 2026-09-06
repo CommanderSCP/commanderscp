@@ -92,7 +92,7 @@ async function passwordMatchesLiveRole(
  *  every other `pg_advisory_*` key in the codebase (db-clone.ts's `0x5c70c10e`, the per-org audit/
  *  journal `hashtext(orgId)` locks, coordination/advisory-lock.ts's change keys). Paired with
  *  `hashtext(role)` as the second int, so the lock is per-role. */
-const PROVISION_ADVISORY_CLASSID = 0x5c_70_50_72; // "SCP Pr"(ovision)
+const PROVISION_ADVISORY_CLASSID = 0x5c_70_50_72;
 
 async function ensureManagedRolePassword(
   adminPool: pg.Pool,

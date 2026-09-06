@@ -63,7 +63,7 @@ describe("parseOscapResult — severity mapping", () => {
     const xml = xccdf([
       { sev: "unknown", result: "fail" },
       { sev: "info", result: "fail" },
-      { result: "fail" }, // no severity attribute at all
+      { result: "fail" },
       { sev: "high", result: "fail" }
     ]);
     expect(parseOscapResult(xml).severityCounts).toEqual({
@@ -215,7 +215,7 @@ describe("the Trivy-DB staleness gate covers the machine-image arm", () => {
       saved[k] = process.env[k];
     }
     process.env.SCP_MANAGED_SCAN_RUNNER_IMAGE = "scp-runner-scan:unit-test";
-    process.env.SCP_MANAGED_SCAN_DB_CACHE = emptyCache; // configured, but carries no db/trivy.db
+    process.env.SCP_MANAGED_SCAN_DB_CACHE = emptyCache;
     process.env.SCP_ARTIFACT_OCI_REGISTRY_HOSTS = "registry.example.test";
   });
 

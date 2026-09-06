@@ -56,7 +56,6 @@ export interface RoleBindingProps {
   subject: IResourceRef | string;
   /** Built-in name (`Owner`, `OrgAdmin`, …) or an org role's name. */
   role: string;
-  /** The object at-or-below which the role grants. */
   scope: IResourceRef | string;
   /** Mandatory — the operator's own words, which the Decision cannot reconstruct. */
   reason: string;

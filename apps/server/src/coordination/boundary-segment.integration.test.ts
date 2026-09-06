@@ -138,10 +138,6 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     await outpostB.close();
   });
 
-  // -------------------------------------------------------------------------------------------
-  // Fixture helpers
-  // -------------------------------------------------------------------------------------------
-
   /** A minimal `user` + Approver role binding, so `castApprovalVote`'s eligibility check passes. */
   async function createApprover(domain: IsolatedDomain): Promise<string> {
     return withTenantTx(domain.db, domain.orgId, async (tx) => {
@@ -304,7 +300,6 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
   it("surfaces a REAL transfer per change on BOTH sides, joined by the real bundle checksum", async () => {
     const { commanderChangeId, bundle } = await promoteBlobChange();
 
-    // --- COMMANDER SIDE, right after export. -------------------------------------------------
     const exported = await segmentAt(commander, commanderChangeId);
     expect(exported).not.toBeNull();
     // A REAL transfer: the hop is the actual `bundle_transfers` row, carrying the actual Ed25519
@@ -325,7 +320,6 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     expect(exported!.unknownFields).toContain("transfer.handoff");
     commanderNeverClaimsVerified("after export, before import", exported!);
 
-    // --- OUTPOST SIDE, after import. ---------------------------------------------------------
     const imported = await importPromotionBundle(outpost.db, outpost.orgId, bundle);
     const received = await segmentAt(outpost, imported.localChangeObjectId);
     expect(received).not.toBeNull();
@@ -374,7 +368,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     expect(verified!.validate.decisionId).toBe(gate.decisionId);
     expect(verified!.validate.observedAt).toEqual(expect.any(String));
     expect(verified!.validate.authorizedArtifactCount).toBe(1);
-    expect(verified!.unknownFields).toEqual([]); // the outpost can see everything it reports
+    expect(verified!.unknownFields).toEqual([]);
 
     // THE CENTRAL CLAIM. A real verification just succeeded — at the OUTPOST. The commander has no
     // data path to that outcome, so its segment is byte-for-byte as honest as before.
@@ -400,7 +394,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     expect(refused!.validate.state).toBe("refused");
     // Charter principle 6: the refusal is explainable — the Decision id is on the wire.
     expect(refused!.validate.decisionId).toBe(gate.decisionId);
-    expect(refused!.transfer.state).toBe("received"); // the transfer really did happen
+    expect(refused!.transfer.state).toBe("received");
 
     // THE COUNT IS NULL ON A REFUSAL. This promotion authorized exactly ONE artifact and ZERO were
     // verified — the bytes were absent. The count is sourced from the Decision's
@@ -505,7 +499,7 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
       exportTo(outpost, changeId),
       exportTo(outpostB, changeId)
     ]);
-    expect(bundleA.checksum).not.toBe(bundleB.checksum); // different peers ⇒ different bundles
+    expect(bundleA.checksum).not.toBe(bundleB.checksum);
 
     const row = await withTenantTx(commander.db, commander.orgId, (tx) =>
       getChangeRow(tx, commander.orgId, changeId)

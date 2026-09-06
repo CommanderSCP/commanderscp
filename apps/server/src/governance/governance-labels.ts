@@ -144,7 +144,6 @@ export async function assertMayWriteGovernanceLabels(
   args: {
     orgId: string;
     actorObjectId: string;
-    /** The stored labels. `{}` on a create. */
     before: Record<string, unknown>;
     /** The labels about to be stored — the value, not the request field. */
     after: Record<string, unknown>;

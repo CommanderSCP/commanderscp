@@ -82,10 +82,6 @@ export function dependencyVersionPollIntervalSeconds(env: NodeJS.ProcessEnv = pr
   return Math.max(300, Number(env.SCP_DEPENDENCY_VERSION_POLL_INTERVAL_SECONDS ?? 86_400));
 }
 
-// -------------------------------------------------------------------------------------------
-// The role guard
-// -------------------------------------------------------------------------------------------
-
 export interface DependencyVersionPollRoleVerdict {
   allowed: boolean;
   /** Why — carried so the boot log says which of the two axes refused, rather than staying silent
@@ -168,17 +164,12 @@ export function dependencyVersionPollRoleGuard(
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// One org's tick
-// -------------------------------------------------------------------------------------------
-
 /** What the tick did about ONE line — returned for tests and logging, never persisted as such. */
 export interface PolledLineResult {
   lineId: string;
   outcome: LineHeadOutcome;
   /** The Decision id standing on the record afterwards (a fresh row, or the restated existing one). */
   decisionId: string;
-  /** False when `insertDecisionIfChanged` suppressed a byte-identical restatement. */
   decisionCreated: boolean;
   /** True when the observation trio was written. False for every non-`observed` outcome — NOTHING is
    *  recorded when a version could not be determined (ADR-0032 §7) — AND false when the write door
@@ -559,7 +550,6 @@ async function pollWork(
   return results;
 }
 
-/** Every org, one tick — mirrors `runObserveSweep`. */
 export async function runDependencyVersionPollSweep(
   db: Db,
   deps: DependencyVersionPollDeps

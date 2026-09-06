@@ -165,7 +165,6 @@ describe("M17.3 E5: cosign public-key distribution (Testcontainers)", () => {
     expect(current?.publicKey).toBe(ed.publicKey);
     expect(current?.cosignPublicKey).toBe(peerCosign);
 
-    // Surfaced by getPeerByIdOrName and listPeers.
     const byId = await withTenantTx(commander.db, commander.orgId, (tx) =>
       getPeerByIdOrName(tx, commander.orgId, selfOutpost.domainId)
     );
@@ -294,7 +293,6 @@ describe("M17.3 E5: cosign public-key distribution (Testcontainers)", () => {
       );
       expect(c0?.cosignPublicKey).toBeNull();
 
-      // Now register a cosign key.
       const cosign = "-----BEGIN PUBLIC KEY-----\nADDITIVE-COSIGN\n-----END PUBLIC KEY-----\n";
       await withTenantTx(domain.db, domain.orgId, (tx) =>
         pairPeer(tx, {

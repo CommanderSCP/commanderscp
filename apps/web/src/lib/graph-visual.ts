@@ -54,15 +54,15 @@ export function sizeForType(typeId: string | undefined): number {
  * FILL, and the two must stay readable together.
  */
 export const GROUP_PALETTE = [
-  "#2563eb", // blue
-  "#7c3aed", // violet
-  "#0d9488", // teal
-  "#c026d3", // fuchsia
-  "#0891b2", // cyan
-  "#4f46e5", // indigo
-  "#9333ea", // purple
-  "#0284c7", // sky
-  "#7e22ce", // deep purple
+  "#2563eb",
+  "#7c3aed",
+  "#0d9488",
+  "#c026d3",
+  "#0891b2",
+  "#4f46e5",
+  "#9333ea",
+  "#0284c7",
+  "#7e22ce",
   "#1d4ed8" // deep blue
 ];
 

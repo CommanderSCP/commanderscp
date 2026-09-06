@@ -85,16 +85,12 @@ describe("base64DecodedByteLength", () => {
     const flat = Buffer.from(text, "utf8").toString("base64");
     const wrapped = (flat.match(/.{1,60}/g) ?? []).join("\n");
 
-    expect(wrapped).toContain("\n"); // the fixture really is wrapped (guards the guard)
+    expect(wrapped).toContain("\n");
     expect(base64DecodedByteLength(wrapped)).toBe(300);
     // Mutation control: without the strip, the newlines inflate the count.
     expect(base64DecodedByteLength(wrapped)).not.toBe(Math.floor((wrapped.length * 3) / 4));
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// decodeBoundedBase64 — the gates
-// -------------------------------------------------------------------------------------------
 
 describe("decodeBoundedBase64", () => {
   it("decodes a normal base64 payload and reports the resolved commit sha and decoded byte length", () => {
@@ -269,10 +265,6 @@ describe("decodeBoundedBase64", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// Path / ref URL safety
-// -------------------------------------------------------------------------------------------
-
 describe("assertSafeRepoPath", () => {
   it("accepts an ordinary nested repo-relative path", () => {
     expect(() => assertSafeRepoPath("p", "services/api/package.json")).not.toThrow();
@@ -308,7 +300,7 @@ describe("assertSafeRef", () => {
       "refs/heads/main",
       "refs/tags/v1.2.3",
       "v1.2.3",
-      "9f".repeat(20), // a 40-hex commit sha
+      "9f".repeat(20),
       "user@example.com-branch"
     ]) {
       expect(() => assertSafeRef("p", ref), ref).not.toThrow();
@@ -357,7 +349,6 @@ describe("assertSafeRepo", () => {
   it("accepts the shapes each provider actually addresses", () => {
     expect(() => assertSafeRepo("github", "acme/widgets", 2)).not.toThrow();
     expect(() => assertSafeRepo("gitea", "acme-org/my_repo.git-ish", 2)).not.toThrow();
-    // GitLab nests, so it asserts no count.
     expect(() => assertSafeRepo("gitlab", "group/subgroup/repo")).not.toThrow();
   });
 
@@ -450,10 +441,6 @@ describe("encodePathSegments", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// Failure classification — redirects and transport/egress
-// -------------------------------------------------------------------------------------------
-
 describe("assertNoRedirect", () => {
   it("passes 2xx and 4xx/5xx straight through (they are the adapter's own business)", () => {
     for (const status of [200, 204, 404, 422, 500]) {
@@ -484,7 +471,6 @@ describe("assertNoRedirect", () => {
 
 describe("wrapProviderRequestError", () => {
   it("re-states an egress-guard denial with the self-hosted case named, and preserves the cause", () => {
-    // The exact marker the guard sets (apps/server/src/plugin-host/egress-guard.ts:83).
     const blocked = Object.assign(
       new Error("egress guard: host 'gitea.internal' resolves to private 10.0.0.5"),
       { egressBlocked: true as const }
@@ -493,7 +479,7 @@ describe("wrapProviderRequestError", () => {
 
     expect(wrapped.message).toMatch(/refused by the plugin egress guard/);
     expect(wrapped.message).toMatch(/self-hosted gitea/);
-    expect(wrapped.message).toMatch(/10\.0\.0\.5/); // the guard's own detail survives
+    expect(wrapped.message).toMatch(/10\.0\.0\.5/);
     expect(wrapped.cause).toBe(blocked);
     expect(wrapped.provider).toBe("gitea");
 

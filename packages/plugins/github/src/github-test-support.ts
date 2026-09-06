@@ -26,10 +26,6 @@ import type {
 import { scopedHttpResponseTooLargeError } from "@scp/plugin-api";
 import type { GithubConfig } from "./index.js";
 
-// -------------------------------------------------------------------------------------------
-// Real (nock-interceptable) ScopedHttpClient
-// -------------------------------------------------------------------------------------------
-
 /**
  * Builds a `ScopedHttpClient` backed by Node's `http`/`https` core modules — see module doc for
  * why this, and not `fetch`, is what makes `nock` fixtures actually apply.
@@ -155,10 +151,6 @@ export function isValidTestAppJwt(headerValue: string | undefined, expectedAppId
   }
 }
 
-// -------------------------------------------------------------------------------------------
-// Config / ctx builders
-// -------------------------------------------------------------------------------------------
-
 /** Fresh appId/installationId by default (unless overridden) — index.ts's installation-token
  *  cache is keyed module-wide by `appId:installationId`, so reusing the SAME identity across
  *  tests in one file would silently serve a cached token and skip the token-exchange HTTP call
@@ -207,10 +199,6 @@ export function buildTestCtx(
     config
   };
 }
-
-// -------------------------------------------------------------------------------------------
-// Nock fixture helpers
-// -------------------------------------------------------------------------------------------
 
 /** The deterministic installation token this helper's token-exchange fixture always issues for a
  *  given config, so callers can assert later API calls carry EXACTLY this token. */

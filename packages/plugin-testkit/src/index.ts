@@ -116,7 +116,7 @@ export function runExecutorConformanceSuite(
     it("trigger() returns an ExternalRunRef with a non-empty externalId", async () => {
       const { plugin, ctx } = await factory();
       const caps = plugin.describeCapabilities();
-      if (!caps.supportsTrigger) return; // capability-gated, per the contract's own vocabulary
+      if (!caps.supportsTrigger) return;
 
       const kind = caps.triggerKinds[0] ?? "custom";
       const ref = await plugin.trigger(ctx, { kind, targetRef: "conformance-target" });

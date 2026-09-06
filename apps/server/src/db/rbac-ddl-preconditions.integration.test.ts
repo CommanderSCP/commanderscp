@@ -137,10 +137,6 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (a) roles_builtin_name_key
-  // -----------------------------------------------------------------------------------------
-
   it("refuses a SECOND built-in role with an existing name — the arbiter index 0002's seed never had", async () => {
     await expectSqlState(
       () =>
@@ -219,10 +215,6 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
     await admin.query(`DELETE FROM roles WHERE org_id = $1 AND name = 'Duplicated'`, [org.orgId]);
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (b) role_bindings_grant_key
-  // -----------------------------------------------------------------------------------------
-
   it("refuses a DUPLICATE grant — the row that would survive a revoke of its twin", async () => {
     await expectSqlState(
       () =>
@@ -251,10 +243,6 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
       [org.orgId, viewerUser.objectId]
     );
   });
-
-  // -----------------------------------------------------------------------------------------
-  // (c) role_bindings_effect_check
-  // -----------------------------------------------------------------------------------------
 
   it.each(["ALLOW", "Allow", "allowed", "DENY", "", " allow"])(
     "refuses effect=%p — a value authz/resolve.ts reads as neither allow nor deny",
@@ -296,10 +284,6 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
       "23514"
     );
   });
-
-  // -----------------------------------------------------------------------------------------
-  // (d) GRANT DELETE ON role_bindings TO scp_app
-  // -----------------------------------------------------------------------------------------
 
   describe("scp_app's DELETE grant", () => {
     let raw: RawScpAppClient;
@@ -351,10 +335,6 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
       await admin.query(`DELETE FROM role_bindings WHERE id = $1`, [survivorId]);
     });
   });
-
-  // -----------------------------------------------------------------------------------------
-  // (e) roles.bindable_at
-  // -----------------------------------------------------------------------------------------
 
   it("adds `roles.bindable_at` as a NULLABLE text[], NULL on every pre-existing built-in", async () => {
     const col = await admin.query<{ data_type: string; is_nullable: string; udt_name: string }>(
@@ -780,7 +760,6 @@ describe("drizzle/0097 — RBAC DDL preconditions", () => {
           `SELECT id FROM roles WHERE org_id IS NULL AND name = 'Owner'`
         );
         expect(twinOwnerId < live.rows[0]!.id).toBe(true);
-        // Same SET, reversed order, with one element repeated.
         await admin.query(
           `INSERT INTO roles (id, org_id, name, permissions)
            SELECT $1, NULL, 'Owner',

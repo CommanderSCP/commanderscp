@@ -175,7 +175,7 @@ describe("M16.2 E3: federation status reports pending-EXPORT, never pending-appl
     const result = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       importSyncBundle(tx, outpost.orgId, bundle)
     );
-    expect(result.appliedEntries).toBeGreaterThan(0); // the outpost really did apply it
+    expect(result.appliedEntries).toBeGreaterThan(0);
 
     const after = await outpostPeerStatus();
     // NOT ONE FIELD MOVED. That is the point: these fields measure what THIS side put on the wire,

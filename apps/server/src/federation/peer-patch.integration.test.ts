@@ -198,7 +198,7 @@ describe("M16.2 E4: PATCH /federation/peers/{id} — transport only, never key m
     expect(saved.baseUrl).toBe("https://outpost-form-2.example.test");
     expect(saved.syncScope).toEqual({ mode: "status_only" });
     expect(saved.pokeMode).toBe(true);
-    expect(saved.role).toBe("outpost"); // …and role is untouched by a settings save.
+    expect(saved.role).toBe("outpost");
     expect(saved.publicKey).toBe(publicKey);
 
     const after = await keyWindows(domainId);
@@ -229,10 +229,10 @@ describe("M16.2 E4: PATCH /federation/peers/{id} — transport only, never key m
 
     const after = await keyWindows(domainId);
     expect(after).not.toEqual(before);
-    expect(after).toHaveLength(2); // a NEW window opened…
+    expect(after).toHaveLength(2);
     expect(after.filter((row) => row.supersededAt === null)).toHaveLength(1);
     const superseded = after.find((row) => row.supersededAt !== null);
-    expect(superseded).toBeDefined(); // …and the OLD key was hard-revoked, sequence-anchored
+    expect(superseded).toBeDefined();
     expect(superseded?.supersededAtSequence).not.toBeNull();
     expect(superseded?.publicKey).toBe(before[0]?.publicKey);
   });

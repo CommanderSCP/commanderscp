@@ -266,8 +266,6 @@ function problem(status: number, title: string, detail: string, decisionId?: str
   });
 }
 
-// -------------------------------------------------------------------------------------------
-
 describe("Admin › Dependencies is a COMMANDER-site page", () => {
   it.each(["outpost", "retrans", undefined] as const)(
     "instanceRole %s → the 'managed at the commander' pointer renders and ZERO SDK calls are issued",
@@ -336,7 +334,6 @@ describe("the producers table", () => {
     const rows = allInDocument("producer-row");
     expect(rows).toHaveLength(2);
     expect(inDocument("producers-empty")).toBeNull();
-    // Row 1: named producer.
     const first = rows[0]!;
     expect(first.querySelector('[data-testid="producer-ecosystem"]')?.textContent).toBe("npm");
     expect(first.querySelector('[data-testid="producer-coordinate"]')?.textContent).toBe(
@@ -389,7 +386,6 @@ describe("the producers table", () => {
     expect(pointer).toContain("scp dependency-subscriptions set-unlock --unlocked");
     expect(pointer).toContain("Dependency subscriptions are enabled per component");
     expect(pointer).not.toMatch(/(^|[^y] )Subscriptions are/);
-    // The chips filter client-side.
     clickInDocument("ecosystem-chip-oci");
     expect(allInDocument("producer-row")).toHaveLength(1);
     expect(inDocument("producer-coordinate")?.textContent).toBe("ghcr.io/acme/base");
@@ -445,15 +441,11 @@ describe("the producers table", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-
 async function openDeclareAndFill(coordinate = "@acme/newlib") {
   clickInDocument("declare-open");
   await waitUntil(() => inDocument("declare-confirm") !== null, "the declare dialog to open");
-  // The picker's components read lands.
   await waitUntil(() => inDocument("declare-producer-match") !== null, "the picker's list");
   typeInto(inDocument("declare-coordinate") as HTMLInputElement, coordinate);
-  // Pick checkout-api by name.
   typeInto(inDocument("declare-producer-search") as HTMLInputElement, "checkout");
   const match = allInDocument("declare-producer-match").find(
     (m) => m.getAttribute("data-id") === COMPONENT.id
@@ -786,8 +778,6 @@ describe("Declare… — dry run FIRST, then the write, and never the write with
     view.unmount();
   });
 });
-
-// -------------------------------------------------------------------------------------------
 
 describe("Retract… — preview, then the write; open bumps rendered and the dialog stays open on them", () => {
   it("opens with a dryRun preview, Retract sends the real call, the REAL response's openBumpAuthorships render as 'still in flight' with PR links only when present, plus the decision id; the list is re-read; the dialog stays until Done", async () => {

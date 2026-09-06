@@ -233,7 +233,6 @@ export function artifactSetOfSourceRef(sourceRef: unknown): ArtifactRef[] {
   return artifactSet;
 }
 
-/** One candidate change, as the pick reads it. */
 interface ChangeCandidate {
   id: string;
   name: string | null;
@@ -358,7 +357,7 @@ async function scanRunsForChange(
     if (!parsed.success) continue;
     const ev = parsed.data;
     const key = `${ev.scanner}|${ev.artifactDigest}`;
-    if (seen.has(key)) continue; // newest-first ⇒ the first seen IS the newest
+    if (seen.has(key)) continue;
     seen.add(key);
     const gateRef = (row.gateRef ?? null) as Record<string, unknown> | null;
     scans.push({

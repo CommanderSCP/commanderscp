@@ -413,7 +413,6 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     );
     expect(journalAfter.length).toBeGreaterThan(journalBefore.length);
 
-    // RECOVERED: the ordinary write verbs work again.
     const patched = await admin.federation.updateOutpost(peer, { trustTier: "govcloud" });
     expect(patched.objectId).toBe(shadow.id);
     expect(patched.trustTier).toBe("govcloud");
@@ -732,7 +731,6 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     const shadow = await plantShadow(peer, "commercial", `pre-c-${peer.slice(0, 8)}`);
     const tokens = await previewTokens(peer);
     expect(tokens).toHaveLength(2);
-    // Someone else reconciles first, which removes the shadow.
     await admin.federation.reconcileOutpost(peer);
     expect(await outpostRowsForPeer(peer)).toHaveLength(1);
 
@@ -757,7 +755,7 @@ describe("M16.2 H1: the hand-fill write door + wedge recovery (Testcontainers)",
     const peer = await pairPeerViaApi("outpost");
     const shadow = await plantShadow(peer, "commercial", `pre-c2-${peer.slice(0, 8)}`);
     const tokens = await previewTokens(peer);
-    await admin.federation.reconcileOutpost(peer); // adopts in place: same id, version bumped
+    await admin.federation.reconcileOutpost(peer);
     const after = (await admin.federation.listOutposts()).find((c) => c.objectId === shadow.id)!;
     expect(after.originIsSelf).toBe(true);
     expect(after.version).toBeGreaterThan(shadow.version);

@@ -284,7 +284,6 @@ export interface GovernanceMoveAdmitsInput {
   orgId: string;
   /** The acting principal (the RBAC subject), NOT the object being moved. */
   subjectObjectId: string;
-  /** The object whose containment parent this write changes. */
   movedObjectId: string;
   /** The container it is moving INTO, or `null` for the org root (`DELETE /relationships` of a
    *  `contains` edge drops the child back to its `domain_id` route, i.e. the org root). */

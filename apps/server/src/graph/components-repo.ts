@@ -122,7 +122,6 @@ export interface SetComponentServiceInput {
   orgId: string;
   actorObjectId: string;
   requestId: string;
-  /** id or URN of the component to (re)assign. */
   componentIdOrUrn: string;
   /** id or URN of the service the component should belong to after this call. */
   serviceIdOrUrn: string;

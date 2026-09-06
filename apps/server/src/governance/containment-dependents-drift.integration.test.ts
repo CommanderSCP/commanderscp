@@ -125,10 +125,6 @@ describe("countContainmentDependents composes the ONE downward fragment (census 
     });
   };
 
-  // ---------------------------------------------------------------------------------------------
-  // DRIFT 1 — arm 2's missing liveness join
-  // ---------------------------------------------------------------------------------------------
-
   it("a live `contains` edge to a TOMBSTONED child is not a dependent — the count says LIVE objects", async () => {
     const serviceId = await created("/api/v1/services", { name: uniq("drift-svc") });
     const componentId = await created("/api/v1/components", {
@@ -165,10 +161,6 @@ describe("countContainmentDependents composes the ONE downward fragment (census 
     ).toBe(0);
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // DRIFT 2 — arm 3's raw-text comparison
-  // ---------------------------------------------------------------------------------------------
-
   it("an UPPER-CASE-HEX componentId is a dependent, exactly as it is already a containment PARENT", async () => {
     const serviceId = await created("/api/v1/services", { name: uniq("hex-svc") });
     const componentId = await created("/api/v1/components", {
@@ -181,7 +173,6 @@ describe("countContainmentDependents composes the ONE downward fragment (census 
       deploymentTarget: targetId
     });
 
-    // CONTROL: written by the door (lower-case), it counts.
     expect(await dependentsOf(componentId), "control: a live placement is a dependent").toBe(1);
 
     // The federated/legacy shape. `createPlacement` cannot write this — it persists the resolved

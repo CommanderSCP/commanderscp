@@ -108,7 +108,7 @@ describe("coordination engine: full fake-executor loop", () => {
   it("propose -> evaluate -> coordinate -> execute -> validate -> accept, waves ordered by depends_on, every transition has a Decision", async () => {
     const infra = await createTestComponent(admin, { name: "coord-infra" });
     const app = await createTestComponent(admin, { name: "coord-app" });
-    await admin.components.addDependsOn(app.id, infra.id); // app depends_on infra
+    await admin.components.addDependsOn(app.id, infra.id);
 
     const change = await admin.changes.propose({
       name: "roll out coord-app",
@@ -128,7 +128,7 @@ describe("coordination engine: full fake-executor loop", () => {
     const explained = await admin.changes.explain(change.id);
     expect(explained.plan).not.toBeNull();
     const waves = explained.plan!.waves;
-    expect(waves).toHaveLength(2); // infra first (no deps), then app (depends_on infra)
+    expect(waves).toHaveLength(2);
     expect(waves[0]!.targets.map((t) => t.targetObjectId)).toEqual([infra.id]);
     expect(waves[1]!.targets.map((t) => t.targetObjectId)).toEqual([app.id]);
     for (const wave of waves) {
@@ -143,7 +143,7 @@ describe("coordination engine: full fake-executor loop", () => {
     expect(transitionDecisions.length).toBeGreaterThanOrEqual(5);
     expect(transitionDecisions.every((d) => d.verdict === "allow")).toBe(true);
     const gateDecisions = explained.decisions.filter((d) => d.kind === "gate");
-    expect(gateDecisions.length).toBeGreaterThanOrEqual(2); // one per wave boundary
+    expect(gateDecisions.length).toBeGreaterThanOrEqual(2);
 
     const accepted = await admin.changes.accept(change.id);
     expect(accepted.state).toBe("accepted");

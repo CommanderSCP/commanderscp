@@ -224,10 +224,6 @@ export async function registerGenericSystem(
   });
 }
 
-// -----------------------------------------------------------------------------------------------
-// Step 1 — register
-// -----------------------------------------------------------------------------------------------
-
 export function RegisterStepGeneric({
   connectable,
   doors,

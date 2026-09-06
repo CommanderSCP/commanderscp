@@ -267,7 +267,6 @@ describe("install.sh can address every bundled image by the shell stem manifest.
 const envKnobs = (text: string): string[] => [
   ...new Set([...text.matchAll(/\b(SCP_[A-Z0-9_]+)=/g)].map((m) => m[1]!))
 ];
-/** `managedDep.runnerImage=…` / `postgres.evalInCluster.enabled=…` — a Helm values path. */
 const chartKnobs = (text: string): string[] => [
   ...new Set(
     [...text.matchAll(/\b([a-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+)=/g)].map((m) => m[1]!)

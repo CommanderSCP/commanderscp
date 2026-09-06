@@ -370,10 +370,6 @@ async function runRunnerContainer(
   };
 }
 
-// -----------------------------------------------------------------------------------------
-// ExecutorPlugin
-// -----------------------------------------------------------------------------------------
-
 async function observe(_ctx: PluginContext, _since?: Cursor): Promise<ExecutorEvent[]> {
   return []; // no push events — this executor's only activity is driven by its own trigger().
 }

@@ -94,7 +94,7 @@ describe("canonicalJson — totality over __proto__ (the integrity bug)", () => 
   it("distinguishes two DIFFERENT __proto__ subtrees from each other", () => {
     const a = JSON.parse('{"__proto__":{"role":"viewer"}}') as unknown;
     const b = JSON.parse('{"__proto__":{"role":"admin"}}') as unknown;
-    expect(legacyCanonicalJson(a)).toBe(legacyCanonicalJson(b)); // oracle: indistinguishable
+    expect(legacyCanonicalJson(a)).toBe(legacyCanonicalJson(b));
     expect(canonicalJson(a)).not.toBe(canonicalJson(b));
   });
 

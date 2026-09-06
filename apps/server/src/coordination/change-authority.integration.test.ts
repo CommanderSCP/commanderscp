@@ -102,7 +102,6 @@ describe("change target-authority (M12 P4B Phase 2)", () => {
     });
     expect(ok.id).toBeTruthy();
 
-    // The rejected attempt created nothing.
     const list = await admin.changes.list({ limit: 100 });
     expect(list.items.every((c) => c.name !== "cross-domain-change")).toBe(true);
   });

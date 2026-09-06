@@ -649,7 +649,6 @@ describe("the write allowlist, pinned across the two modules that restate it", (
     const { manifestParserFor } = await import("@scp/plugin-managed-dep");
     expect(manifestIsEditableInThisBuild("oci", "chart/kustomization.yaml")).toBe(false);
     expect(() => manifestParserFor("oci", "chart/kustomization.yaml")).toThrow();
-    // And it is not refusing everything either.
     expect(manifestIsEditableInThisBuild("oci", "Dockerfile")).toBe(true);
   });
 

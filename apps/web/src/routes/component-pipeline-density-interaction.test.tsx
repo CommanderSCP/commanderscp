@@ -161,7 +161,6 @@ describe("§10.3 — the Details controls actually move the tiles", () => {
     expect(region?.getAttribute("data-state")).toBe("open");
     expect(region?.querySelector('[data-testid="stage-maintainer"]')).not.toBeNull();
     expect(region?.querySelector('[data-testid="stage-current"]')).not.toBeNull();
-    // aria-controls names exactly this region.
     expect(first.getAttribute("aria-controls")).toBe(region?.id);
     click(first);
     expect(states(r.container)).toEqual(["false", "false", "false", "false"]);
@@ -176,7 +175,6 @@ describe("§10.3 — the Details controls actually move the tiles", () => {
     const all = r.byTestId("pipeline-details-toggle-all");
     expect(all.textContent).toContain("Collapse all");
     expect(all.getAttribute("data-expanded-all")).toBe("true");
-    // Each KIND's detail content is really there.
     expect(r.container.querySelectorAll('[data-testid="stage-maintainer"]')).toHaveLength(2);
     expect(
       r.container.querySelector('[data-testid="pipeline-registry-provenance"]')
@@ -201,10 +199,8 @@ describe("§10.3 — the Details controls actually move the tiles", () => {
     // The page-level control still reads as "all expanded" — it reports ITS ask, not a tally.
     expect(r.byTestId("pipeline-details-toggle-all").textContent).toContain("Collapse all");
 
-    // Collapse all: everything shuts, the override included.
     r.click("pipeline-details-toggle-all");
     expect(states(r.container)).toEqual(["false", "false", "false", "false"]);
-    // Open ONE by hand under "all collapsed"…
     click(second);
     expect(states(r.container)).toEqual(["false", "true", "false", "false"]);
     // …then Expand all: the hand-opened tile stays open (it agrees), the rest open too.

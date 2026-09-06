@@ -203,10 +203,6 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     await trivy?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixture builders
-  // -----------------------------------------------------------------------------------------
-
   /** Replaces BOTH instance-scoped floor rows. Instance floors are global to the deployment, so
    *  every test sets exactly the floors it needs (a `null` clears a ceiling, which then stops
    *  contributing — "no floor" is never read as 0). */
@@ -434,7 +430,6 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     // LOOSE, so it cannot be the thing that binds — it is here purely so `service` and `assembly`
     // are two separately-observable labels on the same chain.
     await scanFloorPolicy(admin, "floor-service", service.id, { maxMedium: 9 });
-    // THE BINDING CEILING, anchored at the assembly.
     await scanFloorPolicy(admin, "floor-assembly", assembly!.id, { maxHigh: 0 });
 
     const control = await scanControl(admin, org, {
@@ -529,7 +524,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     });
     const runB = await waitForControlRun(adminB, changeB.id, controlB.id, "fail");
     const evidenceB = runB.evidence as unknown as ScanEvidenceShape;
-    expect(evidenceB.threshold.maxHigh).toBe(0); // the component TIGHTENED the org's 5 to 0
+    expect(evidenceB.threshold.maxHigh).toBe(0);
     expect(runB.detail).toMatch(/exceeds/i);
 
     // The wave never starts, and the block is an audited Decision naming the failed control.
@@ -830,7 +825,6 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     );
     expect(err.status).toBe(403);
 
-    // The floor is unchanged after all of that.
     expect(
       (await admin.instanceScanFloors.list()).find((f) => f.tier === "platform")?.maxHigh
     ).toBe(0);
@@ -872,7 +866,6 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const orgX = await createTestOrg(server, "isolation-x");
     const adminX = new ScpClient({ baseUrl: server.baseUrl, token: orgX.adminToken });
     const chainX = await buildChain(orgX, adminX, "iso-x");
-    // X sets a draconian org-wide ceiling.
     await scanFloorPolicy(adminX, "floor-org", orgX.orgId, { maxHigh: 0, maxMedium: 0, maxLow: 0 });
 
     const orgY = await createTestOrg(server, "isolation-y");

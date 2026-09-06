@@ -445,17 +445,17 @@ describe("M23.6 clause 5: the RBAC declaration is derived from running the adapt
       .sort();
     expect(literals).toStrictEqual(
       [
-        "DELETE", // teardown: the Job
-        "DELETE", // teardown: the per-run Secret
-        "DELETE", // reap: a peer's past-deadline Job
-        "DELETE", // reap: that Job's per-run Secret
-        "GET", // start: the Job's own status
-        "GET", // start: the Job's events
-        "GET", // start: the pod, by label selector
-        "GET", // start: the pod's log
-        "GET", // reap: the labelled Job collection
-        "PATCH", // start: the unsuspend
-        "POST", // create: the Job
+        "DELETE",
+        "DELETE",
+        "DELETE",
+        "DELETE",
+        "GET",
+        "GET",
+        "GET",
+        "GET",
+        "GET",
+        "PATCH",
+        "POST",
         "POST" // create: the per-run Secret
       ].sort()
     );

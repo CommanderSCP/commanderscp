@@ -93,7 +93,6 @@ export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 
 export const CreatePatRequestSchema = z.object({
   name: z.string().min(1),
-  /** No expiry if omitted. */
   expiresAt: z.string().datetime().optional()
 });
 export type CreatePatRequest = z.infer<typeof CreatePatRequestSchema>;
@@ -136,9 +135,7 @@ export const DeviceStartResponseSchema = z.object({
   deviceCode: z.string(),
   userCode: z.string(),
   verificationUri: z.string(),
-  /** Seconds until the device authorization request itself expires. */
   expiresIn: z.number().int(),
-  /** Suggested poll interval, in seconds. */
   interval: z.number().int()
 });
 export type DeviceStartResponse = z.infer<typeof DeviceStartResponseSchema>;

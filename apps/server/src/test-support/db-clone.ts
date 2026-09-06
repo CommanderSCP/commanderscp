@@ -25,7 +25,7 @@ export const TEMPLATE_DATABASE_NAME = "scp_template";
  * clone, which briefly connects to the template to copy it) is attached to the source, so workers
  * take this lock on the shared admin database before cloning. Arbitrary constant, unique to this use.
  */
-const CLONE_ADVISORY_LOCK_KEY = 0x5c_70_c1_0e; // "SCP CLONE"
+const CLONE_ADVISORY_LOCK_KEY = 0x5c_70_c1_0e;
 
 /** Returns the same connection URL with only the database name (URL path) swapped. */
 export function withDatabaseName(connectionString: string, databaseName: string): string {

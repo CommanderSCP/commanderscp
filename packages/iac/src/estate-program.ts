@@ -51,10 +51,6 @@ import type { WaveItem, WaveTarget } from "./waves.js";
  * relying on a shared internal representation neither path can prove against the real types.
  */
 
-// -------------------------------------------------------------------------------------------
-// The normalized input both emitters read.
-// -------------------------------------------------------------------------------------------
-
 export interface PipelineSourceSpec {
   /** @default "gitea" (the pipeline construct's own default, D18) */
   readonly sourceKind?: string;

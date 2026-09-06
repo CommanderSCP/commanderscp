@@ -576,7 +576,7 @@ describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
     // ever grows its own behaviour, these two diverge.
     const a = fixture("via-sugar");
     a.component.placeAt(a.prod);
-    const b = fixture("via-sugar"); // same stack name, so the URNs match
+    const b = fixture("via-sugar");
     new Placement(b.stack, b.component, b.prod);
     expect(a.stack.synth()).toEqual(b.stack.synth());
   });
@@ -739,7 +739,7 @@ describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
   it("the sugar and the stack-level form produce the IDENTICAL manifest", () => {
     const a = fixture("producer-sugar");
     a.component.producesDependency({ ecosystem: "npm", coordinate: "@acme/lib" });
-    const b = fixture("producer-sugar"); // same stack name, so the URNs match
+    const b = fixture("producer-sugar");
     b.stack.addDependencyProducer(b.component, { ecosystem: "npm", coordinate: "@acme/lib" });
     expect(a.stack.synth()).toEqual(b.stack.synth());
   });
@@ -877,7 +877,7 @@ describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
  */
 describe("@scp/iac constructs: fromXxx() reference statics (D16(2))", () => {
   it("fromUrn returns the exact URN given, verbatim, with the construct's typeId", () => {
-    const ref = Service.fromName; // sanity: the static exists on the exported class
+    const ref = Service.fromName;
     expect(typeof ref).toBe("function");
     const svc = Service.fromUrn("urn:scp:payments-team:service:payments");
     expect(svc).toEqual({ urn: "urn:scp:payments-team:service:payments", typeId: "service" });
@@ -886,7 +886,7 @@ describe("@scp/iac constructs: fromXxx() reference statics (D16(2))", () => {
   it("fromName derives a deterministic, syntactically-valid-URN placeholder from (kind, name)", () => {
     const a = Service.fromName("payments");
     const b = Service.fromName("payments");
-    expect(a).toEqual(b); // pure — same input, same reference, every time
+    expect(a).toEqual(b);
     expect(a.typeId).toBe("service");
     // Syntactically a real URN (UrnSchema: urn:scp:{org}:{type}:{slug-path}) so it is legal
     // wherever a construct's own derived URN is — even though today nothing resolves it (below).
@@ -978,7 +978,7 @@ describe("@scp/iac constructs: the L1 escape hatch (D16(1))", () => {
     const l2 = new Stack("l1-vs-l2");
     new Service(l2, "checkout", { name: "Checkout", properties: { tier: "critical" } });
 
-    const l1 = new Stack("l1-vs-l2"); // same stack name -> same derived URN
+    const l1 = new Stack("l1-vs-l2");
     l1.addManifestEntry({
       urn: deriveConstructUrn("l1-vs-l2", "service", "checkout"),
       typeId: "service",
@@ -1096,7 +1096,7 @@ describe("@scp/iac: construct-path in synth errors (D16(5))", () => {
   it("a relationship validation refusal names the FROM construct's path", () => {
     const stack = new Stack("rel-path");
     const svc = new Service(stack, "svc", { name: "Svc" });
-    svc.dependsOn("not-a-valid-urn"); // fails UrnSchema on the `to` side
+    svc.dependsOn("not-a-valid-urn");
     expect(() => stack.synth()).toThrow(/rel-path\/svc/);
   });
 
@@ -1105,7 +1105,7 @@ describe("@scp/iac: construct-path in synth errors (D16(5))", () => {
     stack.addManifestEntry({
       urn: "urn:scp:l1-path-fallback:service:x",
       typeId: "service",
-      name: "", // fails ManifestObjectSchema's name.min(1)
+      name: "",
       properties: {},
       labels: {}
     });

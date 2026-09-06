@@ -43,7 +43,6 @@ import { scanToml, tableEntries } from "./toml-lite.js";
 export type ProjectVersionEcosystem = "npm" | "python" | "maven";
 
 export type ProjectVersionOutcome =
-  /** The manifest states a version, verbatim and uninterpreted. */
   | { readonly outcome: "declared"; readonly version: string; readonly declaredIn: string }
   /** The manifest is readable and simply names no version of its own. */
   | { readonly outcome: "absent"; readonly detail: string }
@@ -68,10 +67,6 @@ export function readDeclaredProjectVersion(
       return readPomProjectVersion(content);
   }
 }
-
-// -------------------------------------------------------------------------------------------
-// npm — package.json "version"
-// -------------------------------------------------------------------------------------------
 
 /**
  * `package.json`'s own `version`. The one ecosystem where the answer is a single field with no
@@ -107,10 +102,6 @@ function readPackageJsonVersion(content: string): ProjectVersionOutcome {
   }
   return { outcome: "declared", version: version.trim(), declaredIn: "version" };
 }
-
-// -------------------------------------------------------------------------------------------
-// python — pyproject.toml [project].version / [tool.poetry].version
-// -------------------------------------------------------------------------------------------
 
 /**
  * PEP 621's `[project] version`, then Poetry's `[tool.poetry] version`, in that order — the same
@@ -164,10 +155,6 @@ function readPyprojectVersion(content: string): ProjectVersionOutcome {
     detail: "pyproject.toml declares neither `[project] version` nor `[tool.poetry] version`"
   };
 }
-
-// -------------------------------------------------------------------------------------------
-// maven — the <project>'s own <version>
-// -------------------------------------------------------------------------------------------
 
 /**
  * The DIRECT `<version>` child of `<project>` — never `<parent><version>`, never a

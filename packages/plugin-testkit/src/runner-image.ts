@@ -16,7 +16,6 @@ export interface ResolveRunnerImageOptions {
    * `scp-runner-scan:m13-3a-integration-test`). Built from `context` with the LEGACY builder.
    */
   localTag: string;
-  /** Docker build context directory (e.g. `apps/runner-scan`). */
   context: string;
 }
 

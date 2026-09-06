@@ -70,7 +70,7 @@ export async function ensureBootstrapAdmin(
     const created = await createObject(tx, {
       orgId: org.id,
       typeId: "user",
-      actorObjectId: org.id, // system placeholder — see doc comment above
+      actorObjectId: org.id,
       requestId: "bootstrap",
       name: opts.adminUsername
     });
@@ -130,9 +130,9 @@ async function ensureOrgRootObject(db: Db, orgId: string): Promise<void> {
     await createObject(tx, {
       orgId,
       typeId: "organization",
-      actorObjectId: orgId, // system placeholder — no user exists yet
+      actorObjectId: orgId,
       requestId: "bootstrap",
-      id: orgId, // stable, predictable id for the org root object
+      id: orgId,
       name: orgId,
       domainId: null
     });

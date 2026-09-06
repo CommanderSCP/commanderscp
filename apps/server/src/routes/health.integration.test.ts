@@ -44,7 +44,6 @@ describe("object health: PUT/GET /objects/:type/:idOrUrn/health + POST /graph/he
     const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
     const comp = await admin.components.create({ name: "gateway", service: svc.id });
 
-    // (2) PUSH: degraded, owner-sourced.
     const pushed = await admin.health.push("service", svc.id, {
       status: "degraded",
       detail: "p99 latency",
@@ -66,7 +65,7 @@ describe("object health: PUT/GET /objects/:type/:idOrUrn/health + POST /graph/he
         .where(and(eq(objectHealth.orgId, org.orgId), eq(objectHealth.objectId, svc.id)))
     );
     expect(rowsAfterFirst).toHaveLength(1);
-    expect(rowsAfterFirst[0]?.objectId).toBe(svc.id); // FK REFERENCES objects(id) — no bespoke concept table
+    expect(rowsAfterFirst[0]?.objectId).toBe(svc.id);
     expect(rowsAfterFirst[0]?.status).toBe("degraded");
 
     // Re-push a DIFFERENT status → same single row, updated in place, observedAt advanced.
@@ -86,10 +85,9 @@ describe("object health: PUT/GET /objects/:type/:idOrUrn/health + POST /graph/he
         .from(objectHealth)
         .where(and(eq(objectHealth.orgId, org.orgId), eq(objectHealth.objectId, svc.id)))
     );
-    expect(rowsAfterRepush).toHaveLength(1); // STILL one row — upsert-in-place, no history row
+    expect(rowsAfterRepush).toHaveLength(1);
     expect(rowsAfterRepush[0]?.status).toBe("down");
 
-    // (4) Surfaced on the object read.
     const read = await admin.health.get("service", svc.id);
     expect(read.status).toBe("down");
     expect(read.detail).toBe("hard down");
@@ -150,7 +148,6 @@ describe("object health: PUT/GET /objects/:type/:idOrUrn/health + POST /graph/he
     });
     expect(batch.records).toHaveLength(0);
 
-    // The first org's row is intact and unchanged.
     const read = await admin.health.get("service", svc.id);
     expect(read.status).toBe("down");
   });

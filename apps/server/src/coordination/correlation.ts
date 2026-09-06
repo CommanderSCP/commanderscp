@@ -223,7 +223,6 @@ export async function matchComponentForSource(
       // win merely by having more `*` in it.
       sql`(${literalLength(sourceMappings.repoPattern)} + ${literalLength(sourceMappings.pathPattern)}
            + ${literalLength(sourceMappings.refPattern)}) desc`,
-      // Rule 3 — the total, stable tiebreak.
       asc(sourceMappings.createdAt),
       asc(sourceMappings.id)
     );

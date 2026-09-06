@@ -128,7 +128,6 @@ describe("migration 0058 — the round-robin cursor backfills from `updated_at` 
         );
       }
 
-      // THE UPGRADE.
       await migrate(drizzle(pool), { migrationsFolder });
 
       const after = await pool.query<{

@@ -3591,7 +3591,6 @@ describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, 
     expect(html).toContain("2026-08-15T10:00:00.000Z");
     expect(html).toContain('data-testid="scan-review-export-gate"');
     expect(html).toContain(">pass</span>");
-    // exports table
     for (const head of [
       "peer",
       "exportedAt",
@@ -3679,8 +3678,8 @@ describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, 
 // against this instance's own trust domain — never a name, never `maintainedBy`.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 describe("scopePipelineToSite — an outpost sees only the stages its own outpost manages; the commander sees all", () => {
-  const SELF = "01a0032d-b479-714c-83c3-5a8a8a911d7a"; // this outpost's trust domain
-  const HQ = "019fece9-92b3-77f2-ba05-6ddb3aaf0791"; // the commander's
+  const SELF = "01a0032d-b479-714c-83c3-5a8a8a911d7a";
+  const HQ = "019fece9-92b3-77f2-ba05-6ddb3aaf0791";
   const outpostOf = (peerDomainId: string, name: string) => ({
     state: "outpost" as const,
     id: "019f0000-0000-7000-8000-0000000000aa",

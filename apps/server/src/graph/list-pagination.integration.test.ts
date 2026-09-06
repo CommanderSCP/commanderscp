@@ -68,7 +68,7 @@ describe("list pagination: cursor precision", () => {
     } while (cursor);
 
     const distinct = new Set(seen);
-    expect(distinct.size).toBe(25); // every component seen
+    expect(distinct.size).toBe(25);
     expect(seen.length).toBe(25); // and each seen exactly once (no boundary-row duplicates)
   });
 });

@@ -86,10 +86,6 @@ describe("the staleness bound is derived from the poll interval, never hardcoded
   });
 });
 
-// ===========================================================================================
-// One (line, declaration) pair — every absence, named
-// ===========================================================================================
-
 describe("evaluateVendorLineAtHead — every absence fails closed, by name", () => {
   it("A NULL latest_version DOES NOT QUALIFY — 'not observed' is never 'up to date'", () => {
     expect(evaluateVendorLineAtHead(npmLine({ latestVersion: null }), npmLine(), OPTS)).toEqual({
@@ -159,10 +155,6 @@ describe("evaluateVendorLineAtHead — every absence fails closed, by name", () 
     ).toEqual({ atHead: false, reason: "version_not_comparable" });
   });
 
-  // ---------------------------------------------------------------------------------------
-  // THE OCI ARM — the non-negotiable
-  // ---------------------------------------------------------------------------------------
-
   it("OCI COMPARES THE DIGEST, NEVER THE TAG — two images agreeing on the tag and differing by digest do NOT both qualify", () => {
     // The headline rule of the oci arm. An index reports TAGS; a tag is mutable, so `3.19.1` names
     // one set of bytes today and another next week. If this ever starts comparing `resolvedVersion`
@@ -205,10 +197,6 @@ describe("evaluateVendorLineAtHead — every absence fails closed, by name", () 
     });
   });
 });
-
-// ===========================================================================================
-// One target's facts
-// ===========================================================================================
 
 describe("foldVendorLatestFacts — ALL, never ANY", () => {
   it("NO declared oci line at all means NO base-image credit", () => {
@@ -258,7 +246,6 @@ describe("foldVendorLatestFacts — ALL, never ANY", () => {
     const rows = [
       npmLine({ lineId: "l-z", coordinate: "zod" }),
       npmLine({ lineId: "l-a", coordinate: "axios" }),
-      // Two python lines that canonicalise to ONE key.
       npmLine({ lineId: "l-p1", ecosystem: "python", coordinate: "zope.interface" }),
       npmLine({ lineId: "l-p2", ecosystem: "python", coordinate: "zope_interface" })
     ];
@@ -267,10 +254,6 @@ describe("foldVendorLatestFacts — ALL, never ANY", () => {
     expect(keys).toEqual(["npm|axios|4.17.21", "npm|zod|4.17.21", "python|zope-interface|4.17.21"]);
   });
 });
-
-// ===========================================================================================
-// Composition across targets
-// ===========================================================================================
 
 describe("intersectVendorLatestFacts — an intersection, never a union", () => {
   const a: ScanVendorLatestFacts = {

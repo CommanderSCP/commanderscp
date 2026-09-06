@@ -52,7 +52,6 @@ import {
 import { SYSTEM_ACTOR_ID } from "../coordination/system-actor.js";
 
 export interface BindingReconcileReport {
-  /** Rows written or refreshed this pass. */
   written: number;
   /** Reconciler-owned rows removed because nothing declares them any more. */
   pruned: number;

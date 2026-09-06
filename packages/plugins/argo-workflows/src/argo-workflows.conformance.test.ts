@@ -59,7 +59,6 @@ nock(SERVER_URL)
     return genericWorkflow(name);
   });
 
-// abort(): PUT .../terminate — any workflow name.
 nock(SERVER_URL)
   .persist()
   .put(new RegExp(`^/api/v1/workflows/${NAMESPACE}/[^/]+/terminate$`))

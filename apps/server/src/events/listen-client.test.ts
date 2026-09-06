@@ -41,7 +41,6 @@ describe("listen-client — backoff stability window (SEC-5)", () => {
       }
     });
 
-    // First connection establishes.
     await vi.advanceTimersByTimeAsync(0);
     expect(created).toHaveLength(1);
 

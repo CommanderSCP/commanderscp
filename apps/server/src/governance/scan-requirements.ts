@@ -241,7 +241,7 @@ export async function readInstanceScanFloors(tx: TenantTx): Promise<ScanThreshol
       ...(row.max_medium !== null ? { maxMedium: row.max_medium } : {}),
       ...(row.max_low !== null ? { maxLow: row.max_low } : {})
     };
-    if (SEVERITY_KEYS.every((k) => threshold[k] === undefined)) continue; // an all-NULL row is inert
+    if (SEVERITY_KEYS.every((k) => threshold[k] === undefined)) continue;
     contributions.push({
       tier: row.tier,
       source: `instance:${row.tier}:${row.origin}`,
@@ -383,11 +383,9 @@ export function tierRank(tier: ScanRequirementTier): number {
 export interface ScanExclusionAdmission {
   tier: ScanRequirementTier;
   class: ScanExclusionClass;
-  /** `instance:platform:local`, `policy:<name>@<objectId>`, … */
   source: string;
 }
 
-/** One tier's contribution of a CLAUSE. */
 export interface ScanExclusionClauseContribution {
   tier: ScanRequirementTier;
   source: string;
@@ -495,7 +493,7 @@ export function resolveEffectiveScanExclusions(
     const perTarget = new Map<string, AdmittedScanExclusionClause>();
     for (const contribution of target.clauses) {
       const rank = tierRank(contribution.tier);
-      if (rank < 0) continue; // an unrecognized tier label admits nothing
+      if (rank < 0) continue;
       const above = TIER_ORDER.filter((t) => tierRank(t) < rank && represented.has(t));
       const admittedBy: AdmittedScanExclusionClause["admittedBy"] = [];
       let blocked = false;
@@ -783,7 +781,7 @@ export function requiredOverrideApprovalTier(
   let best: ScanRequirementTier = OVERRIDE_APPROVAL_TIER_FLOOR;
   for (const contribution of ceiling?.contributors ?? []) {
     const rank = tierRank(contribution.tier);
-    if (rank < 0) continue; // an unrecognized tier label raises no bar
+    if (rank < 0) continue;
     if (rank < tierRank(best)) best = contribution.tier;
   }
   return best;

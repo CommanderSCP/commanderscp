@@ -54,11 +54,11 @@ export interface PipelineGenericConfig {
    *  always report "pending" (a pipeline relying purely on inbound `scp change report`/webhooks
    *  for completion, with no pollable run-status API, sets no `statusUrl`). */
   statusUrl?: string;
-  abortUrl?: string; // same `{externalId}` templating
+  abortUrl?: string;
   runIdField?: string; // default "id" — the field in trigger()'s response body holding the run id
   statusField?: string; // default "status" — the field in status()'s response body
-  succeededValues?: string[]; // default: Terraform Cloud's terminal-success values
-  failedValues?: string[]; // default: Terraform Cloud's terminal-failure values
+  succeededValues?: string[];
+  failedValues?: string[];
   statePath?: string;
 }
 

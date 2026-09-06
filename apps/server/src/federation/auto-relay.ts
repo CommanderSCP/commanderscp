@@ -172,7 +172,7 @@ export interface AutoRelayOutcome {
     | "lease-lost" // this worker's lease lapsed mid-build; another worker owns the outcome.
     | "bookkeeping-failed" // THE BYTES CROSSED but the ledger write did not land — never a verdict.
     | "deferred" // a config gap — no attempt burned, retried next tick.
-    | "disabled"; // seeded work exists but SCP_RETRANS_AUTO_RELAY is not set.
+    | "disabled";
   detail: string;
   decisionId: string | null;
   tarballPath?: string;
@@ -217,7 +217,7 @@ async function finalizeFailure(
     exhaustNow?: boolean;
   }
 ): Promise<AutoRelayOutcome> {
-  const verdicts = claim.failedAttempts + 1; // including this one.
+  const verdicts = claim.failedAttempts + 1;
   if (!args.exhaustNow && verdicts < args.maxAttempts) {
     const backoffSeconds = autoRelayBackoffSeconds(verdicts);
     const held = await withTenantTx(db, orgId, (tx) =>
@@ -310,10 +310,6 @@ function leaseLost(orgId: string, claim: RelayBuildClaim): AutoRelayOutcome {
   console.warn(`[auto-relay] org ${orgId}: change ${claim.changeObjectId}: ${detail}`);
   return { changeObjectId: claim.changeObjectId, outcome: "lease-lost", detail, decisionId: null };
 }
-
-// -------------------------------------------------------------------------------------------------
-// The sweep.
-// -------------------------------------------------------------------------------------------------
 
 /**
  * One org's auto-relay sweep. Exported for the integration suite (the 13.1b DoD is asserted through
@@ -565,7 +561,6 @@ export async function autoRelayOrgTick(
   return outcomes;
 }
 
-/** Every org, one tick — mirrors `runInboxSweep`/`runObserveSweep`. */
 export async function runAutoRelaySweep(
   db: Db,
   masterKey: Buffer,

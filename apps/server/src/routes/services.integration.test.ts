@@ -201,7 +201,6 @@ describe("services: release board (Phase 2, Layer A)", () => {
   it("404s an unknown service, 401s an unauthenticated caller, 403s a caller without read on the service", async () => {
     const svc = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
 
-    // 404 — no such service object.
     const missing = await server.app.inject({
       method: "GET",
       url: `/api/v1/services/${randomUUID()}/board`,
@@ -209,7 +208,6 @@ describe("services: release board (Phase 2, Layer A)", () => {
     });
     expect(missing.statusCode, missing.body).toBe(404);
 
-    // 401 — no credentials.
     const anon = await server.app.inject({
       method: "GET",
       url: `/api/v1/services/${svc.id}/board`

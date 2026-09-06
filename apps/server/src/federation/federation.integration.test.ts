@@ -338,7 +338,6 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       withTenantTx(domainB.db, domainB.orgId, (tx) => importSyncBundle(tx, domainB.orgId, tampered))
     ).rejects.toMatchObject({ status: 409, detail: expect.stringMatching(/checksum mismatch/) });
 
-    // Nothing from this bundle applied — cursor unchanged.
     const cursorAfter = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       getCursor(tx, domainB.orgId, selfA.domainId, selfA.domainId)
     );
@@ -753,13 +752,13 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
         overlayProperties: { enforcement: "required" }
       })
     );
-    expect(overlay.originDomainId).toBe(selfB.domainId); // the overlay itself IS locally owned
+    expect(overlay.originDomainId).toBe(selfB.domainId);
 
     const view = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       getMergedOverlayView(tx, domainB.orgId, basePolicy.id)
     );
     expect(view.overlays).toHaveLength(1);
-    expect(view.merged.enforcement).toBe("required"); // stricter overlay wins
+    expect(view.merged.enforcement).toBe("required");
 
     // The base object itself, re-read from A, is untouched.
     const baseStillOriginal = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
@@ -1533,7 +1532,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
     const bundle = await exportBundleA(changeId);
 
-    expect(bundle.header.formatVersion).toBe(1); // NOT bumped
+    expect(bundle.header.formatVersion).toBe(1);
     expect(bundle.artifacts).toBeDefined();
     expect(bundle.artifacts).toEqual([
       { type: "oci", digest: OCI_DIGEST },
@@ -1545,7 +1544,6 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         signatureRef: sourceRefWithArtifacts.sbom.signatureRef
       }
     ]);
-    // artifactDigests === artifacts.map(a => a.digest)
     expect(bundle.artifactDigests).toEqual(bundle.artifacts!.map((a) => a.digest));
   });
 
@@ -1590,7 +1588,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("E3 OLD->NEW: a v1 bundle with NO artifacts[] imports cleanly (optional, undefined)", async () => {
-    const { changeId } = await proposeApprovedChangeInA(); // no sourceRef → no artifacts
+    const { changeId } = await proposeApprovedChangeInA();
     const bundle = await exportBundleA(changeId);
     // No tracked artifacts → the top-level ENVELOPE `artifacts` field is undefined (NOT []), so it
     // is dropped from the CHECKSUM-relevant canonical string and the envelope stays byte-identical to
@@ -2113,7 +2111,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("E6 SIGN: a passing digest-bound scan EXPORTS and carries a cosign-signed SELF-BINDING manifest", async () => {
-    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts); // auto-seeds passing scan
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts);
     const bundle = await exportBundleA(changeId);
 
     expect(bundle.promotionManifest).toBeDefined();
@@ -2216,7 +2214,6 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     );
 
     const cosignPub = await getInstanceCosignPublicKey(domainA.db, domainA.orgId);
-    // Control: A's signature verifies against A's OWN manifest.
     expect(
       await verifyBlob(
         canonicalStringify(bundleA.promotionManifest),
@@ -2240,9 +2237,9 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     // config/policy-only promotion is not blocked — and still carries a cosign-signed manifest.
     const { changeId } = await proposeApprovedChangeInA();
     const bundle = await exportBundleA(changeId);
-    expect(bundle.artifacts).toBeUndefined(); // no typed artifact set on the envelope
+    expect(bundle.artifacts).toBeUndefined();
     expect(bundle.promotionManifest).toBeDefined();
-    expect(bundle.promotionManifest!.artifacts).toEqual([]); // manifest binds an empty set
+    expect(bundle.promotionManifest!.artifacts).toEqual([]);
     const cosignPub = await getInstanceCosignPublicKey(domainA.db, domainA.orgId);
     expect(
       await verifyBlob(
@@ -2299,7 +2296,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     const auditEvents = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       listAuditEvents(tx, domainA.orgId, { limit: 10_000 })
     );
-    expect(auditEvents.nextCursor).toBeNull(); // sanity: didn't truncate the chain
+    expect(auditEvents.nextCursor).toBeNull();
     expect(verifyAuditChain(auditEvents.items).valid).toBe(true);
 
     const blockEvent = auditEvents.items.find((e) => e.decisionId === outcome.decisionId);
@@ -2426,7 +2423,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         classification: "dev"
       })
     );
-    expect(devMapping.classification).toBe("dev"); // the label really is set on the row
+    expect(devMapping.classification).toBe("dev");
 
     const refuseOnce = async () => {
       const { changeId } = await proposeApprovedChangeInA(
@@ -2638,7 +2635,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         }
       })
     );
-    await seedPassingScan(change.id, digest); // E6 needs the passing, digest-bound row to export
+    await seedPassingScan(change.id, digest);
     const bundle = await exportBundleA(change.id);
     expect(bundle.promotionManifest, "the exporter signs a manifest").toBeDefined();
     expect(bundle.manifestSignature).toBeDefined();
@@ -2754,8 +2751,8 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 // coordination/pre-deploy-gate.integration.test.ts; byte TRANSPORT itself remains M15.5.
 // ---------------------------------------------------------------------------------------------
 describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () => {
-  let commander: IsolatedDomain; // the exporting commander
-  let outpostWithKey: IsolatedDomain; // paired E5-complete (has the commander's cosign key)
+  let commander: IsolatedDomain;
+  let outpostWithKey: IsolatedDomain;
   let outpostNoKey: IsolatedDomain; // paired pre-E5 (NO cosign key — the back-compat axis)
   let selfCommander: FederationSelf;
 

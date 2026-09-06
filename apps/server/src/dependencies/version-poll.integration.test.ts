@@ -145,7 +145,6 @@ describe("M21.4 dependency version poll (ADR-0032 §7)", () => {
   function realIndexHost(): PluginHost & {
     /** Ids started but not yet stopped — the standing subprocess count on a real host. */
     readonly live: Set<string>;
-    /** Every id ever handed to `stopInstances`, in order. */
     readonly stopped: string[];
   } {
     const started = new Map<string, PluginHostInstanceConfig>();
@@ -468,10 +467,6 @@ esac
     }
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (1) Persist-on-change across two ticks
-  // -----------------------------------------------------------------------------------------
-
   it("a SECOND identical tick writes ZERO new Decision rows", async () => {
     // An operator feed makes every ecosystem answer, so this exercises the `observed` verdict as
     // well as the `unavailable` one — the amplification hazard applies to both.
@@ -623,10 +618,6 @@ esac
     expect(latest?.verdict).toBe("not_recorded");
     expect(JSON.stringify(latest?.reasonTree)).toMatch(/behind_head/);
   });
-
-  // -----------------------------------------------------------------------------------------
-  // The (version, digest) pair moves together
-  // -----------------------------------------------------------------------------------------
 
   it("a NEW tag whose digest cannot be resolved never inherits the PREVIOUS version's digest", async () => {
     // The row asserts a PAIR — "3.19.1 is these bytes" — because a mutable tag is not an identity

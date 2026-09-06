@@ -85,16 +85,16 @@ import { asTrustDomainId, type TrustDomainId } from "@scp/schemas";
 const sha256 = (buf: Buffer): string => "sha256:" + createHash("sha256").update(buf).digest("hex");
 
 describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + cosign + skopeo)", () => {
-  let commander: IsolatedDomain; // A — the exporter
-  let retrans: IsolatedDomain; // B — the CDS-boundary staging node
-  let outpost: IsolatedDomain; // C — the receiving destination
+  let commander: IsolatedDomain;
+  let retrans: IsolatedDomain;
+  let outpost: IsolatedDomain;
 
   let srcRegistry: StartedTestContainer;
   let destRegistry: StartedTestContainer;
   let srcHost: string;
   let destHost: string;
 
-  let blobServer: Server; // source-side blob byte channel (SBOM + sig)
+  let blobServer: Server;
   let blobBaseUrl: string;
   const blobStore = new Map<string, Buffer>();
   let destBlobServer: Server;
@@ -110,24 +110,23 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
   let cosignBin: string;
   let imageSignFlags: string[];
 
-  let relayOutDir: string; // where B's buildRelayTarball drops fixtures
-  let outpostInbox: string; // C's watched inbox
-  let retransInbox: string; // B's watched inbox
-  let retransOnwardOut: string; // B's onward DeliveryTarget drop (env-level)
+  let relayOutDir: string;
+  let outpostInbox: string;
+  let retransInbox: string;
+  let retransOnwardOut: string;
 
   const OUTPOST_MASTER_KEY = Buffer.alloc(32, 9);
   const RETRANS_MASTER_KEY = Buffer.alloc(32, 7);
 
   const SRC_REPO = "scp/app";
 
-  // Shared (1)-fixture state.
   let manualImage: { ref: string; digest: string };
   let loopImage: { ref: string; digest: string };
-  let changeA1 = ""; // manual/CLI fixture change at A
-  let changeA2 = ""; // loop fixture change at A
+  let changeA1 = "";
+  let changeA2 = "";
   let changeAtOutpostManual = "";
-  let tarball1Path = ""; // built at B for changeA1 (CLI-path fixture)
-  let tarball2Path = ""; // built at B for changeA2 (loop-path fixture)
+  let tarball1Path = "";
+  let tarball2Path = "";
 
   function outpostConfig(): RelayConfig {
     return {
@@ -204,7 +203,6 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     process.env.SCP_ARTIFACT_BLOB_BASE_URLS = `${blobBaseUrl},${destBlobBaseUrl}`;
     process.env.SCP_ARTIFACT_INSECURE_HOSTS = `${srcHost},${destHost}`;
 
-    // Federation identities + roles.
     commanderDomainId = (
       await withTenantTx(commander.db, commander.orgId, (tx) =>
         ensureFederationSelf(tx, commander.orgId)
@@ -226,7 +224,6 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
       initFederationSelf(tx, { orgId: outpost.orgId, name: "outpost-c", role: "outpost" })
     );
 
-    // Keys.
     const commanderPair = await ensureInstanceCosignKey(commander.db, commander.orgId);
     retransCosignPub = (await getInstanceCosignPublicKey(retrans.db, retrans.orgId)).publicKey;
     commanderKeyPath = path.join(scratch, "commander-cosign.key");
@@ -243,7 +240,6 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
       "--yes"
     ];
 
-    // Pairing (out-of-band key exchange, as in production).
     const commanderEd = await withTenantTx(commander.db, commander.orgId, (tx) =>
       ensureInstanceKey(tx, commander.orgId)
     );
@@ -701,7 +697,6 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     const terminal = outcomes.filter((o) => o.outcome !== "already-processed");
     expect(terminal.map((o) => o.outcome)).toEqual(["imported", "imported"]);
 
-    // The change landed, exactly like the CLI path.
     const changeAtC = await findLocalChangeBySource(outpost, changeA2);
     expect(changeAtC).not.toBeNull();
 
@@ -799,10 +794,6 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     expect(await decisionCount(outpost)).toBe(decisionsBefore);
     expect(await changeCount(outpost)).toBe(changesBefore);
   }, 120_000);
-
-  // ---------------------------------------------------------------------------------------------
-  // (3) Retrans role: push-less validate-and-forward.
-  // ---------------------------------------------------------------------------------------------
 
   it("retrans role: a tarball in the retrans inbox is validated and forwarded byte-identical to the onward drop — WITHOUT any registry push, with validate-gated confirm", async () => {
     await copyFile(tarball2Path, path.join(retransInbox, path.basename(tarball2Path)));
@@ -992,7 +983,6 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
   }, 240_000);
 
   it("the SAME tampered tarball refused via the loop at the outpost carries the IDENTICAL refusal reason as a direct CLI importRelayTarball call — zero trust survives automation", async () => {
-    // CLI reference refusal.
     const cli = await importRelayTarball(outpost.db, {
       orgId: outpost.orgId,
       changeIdOrUrn: changeAtOutpostManual,
@@ -1028,10 +1018,6 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
     );
   }, 240_000);
 
-  // ---------------------------------------------------------------------------------------------
-  // (5) Traversal + malformed-bundle refusals.
-  // ---------------------------------------------------------------------------------------------
-
   it("a traversal-shaped file name is refused outright with a block Decision (the file is never read)", async () => {
     const { self, peers } = await withTenantTx(outpost.db, outpost.orgId, async (tx) => ({
       self: await ensureFederationSelf(tx, outpost.orgId),
@@ -1053,7 +1039,6 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
   }, 60_000);
 
   it("a malformed .scpbundle is refused with the loop's own block Decision, and a tampered-checksum bundle refuses exactly like the CLI's 409 — with a Decision the CLI path never had", async () => {
-    // Malformed JSON.
     await writeFile(path.join(outpostInbox, "garbage.scpbundle"), "{not json", "utf8");
     // A REAL bundle with one byte of payload flipped after signing (checksum mismatch).
     const bundleForC = await exportPromotionFromA(changeA1, "outpost-c");

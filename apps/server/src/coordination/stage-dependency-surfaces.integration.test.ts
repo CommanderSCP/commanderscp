@@ -144,10 +144,6 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     return row!.state;
   };
 
-  // -----------------------------------------------------------------------------------------
-  // SURFACE 1 — `GET /changes/{id}/explain`
-  // -----------------------------------------------------------------------------------------
-
   it("does not double-count a target that is BOTH freeze-held and dependency-held (M25.UI review finding 1)", async () => {
     // `ChangeWaveSchema.heldTargetCount` is composed from TWO independent predicates over the SAME
     // candidate set — the active wave's `pending`/`triggering` targets (routes/changes.ts's explain
@@ -237,7 +233,6 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     await tick(2);
     expect((await admin.changes.explain(appChange.id)).stageDependencyStatus!.held).toBe(true);
 
-    // The dependency finishes through the real poll path.
     executorConfig.forcePhase[dependency.at(gamma)] = "succeeded";
     await tick(3);
 
@@ -463,10 +458,6 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     expect(wellFormed.dependsOnName).toBe(dependency.name);
   }, 60_000);
 
-  // -----------------------------------------------------------------------------------------
-  // SURFACE 3 — the component-pipeline view's stage
-  // -----------------------------------------------------------------------------------------
-
   it("the component pipeline marks the STAGE held, and names what by", async () => {
     // The bug in one sentence: a held target's `change_wave_targets.status` is and stays `pending`
     // (the hold `continue`s before `triggerWaveTarget`), and `pending` is also what a stage shows
@@ -608,10 +599,6 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     expect(stage.hold).toBeNull();
   }, 60_000);
 
-  // -----------------------------------------------------------------------------------------
-  // SURFACE 4 — the watchdog's `executing` arm
-  // -----------------------------------------------------------------------------------------
-
   it("the watchdog's `executing` warn NAMES the coupling, instead of blaming a silent executor", async () => {
     const dependency = await componentAt("wd-dep", [gamma]);
     const dependant = await componentAt("wd-app", [gamma]);
@@ -647,7 +634,6 @@ describe("stage dependencies: the operator surfaces (ADR-0028 increment 4)", () 
     // ...and it must no longer blame the executor, which was never handed this target at all.
     expect(waitingOn).not.toContain("executor status to report");
 
-    // The structured half, for `scp decision get`.
     const held = (row!.inputContext as { heldStageDependencies?: unknown[] }).heldStageDependencies;
     expect(Array.isArray(held)).toBe(true);
     expect(held).toHaveLength(1);

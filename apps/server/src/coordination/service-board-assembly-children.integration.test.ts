@@ -65,7 +65,6 @@ describe("service board with an assembly child", () => {
     );
 
   it("reports the assembly child with its own component count, and keeps rows per-component", async () => {
-    // ONE component directly under the service...
     const direct = await createOrphanComponent(server, org, "gateway");
     await contains(service.id, direct.id);
 

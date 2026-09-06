@@ -56,7 +56,6 @@ describe("device authorization flow", () => {
     expect(started.deviceCode.length).toBeGreaterThan(20);
     expect(started.verificationUri).toContain("/device");
 
-    // Poll before approval — expected/normal "not yet" state.
     const pendingPoll = await server.app.inject({
       method: "POST",
       url: "/api/v1/auth/device/token",
@@ -75,7 +74,6 @@ describe("device authorization flow", () => {
     expect(approve.statusCode, approve.body).toBe(200);
     expect(approve.json()).toEqual({ approved: true });
 
-    // Poll again — now succeeds.
     const poll = await server.app.inject({
       method: "POST",
       url: "/api/v1/auth/device/token",

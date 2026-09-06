@@ -189,7 +189,7 @@ describe.runIf(await dockerAvailable())(
           // THE KILL. No SIGTERM, no grace — the exact signal `plugin-host/host.ts`'s hang detector
           // sends, and the reason nothing downstream of it ever gets to run.
           child.kill("SIGKILL");
-          await new Promise((r) => setTimeout(r, 300)); // let the kill land before asserting
+          await new Promise((r) => setTimeout(r, 300));
 
           expect(
             await containerState(containerName),
@@ -621,7 +621,7 @@ describe("MEDIUM-4: a real SIGKILL mid-`create` leaks the `--env-file`, and reap
         // THE KILL. No SIGTERM, no grace — `plugin-host/host.ts`'s own hang-detector signal, mid the
         // ONE `execFile` (`create`) that had a `finally { unlink }` waiting for it to settle.
         child.kill("SIGKILL");
-        await new Promise((r) => setTimeout(r, 300)); // let the kill land before asserting
+        await new Promise((r) => setTimeout(r, 300));
 
         expect(
           existsSync(leakedPath),

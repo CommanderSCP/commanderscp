@@ -109,8 +109,8 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       externalRef: "my-app"
     });
     expect(b1.executionSystemId).toBe(sys.id);
-    expect(b1.pluginModule).toBe("fake-executor"); // from the system's `kind`
-    expect(b1.pluginInstanceId).toBe(`execution-system:${sys.id}`); // shared instance key
+    expect(b1.pluginModule).toBe("fake-executor");
+    expect(b1.pluginInstanceId).toBe(`execution-system:${sys.id}`);
     expect(b1.externalRef).toBe("my-app");
 
     // A SECOND component on the SAME system gets the SAME instance id — so they share one observe
@@ -313,7 +313,6 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     expect(first.accepted).toBe(true);
     expect(second.eventId).toBe(first.eventId);
 
-    // Exactly one row exists for this org+sourceKind+deliveryId.
     const { withTenantTx } = await import("../db/tenant-tx.js");
     const { changeSourceEvents } = await import("../db/schema.js");
     const { and, eq } = await import("drizzle-orm");
@@ -388,7 +387,6 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     await admin.changeSources.putWebhookSecret("terraform", { secret: "a-configured-secret" });
 
-    // The typed route: accepted.
     const res = await admin.changeSources.report("terraform", { status: "planned", repo: "x/y" });
     expect(res.accepted).toBe(true);
 
@@ -408,11 +406,11 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     const body = { status: "applied" as const, repo: "dedupe/repo", artifactDigest: "sha256:aaaa" };
 
     const first = await admin.changeSources.report("terraform", body);
-    const again = await admin.changeSources.report("terraform", body); // byte-identical
-    expect(again.eventId).toBe(first.eventId); // deduped to the SAME event
+    const again = await admin.changeSources.report("terraform", body);
+    expect(again.eventId).toBe(first.eventId);
 
     const different = await admin.changeSources.report("terraform", { ...body, status: "errored" });
-    expect(different.eventId).not.toBe(first.eventId); // a distinct result is a distinct event
+    expect(different.eventId).not.toBe(first.eventId);
 
     const { withTenantTx } = await import("../db/tenant-tx.js");
     const { changeSourceEvents } = await import("../db/schema.js");
@@ -455,9 +453,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     for (const wrongModule of [
       "bogus-module-that-does-not-exist",
       "webhook-control", // a real module, but a ControlPlugin, not an ExecutorPlugin
-      "github-discovery", // a real module, but a DiscoveryPlugin
+      "github-discovery",
       "gitea-discovery", // a real module, but a DiscoveryPlugin (M15.3a — must be excluded too)
-      "webhook-notify", // a real module, but a NotificationPlugin
+      "webhook-notify",
       "smtp-notify"
     ]) {
       await expect(
@@ -590,8 +588,8 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
 
       const cfg = resolved!.instanceConfig.config as Record<string, unknown>;
       expect(cfg.runnerImage).toBe("scp-runner-iac:vetted-server-pinned"); // NOT attacker/evil
-      expect(cfg.networkMode).toBe("none"); // NOT host
-      expect(cfg.workspaceRoot).toBe("/srv/scp/managed-iac"); // NOT /
+      expect(cfg.networkMode).toBe("none");
+      expect(cfg.workspaceRoot).toBe("/srv/scp/managed-iac");
       expect(typeof cfg.statePath).toBe("string"); // durable dedup path always injected (MAJOR #4)
       // Defence in depth for the key that is now refused AND injected: `dockerBinary` selects the
       // executable this plugin `execFile`s, so the write-door schema is no longer its only guard.

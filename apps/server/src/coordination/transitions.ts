@@ -63,7 +63,6 @@ const LEGAL_EDGE_SET: ReadonlySet<string> = new Set(
   LEGAL_TRANSITIONS.map((edge) => `${edge.from}->${edge.to}`)
 );
 
-/** Terminal states have no outgoing edges at all. */
 export const TERMINAL_STATES: ReadonlySet<ChangeState> = new Set(
   CHANGE_STATES.filter((s) => !LEGAL_TRANSITIONS.some((edge) => edge.from === s))
 );

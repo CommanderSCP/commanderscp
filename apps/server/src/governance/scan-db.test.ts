@@ -18,8 +18,8 @@ import {
  */
 
 const NOW = new Date("2026-07-24T00:00:00Z");
-const SOFT = 168; // 7d
-const HARD = 720; // 30d
+const SOFT = 168;
+const HARD = 720;
 
 function meta(hoursOld: number, version = EXPECTED_TRIVY_DB_SCHEMA_VERSION) {
   const updated = new Date(NOW.getTime() - hoursOld * 3_600_000).toISOString();

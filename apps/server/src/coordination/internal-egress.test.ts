@@ -22,7 +22,6 @@ describe("assertNotReservedInstanceId — reserved execution-system instance nam
       )
     ).toThrow(/reserved/);
     expect(() => assertNotReservedInstanceId("execution-system:anything")).toThrow(/reserved/);
-    // Bare prefix alone is still inside the namespace.
     expect(() => assertNotReservedInstanceId(EXECUTION_SYSTEM_INSTANCE_PREFIX)).toThrow(/reserved/);
   });
 

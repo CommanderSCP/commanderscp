@@ -121,10 +121,6 @@ describe("verifyGithubWebhookSignature", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// mapGithubWebhookEventToHint — pure function, no HTTP/nock involved.
-// -------------------------------------------------------------------------------------------
-
 describe("mapGithubWebhookEventToHint", () => {
   it("maps a push event to repo/commitSha (from head_commit.id)/correlationKey (ref)", () => {
     const hint = mapGithubWebhookEventToHint("push", {
@@ -206,10 +202,6 @@ describe("mapGithubWebhookEventToHint", () => {
     expect(mapGithubWebhookEventToHint("issues", {})).toBeNull();
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// trigger() — workflow_dispatch
-// -------------------------------------------------------------------------------------------
 
 describe("trigger() — workflow_dispatch", () => {
   it("dispatches the workflow, correlates the newest matching run via the runs-list poll, and returns externalId = workflow_run::<id>", async () => {
@@ -337,10 +329,6 @@ describe("trigger() — workflow_dispatch", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// trigger() — custom / repository_dispatch
-// -------------------------------------------------------------------------------------------
-
 describe("trigger() — custom (repository_dispatch)", () => {
   it("POSTs repository_dispatch and returns a repository_dispatch::* externalId (no run correlation is possible for this event type)", async () => {
     const { config, ctx, authHeader, base } = setup();
@@ -376,7 +364,7 @@ describe("trigger() — custom (repository_dispatch)", () => {
 
 describe("trigger() idempotency — in-memory dedup cache (statePath unset)", () => {
   it("a second trigger() call with the SAME idempotencyKey returns the SAME externalId and never re-dispatches", async () => {
-    const { config, ctx, authHeader, base } = setup(); // statePath omitted -> in-memory cache
+    const { config, ctx, authHeader, base } = setup();
     const runId = 777_001;
     const dispatchScope = nock(base)
       .matchHeader("authorization", authHeader)
@@ -623,10 +611,6 @@ describe("base URL resolution (apiBaseUrl → serverUrl → github.com default)"
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// status()
-// -------------------------------------------------------------------------------------------
-
 describe("status()", () => {
   async function statusFor(runBody: { status: string; conclusion: string | null }) {
     const { config, ctx, authHeader, base } = setup();
@@ -709,10 +693,6 @@ describe("status()", () => {
     scope.done();
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// abort()
-// -------------------------------------------------------------------------------------------
 
 describe("abort()", () => {
   it("cancels a correlated run", async () => {
@@ -1016,10 +996,6 @@ describe("observe() pagination", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// Rate-limit / non-2xx handling
-// -------------------------------------------------------------------------------------------
-
 describe("rate-limit / non-2xx error handling", () => {
   // TODO(M7 follow-up): trigger()/status()/observe()/abort() in index.ts implement NO retry or
   // backoff of their own — every non-2xx response (including 403-with-rate-limit-headers and 429)
@@ -1083,10 +1059,6 @@ describe("rate-limit / non-2xx error handling", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// discover() (DiscoveryPlugin)
-// -------------------------------------------------------------------------------------------
-
 describe("discover() (DiscoveryPlugin)", () => {
   it("proposes one Service (repo root) and one Component per marker-file-containing top-level directory; directories with no marker file and non-directory entries are skipped", async () => {
     const { config, ctx, authHeader, base } = setup({ owner: "acme", repo: "monorepo" });
@@ -1095,7 +1067,7 @@ describe("discover() (DiscoveryPlugin)", () => {
       .get(`/repos/${config.owner}/${config.repo}/contents/`)
       .reply(200, [
         { name: "service-a", path: "service-a", type: "dir" },
-        { name: "docs", path: "docs", type: "dir" }, // dir, but no marker file inside -> skipped
+        { name: "docs", path: "docs", type: "dir" },
         { name: "README.md", path: "README.md", type: "file" } // not a dir -> no contents/ call at all
       ]);
     nock(base)
@@ -1161,10 +1133,6 @@ describe("discover() (DiscoveryPlugin)", () => {
     expect(proposal.relationships).toHaveLength(0);
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// postCommitStatus()
-// -------------------------------------------------------------------------------------------
 
 describe("postCommitStatus()", () => {
   it("POSTs the mapped commit status payload, defaulting context to 'commanderscp/coordination'", async () => {
@@ -1724,7 +1692,7 @@ describe("readFileAtRef()", () => {
 
   it("honors an explicit `repo` override so one binding can read manifests for sibling components", async () => {
     const { config, ctx, authHeader, base } = setup({ owner: "acme", repo: "widgets" });
-    expect(`${config.owner}/${config.repo}`).toBe("acme/widgets"); // the binding's own repo
+    expect(`${config.owner}/${config.repo}`).toBe("acme/widgets");
     nock(base)
       .matchHeader("authorization", authHeader)
       .get(`/repos/acme/other-service/commits/main`)
@@ -1783,7 +1751,6 @@ describe("readFileAtRef()", () => {
 
   it("refuses a REPO traversal BEFORE any HTTP — a raw `repo` re-targeted the route", async () => {
     const { ctx } = setup();
-    // Proven reachable before the fix: issued `GET https://api.github.com/commits/main`.
     await expect(
       githubAdapter.readFileAtRef(ctx, {
         repo: "acme/widgets/../../..",
@@ -1798,8 +1765,6 @@ describe("readFileAtRef()", () => {
 
   it("refuses a REPO containing '?' — it terminated the route and folded the rest into a query string", async () => {
     const { ctx } = setup();
-    // Proven reachable before the fix: issued
-    // `GET https://api.github.com/repos/acme/widgets?x=/commits/main`.
     await expect(
       githubAdapter.readFileAtRef(ctx, {
         repo: "acme/widgets?x=",
@@ -1891,7 +1856,6 @@ describe("readFileAtRef()", () => {
       .query({ ref: REF_COMMIT_SHA })
       .reply(200, {
         path: "go.mod",
-        // no `sha` at all
         size: Buffer.byteLength(manifest, "utf8"),
         type: "file",
         encoding: "base64",
@@ -2066,7 +2030,6 @@ describe("readFilesAtRef()", () => {
         ],
         truncated: false
       });
-    // NEGATIVE CONTROL: no `contents` interceptor registered.
 
     await expect(
       githubAdapter.readFilesAtRef(ctx, { ref: "main", globs: ["**/go.mod"], maxFiles: 2 })

@@ -176,7 +176,6 @@ export async function evaluateFreezeHolds(
   return holds;
 }
 
-/** One entry of a `freeze_admission` Decision's `inputContext.held`. */
 export interface HeldTargetRecord {
   targetObjectId: string;
   componentObjectId: string | null;

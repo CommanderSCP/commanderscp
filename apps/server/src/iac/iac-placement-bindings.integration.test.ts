@@ -196,7 +196,7 @@ describe("IaC executor bindings on placements", () => {
     await apply(baseManifest(s, { executorBindings: [binding(s)] }));
     expect(await bindingsOnPlacementOf(urns(s).comp)).toHaveLength(1);
 
-    await apply(baseManifest(s)); // placement still declared, binding no longer
+    await apply(baseManifest(s));
     expect(
       await bindingsOnPlacementOf(urns(s).comp),
       "absent == 'I declare none' == prune, exactly as for an object-targeted binding"
@@ -212,7 +212,7 @@ describe("IaC executor bindings on placements", () => {
     const placementRows = await bindingsOnPlacementOf(comp);
     const placementId = placementRows[0]!.targetObjectId;
 
-    await apply(baseManifest(s)); // prune
+    await apply(baseManifest(s));
 
     const page = await admin.auditEvents.list({ limit: 200 });
     const putEvents = page.items.filter(
@@ -398,7 +398,7 @@ describe("IaC executor bindings on placements", () => {
     });
 
     await apply(build("before"));
-    const second = await apply(build("after")); // placement noop, binding update
+    const second = await apply(build("after"));
 
     expect(second.summary.updates, "the binding changed and nothing else did").toBe(1);
     const rows = await bindingsOnPlacementOf(appComp);

@@ -277,10 +277,6 @@ describe("D23 test bundle: report -> capture -> evidence -> gate", () => {
       return rows[0]!;
     });
 
-  // -------------------------------------------------------------------------------------------
-  // 1. THE REFERENCE — `sbom`'s shape, `sbom`'s discipline
-  // -------------------------------------------------------------------------------------------
-
   it("a build's report carrying a TEST BUNDLE reference lands it on the change's sourceRef.testBundle — reference only, nothing minted", async () => {
     const changeObjectId = await reportBuild({
       artifactDigest: IMAGE_DIGEST,
@@ -327,10 +323,6 @@ describe("D23 test bundle: report -> capture -> evidence -> gate", () => {
     expect(sourceRef.artifact_digest).toBe(IMAGE_DIGEST);
     expect(sourceRef.workspace).toBe("prod");
   });
-
-  // -------------------------------------------------------------------------------------------
-  // 2. THE `strictObject` PROPERTY SURVIVES
-  // -------------------------------------------------------------------------------------------
 
   it("an UNDECLARED key on the report body is still REFUSED (400), not silently stripped — which is why testBundle had to be declared rather than merely read", async () => {
     const repo = `acme/${label()}`;

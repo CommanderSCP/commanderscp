@@ -68,7 +68,6 @@ describe("openapi conformance: the matcher can actually reject", () => {
 
   it("recognises API calls and ignores the SPA's own assets", () => {
     expect(apiPathOf("http://localhost:1234/api/v1/federation/status")).toBe("/federation/status");
-    // Query strings are not part of a path.
     expect(apiPathOf("http://localhost:1234/api/v1/federation/outposts/x/reconcile?keep=y")).toBe(
       "/federation/outposts/x/reconcile"
     );

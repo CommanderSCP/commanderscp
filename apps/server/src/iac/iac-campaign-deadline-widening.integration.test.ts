@@ -396,9 +396,6 @@ describe("IaC apply cannot widen a campaign's deadline at plain object:write", (
     expect(await storedDeadline(f.campaignId)).toEqual({ at: f.at });
   });
 
-  // ==============================================================================================
-  // THE PER-TARGET WAIVER VECTOR — `deadline.overrides[]` (round 3)
-  // ==============================================================================================
   /**
    * R1-R6 above closed the deadline INSTANT at this door. They were censused by SYMPTOM
    * (`deadline.at`) rather than by PROPERTY — *any edit to the stored deadline document that
@@ -469,7 +466,6 @@ describe("IaC apply cannot widen a campaign's deadline at plain object:write", (
     ).toBe(403);
     expect(applied.body).toContain("campaign:deadline-override");
 
-    // NOTHING HALF-APPLIED, and the target is still withheld.
     expect(await storedDeadline(f.campaignId)).toEqual({ at: f.at });
     expect(await storedOverrides(f.campaignId)).toHaveLength(0);
 

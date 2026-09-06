@@ -277,9 +277,7 @@ beforeEach(() => {
   held.length = 0;
 });
 
-// ==================================================================================================
 describe("M23.5 HIGH-2: what may happen AFTER the deadline is counted from the code, not asserted in a comment", () => {
-  // ================================================================================================
   it("EVERY ADAPTER KIND IN THE MODEL HAS A COUNTER — a declared list checked by nothing is the defect", () => {
     expect(KINDS.slice().sort()).toStrictEqual(Object.keys(RUNNER_POST_DEADLINE_CALLS).sort());
   });

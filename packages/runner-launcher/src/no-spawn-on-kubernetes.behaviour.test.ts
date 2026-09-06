@@ -200,7 +200,6 @@ console.log(JSON.stringify({
     expect(report.wire).toContain("PATCH /apis/batch/v1/namespaces/scp/jobs/scp-runner-b1");
     expect(report.wire).toContain("DELETE /apis/batch/v1/namespaces/scp/jobs/scp-runner-b1");
     expect(report.wire.some((w) => w.endsWith("/log"))).toBe(true);
-    // …AND THE MEASUREMENT ITSELF.
     expect(
       run.spawns,
       `a process was created on the Kubernetes path: ${JSON.stringify(run.spawns)}`
@@ -338,7 +337,6 @@ console.log(JSON.stringify({ constructed, failure, ledger: m.runnerSpawnCount() 
       report.failure,
       "the run did not reach the default transport's token read, so nothing past construction was driven"
     ).toContain(`${K8S_SA_DIR}/token`);
-    // …AND THE MEASUREMENT.
     expect(
       run.spawns,
       `a process was created while the resolver built and used its own transport: ${JSON.stringify(run.spawns)}`

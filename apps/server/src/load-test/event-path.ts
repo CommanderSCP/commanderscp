@@ -67,7 +67,7 @@ const INGESTION_CONCURRENCY = 20;
 const INGESTION_COUNT = 3000;
 const EVENT_PATH_CONCURRENCY = 10;
 const EVENT_PATH_COUNT = 500;
-const DELIVERY_GRACE_MS = 8_000; // generous vs. the relay's 1s poll fallback (events/outbox-relay.ts)
+const DELIVERY_GRACE_MS = 8_000;
 const SOURCE_KIND = "loadtest";
 const WEBHOOK_SECRET = "load-test-webhook-secret-do-not-use-in-prod";
 

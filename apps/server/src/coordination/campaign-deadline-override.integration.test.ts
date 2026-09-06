@@ -259,10 +259,6 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     };
   }
 
-  // ===========================================================================================
-  // O — THE EFFECT. THE MUTATION TARGET.
-  // ===========================================================================================
-
   /**
    * THE CASE THE WHOLE INCREMENT EXISTS FOR: two locked siblings, one waived, and the waiver's
    * entire observable consequence is that ONE member Change gets minted and the other does not.
@@ -285,7 +281,6 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(await changeCount(org), "both targets start out locked by the deadline").toBe(0);
     expect(await decisionsOfKind(org, campaignId, CAMPAIGN_DEADLINE_DECISION_KIND)).toHaveLength(1);
 
-    // ---- THE WAIVER, for exactly one of them.
     const updated = await post(org, `/api/v1/campaigns/${campaignId}/deadline-override`, {
       targets: [waived],
       reason: "the vendor has not shipped a 3.x base image for this component yet"
@@ -343,7 +338,6 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
       "a waiver whose `until` has passed must withhold nothing from the deadline"
     ).toBe(0);
 
-    // ---- RE-WAIVE, with no expiry this time.
     const renewed = await post(org, `/api/v1/campaigns/${campaignId}/deadline-override`, {
       targets: [component],
       reason: "the vendor slipped again; excused indefinitely"
@@ -418,10 +412,6 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect((await read()).deadline!.at).toBe(deadline.at);
   });
 
-  // ===========================================================================================
-  // THE RECORD
-  // ===========================================================================================
-
   /**
    * ONE DECISION UNDER ITS OWN KIND, AND ONE HIGH-SEVERITY AUDIT EVENT **PER TARGET**.
    *
@@ -475,10 +465,6 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     expect(stored.every((o) => o.actorId.length > 0 && o.at.length > 0)).toBe(true);
   });
 
-  // ===========================================================================================
-  // THE DOOR — 400s
-  // ===========================================================================================
-
   it("B1: the reason is MANDATORY — an absent or empty one is a 400", async () => {
     const { org, componentIds, campaignId } = await lockedCampaign("override-reason");
     const [component] = componentIds as [string];
@@ -523,10 +509,6 @@ describe("campaign deadline override: excuse ONE laggard, not everybody (M25.6b 
     });
     expect(nothingToWaive.statusCode).toBe(400);
   });
-
-  // ===========================================================================================
-  // THE DOOR — 403s. THE SUBSTANCE.
-  // ===========================================================================================
 
   /**
    * NO `campaign:deadline-override` => 403, and the subject chosen is the sharpest available: an

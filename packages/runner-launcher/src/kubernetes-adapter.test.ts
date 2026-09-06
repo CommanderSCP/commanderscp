@@ -110,7 +110,7 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
       const owners =
         (obj as { metadata?: { ownerReferences?: { uid?: string }[] } }).metadata
           ?.ownerReferences ?? [];
-      if (owners.length === 0) continue; // unowned objects are nobody's garbage
+      if (owners.length === 0) continue;
       const collected = owners.some(
         (o) => o.uid === deletedUid || (o.uid !== undefined && !liveUids.has(o.uid))
       );
@@ -522,10 +522,6 @@ describe("M23.2 adapter selection: explicit operator config, never detection", (
   });
 });
 
-// ==================================================================================================
-// THE SHAPE OF ONE RUN
-// ==================================================================================================
-
 describe("M23.2: the five port steps, in order, against the API server and the shared volume", () => {
   it("THE FULL SEQUENCE — create(suspended) / copy-in / unsuspend+poll+log / copy-out / teardown", async () => {
     const c = cluster();
@@ -626,10 +622,6 @@ describe("M23.2: the five port steps, in order, against the API server and the s
     expect(del.timeoutMs).toBe(30_000);
   });
 });
-
-// ==================================================================================================
-// WHAT THE JOB CARRIES
-// ==================================================================================================
 
 describe("M23.2: identity, attribution and the value that cannot be honoured", () => {
   it("THE JOB NAME IS THE DOCKER CONTAINER NAME — the same string, as `RunnerSpec.runId` promised", () => {
@@ -1433,7 +1425,6 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
     // observation the run never made.
     expect(result.failure!.detail).toContain("the Job had not yet been observed");
     expect(result.failure!.detail).not.toContain("was observed and no container had started");
-    // The teardown is unconditional whatever the verdict was.
     expect(c.jobs.size).toBe(0);
   });
 
@@ -1719,7 +1710,6 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
     expect(result.failure!.kind).toBe("spawn-failed");
     expect(result.failure!.detail).toContain("REFUSED to unsuspend");
     expect(result.failure!.detail).toContain("NOTHING RAN");
-    // The API server's own words survive the rewrite.
     expect(result.failure!.detail).toContain("cannot patch");
   });
 
@@ -2336,10 +2326,6 @@ describe("M23.2: `copyOut.when` and `copyOut.onFailure` are the caller's, unchan
   });
 });
 
-// ==================================================================================================
-// THE REAPER
-// ==================================================================================================
-
 describe("M23.2: `reap()` removes foreign, expired Jobs and nothing else", () => {
   const past = new Date(Date.now() - 60_000).toISOString();
   const future = new Date(Date.now() + 600_000).toISOString();
@@ -2495,10 +2481,6 @@ runLaunchOrderingConformanceSuite(
   "M23.2 conformance — the Kubernetes adapter",
   kubernetesOrderingSubstrate
 );
-
-// ==================================================================================================
-// NON-VACUITY OF THE SUBSTRATE ITSELF
-// ==================================================================================================
 
 describe("M23.2: the substrate is not vacuous", () => {
   let substrate: LaunchOrderingSubstrate;

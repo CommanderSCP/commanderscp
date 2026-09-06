@@ -545,7 +545,6 @@ export function compilePlan(input: CompilePlanInput): CompilePlanResult {
     return { ok: true, waves: withFanIn(result) };
   }
 
-  // Explicit-topology mode.
   const steps: {
     name: string | null;
     targets: string[];

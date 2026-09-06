@@ -30,7 +30,6 @@ function subject(): JsonObject {
   return { id: COMPONENT_ID, name: "checkout-api", domainId: null };
 }
 
-/** A well-formed `ComponentDependencyInventoryResponse` with one row. */
 function wellFormedInventory(): JsonObject {
   return {
     component: subject(),
@@ -73,7 +72,6 @@ function wellFormedInventory(): JsonObject {
   };
 }
 
-/** A well-formed `ComponentDependencyBumpsResponse` with one row. */
 function wellFormedBumps(): JsonObject {
   return {
     component: subject(),

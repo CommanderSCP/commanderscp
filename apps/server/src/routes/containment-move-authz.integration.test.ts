@@ -40,7 +40,6 @@ describe("writing an object's containment parent is authorized at the destinatio
 
   interface Fixture {
     org: TestOrg;
-    /** A domain the mover holds NOTHING at. */
     victimDomainId: string;
     /** A domain the mover holds nothing at either — where the movable object lives. */
     homeDomainId: string;
@@ -106,10 +105,6 @@ describe("writing an object's containment parent is authorized at the destinatio
     expect(res.statusCode, res.body).toBe(200);
     return (res.json() as { domainId: string | null }).domainId;
   }
-
-  // ---------------------------------------------------------------------------------------------
-  // B1 — the destination
-  // ---------------------------------------------------------------------------------------------
 
   it("PATCH /services/{id} refuses a move into a domain the actor holds nothing at, and the row does not move", async () => {
     const f = await makeFixture("move-patch-typed");

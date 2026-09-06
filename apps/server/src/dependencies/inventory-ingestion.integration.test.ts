@@ -297,9 +297,6 @@ require (
     await server?.close();
   });
 
-  // -------------------------------------------------------------------------------------------
-  // 1. WIRED
-  // -------------------------------------------------------------------------------------------
   describe("the real path", () => {
     it("the worker's own job function ingests an accepted change's component inventory", async () => {
       const component = await componentWithMapping("wired", "svc/api/**");
@@ -412,9 +409,6 @@ require (
     });
   });
 
-  // -------------------------------------------------------------------------------------------
-  // 2. GATED BY CONSTRUCTION
-  // -------------------------------------------------------------------------------------------
   describe("the enablement gate", () => {
     it("a component with NO enabling subscription is never fetched — zero recorded reads", async () => {
       const component = await componentWithMapping("disabled", null);

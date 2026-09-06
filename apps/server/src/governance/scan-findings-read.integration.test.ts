@@ -303,8 +303,6 @@ describe("M22.9: GET /control-runs/{id}/findings, over real HTTP", () => {
     );
   }
 
-  // ===========================================================================================
-
   it("F1: the persisted decomposition of a REAL gate's scan verdict is readable, with the retention class the write decided", async () => {
     // THE ROUTE'S REASON TO EXIST. `SCAN_EXCLUSION_EVIDENCE_CAP` (100) bounds the per-clause
     // enumeration on `evidence.exclusions.applied` while `appliedCount` stays EXACT, so past 100

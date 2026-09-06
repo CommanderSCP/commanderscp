@@ -315,8 +315,6 @@ describe("M22.9: the exclusion-set re-check, at both federation call sites", () 
     });
   }
 
-  // ===========================================================================================
-
   it("B1: an artifact scanned under the set that is STILL in force crosses the boundary, and the run carries the set's hash", async () => {
     // THE AGREEING CASE, and the one that catches the export gate's omission. Nothing changes between
     // the scan and the gate: the step resolves the set, stamps its hash on the evidence, and the gate

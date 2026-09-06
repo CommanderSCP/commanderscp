@@ -125,8 +125,8 @@ describe("resolveCallPolicy", () => {
     // — the failure this whole change exists to stop.
     for (const budget of budgets) expect(budget).toBeGreaterThan(HANG_DETECTOR_MS);
     expect(budgets).toEqual([
-      10 * 60_000 + MANAGED_TRIGGER_GRACE_MS, // managed-iac
-      10 * 60_000 + MANAGED_TRIGGER_GRACE_MS, // managed-scan
+      10 * 60_000 + MANAGED_TRIGGER_GRACE_MS,
+      10 * 60_000 + MANAGED_TRIGGER_GRACE_MS,
       5 * 60_000 + MANAGED_TRIGGER_GRACE_MS // managed-dep
     ]);
   });
@@ -404,7 +404,7 @@ describe("MEDIUM (pass 5): the host's budget and the launcher's run are clamped 
     // The measured defect, as arithmetic across the boundary. The host's expiry is the event that
     // CREATES the orphan (it SIGKILLs the subprocess, so no `finally` and no teardown run), and the
     // orphan's stamp is what decides when any peer may collect it.
-    const runBudget = clampRunTimeoutMs(2 ** 31); // the largest the old schema admitted
+    const runBudget = clampRunTimeoutMs(2 ** 31);
     const hostSigkillsAt = runBudget + MANAGED_TRIGGER_GRACE_MS;
     const orphanStampedAt = runBudget + RUNNER_REAP_GRACE_MS;
 

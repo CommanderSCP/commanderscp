@@ -141,7 +141,6 @@ describe("OQ-5: a recipe may not drive one of CommanderSCP's own actuators", () 
   });
 });
 
-// ==================================================================================================
 describe("a malformed recipe's DETAIL is bounded at the producer (M25.4 review finding)", () => {
   /**
    * THE BYTE CAP CANNOT REACH THIS PATH, WHICH IS THE WHOLE FINDING.

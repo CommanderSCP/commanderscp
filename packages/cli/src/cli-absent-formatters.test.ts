@@ -151,9 +151,6 @@ function baseScanDbStatus(overrides: Partial<ScanDbStatus> = {}): ScanDbStatus {
   } as ScanDbStatus;
 }
 
-// -------------------------------------------------------------------------------------
-// cli.ts:205 — campaignDetailRow.topologyVersion
-// -------------------------------------------------------------------------------------
 describe("campaignDetailRow: an absent topologyVersion is blank, never the word `undefined`", () => {
   it("prints an empty cell when the key is OMITTED (not merely null)", () => {
     const row = campaignDetailRow(without(baseCampaign(), "topologyVersion"));
@@ -328,9 +325,6 @@ describe("federationStatusRow: a trust tier is an assertion, and its provenance 
   });
 });
 
-// -------------------------------------------------------------------------------------
-// cli.ts:2253-2256 — instanceScanFloorRow
-// -------------------------------------------------------------------------------------
 describe("instanceScanFloorRow: an unset ceiling is `-`, and `-` is not 0", () => {
   for (const [key, column] of [
     ["maxCritical", "maxCritical"],
@@ -390,9 +384,6 @@ describe("instanceScanExclusionAdmissionRow: an absent audit column must not rea
   });
 });
 
-// -------------------------------------------------------------------------------------
-// cli.ts:2437 — scanDbStatusRow.ageHours
-// -------------------------------------------------------------------------------------
 describe("scanDbStatusRow: an unknown DB age must not kill the command", () => {
   it("an OMITTED ageHours renders `(unknown)` instead of throwing on `.toFixed`", () => {
     // THE MUTANT HERE DOES NOT MISPRINT, IT CRASHES: `=== null` lets `undefined` reach
@@ -466,7 +457,6 @@ function baseReconcile(
   } as OutpostConfigReconcileResult;
 }
 
-// cli.ts — peerRow.syncScope (Z2)
 describe("peerRow: a peer whose response omits `syncScope` must not kill `scp federation peers`", () => {
   it("prints `?` instead of throwing on `.mode`", () => {
     // THE MUTANT: `p.syncScope.mode` throws `TypeError: Cannot read properties of undefined
@@ -495,7 +485,6 @@ describe("peerRow: a peer whose response omits `syncScope` must not kill `scp fe
   });
 });
 
-// cli.ts — outpostConfigRow.unknownFields (Z3)
 describe("outpostConfigRow: an omitted `unknownFields` must not kill six commands", () => {
   it("prints `-` instead of throwing on `.join`", () => {
     // THE MUTANT: `o.unknownFields.join(", ")` throws `TypeError: … reading 'join'`. `unknownFields`
@@ -521,7 +510,6 @@ describe("outpostConfigRow: an omitted `unknownFields` must not kill six command
   });
 });
 
-// cli.ts — formatReconcileResultLines removal buckets (Z4)
 describe("formatReconcileResultLines: the report of a DESTRUCTIVE verb must survive a missing key", () => {
   for (const key of ["removedShadowObjectIds", "removedLocalObjectIds"] as const) {
     it(`an OMITTED ${key} still produces a report instead of throwing`, () => {
@@ -563,9 +551,7 @@ describe("formatReconcileResultLines: the report of a DESTRUCTIVE verb must surv
   });
 });
 
-// cli.ts — printFederationStatus.peers (Z5)
 describe("printFederationStatus: an omitted `peers` list must not kill `scp federation status`", () => {
-  /** Capture stdout for one call. */
   function capture(fn: () => void): string {
     const out: string[] = [];
     const original = console.log;
@@ -600,7 +586,6 @@ describe("printFederationStatus: an omitted `peers` list must not kill `scp fede
       text = capture(() => printFederationStatus(response, "table"));
     }).not.toThrow();
     expect(text).toContain("No paired peers.");
-    // and the self line above it survives
     expect(text).toContain("Self: hq");
   });
 
@@ -656,7 +641,6 @@ describe("scanDbOutcomeRow: `scp scan-db refresh`/`load` must not print `undefin
     expect(refreshed.loaded).toBeUndefined();
     expect(loaded.loaded).toBe("true");
     expect(loaded.refreshed).toBeUndefined();
-    // a real age still prints
     expect(loaded.ageHours).toBe("4.25");
     expect(loaded.source).toBe("refreshed");
   });

@@ -60,7 +60,7 @@ describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → land
           res.end(
             JSON.stringify([
               { name: "service-a", path: "service-a", type: "tree" },
-              { name: "docs", path: "docs", type: "tree" }, // no marker inside → skipped
+              { name: "docs", path: "docs", type: "tree" },
               { name: "README.md", path: "README.md", type: "blob" } // not a tree
             ])
           );

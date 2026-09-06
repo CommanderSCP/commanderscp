@@ -144,17 +144,14 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
   });
 
   it("(1) selectors are ANDed — ecosystem, coordinate and major must ALL match", () => {
-    // Right coordinate, wrong major.
     expect(resolve([enable("component", { coordinate: "@acme/lib", major: "2" })]).enabled).toBe(
       false
     );
-    // Right coordinate and major, wrong ecosystem.
     expect(
       resolve([enable("component", { ecosystem: "go", coordinate: "@acme/lib", major: "1" })])
         .enabled
     ).toBe(false);
 
-    // NEGATIVE CONTROL: all three matching enables.
     expect(
       resolve([enable("component", { ecosystem: "npm", coordinate: "@acme/lib", major: "1" })])
         .enabled
@@ -240,7 +237,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
       enable("org", { delivery: "auto_merge" }),
       enable("service", { granularity: "minor_and_patch" }),
       enable("component", { granularity: "patch", delivery: "pull_request" }),
-      disable("containment_domain", { coordinate: "@acme/other" }), // does not match LINE
+      disable("containment_domain", { coordinate: "@acme/other" }),
       { tier: "org" as const, source: "policy:broken@broken-id", effect: { enabled: "yes" } }
     ];
     const baseline = resolve(candidates);
@@ -258,10 +255,6 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     expect(baseline.delivery).toBe("pull_request");
     expect(baseline.contributions.filter((c) => c.contributed === "ignored")).toHaveLength(1);
   });
-
-  // -----------------------------------------------------------------------------------------
-  // (5) MOST-RESTRICTIVE-WINS: granularity and delivery
-  // -----------------------------------------------------------------------------------------
 
   it("(5) granularity: patch beats minor_and_patch — a child may only tighten", () => {
     expect(
@@ -474,7 +467,7 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
       effect: { enabled: false, coordinat: "@acme/lib" }
     };
     const optOutResult = resolve([enable("component"), typoOptOut], UNLOCKED, notThisLine);
-    expect(optOutResult.enabled).toBe(true); // the wildcard DISABLE did not happen
+    expect(optOutResult.enabled).toBe(true);
     expect(optOutResult.contributions).toContainEqual({
       tier: "org",
       source: "policy:typo-optout@typo-id",
@@ -552,7 +545,6 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
     // NEGATIVE CONTROL for the enable half: the identical candidate WITHOUT a condition enables.
     expect(resolve([enable("component")]).enabled).toBe(true);
 
-    // The disable half: a conditional opt-out still subtracts.
     const conditionalDisable: DependencySubscriptionCandidate = {
       ...disable("org"),
       conditional: true
@@ -644,10 +636,6 @@ describe("dependency-subscription enablement merge (ADR-0032 §6)", () => {
       }
     ]);
   });
-
-  // -----------------------------------------------------------------------------------------
-  // Totality
-  // -----------------------------------------------------------------------------------------
 
   it("is TOTAL — every input shape returns a resolution rather than throwing", () => {
     const hostile: MergeDependencySubscriptionInput["candidates"] = [

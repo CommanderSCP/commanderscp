@@ -314,9 +314,6 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (2) The inventory
-  // -----------------------------------------------------------------------------------------
   describe("(2) the inventory", () => {
     it("returns one row per (line, dependency manifest), coordinates verbatim, head and producer read", async () => {
       const { status, body } = await getInventory(component, org.adminToken);
@@ -337,7 +334,6 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
       const wantedRoot = body.rows.find(
         (r) => r.line.id === lineWantedId && r.manifestPath === "package.json"
       )!;
-      // Verbatim — the scoped npm name survives untouched.
       expect(wantedRoot.line.coordinate).toBe("@acme/lib");
       expect(wantedRoot.declaredVersion).toBe("^1.2.0");
       expect(wantedRoot.resolvedVersion).toBe("1.2.0");
@@ -623,9 +619,6 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (3) The bumps
-  // -----------------------------------------------------------------------------------------
   describe("(3) the bumps", () => {
     let bumped: string;
     let olderChange: string;

@@ -88,7 +88,7 @@ function buildStack(spec: TreeSpec, order: number[]): Stack {
   for (const rel of spec.relationships) {
     const fromI = rel.fromIndex % spec.resources.length;
     const toI = rel.toIndex % spec.resources.length;
-    if (fromI === toI) continue; // self-edges aren't interesting for this property
+    if (fromI === toI) continue;
     const from = constructs[fromI];
     const to = constructs[toI];
     if (!from || !to) continue;

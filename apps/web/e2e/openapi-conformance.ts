@@ -80,7 +80,6 @@ export function isDeclaredOperation(operations: Operation[], call: ApiCall): boo
   return operations.some((op) => op.method === call.method && op.pattern.test(call.path));
 }
 
-/** Every captured call the contract does NOT declare. */
 export function undeclaredCalls(operations: Operation[], captured: ApiCall[]): ApiCall[] {
   return captured.filter((call) => !isDeclaredOperation(operations, call));
 }

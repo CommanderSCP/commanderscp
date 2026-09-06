@@ -106,7 +106,6 @@ describe("PluginHost.stopInstances (M21.4)", () => {
       { id: "drop", module: "fake-executor", orgId: "org-1", scopeKey: "domain-1" }
     ]);
 
-    // Both live: a call on each succeeds.
     await expect(host.executor("keep").describeCapabilities()).resolves.toBeTruthy();
     await expect(host.executor("drop").describeCapabilities()).resolves.toBeTruthy();
 

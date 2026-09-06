@@ -44,7 +44,6 @@ const execFileAsync = promisify(execFile);
  *  paths refuse it fail-closed. Kept in lockstep with pin.env by `scan-db.test.ts`. */
 export const EXPECTED_TRIVY_DB_SCHEMA_VERSION = 2;
 
-/** trivy-db's on-disk `metadata.json` (the fields we consume). */
 export interface TrivyDbMetadata {
   Version: number;
   UpdatedAt: string;
@@ -59,10 +58,6 @@ const SCAN_DB_POLICY_READ_ORG = "commander";
 /** The sidecar the cache carries recording HOW its current DB was populated (refresh vs operator
  *  load), so the status read and the ScanEvidence can name the source honestly. */
 const SOURCE_SIDECAR = "scp-scan-db-source.json";
-
-// -------------------------------------------------------------------------------------------
-// Cache path + presence
-// -------------------------------------------------------------------------------------------
 
 /** The configured DB cache dir (`SCP_MANAGED_SCAN_DB_CACHE`), or undefined ⇒ no cache (the runner
  *  falls back to the image-baked DB, the fail-closed fallback as stale as the image). */
@@ -258,10 +253,6 @@ export function classifyScanDbStaleness(input: ScanDbClassifyInput): ScanDbClass
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// Instance staleness policy (the operator's commander-level setting)
-// -------------------------------------------------------------------------------------------
-
 interface PolicyRow extends Record<string, unknown> {
   soft_max_age_hours: number | null;
   hard_max_age_hours: number | null;
@@ -321,10 +312,6 @@ export async function resolveActiveStalenessBounds(db: Db | undefined): Promise<
     policy
   };
 }
-
-// -------------------------------------------------------------------------------------------
-// Status projection (the tenant-readable GET /instance/scan-db)
-// -------------------------------------------------------------------------------------------
 
 /** The full status of the DB the runner would consume — the API projection + the block reason a
  *  Decision would cite. `cacheDir` undefined ⇒ the baked-image fallback (no staleness gate). */
@@ -408,7 +395,6 @@ export async function atomicInstallDb(
     await mkdir(stagingDb, { recursive: true });
     await populate(stagingDb);
 
-    // VALIDATE before we touch the live cache.
     if (!existsSync(join(stagingDb, "trivy.db"))) {
       throw new Error("scan-db install: staged payload has no trivy.db — refusing");
     }

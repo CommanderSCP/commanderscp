@@ -321,10 +321,6 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     expect(quiet.coveredBy).toEqual(["pushed"]);
   });
 
-  // -------------------------------------------------------------------------------------------
-  // PROPERTY 3 — the strict body
-  // -------------------------------------------------------------------------------------------
-
   it("REFUSES a body carrying an extra top-level `producer` key — never silently strips it", async () => {
     const component = await createTestComponent(admin, {
       name: `strict-${randomUUID().slice(0, 8)}`
@@ -449,7 +445,6 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     );
     expect(crossed.statusCode, crossed.body).toBe(403);
 
-    // NOTHING WAS WRITTEN for the refused target.
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select()
@@ -460,10 +455,6 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     );
     expect(rows).toHaveLength(0);
   });
-
-  // -------------------------------------------------------------------------------------------
-  // PROPERTY 6 — unauthenticated
-  // -------------------------------------------------------------------------------------------
 
   it("refuses an unauthenticated submission", async () => {
     const component = await createTestComponent(admin, {
@@ -494,10 +485,6 @@ describe("POST /pipelines/evidence + the continuous-test hold projection", () =>
     );
     expect(rows).toHaveLength(0);
   });
-
-  // -------------------------------------------------------------------------------------------
-  // PROPERTY 7 — the read-time hold projection
-  // -------------------------------------------------------------------------------------------
 
   it("carries hold.continuousTests on a genuinely held wave target, and DROPS it on the very next read once fresh green lands — composed at read time, never persisted", async () => {
     const place = await admin.deploymentTargets.create({

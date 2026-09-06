@@ -577,9 +577,7 @@ export interface ListObjectsQuery extends ListQuery {
 
 /** Wire-INPUT shape (pre-defaults) — the schema's `PlacementListQuery` is the parsed output type. */
 export interface ListPlacementsQuery extends ListObjectsQuery {
-  /** id or URN of a component. */
   component?: string;
-  /** id or URN of a deployment-target. */
   deploymentTarget?: string;
 }
 
@@ -911,7 +909,6 @@ export class ScpClient {
     };
   }
 
-  /** Pagination iterator over any object type. */
   async *listAllObjects(
     type: string,
     query: Omit<ListObjectsQuery, "cursor"> = {}
@@ -923,10 +920,6 @@ export class ScpClient {
       cursor = page.nextCursor ?? undefined;
     } while (cursor);
   }
-
-  // -----------------------------------------------------------------------------------------
-  // Relationships
-  // -----------------------------------------------------------------------------------------
 
   readonly relationships = {
     create: async (
@@ -995,7 +988,6 @@ export class ScpClient {
     };
   }
 
-  /** `.addOwner()/.listOwners()/.removeOwner()` — valid on domains/services/components/deploymentTargets. */
   private ownerMethods(fns: OwnerFns) {
     return {
       addOwner: async (
@@ -1413,10 +1405,6 @@ export class ScpClient {
       return unwrap(result);
     }
   };
-
-  // -----------------------------------------------------------------------------------------
-  // Audit log
-  // -----------------------------------------------------------------------------------------
 
   readonly auditEvents = {
     list: async (query: ListQuery = {}): Promise<AuditEventListResponse> => {

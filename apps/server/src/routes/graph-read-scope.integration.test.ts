@@ -75,7 +75,7 @@ describe("graph read-scoping (role-model.md §8.6a)", () => {
     });
     const seen = new Set(res.objects.map((o) => o.id));
     expect(seen.has(compA)).toBe(true);
-    expect(seen.has(serviceId)).toBe(true); // org-root reader is unfiltered (readable set is null)
+    expect(seen.has(serviceId)).toBe(true);
     expect(seen.has(compB)).toBe(true);
   });
 
@@ -87,10 +87,9 @@ describe("graph read-scoping (role-model.md §8.6a)", () => {
       maxDepth: 10
     });
     const seen = new Set(res.objects.map((o) => o.id));
-    expect(seen.has(compA)).toBe(true); // its own component is readable
+    expect(seen.has(compA)).toBe(true);
     expect(seen.has(serviceId)).toBe(false); // parent service — the bypass this closes
-    expect(seen.has(compB)).toBe(false); // sibling under the same service
-    // and no returned edge names a non-readable endpoint
+    expect(seen.has(compB)).toBe(false);
     expect(res.edges.every((e) => seen.has(e.fromId) && seen.has(e.toId))).toBe(true);
   });
 

@@ -100,7 +100,7 @@ export interface GithubConfig {
   /** Default workflow file name (e.g. `deploy.yml`) used when a `TriggerIntent` doesn't specify
    *  `parameters.workflowId`. */
   defaultWorkflowId?: string;
-  apiBaseUrl?: string; // explicit override; default https://api.github.com
+  apiBaseUrl?: string;
   /** Injected by the server when this binding is backed by an execution-system (Mode A — import an
    *  EXISTING GitHub, incl. GitHub Enterprise). Used as the base-URL FALLBACK when `apiBaseUrl` is
    *  not set, so a `kind=github` execution-system's `serverUrl` actually reaches the provider
@@ -390,8 +390,8 @@ export function mapGithubWebhookEventToHint(
 
 interface WorkflowRun {
   id: number;
-  status: string; // queued|in_progress|completed
-  conclusion: string | null; // success|failure|cancelled|skipped|timed_out|action_required|neutral|stale|null
+  status: string;
+  conclusion: string | null;
   html_url: string;
   head_sha?: string;
   created_at?: string;
@@ -406,7 +406,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   const events: ExecutorEvent[] = [];
   const commits: Array<{ sha: string; commit?: { author?: { date?: string } } }> = [];
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
-  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     if (sinceIso) query.set("since", sinceIso);
@@ -416,7 +416,7 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
       "GET",
       `/repos/${config.owner}/${config.repo}/commits?${query.toString()}`
     );
-    if (status < 200 || status >= 300) break; // lenient observe posture — see this hook's doc.
+    if (status < 200 || status >= 300) break;
     const pageCommits = body as Array<{ sha: string; commit?: { author?: { date?: string } } }>;
     if (!Array.isArray(pageCommits) || pageCommits.length === 0) break;
     servedPageSize ??= pageCommits.length;
@@ -453,7 +453,6 @@ async function pollCommits(ctx: PluginContext, sinceIso?: string): Promise<Execu
   return events;
 }
 
-/** Per-poll ceiling on single-commit fetches (see `pollCommits`). */
 const MAX_COMMIT_FILE_FETCHES_PER_POLL = 20;
 
 /**
@@ -531,7 +530,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
   const config = asConfig(ctx.config);
   const events: ExecutorEvent[] = [];
   const sinceMs = sinceIso ? new Date(sinceIso).getTime() : undefined;
-  let servedPageSize: number | undefined; // learned from page 1 — see POLL_PAGE_SIZE.
+  let servedPageSize: number | undefined;
   for (let page = 1; page <= MAX_POLL_PAGES; page += 1) {
     const query = new URLSearchParams({ per_page: String(POLL_PAGE_SIZE), page: String(page) });
     const { status, body } = await api(
@@ -540,7 +539,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
       "GET",
       `/repos/${config.owner}/${config.repo}/actions/runs?${query.toString()}`
     );
-    if (status < 200 || status >= 300) break; // lenient observe posture — see pollCommits' doc.
+    if (status < 200 || status >= 300) break;
     const runs = (body as { workflow_runs?: WorkflowRun[] }).workflow_runs ?? [];
     if (runs.length === 0) break;
     servedPageSize ??= runs.length;
@@ -559,7 +558,7 @@ async function pollRuns(ctx: PluginContext, sinceIso?: string): Promise<Executor
       });
     }
     if (runs.length < servedPageSize) break; // shorter than the SERVED page — the last page.
-    if (sinceMs === undefined) break; // cold start reads one page — see MAX_POLL_PAGES.
+    if (sinceMs === undefined) break;
     // Unlike /commits, this resource has no server-side `since`: the whole page is filtered here,
     // so the stop condition is the page's OLDEST run falling at/behind the watermark.
     const oldest = runs[runs.length - 1]?.created_at;
@@ -678,7 +677,6 @@ function mapConclusionToPhase(status: string, conclusion: string | null): Execut
   }
 }
 
-/** Adapter `getStatus` hook. */
 async function getStatus(ctx: PluginContext, ref: ExternalRunRef): Promise<ExecutionStatus> {
   const config = asConfig(ctx.config);
   if (!ref.externalId.startsWith("workflow_run::")) {
@@ -706,7 +704,6 @@ async function getStatus(ctx: PluginContext, ref: ExternalRunRef): Promise<Execu
   };
 }
 
-/** Adapter `abortRun` hook. */
 async function abortRun(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortResult> {
   const config = asConfig(ctx.config);
   if (!ref.externalId.startsWith("workflow_run::")) {
@@ -1245,10 +1242,6 @@ export const githubDiscoveryPlugin: DiscoveryPlugin = { discover };
 export function createGithubDiscoveryPlugin(): DiscoveryPlugin {
   return githubDiscoveryPlugin;
 }
-
-// -------------------------------------------------------------------------------------------
-// Manifests
-// -------------------------------------------------------------------------------------------
 
 const githubConfigSchema = {
   type: "object",

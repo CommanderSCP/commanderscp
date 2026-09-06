@@ -149,10 +149,6 @@ describe("ADR-0032 §6a: every local write door refuses a group-scoped opt-out (
     );
   }
 
-  // -------------------------------------------------------------------------------------------
-  // DOOR 1 — IaC plan + apply.
-  // -------------------------------------------------------------------------------------------
-
   it("DOOR 1a: IaC apply refuses a manifest that CREATES the refused policy, and writes nothing", async () => {
     const stackName = `dep-sub-${randomUUID().slice(0, 8)}`;
     const urn = `urn:scp:${stackName}:policy:smuggled`;
@@ -252,10 +248,6 @@ describe("ADR-0032 §6a: every local write door refuses a group-scoped opt-out (
     expect(filled.provenance).toBe("manual");
     expect(await policyRowsByUrn(urn)).toHaveLength(1);
   });
-
-  // -------------------------------------------------------------------------------------------
-  // DOOR 3 — federation overlay.
-  // -------------------------------------------------------------------------------------------
 
   it("DOOR 3: the overlay route refuses it, and creates neither the overlay nor its `annotates` edge", async () => {
     const base = await admin.services.create({ name: `svc-overlay-${randomUUID().slice(0, 8)}` });

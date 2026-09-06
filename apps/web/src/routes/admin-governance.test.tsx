@@ -283,8 +283,6 @@ function problem(status: number, title: string, detail: string, decisionId?: str
   });
 }
 
-// -------------------------------------------------------------------------------------------
-
 describe("Admin › Governance has NO role/wire gate — enforcement is per-instance", () => {
   it.each(["commander", "outpost", "retrans", undefined] as const)(
     "instanceRole %s still reads and renders the page — never the 'managed at the commander' pointer",
@@ -394,7 +392,6 @@ describe("the org rung switch", () => {
       "019f0000-0000-7000-8000-00000000d101"
     );
     expect(inDocument("rung-write-why")).not.toBeNull();
-    // The list was re-read.
     expect(calls.filter((c) => c.method === "governanceMove.rungs").length).toBeGreaterThanOrEqual(
       2
     );

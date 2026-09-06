@@ -91,7 +91,6 @@ export const ScanDbStatusSchema = z.object({
   source: ScanDbSourceSchema,
   /** The DB's age in hours from its `metadata.json` `UpdatedAt`; `null` when unknown/absent. */
   ageHours: z.number().nonnegative().nullable(),
-  /** trivy-db `metadata.json` timestamps (ISO), when readable. */
   updatedAt: z.string().nullable(),
   nextUpdate: z.string().nullable(),
   /** The DB's own schema version and the version the PINNED Trivy binary requires (tools/trivy/pin.env). */

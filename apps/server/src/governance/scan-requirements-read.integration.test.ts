@@ -72,10 +72,6 @@ describe("M22.8 component scan-requirements read surface", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixtures
-  // -----------------------------------------------------------------------------------------
-
   async function orgWithChain(label: string) {
     const org = await createTestOrg(server, label);
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });

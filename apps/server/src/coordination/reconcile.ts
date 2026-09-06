@@ -1477,7 +1477,6 @@ async function reconcileExecutingChange(
       continue;
     }
 
-    // triggered or observing: poll.
     if (!target.executorRef) {
       // Shouldn't happen (triggered/observing always carry the ref markWaveTargetTriggered set) —
       // defensive no-op; next tick will see the same state and try again.
@@ -1671,7 +1670,7 @@ async function reconcileExecutingChange(
     );
     return; // something is genuinely still running
   }
-  if (heldCount > 0 && !anyFailed) return; // the PURE hold: unchanged, still in flight
+  if (heldCount > 0 && !anyFailed) return;
   await withTenantTx(db, orgId, (tx) =>
     markWaveTerminal(tx, orgId, activeWave.id, anyFailed ? "failed" : "succeeded")
   );
@@ -2549,9 +2548,8 @@ async function triggerWaveTarget(
       // receiving an `image` release, look like zero-bindings and FAKE-SUCCEED — case (b) wearing
       // case (a)'s clothes, which is the masking gap #66 closed.
       const all = await listVisibleBindingsForTarget(tx, orgId, targetObjectId);
-      if (all.length === 0) return false; // case (a): intended-fake, behaviour unchanged.
+      if (all.length === 0) return false;
 
-      // case (b): masking gap.
       const boundTypes = all.map((b) => b.binding.type).sort();
       return blockWaveTarget(tx, {
         orgId,
@@ -3002,10 +3000,6 @@ async function shouldAutoRollback(
   const effective = resolvePolicies(matches);
   return effective.some((p) => p.autoRollbackOnFailure);
 }
-
-// -------------------------------------------------------------------------------------------
-// pg-boss wiring
-// -------------------------------------------------------------------------------------------
 
 /** One full sweep: every org, one `reconcileOrgTick` each. Errors in one org's tick are caught
  *  and logged so they never take down the sweep (or the pg-boss job) for every other org. */

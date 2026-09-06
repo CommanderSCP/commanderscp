@@ -88,7 +88,6 @@ function ctx(overrides: Record<string, unknown>): PluginContext {
 describe("M23.2: managed-iac, constructed the way production constructs it, honours the selection", () => {
   it("`runnerLauncher: 'kubernetes'` REACHES THE KUBERNETES ADAPTER through the ZERO-ARGUMENT factory", async () => {
     const seen: string[] = [];
-    // NO ARGUMENT — exactly `subprocess-entry.ts`'s call.
     const plugin = createManagedIacExecutorPlugin();
     const c = ctx({
       ...KUBERNETES_SETTINGS,
@@ -463,7 +462,6 @@ console.log(
         report.detail,
         "the run never reached the default transport's token read, so nothing past construction was driven"
       ).toContain(`${K8S_SA_DIR}/token`);
-      // THE MEASUREMENT.
       expect(
         report.afterKubernetes,
         `managed-iac created a process on the Kubernetes path: ${JSON.stringify(run.spawns)}`

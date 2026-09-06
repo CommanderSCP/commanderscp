@@ -314,7 +314,6 @@ export type KubernetesWorkspaceVolume =
  * `hostPath: /` away from reading the node.
  */
 export interface KubernetesRunnerPodConventions {
-  /** `spec.imagePullSecrets`, by NAME. The chart inherits `.Values.imagePullSecrets`. */
   readonly imagePullSecrets?: readonly string[];
   /** The runner container's `imagePullPolicy`. The chart inherits `.Values.image.pullPolicy`
    *  (`IfNotPresent`), which is the value that keeps an air-gapped node from reaching a registry. */
@@ -412,7 +411,6 @@ export interface KubernetesRunnerLauncherConfig {
  *  minutes; 300 GETs against an API server is not a cost worth a whole failure class. */
 export const KUBERNETES_POLL_INTERVAL_MS = 2_000;
 
-/** Default `ttlSecondsAfterFinished`, matching `runner-iac.yaml`'s reference shape. */
 export const KUBERNETES_JOB_TTL_SECONDS = 3_600;
 
 /** The one container in every runner Job. Fixed, because `pods/log?container=` needs a name and a
@@ -729,7 +727,6 @@ interface JobView {
   };
 }
 
-/** The slice of an Event this adapter reads. */
 interface EventView {
   type?: string;
   reason?: string;
@@ -1138,7 +1135,6 @@ export interface KubernetesStartFacts {
   /** The last operator-facing clause {@link kubernetesWaitingEvidence} produced, or — when nothing
    *  was ever observed — the sentence that says so. */
   waiting: string;
-  /** `clampRunTimeoutMs(spec.timeoutMs)`, for the messages that name the budget. */
   runTimeoutMs: number;
 }
 
@@ -1346,10 +1342,6 @@ export function kubernetesStartVerdict(
   };
 }
 
-// ==================================================================================================
-// THE ADAPTER
-// ==================================================================================================
-
 /** Single-flight slot for the background sweep, ONE PER NAMESPACE — the exact analogue of the Docker
  *  adapter's per-`dockerBinary` map, and separate from it on purpose: a Docker pass must never
  *  satisfy a Kubernetes caller's sweep, which is what a shared slot would do. */
@@ -1454,7 +1446,7 @@ export function createKubernetesRunnerLauncher(
       const deadline = item.metadata?.annotations?.[RUNNER_LAUNCHER_DEADLINE_ANNOTATION];
       if (!name || owner === LAUNCHER_OWNER_ID) continue; // never my own
       const deadlineMs = deadline ? Date.parse(deadline) : NaN;
-      if (!Number.isFinite(deadlineMs) || deadlineMs > now) continue; // missing/garbled/future
+      if (!Number.isFinite(deadlineMs) || deadlineMs > now) continue;
       targets.push(name);
     }
 
@@ -2127,7 +2119,7 @@ export function createKubernetesRunnerLauncher(
 
             // SAME QUESTION, SAME ANSWER. Sleeping out a remainder too small to issue anything with
             // only delays the refusal `api()` is about to give.
-            if (runDeadline.spent()) continue; // let `api()` give the verdict
+            if (runDeadline.spent()) continue;
             await sleep(Math.min(pollIntervalMs, runDeadline.remainingMs()));
           }
 

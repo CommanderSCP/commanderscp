@@ -58,13 +58,9 @@ export interface BundleImageSpec {
    *  separate from `name` — the eval postgres image is `postgres-eval` in the bundle but has
    *  always been `--postgres-ref` on the command line, and renaming a shipped flag is a break. */
   optionStem: string;
-  /** Default for `--<optionStem>-ref`. */
   defaultRef: string;
-  /** Default for `--<optionStem>-source`. */
   defaultSource: ImageSourceType;
-  /** One-line `--help` text (the `--<optionStem>-ref` flag's description). */
   flagDescription: string;
-  /** One-line operator-facing description, rendered into `docs/OFFLINE_INSTALL.md`'s contents tree. */
   doc: string;
 }
 

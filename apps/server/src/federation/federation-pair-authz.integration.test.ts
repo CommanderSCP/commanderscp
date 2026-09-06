@@ -92,7 +92,6 @@ describe("federation:pair — a second bar on pairing, added never substituted (
   /** `federation:read` + `federation:write` at the org root, NO `federation:pair`, NO `object:write`
    *  — the FederationAdmin shape (role-model.md §4.1). */
   let linkOperator: TestUser;
-  /** The built-in `Administrator`, which drizzle/0094 grants `federation:pair`. */
   let administrator: TestUser;
   /** A peer paired by the OWNER before the refusal cases run — the thing a re-key is attempted on,
    *  and the peer the control export/PATCH cases operate. */

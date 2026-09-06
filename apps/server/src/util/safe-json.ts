@@ -50,7 +50,6 @@
  *  distinct class, so a call site that wants to tell "malformed" from "hostile" apart can. */
 export class PrototypePoisoningError extends SyntaxError {
   override readonly name = "PrototypePoisoningError";
-  /** `"__proto__"` or `"constructor"` — which rule fired. */
   readonly forbiddenKey: "__proto__" | "constructor";
 
   constructor(forbiddenKey: "__proto__" | "constructor") {

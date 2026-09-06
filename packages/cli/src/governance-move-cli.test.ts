@@ -93,10 +93,6 @@ describe("scp governance move-enforcement — the command tree", () => {
   });
 });
 
-// -------------------------------------------------------------------------------------------
-// Formatters — direct unit pins.
-// -------------------------------------------------------------------------------------------
-
 function without<T, K extends keyof T>(value: T, key: K): T {
   const copy: T = { ...value };
   delete copy[key];

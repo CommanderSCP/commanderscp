@@ -172,7 +172,7 @@ describe("boundary segment: a real outpost verdict IS rendered, and the two neve
   it("paints `verified` as the success state — the premise for every negative assertion above", () => {
     const html = render(outpostVerifiedSegment);
 
-    expect(html).toContain(SUCCESS_CLASS); // premise: the success paint really is this class
+    expect(html).toContain(SUCCESS_CLASS);
     expect(html).toContain("signatures verified");
     expect(html).toContain('data-verified="true"');
     expect(html).toContain('data-state="verified"');
@@ -194,7 +194,6 @@ describe("boundary segment: a real outpost verdict IS rendered, and the two neve
     expect(html).toContain('data-state="not_yet_verified"');
     // The RECEIVED transfer is still a real observation and keeps its success paint...
     expect(html).toContain("received here");
-    // ...so assert the VALIDATE phase specifically carries none.
     const validateStart = html.indexOf('data-testid="boundary-phase-validate"');
     expect(validateStart).toBeGreaterThan(-1);
     expect(html.slice(validateStart)).not.toContain(SUCCESS_CLASS);

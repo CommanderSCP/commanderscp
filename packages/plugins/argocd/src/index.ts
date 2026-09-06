@@ -43,7 +43,6 @@ import type {
  */
 
 export interface ArgoCdConfig {
-  /** ArgoCD API server base URL, e.g. `https://argocd.example.com`. */
   serverUrl: string;
   /** `SecretsAccessor` key holding the ArgoCD API token (a project-scoped or admin token, per the
    *  org's own ArgoCD RBAC) — never embedded directly in config. */
@@ -123,7 +122,7 @@ interface ArgoResourceStatus {
   kind?: string;
   namespace?: string;
   name?: string;
-  status?: string; // sync status
+  status?: string;
   health?: { status?: string; message?: string };
 }
 
@@ -136,7 +135,7 @@ interface ArgoApplication {
     sync?: { status?: string; revision?: string; revisions?: string[] };
     health?: { status?: string };
     operationState?: {
-      phase?: string; // Running|Succeeded|Failed|Error|Terminating
+      phase?: string;
       message?: string;
       finishedAt?: string;
       startedAt?: string;
@@ -159,7 +158,7 @@ interface ArgoApplication {
 // plugin surfaces — all optional and version-dependent (`canary.weights` is absent on Argo Rollouts
 // older than ~v1.1; `currentStepIndex` is absent for non-canary/blue-green). Never fabricated.
 interface LiveRolloutStatus {
-  phase?: string; // RolloutPhase: Progressing|Paused|Healthy|Degraded
+  phase?: string;
   message?: string;
   currentStepIndex?: number;
   canary?: { weights?: { canary?: { weight?: number } } };
@@ -345,10 +344,6 @@ function mapArgoPhase(app: ArgoApplication | undefined): ExecutionStatus {
     progress: settled ? 1 : 0.5
   };
 }
-
-// -----------------------------------------------------------------------------------------
-// ExecutorPlugin
-// -----------------------------------------------------------------------------------------
 
 /**
  * The revision(s) an Application is synced to, as ONE deterministic string — the dedupe identity of

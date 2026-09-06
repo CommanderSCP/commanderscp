@@ -106,9 +106,6 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
   const typed = app.withTypeProvider<ZodTypeProvider>();
   const base = "/api/v1/scan-override-grants";
 
-  // -----------------------------------------------------------------------------------------
-  // RAISE
-  // -----------------------------------------------------------------------------------------
   typed.route({
     method: "POST",
     url: base,
@@ -217,9 +214,6 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
     }
   });
 
-  // -----------------------------------------------------------------------------------------
-  // READ
-  // -----------------------------------------------------------------------------------------
   typed.route({
     method: "GET",
     url: base,

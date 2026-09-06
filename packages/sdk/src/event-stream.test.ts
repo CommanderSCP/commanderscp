@@ -26,7 +26,6 @@ interface Connection {
 }
 
 function frame(event: RelayedEvent): string {
-  // Byte-identical to routes/events.ts's `send`.
   return `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
@@ -140,7 +139,6 @@ describe("client.events.stream() — the live SSE channel through the generated 
     connectionAt(0).res.write(frame(anEvent("evt-1")));
     await waitFor(() => run.received.length === 1, "the first event");
 
-    // An abrupt reset — the LB/pod-eviction case.
     connectionAt(0).res.socket?.destroy();
 
     await waitFor(() => connections.length === 2, "a reconnection after the kill");

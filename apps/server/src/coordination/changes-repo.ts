@@ -815,7 +815,7 @@ export async function stampBoundaryBundleChecksum(
     .where(and(eq(changes.orgId, orgId), eq(changes.objectId, changeObjectId)))
     .limit(1)
     .for("update");
-  if (!row) return; // change vanished (cancelled/purged mid-export) — nothing to decorate.
+  if (!row) return;
   const stamped = withBoundaryBundleChecksum(row.sourceRef, checksum);
   const next = promotionExport ? withPromotionExport(stamped, promotionExport) : stamped;
   await tx

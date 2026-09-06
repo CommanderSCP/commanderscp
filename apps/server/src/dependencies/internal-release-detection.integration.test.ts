@@ -147,11 +147,6 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     await server?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixture builders
-  // -----------------------------------------------------------------------------------------
-
-  /** (component, deployment-target) pairs already placed — see `releaseTo`. */
   const placedPairs = new Set<string>();
 
   /**
@@ -556,10 +551,6 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
     expect(reader.calls, "a disabled/unsubscribed line is never fetched (ADR-0032 §6)").toEqual([]);
     expect((await headOf(lineId))?.latestVersion).toBeNull();
   });
-
-  // -----------------------------------------------------------------------------------------
-  // (4) the oci version comes from observed.images
-  // -----------------------------------------------------------------------------------------
 
   it("takes the oci version from observed.images — tag AND digest", async () => {
     const producer = await createOrphanComponent(server, org, `oci-producer-${uuidv7()}`);

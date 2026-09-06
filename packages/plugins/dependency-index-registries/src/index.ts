@@ -65,10 +65,6 @@ function toVersions(raw: Iterable<string>): DependencyIndexVersion[] {
   return out;
 }
 
-// -------------------------------------------------------------------------------------------
-// Go — the module proxy protocol (https://go.dev/ref/mod#goproxy-protocol)
-// -------------------------------------------------------------------------------------------
-
 /**
  * The module proxy's CASE-ENCODING, which is not optional and not cosmetic.
  *
@@ -138,10 +134,6 @@ export const goIndexManifest: PluginManifest = {
   configSchema: indexConfigSchema()
 };
 
-// -------------------------------------------------------------------------------------------
-// npm — the registry's packument
-// -------------------------------------------------------------------------------------------
-
 /** A scoped name's slash is percent-encoded (`@acme/lib` → `@acme%2flib`) and nothing else is:
  *  encoding the `@` too yields a 404 from the real registry. */
 export function encodeNpmName(name: string): string {
@@ -202,10 +194,6 @@ export const npmIndexManifest: PluginManifest = {
   version: "0.1.0",
   configSchema: indexConfigSchema()
 };
-
-// -------------------------------------------------------------------------------------------
-// Python — PyPI's JSON API
-// -------------------------------------------------------------------------------------------
 
 /** One PyPI release file, as `releases[version][]` really carries it. Only `yanked` is read. */
 interface PypiReleaseFile {
@@ -275,10 +263,6 @@ export const pypiIndexManifest: PluginManifest = {
   version: "0.1.0",
   configSchema: indexConfigSchema()
 };
-
-// -------------------------------------------------------------------------------------------
-// Maven — a repository's maven-metadata.xml
-// -------------------------------------------------------------------------------------------
 
 /** `com.acme:lib` → `com/acme/lib`. A coordinate with no `:` cannot address a Maven artifact at
  *  all, so it is refused rather than turned into a plausible-looking path. */

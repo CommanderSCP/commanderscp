@@ -288,7 +288,6 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     await server?.close();
   });
 
-  /** `GET /role-bindings` for an org, unwrapped. */
   async function bindings(
     token: string
   ): Promise<{ id: string; subjectId: string; roleName: string }[]> {
@@ -415,10 +414,6 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     return { org, team, member, teamBindingId };
   }
 
-  // =============================================================================================
-  // DOOR B — `DELETE /relationships/{id}`
-  // =============================================================================================
-
   it("DOOR B: removing the `member_of` edge under the last administrative binding is refused", async () => {
     const { org, team, member, teamBindingId } = await orgAdministeredThroughATeam("floor-door-b");
 
@@ -462,10 +457,6 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
       [teamBindingId]
     );
   });
-
-  // =============================================================================================
-  // DOOR C — `DELETE /objects/team/{id}`, and its cascade
-  // =============================================================================================
 
   it("DOOR C: tombstoning the team that holds the last administrative binding is refused", async () => {
     const { org, team, member } = await orgAdministeredThroughATeam("floor-door-c");
@@ -753,7 +744,6 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     ).acknowledgedPrincipalIds;
     expect(stale).toEqual([known.objectId]);
 
-    // …and now somebody joins.
     const latecomer = await createTestUser(server, org, []);
     expect(
       (
@@ -797,7 +787,6 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     expect(wrongWay.body).toContain("not reached by this team");
     expect(wrongWay.body).toContain(bogus.objectId);
 
-    // THE ADMISSION PAIR — re-read, retry, admitted.
     const fresh = (
       (
         await call("GET", org.adminToken, `/api/v1/role-bindings/grant-preview?subjectId=${team}`)
@@ -1508,10 +1497,6 @@ describe("the administrator floor is an invariant of the org, not a rule on one 
     );
     expect(admitted.statusCode, admitted.body).toBe(200);
   });
-
-  // =============================================================================================
-  // THE CONTRACT DECLARES THE 409 THE FLOOR INTRODUCED
-  // =============================================================================================
 
   it("every delete route that can hit the floor declares 409 in the emitted contract", async () => {
     // DOOR B and DOOR C above prove these two routes RETURN 409. Nothing above proves the contract

@@ -25,10 +25,6 @@ import {
   type RawTreeEntry
 } from "./read-tree.js";
 
-// -------------------------------------------------------------------------------------------
-// globMatchesPath / matchesAnyGlob
-// -------------------------------------------------------------------------------------------
-
 describe("globMatchesPath", () => {
   it("`*` matches within one segment but NOT across `/`", () => {
     expect(globMatchesPath("services/*/package.json", "services/api/package.json")).toBe(true);
@@ -106,10 +102,6 @@ describe("resolveMaxFiles / resolveMaxTotalBytes / resolveMaxEntriesScanned", ()
     expect(resolveMaxEntriesScanned(500)).toBe(500);
   });
 });
-
-// -------------------------------------------------------------------------------------------
-// gitProviderTreeBoundError / isGitProviderTreeBoundError
-// -------------------------------------------------------------------------------------------
 
 describe("gitProviderTreeBoundError / isGitProviderTreeBoundError", () => {
   it("builds an Error carrying treeBoundExceeded/limit/provider, message names both", () => {

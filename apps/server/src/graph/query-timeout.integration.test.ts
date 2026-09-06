@@ -360,7 +360,7 @@ describe("GET /api/v1/graph/query/impact-of — high fan-in no longer blows up (
     // Every node in every earlier layer (0..LAYERS-2) is a genuine transitive dependent — complete
     // bipartite between consecutive layers, and maxDepth=LAYERS-1 covers exactly that many hops.
     expect(body.objects).toHaveLength(WIDTH * (LAYERS - 1));
-    expect(new Set(body.objects.map((o) => o.id)).size).toBe(WIDTH * (LAYERS - 1)); // no duplicates
+    expect(new Set(body.objects.map((o) => o.id)).size).toBe(WIDTH * (LAYERS - 1));
     // Comfortably fast — nowhere near the old 7+ minute pathological runtime, and well inside the
     // tight 3s bound configured above (generous only for a loaded CI box, not to hide a
     // regression: a reopened blowup would take vastly longer than this).

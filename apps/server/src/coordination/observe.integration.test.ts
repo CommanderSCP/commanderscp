@@ -92,7 +92,6 @@ describe("observe()-driver: pull-based change detection (no inbound webhook)", (
     expect((afterFirst[0]!.payload as { repo?: string }).repo).toBe(REPO);
     expect(afterFirst[0]!.processedAt).toBeNull();
 
-    // Cursor persisted + advanced to the event watermark.
     const cursor = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select()

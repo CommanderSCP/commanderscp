@@ -543,7 +543,6 @@ export function buildJourney(data: {
   return waves;
 }
 
-/** This stage's pipelines that belong to `lane`. */
 function bindingsFor(
   stage: ComponentPipelineStage,
   lane: Lane
@@ -2920,10 +2919,6 @@ function ArtifactFieldList({
   );
 }
 
-/* ------------------------------------------------------------------------------------------------
- * BUILD
- * ---------------------------------------------------------------------------------------------- */
-
 /**
  * A BUILD NODE — what turns the source into an artifact. Hoisted out of the deploy stages: a build
  * happens once per release, not once per place, whatever scope its binding happens to hang off.
@@ -3200,10 +3195,6 @@ export function BuildNodeForTest(props: {
     </TileDetailsForTest>
   );
 }
-
-/* ------------------------------------------------------------------------------------------------
- * REGISTRY
- * ---------------------------------------------------------------------------------------------- */
 
 /**
  * A REGISTRY NODE — where the built artifact lands, and what promotion advances by digest.
@@ -4532,7 +4523,6 @@ export function CorrelatedInfraSection({
   );
 }
 
-/** `/components/$id/infrastructure` — the infrastructure pipeline tab. */
 export function ComponentInfrastructurePage(): React.JSX.Element {
   return <ComponentPipelinePage lane={LANES[1]!} />;
 }

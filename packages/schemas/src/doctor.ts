@@ -23,7 +23,6 @@ export const DoctorCheckSchema = z.object({
   /** Stable machine id, e.g. `federation-self-origin` — safe to alert on, unlike the prose below. */
   id: z.string(),
   status: DoctorCheckStatusSchema,
-  /** One line, for a table row. */
   summary: z.string(),
   /**
    * The full operator-facing explanation, newline-separated: what is wrong, why it is silent, how it

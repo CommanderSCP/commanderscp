@@ -56,10 +56,6 @@ import {
  * report unavailable. `version-poll.integration.test.ts` pins exactly that asymmetry.
  */
 
-// -------------------------------------------------------------------------------------------
-// Which plugin module serves which ecosystem
-// -------------------------------------------------------------------------------------------
-
 /** Total over `DependencyEcosystem` by construction — adding an ecosystem to the enum without an
  *  index here is a compile error, not a silent "this one never gets polled". */
 export const INDEX_MODULE_BY_ECOSYSTEM: Record<DependencyIndexEcosystem, PluginModule> = {
@@ -168,7 +164,6 @@ export interface LineHeadSelection {
   /** The head of the line, or `undefined` — and `undefined` means NOTHING IS RECORDED. */
   head?: { version: string; parsed: ComparableVersion };
   reason?: LineHeadUndeterminedReason;
-  /** How many versions the index offered. */
   considered: number;
   /** Offered but UNPARSEABLE — `latest`, `stable`, a branch name, a malformed tag. Counted so a
    *  Decision can say "we looked at 40 tags and understood 12" instead of silently discarding 28. */

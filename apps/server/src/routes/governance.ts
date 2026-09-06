@@ -589,7 +589,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const votes = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        const r = await getApprovalRequest(tx, auth.orgId, request.params.id); // 404s if unknown
+        const r = await getApprovalRequest(tx, auth.orgId, request.params.id);
         // Same scope as the request itself — the votes are that request's contents, so a bar that
         // differed here would guard one and publish the other.
         await assertApprovalRequestReadable(tx, auth, r.changeObjectId);

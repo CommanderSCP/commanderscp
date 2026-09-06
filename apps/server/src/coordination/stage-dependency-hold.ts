@@ -226,7 +226,6 @@ export async function evaluateStageDependencies(
     orgId: string;
     /** The wave target's `target_object_id` — a PLACEMENT in stage mode, a component in legacy. */
     waveTargetObjectId: string;
-    /** Already parsed off the change's properties by `stageDependenciesOf`. */
     stageDependencies: readonly ResolvedStageDependency[];
     /** Stored entries that did not parse. Each becomes one `undeclarable` (holding) verdict. */
     malformed: readonly unknown[];

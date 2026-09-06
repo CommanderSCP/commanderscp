@@ -26,10 +26,6 @@ import { isScopedHttpResponseTooLargeError } from "@scp/plugin-api";
  * path encoding, and it returns the resolved commit id in the same response).
  */
 
-// -------------------------------------------------------------------------------------------
-// Request / result vocabulary
-// -------------------------------------------------------------------------------------------
-
 export interface ReadFileAtRefRequest {
   /**
    * Repository to read from, as the provider's own `owner/repo` (GitLab: a full project path, e.g.
@@ -92,7 +88,6 @@ export interface ReadFileAtRefNotFound {
   missing: "path" | "ref" | "unknown";
   path: string;
   requestedRef: string;
-  /** Provider-supplied explanation, when one was returned. */
   detail?: string;
 }
 
@@ -143,10 +138,6 @@ export interface ReadFileAtRefRefused {
 }
 
 export type ReadFileAtRefResult = ReadFileAtRefFound | ReadFileAtRefNotFound | ReadFileAtRefRefused;
-
-// -------------------------------------------------------------------------------------------
-// The decode bound
-// -------------------------------------------------------------------------------------------
 
 /**
  * Default decode ceiling: 1 MiB. Sized against what this capability is FOR — a declared-dependency
@@ -332,7 +323,6 @@ export interface DecodeBoundedBase64Input {
 export function decodeBoundedBase64(input: DecodeBoundedBase64Input): ReadFileAtRefResult {
   const { path, requestedRef, maxBytes } = input;
 
-  // Gate 1 — encoding.
   if (input.encoding !== undefined && input.encoding !== "base64") {
     if (input.encoding === "none") {
       return {
@@ -609,10 +599,6 @@ export function assertSafeRepo(provider: string, repo: string, exactSegments?: n
 export function encodePathSegments(value: string): string {
   return value.split("/").map(encodeURIComponent).join("/");
 }
-
-// -------------------------------------------------------------------------------------------
-// Failure classification — redirects and transport/egress
-// -------------------------------------------------------------------------------------------
 
 /** An error raised by the read path itself, already carrying provider + URL context. Marked so a
  *  wrapper can recognise its own product and not double-wrap it. */

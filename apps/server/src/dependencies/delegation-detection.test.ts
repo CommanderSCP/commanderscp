@@ -208,7 +208,6 @@ describe("a probe that could not READ never resolves to 'no delegation here'", (
     expect(probe.delegated).toBe(false);
     expect(probe.configs).toEqual([]);
     expect(probe.collisions).toEqual([]);
-    // ...is now distinguished, on every candidate path.
     expect(probe.conclusive).toBe(false);
     expect(probe.unreadable).toHaveLength(DELEGATION_CONFIG_PATHS.length);
     expect(delegationProbeIsInconclusive(probe)).toBe(true);

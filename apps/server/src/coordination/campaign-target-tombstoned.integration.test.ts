@@ -136,7 +136,6 @@ describe("a tombstoned campaign target is refused with a record, not an infinite
       reachedVia: "target"
     });
 
-    // ...and the hash-chained audit event that carries it.
     const events = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select()

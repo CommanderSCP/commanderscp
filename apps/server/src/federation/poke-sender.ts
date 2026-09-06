@@ -209,7 +209,6 @@ export interface CommanderPokeSenderOptions {
   mtls?: FederationClientMtls | null;
   /** Test seam — capture the fire-and-forget outcomes of each org's poke round. */
   onRoundComplete?: (orgId: string, outcomes: PokeSendOutcome[]) => void;
-  /** Optional debug sink (defaults to `console.debug`). */
   log?: (msg: string) => void;
 }
 

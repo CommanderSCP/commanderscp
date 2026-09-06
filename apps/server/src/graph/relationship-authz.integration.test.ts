@@ -94,7 +94,6 @@ describe("relationship writes: both-endpoint authorization", () => {
     });
     expect(created.typeId).toBe("depends_on");
 
-    // Cleanup so other tests' cardinality/uniqueness constraints stay unaffected.
     await admin.relationships.delete(created.id);
   });
 

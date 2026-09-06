@@ -62,7 +62,6 @@ import { TrustDomainId } from "@scp/schemas";
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// apps/server/src/federation/*.test.ts -> apps/server/drizzle
 const migrationsFolder = path.resolve(__dirname, "../../drizzle");
 
 let dbCounter = 0;
@@ -208,7 +207,6 @@ describe.skipIf(!opensslAvailable())("M14.0 outpost live-pull over mTLS (two-dom
       })
     );
 
-    // Something for the commander to export.
     const created = await withTenantTx(commander.db, commander.orgId, (tx) =>
       createObject(tx, {
         orgId: commander.orgId,
@@ -320,7 +318,7 @@ describe.skipIf(!opensslAvailable())("M14.4 scheduler mode — poke vs poll cade
   let outpostClientMtls: FederationClientMtls;
   let commanderPeerId: TrustDomainId;
 
-  const FREQUENT_SECONDS = 60; // SCP_FEDERATION_SYNC_INTERVAL_SECONDS default
+  const FREQUENT_SECONDS = 60;
   const SPARSE_SECONDS = 900; // SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS default (D1)
   const T0 = Date.parse("2026-07-24T12:00:00.000Z");
 
@@ -467,7 +465,7 @@ describe.skipIf(!opensslAvailable())("M14.4 scheduler mode — poke vs poll cade
     await setPeerState({ pokeMode: true, lastPokeReceivedAt: null });
 
     expect(await tickAt(0)).toHaveLength(1); // never attempted -> due
-    expect(await tickAt(30)).toHaveLength(0); // inside the FREQUENT window
+    expect(await tickAt(30)).toHaveLength(0);
     expect(await tickAt(FREQUENT_SECONDS)).toHaveLength(1); // frequent, NOT sparse — no silent 15min staleness
     expect(await tickAt(2 * FREQUENT_SECONDS)).toHaveLength(1);
     expect((await peerState()).lastPokeReceivedAt).toBeNull();
@@ -636,7 +634,6 @@ describe("M14.4 migration 0038 — additive on a DB seeded at 0037", () => {
         [peerId, orgId, "legacy-commander"]
       );
 
-      // THE UPGRADE.
       await migrate(drizzle(pool), { migrationsFolder });
 
       const after = await pool.query<{

@@ -107,9 +107,7 @@ export type RegistrationSyncResult =
   | {
       outcome: "stack_owned_elsewhere";
       stackName: string;
-      /** The registration this repo actually matched. */
       matchedRegistration: ConfigSourceRegistration;
-      /** The OTHER registration whose `stackTeams` already claims `stackName`. */
       owner: ConfigSourceRegistration;
     };
 

@@ -98,7 +98,7 @@ import { formatSummary, sampleDistinct, seededRandom, summarize } from "./stats.
  *   pnpm --filter @scp/server load-test:graph`
  */
 
-const SPINE_CHAIN_LENGTH = 12; // matches named-queries.integration.test.ts's own chain fixture shape
+const SPINE_CHAIN_LENGTH = 12;
 const SPINE_CHAIN_COUNT = 250; // 250 * 12 = 3,000 spine nodes, ~250 independent depth-11 lineages
 const BULK_LAYERS = 3;
 const TOTAL_NODES = 10_000;
@@ -106,7 +106,7 @@ const TARGET_TOTAL_EDGES = 100_000;
 const SAMPLE_RUNS_DEEP = 80; // targets sampled from spine chain tails — genuine depth-10 exercise
 const SAMPLE_RUNS_RANDOM = 20; // targets sampled uniformly across the whole graph (spine + bulk) — "typical case"
 const MAX_DEPTH = 10;
-const QUERY_STATEMENT_TIMEOUT_MS = 30_000; // safety net — see "KNOWN PATHOLOGICAL CASE" above
+const QUERY_STATEMENT_TIMEOUT_MS = 30_000;
 const RNG_SEED = 42;
 
 interface Topology {

@@ -56,10 +56,6 @@ import {
  * it — it is a record that the gap is known and where it lives.
  */
 
-// -------------------------------------------------------------------------------------------
-// Fixtures
-// -------------------------------------------------------------------------------------------
-
 /** A `boss` that RECORDS instead of refusing — the opposite polarity from
  *  `dependencies/commander-only.test.ts`'s probe (which throws on touch to prove a REFUSAL touched
  *  nothing). Here the question is what a loop that is ALLOWED to run actually does, so every call

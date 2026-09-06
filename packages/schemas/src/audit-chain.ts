@@ -41,7 +41,6 @@ export function canonicalizeAuditEvent(event: Omit<AuditEvent, "rowHash">): stri
   });
 }
 
-/** `row_hash = sha256(prev_hash || canonical(row))`, hex-encoded. */
 export function computeRowHash(event: Omit<AuditEvent, "rowHash">): string {
   const hash = createHash("sha256");
   hash.update(event.prevHash);

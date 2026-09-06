@@ -305,7 +305,6 @@ describe("§10.3 — a PLACED target tile: identity + state compact, everything 
     const html = renderWithQueryClient(
       <StageCardForTest stage={stage()} pipelineKey={["pipeline", "c"]} />
     );
-    // The compact set.
     expect(html).toContain("commercial-nyc3-prod");
     expect(html).toContain("deploys to prod");
     expect(html, "the facet stays beside the hint").toContain(
@@ -492,7 +491,6 @@ describe("§10.3 — the one-line ENTRY GATE summary (compact), the per-check li
     const html = renderToStaticMarkup(<StageCardForTest stage={stage({ gate: gate([], 1) })} />);
     expect(html).toContain("0 checks · approval required");
     expect(html).not.toContain('data-gate-summary="none"');
-    // The approval's WHO/HOW MANY is a Details fact.
     expect(html).not.toContain('data-testid="gate-approval"');
     expect(
       renderToStaticMarkup(
@@ -741,7 +739,6 @@ describe("§10.3 — the SCAN & SIGN tile: four one-liners compact; rows, export
     expect(html).toContain("2 exports");
     const signed = /data-testid="pipeline-sign-summary"[^>]*>(.*?)<\/p>/s.exec(html)?.[1] ?? "";
     expect(signed).not.toContain("old-peer");
-    // Order: scan → E6 → PM → signed.
     expect(at("pipeline-scan-summary")).toBeLessThan(at("pipeline-scan-export-gate"));
     expect(at("pipeline-scan-export-gate")).toBeLessThan(at("pipeline-scan-pm"));
     expect(at("pipeline-scan-pm")).toBeLessThan(at("pipeline-sign-summary"));

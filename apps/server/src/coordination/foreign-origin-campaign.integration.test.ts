@@ -199,7 +199,6 @@ describe("S10 single-writer: this instance must not drive ANOTHER domain's campa
     expect((await objectRow(foreignCampaignId)).origin).toBe(FOREIGN);
     expect((await objectRow(localCampaignId)).origin).toBe(self.domainId);
 
-    // Neither has been driven yet.
     expect(await planFor(foreignCampaignId)).toBeNull();
     expect(await planFor(localCampaignId)).toBeNull();
     expect(foreignTargetId).not.toBe(localTargetId);

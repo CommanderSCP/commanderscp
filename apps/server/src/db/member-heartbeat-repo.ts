@@ -5,7 +5,7 @@ import { memberClusterHeartbeat } from "./schema.js";
 /** §7.4 — how long since a heartbeat still counts a member cluster as LIVE. Generous relative to any
  *  boot cadence so a briefly-restarting pod is not mistaken for a decommissioned cluster; the
  *  version-skew gate only ever REFUSES on a live trailing heartbeat, never on a stale one. */
-export const MEMBER_HEARTBEAT_LIVE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+export const MEMBER_HEARTBEAT_LIVE_WINDOW_MS = 10 * 60 * 1000;
 
 export interface MemberHeartbeat {
   clusterId: string;

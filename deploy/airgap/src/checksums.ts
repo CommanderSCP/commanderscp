@@ -71,7 +71,6 @@ export async function computeChecksums(
   return entries;
 }
 
-/** Render entries as `sha256sum -c`-compatible text. */
 export function formatChecksums(entries: ChecksumEntry[]): string {
   return entries.map((e) => `${e.digest}  ${e.relativePath}`).join("\n") + "\n";
 }

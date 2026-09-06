@@ -121,9 +121,8 @@ describe("resolveDeliveryTarget — the validated per-peer view (M15.6 shape)", 
         { outDir: "/env/out", inDir: "/env/in" }
       );
       expect(view.valid).toBe(false);
-      expect(view.outbound.dir).toBeNull(); // no silent env fallback masking the misconfig
+      expect(view.outbound.dir).toBeNull();
       expect(view.outbound.problem).toContain("not an absolute, traversal-free");
-      // The untouched direction still resolves normally.
       expect(view.inbound.dir).toBe("/env/in");
     }
   });
@@ -156,13 +155,13 @@ describe("SCP_DELIVERY_ROOTS — the operator root bound on per-peer dirs (#110 
   it("parseDeliveryRoots: comma/colon-separated absolutes, normalized; non-absolute dropped", () => {
     expect(parseDeliveryRoots("/a,/b:/c")).toEqual(["/a", "/b", "/c"]);
     expect(parseDeliveryRoots(" /a , /b ")).toEqual(["/a", "/b"]);
-    expect(parseDeliveryRoots("/data/roots/../escape")).toEqual(["/data/escape"]); // normalized
-    expect(parseDeliveryRoots("relative,,  ")).toEqual([]); // non-absolute + empties dropped
+    expect(parseDeliveryRoots("/data/roots/../escape")).toEqual(["/data/escape"]);
+    expect(parseDeliveryRoots("relative,,  ")).toEqual([]);
     expect(parseDeliveryRoots(undefined)).toEqual([]);
   });
 
   it("isUnderDeliveryRoot: segment-safe — honors nested, rejects the /root-evil prefix trick", () => {
-    expect(isUnderDeliveryRoot("/root", ["/root"])).toBe(true); // the root itself
+    expect(isUnderDeliveryRoot("/root", ["/root"])).toBe(true);
     expect(isUnderDeliveryRoot("/root/sub/x", ["/root"])).toBe(true);
     expect(isUnderDeliveryRoot("/root-evil", ["/root"])).toBe(false); // sibling, NOT under /root
     expect(isUnderDeliveryRoot("/root-evil/x", ["/root"])).toBe(false);
@@ -348,7 +347,7 @@ describe("SCP_DELIVERY_S3_ENDPOINTS — the endpoint/bucket allowlist (endpoint-
     expect(parseDeliveryS3Endpoints("https://MinIO.A:9000/ignored/path")).toEqual([
       { origin: "https://minio.a:9000", bucket: null }
     ]);
-    expect(parseDeliveryS3Endpoints("not-a-url, ,  ")).toEqual([]); // unparseable + empties dropped
+    expect(parseDeliveryS3Endpoints("not-a-url, ,  ")).toEqual([]);
     expect(parseDeliveryS3Endpoints(undefined)).toEqual([]);
   });
 
@@ -361,7 +360,6 @@ describe("SCP_DELIVERY_S3_ENDPOINTS — the endpoint/bucket allowlist (endpoint-
 
   it("isDeliveryS3EndpointAllowed: origin EQUALITY (never string-prefix), bucket-pin honored", () => {
     const allow = parseDeliveryS3Endpoints("https://minio:9000, https://pinned:9000+only");
-    // Allowed: endpoint with no bucket-pin → any bucket.
     expect(isDeliveryS3EndpointAllowed("https://minio:9000", "anything", allow)).toBe(true);
     // Prefix-trick: a look-alike host must NOT match by string prefix.
     expect(isDeliveryS3EndpointAllowed("https://minio:9000.evil.net", "b", allow)).toBe(false);

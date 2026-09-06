@@ -97,7 +97,7 @@ describe("list pagination sweep: cursor precision across repos", () => {
     // seeded subset rather than a hard total: every seeded type appears EXACTLY once (no loop dupes)
     // and none are dropped.
     const seededSeen = seen.filter((id) => id.startsWith("bulk-type-"));
-    expect(new Set(seededSeen).size).toBe(SEED); // all seeded types seen
+    expect(new Set(seededSeen).size).toBe(SEED);
     expect(seededSeen.length).toBe(SEED); // and each exactly once
   });
 
@@ -124,7 +124,7 @@ describe("list pagination sweep: cursor precision across repos", () => {
     // stored sub-millisecond tail is nonzero (the boundary row re-qualifies; caught by the PAGE_CAP
     // assertion above) or DROPS rows when the tail is zero (caught here). The (created_at_ms, id)
     // tiebreak fixes both; this assertion proves no rows were lost.
-    expect(new Set(seen).size).toBe(SEED); // every decision seen — none dropped
+    expect(new Set(seen).size).toBe(SEED);
     expect(seen.length).toBe(SEED); // and each exactly once — no boundary-row duplicates
   });
 });

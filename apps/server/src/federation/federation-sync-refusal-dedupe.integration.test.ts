@@ -120,7 +120,6 @@ describe("federation sync refusals persist ON CHANGE (U4)", () => {
       decisionIds.push(outcome.decisionId!);
     }
 
-    // Every attempt named the SAME standing Decision...
     expect(new Set(decisionIds).size).toBe(1);
     // ...because only one was ever written (before the fix: 10, and 1,440/day/peer in a live loop).
     const rows = await syncDecisions();

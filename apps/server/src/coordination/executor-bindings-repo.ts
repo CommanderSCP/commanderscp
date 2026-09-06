@@ -867,7 +867,6 @@ function managedRunnerLauncherKind(): "docker" | "kubernetes" {
  * values); a hand-rolled deployment can, and it gets the variable name and the offending value.
  */
 const DNS_1123_SUBDOMAIN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
-/** A Kubernetes resource NAME: `cpu`, `memory`, `ephemeral-storage`, `nvidia.com/gpu`. */
 const K8S_RESOURCE_NAME = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(\/[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?$/;
 /** A Kubernetes QUANTITY: `250m`, `1`, `512Mi`, `1.5`, `2Gi`, `1e3`. Deliberately narrow — anything
  *  this does not match is refused rather than sent to the API server to be rejected there. */

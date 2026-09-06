@@ -204,10 +204,6 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
     });
   });
 
-  // -----------------------------------------------------------------------------------------
-  // (2) The tenant read of the unlock
-  // -----------------------------------------------------------------------------------------
-
   describe("(2) GET the instance unlock is tenant-readable", () => {
     it("reads the never-set default as LOCKED with a NULL `updatedAt` — negative control: a written row carries a timestamp", async () => {
       await clearUnlock();
@@ -243,10 +239,6 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
       expect(typeof response.json.unlocked).toBe("boolean");
     });
   });
-
-  // -----------------------------------------------------------------------------------------
-  // (3) The resolution surface — the explainability payload
-  // -----------------------------------------------------------------------------------------
 
   describe("(3) GET the (component, line) resolution", () => {
     const tiersThatTurnedItOff = (contributions: DependencySubscriptionContribution[]) =>
@@ -967,7 +959,6 @@ describe("(7) the resolve answer is QUALIFIED by whether dependencies are manage
         // `false` for an unrelated reason, which is not the hole being closed.
         expect(resolved.resolution.enabled).toBe(true);
         expect(resolved.resolution.reason).toBe("enabled");
-        // …and the qualifier that makes it honest.
         expect(resolved.dependencyManagement.managedHere).toBe(false);
         expect(resolved.dependencyManagement.reason).toBe(posture.reason);
       });

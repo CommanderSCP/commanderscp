@@ -83,7 +83,6 @@ describe("deleting an object tombstones its edges, and a deleted ancestor stops 
     return { component, service };
   }
 
-  /** Live edges touching `objectId` in either direction. */
   async function liveEdgesTouching(objectId: string) {
     return withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx

@@ -103,7 +103,6 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     registryHost = `${registry.getHost()}:${registry.getMappedPort(5000)}`;
     scratch = await mkdtemp(join(tmpdir(), "scp-scandb-it-"));
 
-    // Push the clean subject.
     cleanRepo = `${registryHost}/scp/clean`;
     await execFileAsync(
       skopeoBin,
@@ -226,7 +225,6 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     return runs.filter((r) => r.controlObjectId === MANAGED_SCAN_CONTROL_OBJECT_ID);
   }
 
-  // (a) ------------------------------------------------------------------------------------------
   it("(a) a server-provided pre-loaded DB is copied in and produces a valid digest-bound ScanEvidence (offline)", async () => {
     process.env.SCP_MANAGED_SCAN_DB_CACHE = goodCache;
     await setPolicy(HUGE, HUGE); // the real baked DB, whatever its age, classifies fresh
@@ -249,7 +247,6 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     expect(ev.scannerVersion).not.toBe("unknown");
   }, 180_000);
 
-  // (b) ------------------------------------------------------------------------------------------
   it("(b) a MISSING/empty configured cache fails closed → no evidence → E6 refuses with a decision_id", async () => {
     const empty = join(scratch, `empty-${randomUUID()}`);
     await mkdir(empty, { recursive: true });
@@ -264,7 +261,6 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     expect(await managedEvidenceFor(changeId)).toHaveLength(0);
   }, 120_000);
 
-  // (c) ------------------------------------------------------------------------------------------
   it("(c) a DB past the HARD max fails closed; past the SOFT max scans + WARNs", async () => {
     // Hard-fail: tiny hard bound ⇒ the real baked DB is past it ⇒ no scan → E6 refuses.
     process.env.SCP_MANAGED_SCAN_DB_CACHE = goodCache;
@@ -291,7 +287,6 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     expect(runs[0]!.detail).toContain("scan DB WARN");
   }, 240_000);
 
-  // (d) ------------------------------------------------------------------------------------------
   it("(d) operator-load verifies a cosign-signed DB blob and REFUSES a tampered / wrong-key one (no cache write)", async () => {
     // Build a DB blob = tar.gz of the real cache's db/ dir (trivy.db + metadata.json).
     const blob = join(scratch, "db-blob.tar.gz");
@@ -321,7 +316,6 @@ describe("M13.3b-ii offline scan-DB pre-load + staleness + operator-load", () =>
     const sidecar = JSON.parse(await readFile(join(loadCache, "scp-scan-db-source.json"), "utf8"));
     expect(sidecar.source).toBe("operator-loaded");
 
-    // WRONG KEY → refused, no cache write.
     const other = await generateKeyPair();
     const otherPub = join(scratch, "other.pub");
     await writeFile(otherPub, other.publicKeyPem, "utf8");

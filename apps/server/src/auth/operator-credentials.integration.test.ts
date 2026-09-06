@@ -27,7 +27,6 @@ describe("instance operator credentials (role-model.md §5 step 9)", () => {
   let server: TestServer;
   let org: TestOrg;
   let admin: pg.Client;
-  /** The bootstrap env token the harness configures. */
   let bootstrapToken: string;
 
   const RUNG_URL = "/api/v1/instance/governance-move-enforcement";

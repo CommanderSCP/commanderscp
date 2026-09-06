@@ -164,10 +164,6 @@ describe("change doors are scoped to the change's targets, not to the org root",
     await server?.close();
   });
 
-  // ---------------------------------------------------------------------------------------
-  // READ doors — ANY ONE target
-  // ---------------------------------------------------------------------------------------
-
   it("GET /changes/:id — a component-scoped principal reads a change targeting THEIR component", async () => {
     const changeId = await propose("read-mine", [componentA]);
     const res = await server.app.inject({
@@ -227,10 +223,6 @@ describe("change doors are scoped to the change's targets, not to the org root",
       expect(res.statusCode).toBe(404);
     }
   });
-
-  // ---------------------------------------------------------------------------------------
-  // WRITE doors — EVERY target
-  // ---------------------------------------------------------------------------------------
 
   it("POST /changes/:id/cancel — a component-scoped principal cancels a single-target change of theirs", async () => {
     const changeId = await propose("cancel-mine", [componentA]);
@@ -458,10 +450,6 @@ describe("change doors are scoped to the change's targets, not to the org root",
     });
     expect(cancel.statusCode).toBe(403);
   });
-
-  // ---------------------------------------------------------------------------------------
-  // The governance-side change doors
-  // ---------------------------------------------------------------------------------------
 
   it("GET /changes/:idOrUrn/control-runs — target-scoped, and 404 for a change that does not exist", async () => {
     const changeId = await propose("control-runs", [componentA]);
@@ -806,7 +794,6 @@ describe("change doors are scoped to the change's targets, not to the org root",
     });
     expect(stranger.statusCode).toBe(403);
 
-    // …and the deployment-wide arm is untouched.
     const owner = await server.app.inject({
       method: "GET",
       url: `/api/v1/decisions/${decisionId}`,
@@ -884,7 +871,6 @@ describe("change doors are scoped to the change's targets, not to the org root",
     const detail = (refused.json() as { detail: string }).detail;
     // The refusal is about the permission, not about a malformed set…
     expect(detail).toContain("lacks 'object:read' at the org root and at any target of change");
-    // …and it names the repeated target exactly once.
     expect(detail.split(componentB).length - 1).toBe(1);
 
     // The duplicate is still a real target: its own admin reads the change.

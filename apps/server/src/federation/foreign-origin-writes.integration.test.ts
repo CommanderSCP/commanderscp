@@ -221,7 +221,7 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     const component = await foreignObject("component", "move-foreign-comp");
     const from = await localObject("service", "move-from-svc");
     const to = await localObject("service", "move-to-svc");
-    await admin.components.setService(component.id, from.id); // creates a LOCAL-origin edge
+    await admin.components.setService(component.id, from.id);
 
     const updated = await admin.components.setService(component.id, to.id);
     expect(updated.id).toBe(component.id);
@@ -392,7 +392,7 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     // one instead — this distinguishes "skipped" from either "advanced" or "blocked").
     const foreign = await admin.changes.get(foreignId);
     expect(foreign.state).toBe("proposed");
-    expect(foreign.originDomainId).toBe(FOREIGN); // the flip survived untouched
+    expect(foreign.originDomainId).toBe(FOREIGN);
     const decisions = await admin.decisions.list({ subjectId: foreignId, limit: 20 });
     expect(decisions.items).toHaveLength(1);
     expect(decisions.items[0]!.inputContext.trigger).toBe("propose");

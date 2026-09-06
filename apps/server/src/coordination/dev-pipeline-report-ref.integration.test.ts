@@ -51,7 +51,7 @@ describe("ADR-0030: a typed CI report routes by git ref", () => {
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.select().from(changeSourceEvents).where(eq(changeSourceEvents.id, eventId))
     );
-    expect(rows[0]!.processedAt).not.toBeNull(); // processed either way — routed or correctly dropped
+    expect(rows[0]!.processedAt).not.toBeNull();
     return rows[0]!.resultingChangeObjectId;
   }
 

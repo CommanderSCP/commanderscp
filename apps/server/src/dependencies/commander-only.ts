@@ -110,7 +110,6 @@ import type { ServerConfig } from "../config.js";
  * never assumed; the remedy is one env var an operator can set truthfully either way.
  */
 
-/** Every axis a dependency-automation guard reads. */
 export type CommanderOnlyConfig = Pick<
   ServerConfig,
   "role" | "federationRole" | "federationRoleDeclared"

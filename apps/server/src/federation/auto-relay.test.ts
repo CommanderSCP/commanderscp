@@ -144,7 +144,6 @@ describe("M13.1b auto-relay config", () => {
     // i.e. a hot loop around a multi-GB skopeo pull).
     expect(autoRelayBackoffSeconds(0)).toBe(60);
     expect(autoRelayBackoffSeconds(-5)).toBe(60);
-    // Monotonic non-decreasing across the whole live range.
     for (let n = 1; n < 30; n += 1) {
       expect(autoRelayBackoffSeconds(n + 1)).toBeGreaterThanOrEqual(autoRelayBackoffSeconds(n));
     }

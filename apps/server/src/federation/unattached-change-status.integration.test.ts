@@ -55,7 +55,6 @@ describe("federation_unattached_change_status — the store behind the evidence-
   it("converges on ONE row under replay, and keeps the propose-time naming across a transition", async () => {
     const changeId = randomUUID();
     await withTenantTx(server.deps.db, org.orgId, async (tx) => {
-      // The propose entry: names the change.
       for (let i = 0; i < 3; i += 1) {
         await recordUnattachedChangeStatus(tx, {
           orgId: org.orgId,
@@ -82,7 +81,6 @@ describe("federation_unattached_change_status — the store behind the evidence-
     );
     const row = rows.find((r) => r.changeObjectId === changeId);
     expect(rows.filter((r) => r.changeObjectId === changeId)).toHaveLength(1);
-    // The state is the CURRENT reading...
     expect(row!.lastState).toBe("executing");
     // ...while the naming the propose gave us is NOT erased by a payload that never carried it.
     expect(row!.name).toBe("ledger rollout");

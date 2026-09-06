@@ -566,10 +566,6 @@ describe("pipeline hook runs", () => {
     }
   }, 60_000);
 
-  // -------------------------------------------------------------------------------------------
-  // 5. RLS
-  // -------------------------------------------------------------------------------------------
-
   it("RLS: a second org reads NONE of the first org's hook runs — proved by an UNFILTERED select under the other tenant, with the owner running the same query and seeing rows", async () => {
     const mine = await subject(admin, "rls");
     await rawInsert(mine, { hookId: `secret-${label()}`, waveIndex: 1 });
@@ -639,7 +635,7 @@ describe("pipeline hook runs", () => {
     const refusal = await rawInsert(s, { hookId: "bad-status", waveIndex: 1 })
       .then(() => null)
       .catch(() => null);
-    expect(refusal).toBeNull(); // the control: a legal status inserts.
+    expect(refusal).toBeNull();
 
     const bad = inOrg((tx) =>
       tx.insert(pipelineHookRuns).values({

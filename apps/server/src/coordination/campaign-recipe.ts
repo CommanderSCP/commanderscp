@@ -59,7 +59,6 @@ export const WAVE_TARGET_RECIPE_UNSUPPORTED_AUDIT_ACTION = "change.wave_target.r
  */
 export const WAVE_TARGET_RECIPE_UNREADABLE_STATUS = "recipe_unreadable";
 
-/** The hash-chained audit action for that refusal. */
 export const WAVE_TARGET_RECIPE_UNREADABLE_AUDIT_ACTION = "change.wave_target.recipe_unreadable";
 
 /**
@@ -104,7 +103,6 @@ export const WAVE_TARGET_RECIPE_UNREADABLE_AUDIT_ACTION = "change.wave_target.re
  */
 export const WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_STATUS = "recipe_managed_executor";
 
-/** The hash-chained audit action for that refusal. */
 export const WAVE_TARGET_RECIPE_MANAGED_EXECUTOR_AUDIT_ACTION =
   "change.wave_target.recipe_managed_executor";
 

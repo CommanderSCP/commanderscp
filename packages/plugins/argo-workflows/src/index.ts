@@ -96,7 +96,6 @@ import type {
  */
 
 export interface ArgoWorkflowsConfig {
-  /** Argo Workflows API server base URL, e.g. `https://argo-workflows.example.com`. */
   serverUrl: string;
   /** Every endpoint this plugin calls is namespaced (assumption #1-3, #9) — one plugin instance
    *  addresses exactly one namespace, mirroring how one `@scp/plugin-argocd` instance addresses
@@ -282,10 +281,6 @@ function computeProgress(progress: string | undefined, phase: ExecutionPhase): n
   if (phase === "running") return 0.5;
   return 1;
 }
-
-// -----------------------------------------------------------------------------------------
-// ExecutorPlugin
-// -----------------------------------------------------------------------------------------
 
 async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);

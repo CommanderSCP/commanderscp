@@ -226,7 +226,6 @@ describe("config-source sync engine", () => {
     expect(refused.refusals).toHaveLength(3);
     expect(refused.refusals[0]?.reason).toContain("object:write");
 
-    // Nothing landed for the refused one.
     const rows = await withTenantTx(server.deps.db, f.org.orgId, (tx) =>
       tx.select().from(objects).where(eq(objects.orgId, f.org.orgId))
     );

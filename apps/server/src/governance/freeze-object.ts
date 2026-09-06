@@ -339,7 +339,7 @@ export async function rebuildFreezeProjectionFromObject(
   const startsAt = instant(properties, "startsAt");
   const endsAt = instant(properties, "endsAt");
   const reason = str(properties, "reason");
-  if (!freezeId || !startsAt || !endsAt || !reason) return; // see the docblock
+  if (!freezeId || !startsAt || !endsAt || !reason) return;
   // The window invariant `assertWindowOrdered` enforces at both local write doors, re-checked on a
   // payload this instance did not author. A row with `ends_at <= starts_at` is one the local POST
   // route refuses to produce and one the half-open predicate reads as permanently inactive — a

@@ -112,9 +112,6 @@ export async function buildBoundarySegment(
     listDecisionsForSubject(tx, orgId, changeObjectId)
   ]);
 
-  // ---------------------------------------------------------------------------------------------
-  // Phase 1 — TRANSFERRED.
-  // ---------------------------------------------------------------------------------------------
   const hops: BoundaryTransferHop[] = transfers.map((t) => ({
     direction: t.direction,
     status: t.status,
@@ -141,9 +138,6 @@ export async function buildBoundarySegment(
   // that also imported it, whose ONWARD hop is just as unobservable as a commander's.
   if (exportHops.length > 0) unknownFields.push(TRANSFER_HANDOFF_UNKNOWN);
 
-  // ---------------------------------------------------------------------------------------------
-  // Phase 2 — VALIDATED.
-  // ---------------------------------------------------------------------------------------------
   let validate: BoundaryValidatePhase;
   if (!isReceivingSide) {
     // R2 — STRUCTURAL. This branch is taken for every change this instance did not receive from a

@@ -144,8 +144,6 @@ function problem(status: number, title: string, detail: string): ScpApiError {
   });
 }
 
-// -------------------------------------------------------------------------------------------
-
 describe("Admin › Decisions renders the list", () => {
   it("renders rows from the fixture — kind, subject, verdict, id", async () => {
     listImpl = async () => ({
@@ -219,7 +217,7 @@ describe("Admin › Decisions — Load more carries the server's own cursor", ()
 
     clickInDocument("decisions-load-more");
     await waitUntil(() => allInDocument("decision-list-row").length === 2, "page 2 to append");
-    expect(inDocument("decisions-load-more")).toBeNull(); // nextCursor was null
+    expect(inDocument("decisions-load-more")).toBeNull();
     expect(calls).toHaveLength(2);
     expect(calls[0]!.query.cursor).toBeUndefined();
     expect(calls[1]!.query.cursor).toBe("CURSOR-1");

@@ -125,7 +125,7 @@ describe("ownership ergonomics: owns/consumes/depends_on sub-resources", () => {
     const svcC = await admin.services.create({ name: "many-to-many-dst-2" });
 
     await admin.services.addConsumes(svcA.id, svcB.id);
-    await admin.services.addConsumes(svcA.id, svcC.id); // no cardinality conflict — many_to_many
+    await admin.services.addConsumes(svcA.id, svcC.id);
 
     const list = await admin.services.listConsumes(svcA.id);
     expect(list.items.map((r) => r.toId).sort()).toEqual([svcB.id, svcC.id].sort());

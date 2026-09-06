@@ -36,7 +36,7 @@ describe("outpost dashboard §10.6: held inputs are counted, labels are READ", (
   it("declared labels are counted off each row: domain / global / mirror, orthogonally", () => {
     const summary = heldInputsSummary([
       { scope: "domain", mirrorOfShared: false },
-      { scope: "domain", mirrorOfShared: true }, // a domain-scope mapping that mirrors a global one
+      { scope: "domain", mirrorOfShared: true },
       { scope: "global", mirrorOfShared: false },
       { scope: null, mirrorOfShared: false }
     ]);

@@ -109,7 +109,6 @@ export interface CreatePlacementInput {
   /** CONTAINMENT sense (ADR-0021 D4). */
   domainId?: ContainmentDomainId | null | undefined;
   labels?: Record<string, unknown> | undefined;
-  /** id or URN of the component being placed. */
   componentIdOrUrn: string;
   /** id or URN of the deployment-target it is placed at. */
   deploymentTargetIdOrUrn: string;
@@ -348,7 +347,6 @@ export interface ListPlacementsQuery {
   includeDeleted?: boolean | undefined;
   /** Already-resolved component object id (the route resolves the id-or-URN ref). */
   componentId?: string | undefined;
-  /** Already-resolved deployment-target object id. */
   deploymentTargetId?: string | undefined;
   /**
    * The rows this caller's authority REACHES, as a subquery yielding `id`

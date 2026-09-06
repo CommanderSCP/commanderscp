@@ -8,7 +8,6 @@ export interface ListenNotification {
 }
 
 export interface ReconnectingListenClientOptions {
-  /** Postgres connection string for the dedicated LISTEN connection. */
   connectionString: string;
   /** Channels this client subscribes to on every (re)connection. Static constants only — these
    *  are interpolated directly into `LISTEN <channel>`, which does not accept a bind parameter. */
@@ -26,9 +25,7 @@ export interface ReconnectingListenClientOptions {
   /** Logged, never thrown. Covers both a failed connection attempt and a runtime error on an
    *  already-established one. */
   onError?: (err: unknown) => void;
-  /** Floor of the reconnect backoff. Default 250ms. */
   minBackoffMs?: number;
-  /** Ceiling of the reconnect backoff. Default 5000ms. */
   maxBackoffMs?: number;
   /**
    * How long a connection must STAY up before the backoff is reset to its floor. Default 5000ms.

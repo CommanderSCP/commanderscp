@@ -110,10 +110,6 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
   const inB = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> =>
     withTenantTx(server.deps.db, orgB.orgId, fn);
 
-  // -----------------------------------------------------------------------------------------
-  // (a) Round-trip
-  // -----------------------------------------------------------------------------------------
-
   it("round-trips a line and a component's declaration of it, in both directions", async () => {
     const componentId = await componentIn(clientA, "api");
 
@@ -154,7 +150,6 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(declaration.resolvedVersion).toBe("1.4.0");
     expect(declaration.observedRef).toBe("refs/heads/main");
 
-    // FORWARD — "what does component C declare?"
     const forward = await inA((tx) => listComponentDependencies(tx, orgA.orgId, componentId));
     expect(forward).toHaveLength(1);
     expect(forward[0]?.lineId).toBe(line.id);
@@ -571,7 +566,6 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(observed.line.latestVersion).toBe("22.6.0-alpine");
     expect(observed.line.latestDigest).toBe("sha256:" + "b".repeat(64));
     expect(observed.line.latestObservedAt).not.toBeNull();
-    // Identity columns are untouched by an observation.
     expect(observed.line.coordinate).toBe("registry.internal/base/node");
     expect(observed.line.major).toBe("22");
     expect(observed.line.tagPattern).toBe("-alpine");
@@ -1033,10 +1027,6 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
       otherEcosystem.id
     );
   });
-
-  // -----------------------------------------------------------------------------------------
-  // (b) RLS — the load-bearing one
-  // -----------------------------------------------------------------------------------------
 
   describe("RLS isolates two orgs' inventories", () => {
     let lineAId: string;

@@ -365,7 +365,6 @@ describe("federation sync_scope asymmetry: refused fail-closed, diagnosed accura
     // The likely cause, with the narrow modes spelled out — named as likely, not as a verdict.
     expect(message).toMatch(/most likely cause/);
     expect(message).toMatch(/status_only/);
-    // Something to actually do.
     expect(message).toMatch(/scp federation peers.*BOTH domains/);
     // THE POINT: a config asymmetry is never announced as tampering.
     expect(message.toLowerCase()).not.toContain("tamper");
@@ -712,7 +711,6 @@ describe("federation sync_scope full re-pair (R1): the ALREADY-WEDGED population
     const refusal = await expectRefused(await exportToOutpost());
     expect(refusal.status).toBe(409);
     const cursor = await outpostCursor();
-    // Refused: nothing applied, cursor unmoved.
     expect(cursor.rowHash).toBeNull();
   });
 
@@ -765,7 +763,6 @@ describe("federation sync_scope full re-pair (R1): the ALREADY-WEDGED population
     expect(cursorAfter.rowHash).not.toBeNull();
     expect(cursorAfter.sequence).toBe(result.lastAppliedSequence);
     expect(cursorAfter.sequence).toBeGreaterThan(cursorBefore.sequence);
-    // ONE-SHOT: consumed by the very run it permitted.
     expect(cursorAfter.reanchorFromSeq).toBeNull();
   });
 
@@ -939,7 +936,6 @@ describe("federation journal integrity: mutated and THINNED re-signed bundles ar
       detail: expect.stringMatching(/is not gap-free/)
     });
 
-    // Nothing applied: the cursor is untouched.
     const cursor = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       getCursor(tx, outpost.orgId, selfCommander.domainId, selfCommander.domainId)
     );
@@ -1004,7 +1000,6 @@ describe("federation journal integrity: mutated and THINNED re-signed bundles ar
       detail: expect.stringMatching(/tampered or broken journal segment.*row_hash mismatch/)
     });
 
-    // And nothing from the rejected segment applied.
     const cursorAfter = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       getCursor(tx, outpost.orgId, selfCommander.domainId, selfCommander.domainId)
     );

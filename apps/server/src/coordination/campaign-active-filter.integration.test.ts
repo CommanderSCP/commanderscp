@@ -170,7 +170,7 @@ describe("listActiveCampaignObjectIds: the LATEST plan decides, and it agrees wi
     // `id DESC` is the tiebreak BOTH sides now use.
     const sameInstant = new Date("2026-03-01T00:00:00Z");
     const olderId = uuidv7();
-    const newerId = uuidv7(); // UUIDv7 is time-ordered, so newerId > olderId
+    const newerId = uuidv7();
 
     const tiedActive = await makeCampaign("tie-active");
     await insertPlan(tiedActive, "completed", sameInstant, olderId);
@@ -207,7 +207,7 @@ describe("listActiveCampaignObjectIds: the LATEST plan decides, and it agrees wi
   it("a soft-deleted campaign stays excluded even with an ACTIVE plan — the pre-existing guard still composes with the new one", async () => {
     const id = await makeCampaign("deleted");
     await insertPlan(id, "active", new Date("2026-01-01T00:00:00Z"));
-    expect(await activeIds()).toContain(id); // control: it qualifies on plan status alone
+    expect(await activeIds()).toContain(id);
 
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx.execute(sql`update objects set deleted_at = now() where id = ${id}`)
@@ -225,7 +225,7 @@ describe("listActiveCampaignObjectIds: the LATEST plan decides, and it agrees wi
     // LIMIT n` and a skipped row's `updated_at` never moves.
     const id = await makeCampaign("replica");
     await insertPlan(id, "active", new Date("2026-01-01T00:00:00Z"));
-    expect(await activeIds()).toContain(id); // control: it qualifies on every other predicate
+    expect(await activeIds()).toContain(id);
 
     const foreign = randomUUID();
     expect(foreign, "a vacuous fixture if this is our own domain").not.toBe(await selfDomainId());

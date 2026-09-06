@@ -57,7 +57,7 @@ describe("executor bindings: 1:N per target, keyed by Type", () => {
     const infrastructure = await bind(comp.id, "infrastructure", "gh-terraform");
 
     expect(configuration.type).toBe("configuration");
-    expect(configuration.category).toBe("configuration"); // derived Category projection
+    expect(configuration.category).toBe("configuration");
     expect(infrastructure.type).toBe("infrastructure");
     expect(infrastructure.category).toBe("infrastructure");
     expect(infrastructure.id).not.toBe(configuration.id); // a NEW row, not an update of the first
@@ -81,7 +81,7 @@ describe("executor bindings: 1:N per target, keyed by Type", () => {
     await bind(comp.id, "infrastructure", "gh-terraform");
 
     expect(image.type).toBe("image");
-    expect(image.category).toBe("build"); // image/rpm/deb/npm all derive Category `build`
+    expect(image.category).toBe("build");
 
     const all = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       listExecutorBindingsForTarget(tx, org.orgId, comp.id)
@@ -156,7 +156,7 @@ describe("executor bindings: 1:N per target, keyed by Type", () => {
     await bind(comp.id, "infrastructure", "inf");
 
     const dflt = await admin.executors.getBinding(comp.id);
-    expect(dflt.type).toBe("configuration"); // unqualified read resolves the default Type
+    expect(dflt.type).toBe("configuration");
     expect(dflt.pluginInstanceId).toBe("cfg");
 
     const infra = await admin.executors.getBinding(comp.id, "infrastructure");

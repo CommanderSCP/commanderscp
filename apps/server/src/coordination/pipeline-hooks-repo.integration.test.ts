@@ -103,10 +103,6 @@ describe("pipeline hooks + evidence storage", () => {
     alarms
   });
 
-  // -------------------------------------------------------------------------------------------
-  // Identity
-  // -------------------------------------------------------------------------------------------
-
   it("the (org, component, kind, hookId) UNIQUE constraint REJECTS a duplicate tuple — proved by making Postgres refuse a raw insert, not by trusting upsertHook", async () => {
     const { componentObjectId } = await subject(admin, "identity");
 
@@ -185,10 +181,6 @@ describe("pipeline hooks + evidence storage", () => {
     );
     expect(again).toBeUndefined();
   });
-
-  // -------------------------------------------------------------------------------------------
-  // RLS
-  // -------------------------------------------------------------------------------------------
 
   it("RLS: a second org reads NEITHER the first org's hooks NOR its evidence — proved by an UNFILTERED select under the other tenant", async () => {
     const mine = await subject(admin, "rls");
@@ -285,10 +277,6 @@ describe("pipeline hooks + evidence storage", () => {
     );
     expect(landed).toHaveLength(0);
   });
-
-  // -------------------------------------------------------------------------------------------
-  // The two write semantics
-  // -------------------------------------------------------------------------------------------
 
   it("test-run evidence SUPERSEDES: two records for one key leave exactly ONE row, the newer — including a newer FAIL displacing an older pass", async () => {
     const s = await subject(admin, "supersede");

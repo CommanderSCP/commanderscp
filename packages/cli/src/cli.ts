@@ -306,7 +306,6 @@ function changeRow(c: Change): Record<string, string> {
   };
 }
 
-/** Fuller row for single-Change commands (propose/get/cancel/accept/rollback). */
 function changeDetailRow(c: Change): Record<string, string> {
   return {
     id: c.id,
@@ -2388,7 +2387,6 @@ function registerTypedResourceCrud(
   return cmd;
 }
 
-/** Adds `add-owner`/`list-owners`/`remove-owner` to an existing resource command. */
 function registerOwnerCommands(cmd: Command, resourceOf: (client: ScpClient) => OwnerOps): void {
   cmd
     .command("add-owner <idOrUrn>")
@@ -2479,9 +2477,6 @@ export function buildProgram(): Command {
   const program = new Command();
   program.name("scp").description("CommanderSCP CLI").version("0.0.0");
 
-  // -------------------------------------------------------------------------------------
-  // login
-  // -------------------------------------------------------------------------------------
   program
     .command("login")
     .description("Exchange credentials for a bearer token and store it")
@@ -3204,9 +3199,6 @@ export function buildProgram(): Command {
       }
     );
 
-  // -------------------------------------------------------------------------------------
-  // rel (relationships)
-  // -------------------------------------------------------------------------------------
   const relCmd = program.command("rel").description("Manage graph relationships");
 
   relCmd
@@ -4249,9 +4241,6 @@ export function buildProgram(): Command {
       printResult(page.items, opts.output, (item) => decisionRow(item as Decision));
     });
 
-  // -------------------------------------------------------------------------------------
-  // audit
-  // -------------------------------------------------------------------------------------
   const auditCmd = program.command("audit").description("Audit log");
 
   auditCmd

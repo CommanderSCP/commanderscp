@@ -112,7 +112,7 @@ describe("a loop's startup kick never reuses the interval chain's singleton key"
     const offenders: Offender[] = [];
     for (const file of files) {
       for (const args of sendCallArguments(readStripped(file))) {
-        if (RESCHEDULE_MARKER.test(args)) continue; // the reschedule legitimately owns "tick"
+        if (RESCHEDULE_MARKER.test(args)) continue;
         if (!SWALLOWABLE_WINDOW.test(args)) continue;
         offenders.push({
           file: relative(SERVER_SRC, file),

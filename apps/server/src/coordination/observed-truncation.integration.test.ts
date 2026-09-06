@@ -171,7 +171,6 @@ describe("M23.1g: an API consumer can tell a truncated field from an absent one"
       withEventRelay: true,
       withReconcileLoop: true,
       fakeExecutorConfig: {
-        // Held non-terminal so reconcile keeps writing `observing` readings.
         forcePhase: {
           [cutTargetId]: "running",
           [honestTargetId]: "running",
@@ -255,7 +254,7 @@ describe("M23.1g: an API consumer can tell a truncated field from an absent one"
 
     const entry: GeneratedTruncationEntry | undefined = cut.truncation?.images;
     expect(entry).toBeDefined();
-    expect(entry!.dropped).toBe(false); // the field is there; its TAIL is not
+    expect(entry!.dropped).toBe(false);
     expect(entry!.droppedEntries).toBeGreaterThan(0);
     // The arithmetic is honest against what arrived: kept + dropped is what the executor sent.
     // (`images` carries one elision entry of its own, which is why this is `>=` rather than `===`

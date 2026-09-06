@@ -157,10 +157,6 @@ describe("moving an object BACK to the top level — the destination-side org-ro
     };
   }
 
-  // -----------------------------------------------------------------------------------------------
-  // R3 — the legitimate direction
-  // -----------------------------------------------------------------------------------------------
-
   it("PATCH /services/{id} lets a subtree owner move their OWN object out to the top level", async () => {
     const f = await makeSubtreeFixture("root-dest-patch");
 

@@ -75,7 +75,6 @@ describe("Personal Access Tokens", () => {
     expect(listed).not.toHaveProperty("tokenHash");
     expect(listed).not.toHaveProperty("tokenId");
 
-    // Revoke.
     const revoke = await server.app.inject({
       method: "DELETE",
       url: `/api/v1/auth/pats/${created.id}`,

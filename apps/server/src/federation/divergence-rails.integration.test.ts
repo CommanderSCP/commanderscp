@@ -53,7 +53,6 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
     );
     await pair(domainA, domainB, "outpost");
     await pair(domainB, domainA, "commander");
-    // Some journal on A to export.
     for (const name of ["svc-1", "svc-2", "svc-3"]) {
       await withTenantTx(domainA.db, domainA.orgId, (tx) =>
         createObject(tx, {
@@ -159,7 +158,7 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
     const result = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       importSyncBundle(tx, domainB.orgId, older)
     );
-    expect(result.appliedEntries).toBe(0); // all already applied
+    expect(result.appliedEntries).toBe(0);
     expect(await highWaterSeq()).toBe(recorded); // mark neither regressed nor advanced
   });
 
@@ -176,7 +175,7 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
       })
     );
     const recorded = await highWaterSeq();
-    const fresh = await exportFromA(); // throughSequence now beyond B's cursor
+    const fresh = await exportFromA();
     const regressed = withAttestation(fresh, recorded - 1, "deadbeef".repeat(8));
     await expect(
       withTenantTx(domainB.db, domainB.orgId, (tx) =>
@@ -240,7 +239,6 @@ describe("divergence rails: export-side tail/anchor checks, tail attestation, re
     );
     expect(permitted).toBeGreaterThan(0);
 
-    // Now stand a divergence verdict for this peer.
     await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       insertDecision(tx, {
         orgId: domainB.orgId,

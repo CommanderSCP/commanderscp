@@ -75,7 +75,6 @@ declare module "fastify" {
 }
 
 export interface BuildAppOptions {
-  /** Suppresses request logging noise for openapi:emit / tests. */
   logger?: boolean;
 }
 

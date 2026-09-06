@@ -189,7 +189,6 @@ describe("M22.1b — the plugin→server transport seam", () => {
     const taken = takeScanFindingsFromTransport(wire);
     expect(taken.evidence).not.toHaveProperty(SCAN_FINDINGS_TRANSPORT_KEY);
     expect(taken.evidence).not.toHaveProperty(SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY);
-    // Everything else is preserved verbatim.
     expect(taken.evidence).toEqual({ severityCounts: { critical: 0, high: 1, medium: 0, low: 0 } });
     // And the source object was not mutated in place — the caller's copy is still whole.
     expect(wire).toHaveProperty(SCAN_FINDINGS_TRANSPORT_KEY);

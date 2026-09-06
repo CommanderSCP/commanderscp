@@ -176,7 +176,6 @@ describe("IaC adoption and stack-theft refusal", () => {
     // something is wrong.
     expect(detail).toContain(first);
 
-    // And nothing moved.
     expect(await ownerOf(existing.urn)).toBe(first);
   });
 

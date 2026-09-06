@@ -149,7 +149,6 @@ describe("reconcile: the default button SENDS the survivor it named", () => {
     expect(keepLocal, "a Keep button for the local row").toBeDefined();
     expect(keepShadow, "a Keep button for the shadow row").toBeDefined();
 
-    // PREMISE: the propagating choice really is held.
     expect(keepShadow!.disabled).toBe(true);
     fire(keepShadow!, new MouseEvent("click", { bubbles: true, cancelable: true }));
     expect(onReconcile, "a disabled destructive button must not fire").not.toHaveBeenCalled();

@@ -69,10 +69,6 @@ import { isPersistedJsonEntriesElision } from "@scp/runner-launcher";
  * compare is refused too, never assumed to match.
  */
 
-// -------------------------------------------------------------------------------------------
-// The manifest-read port
-// -------------------------------------------------------------------------------------------
-
 /**
  * Reading ONE file out of a user repo at a ref — the ingress M21.2 built as the `readFileAtRef`
  * `GitProviderAdapter` hook (`packages/plugins/git-provider-core/src/read-file.ts`), taken here as
@@ -95,10 +91,6 @@ import { isPersistedJsonEntriesElision } from "@scp/runner-launcher";
  * never-detects-anything that reads like "no releases happened".
  */
 export type ManifestReader = (request: ReadFileAtRefRequest) => Promise<ReadFileAtRefResult>;
-
-// -------------------------------------------------------------------------------------------
-// Result vocabulary
-// -------------------------------------------------------------------------------------------
 
 /** WHICH signal answered — set by the strategy that ran, never inferred from the answer's shape. */
 export type ReleaseVersionSignal =
@@ -184,7 +176,6 @@ export type ReleasedVersion =
       /** `oci` only, and `null` rather than absent when the observed ref carried none. See
        *  {@link resolveReleasedVersion} for why an ABSENT digest must still be written. */
       readonly digest: string | null;
-      /** Human-readable provenance — what was read, and where. */
       readonly why: string;
     }
   | {
@@ -192,10 +183,6 @@ export type ReleasedVersion =
       readonly reason: ReleaseVersionUnknownReason;
       readonly detail: string;
     };
-
-// -------------------------------------------------------------------------------------------
-// Image refs
-// -------------------------------------------------------------------------------------------
 
 /** One `observed.images` entry, split into the three things a ref can carry. */
 export interface ParsedImageRef {
@@ -243,10 +230,6 @@ export function parseImageRef(ref: string): ParsedImageRef | null {
   };
 }
 
-// -------------------------------------------------------------------------------------------
-// The line guard
-// -------------------------------------------------------------------------------------------
-
 /**
  * WHICH LINE A RELEASE LANDS ON IS NOT DECIDED IN THIS FILE — it is `line-head.ts`'s
  * `lineAcceptsVersion`, the SAME function the third-party poll's ranking uses, re-exported here so
@@ -265,10 +248,6 @@ export function parseImageRef(ref: string): ParsedImageRef | null {
  */
 export { lineAcceptsVersion } from "./line-head.js";
 export type { LineAcceptance, LineAcceptanceReason } from "./line-head.js";
-
-// -------------------------------------------------------------------------------------------
-// The strategy
-// -------------------------------------------------------------------------------------------
 
 /** Which dependency-manifest filename states the PROJECT's own version, per ecosystem. Used to
  *  pick candidates out of the component's ALREADY-RECORDED manifest paths — never to guess a path
@@ -292,7 +271,6 @@ function projectVersionEcosystem(
 }
 
 export interface ResolveReleasedVersionInput {
-  /** The line the release might have moved. */
   readonly line: { readonly ecosystem: DependencyEcosystem; readonly coordinate: string };
   /** `changes.source_ref`'s canonical keys, as far as they were populated. */
   readonly sourceRef: {

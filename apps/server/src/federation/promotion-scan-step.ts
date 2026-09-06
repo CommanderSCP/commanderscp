@@ -233,7 +233,7 @@ function isCoveringScanOutcome(
 // --- Artifact + pull-ref resolution from the change's sourceRef ----------------------------------
 
 interface ScanSubject {
-  digest: string; // sha256:<hex>, normalized
+  digest: string;
   pullRef: string | null;
   executorType: string;
   /** OpenSCAP profile+datastream resolved for this artifact (only used when a method is `openscap`). */
@@ -344,8 +344,6 @@ function breaches(counts: ScanSeverityCounts, threshold: ScanThreshold): boolean
   if (threshold.maxLow !== undefined && counts.low > threshold.maxLow) return true;
   return false;
 }
-
-// --- The step ------------------------------------------------------------------------------------
 
 export interface RunPromotionScanStepInput {
   orgId: string;

@@ -99,7 +99,6 @@ describe("M17.3 E4: cosign signing-keypair management", () => {
     const keyA = await ensureInstanceCosignKey(server.deps.db, orgAId, a.gen);
     await ensureInstanceCosignKey(server.deps.db, orgBId, b.gen);
 
-    // Org A sees its own row.
     const rawA = await RawScpAppClient.connect();
     await rawA.setOrgContext(orgAId);
     const ownRow = await rawA.query<{ id: string; private_key: string }>(

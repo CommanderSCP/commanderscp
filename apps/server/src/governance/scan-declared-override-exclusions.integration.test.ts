@@ -240,10 +240,6 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await trivy?.close();
   });
 
-  // -----------------------------------------------------------------------------------------
-  // Fixtures
-  // -----------------------------------------------------------------------------------------
-
   /**
    * A SECOND PRINCIPAL TO RAISE WITH, because the raiser may not be the approver (ADR-0033 §6a,
    * owner decision 2026-08-18).

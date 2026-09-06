@@ -91,7 +91,6 @@ describe("§7.5 failover drill: outbox→bridge delivery survives a mid-flight b
     };
     sseHub.on(org.orgId, onEvent);
     try {
-      // Baseline: the path works end to end.
       await publishProbe("pre-failover");
       await waitUntil(async () => received.find((e) => e.subject === "pre-failover"), {
         describe: "the pre-failover probe to be delivered through relay→bridge",

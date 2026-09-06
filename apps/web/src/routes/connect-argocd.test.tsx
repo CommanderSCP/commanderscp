@@ -123,10 +123,6 @@ function withQueryClient(node: React.ReactElement): {
   };
 }
 
-// ---------------------------------------------------------------------------------------------
-// (b) The credential
-// ---------------------------------------------------------------------------------------------
-
 describe("hazard (b): the Argo CD token reaches secrets.put and nothing else", () => {
   it("is submitted, stored, and then findable NOWHERE the browser keeps state", async () => {
     const doors = doorsDouble();
@@ -163,7 +159,6 @@ describe("hazard (b): the Argo CD token reaches secrets.put and nothing else", (
       "prod-argocd-token"
     );
 
-    // The four places a browser would keep it.
     const queries = JSON.stringify(
       queryClient
         .getQueryCache()
@@ -187,10 +182,6 @@ describe("hazard (b): the Argo CD token reaches secrets.put and nothing else", (
     view.unmount();
   });
 });
-
-// ---------------------------------------------------------------------------------------------
-// (c) The orphan notice
-// ---------------------------------------------------------------------------------------------
 
 describe("hazard (c): the success screen reports what the SERVER returned", () => {
   // THE ORPHAN-NOTICE PAIR IS GONE WITH `ImportSummary` (ADR-0047).

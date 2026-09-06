@@ -229,7 +229,7 @@ export function parseDockerfile(content: string): DeclaredDependency[] {
     while (idx < tokens.length && (tokens[idx] ?? "").startsWith("--")) idx++;
 
     const ref = tokens[idx];
-    if (ref === undefined) continue; // malformed `FROM` with no operand
+    if (ref === undefined) continue;
     idx++;
 
     // (1) A reference to an EARLIER stage is not a dependency. This is the case a naive parser gets

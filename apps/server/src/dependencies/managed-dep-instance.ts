@@ -134,7 +134,6 @@ export async function startManagedDepInstance(
       ...(typeof tenant.serverUrl === "string" && typeof tenant.apiBaseUrl !== "string"
         ? { apiBaseUrl: tenant.serverUrl }
         : {}),
-      // SERVER-GOVERNED, LAST — see this module's doc.
       runnerImage: settings.runnerImage,
       workspaceRoot: settings.workspaceRoot,
       // The operator's container runtime, and since M23.2 the launcher SELECTION with it. This is

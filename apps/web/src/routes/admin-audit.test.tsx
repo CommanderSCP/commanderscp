@@ -166,8 +166,6 @@ function problem(status: number, title: string): ScpApiError {
   return new ScpApiError(title, { status, problem: { type: "about:blank", title, status } });
 }
 
-// -------------------------------------------------------------------------------------------
-
 describe("Admin › Audit renders the list", () => {
   it("renders rows from the fixture — at, action, actor, subject, reason, decision", async () => {
     listImpl = async () => ({

@@ -165,7 +165,7 @@ describe("trigger()", () => {
       const second = await plugin.trigger(ctx, intent);
 
       expect(second).toEqual(first);
-      expect(scope.isDone()).toBe(true); // the one registered interceptor WAS consumed...
+      expect(scope.isDone()).toBe(true);
       expect(nock.pendingMocks()).toEqual([]); // ...and nothing else is left outstanding
     });
 
@@ -234,7 +234,7 @@ describe("status()", () => {
     // if status() attempted any network call it would reject instead of resolving, so a
     // successful resolution here IS the proof no call was attempted.
     const plugin = createTerraformExecutorPlugin();
-    const ctx = realHttpPluginContext({ triggerUrl: `${BASE_URL}/trigger` }); // statusUrl omitted
+    const ctx = realHttpPluginContext({ triggerUrl: `${BASE_URL}/trigger` });
 
     const result = await plugin.status(ctx, { externalId: "run-x" });
 
@@ -366,7 +366,7 @@ describe("status()", () => {
 describe("abort()", () => {
   it("with NO abortUrl configured, returns {aborted: false} and makes no HTTP call", async () => {
     const plugin = createTerraformExecutorPlugin();
-    const ctx = realHttpPluginContext({ triggerUrl: `${BASE_URL}/trigger` }); // abortUrl omitted
+    const ctx = realHttpPluginContext({ triggerUrl: `${BASE_URL}/trigger` });
 
     const result = await plugin.abort(ctx, { externalId: "run-x" });
 
@@ -515,7 +515,7 @@ describe("auth (tokenSecretKey -> Authorization header)", () => {
       });
 
     const plugin = createTerraformExecutorPlugin();
-    const ctx = realHttpPluginContext({ triggerUrl: `${BASE_URL}/trigger` }); // no tokenSecretKey
+    const ctx = realHttpPluginContext({ triggerUrl: `${BASE_URL}/trigger` });
     await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a" });
 
     expect(capturedHeaders?.authorization).toBeUndefined();

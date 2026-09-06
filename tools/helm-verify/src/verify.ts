@@ -325,7 +325,6 @@ function chartGrantProblems(args: {
   const problems: string[] = [];
   const say = (msg: string) => problems.push(`[${label}] ${msg}`);
 
-  // (1) NOTHING CLUSTER-SCOPED, AT ALL.
   for (const doc of docs) {
     if (doc.kind === "ClusterRole" || doc.kind === "ClusterRoleBinding") {
       say(
@@ -550,7 +549,6 @@ function podSpecsOf(doc: K8sDoc): Record<string, unknown>[] {
   if (doc.kind === "Pod") out.push(spec);
   const template = spec["template"] as { spec?: Record<string, unknown> } | undefined;
   if (template?.spec) out.push(template.spec);
-  // CronJob: spec.jobTemplate.spec.template.spec
   const jobTemplate = spec["jobTemplate"] as
     { spec?: { template?: { spec?: Record<string, unknown> } } } | undefined;
   if (jobTemplate?.spec?.template?.spec) out.push(jobTemplate.spec.template.spec);
@@ -1387,7 +1385,7 @@ function cidrToRange(cidr: string): IpRange | undefined {
   if (!Number.isInteger(bits) || bits < 0 || bits > 32) return undefined;
   const addr = octets.reduce((acc, o) => acc * 256 + o, 0);
   const size = 2 ** (32 - bits);
-  const start = Math.floor(addr / size) * size; // normalise to the network address
+  const start = Math.floor(addr / size) * size;
   return [start, start + size - 1];
 }
 

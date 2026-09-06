@@ -21,7 +21,7 @@ import { createSession } from "./local-auth.js";
  * hash) — see the doc comments on those two functions and drizzle/0006_device_flow_defer_session.sql.
  */
 
-const DEVICE_TTL_MS = 10 * 60 * 1000; // 10 min — request itself expires
+const DEVICE_TTL_MS = 10 * 60 * 1000;
 const POLL_INTERVAL_SECONDS = 5;
 // Excludes visually-ambiguous characters (0/O, 1/I) — this code is hand-typed by a human.
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";

@@ -126,8 +126,8 @@ export const deviceAuthRequests = pgTable("device_auth_requests", {
   id: uuid("id").primaryKey(),
   deviceCodeHash: text("device_code_hash").notNull().unique(),
   userCode: text("user_code").notNull().unique(),
-  status: text("status").notNull().default("pending"), // pending|approved|denied|expired|claimed
-  orgId: uuid("org_id").references(() => orgs.id), // set on approval
+  status: text("status").notNull().default("pending"),
+  orgId: uuid("org_id").references(() => orgs.id),
   /** Set on approval; the user whose auth context the deferred session gets minted from at claim time. */
   approvedByUserId: uuid("approved_by_user_id").references(() => users.id),
   approvedAt: timestamp("approved_at", { withTimezone: true }),
@@ -141,7 +141,7 @@ export const deviceAuthRequests = pgTable("device_auth_requests", {
 
 export const objectTypes = pgTable("object_types", {
   id: text("id").primaryKey(),
-  orgId: uuid("org_id"), // NULL = built-in/global type
+  orgId: uuid("org_id"),
   displayName: text("display_name").notNull(),
   propertySchema: jsonb("property_schema"),
   isBuiltin: boolean("is_builtin").notNull().default(false),
@@ -167,7 +167,7 @@ export const relationshipTypes = pgTable("relationship_types", {
 export const objects = pgTable(
   "objects",
   {
-    id: uuid("id").primaryKey(), // UUIDv7, client-suppliable
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     // CONTAINMENT sense (ADR-0021 D4) — the containment parent (ANY object; a `domain` in the
     // common case); NULL only for the org root object. There is deliberately NO FK and NO CHECK
@@ -244,7 +244,6 @@ export const objects = pgTable(
     // consequence is READ FROM THE CODE, not reproduced against two live domains; see
     // `iac/stack-ownership.ts` for the chain and the caveat.
     managedByStack: text("managed_by_stack"),
-    // lifecycle
     version: bigint("version", { mode: "number" }).notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -293,7 +292,7 @@ export const objects = pgTable(
 export const relationships = pgTable(
   "relationships",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     typeId: text("type_id")
       .notNull()
@@ -332,7 +331,6 @@ export const relationships = pgTable(
     index("rel_rev").on(table.orgId, table.toId, table.typeId),
     index("rel_created_cursor").on(table.orgId, table.createdAt, table.id),
     index("rel_labels").using("gin", sql`${table.labels} jsonb_path_ops`),
-    // drizzle/0068 — see `obj_managed_stack`.
     index("rel_managed_stack")
       .on(table.orgId, table.managedByStack)
       .where(sql`${table.managedByStack} IS NOT NULL AND ${table.deletedAt} IS NULL`),
@@ -358,7 +356,7 @@ export const roles = pgTable(
   "roles",
   {
     id: uuid("id").primaryKey(),
-    orgId: uuid("org_id"), // NULL = built-in (Viewer|Operator|Approver|Administrator|Owner)
+    orgId: uuid("org_id"),
     name: text("name").notNull(),
     permissions: text("permissions").array().notNull(),
     /** drizzle/0108 — the IaC stack that authored this ORG role, or NULL. Never set on a built-in:
@@ -426,7 +424,7 @@ export const roleBindings = pgTable(
     scopeObjectId: uuid("scope_object_id")
       .notNull()
       .references(() => objects.id),
-    effect: text("effect").notNull().default("allow"), // 'allow' | 'deny' (deny overrides)
+    effect: text("effect").notNull().default("allow"),
     /**
      * drizzle/0108 — the IaC stack that created this binding, or NULL for one granted through
      * `POST /role-bindings` or at bootstrap.
@@ -494,7 +492,7 @@ export const auditEvents = pgTable(
     // low bits are not a true insertion-order counter. `seq` is DB-internal only (never exposed
     // by the API — the public `AuditEvent` shape stays exactly DESIGN.md §4.3's columns).
     seq: bigint("seq", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     // CONTAINMENT sense (ADR-0021 D4) — the containing `domain` graph object the audited action
     // happened under, matching its position in DESIGN.md §4.3 (org_id, domain_id, actor_id,
@@ -527,11 +525,11 @@ export const auditEvents = pgTable(
 export const outbox = pgTable(
   "outbox",
   {
-    id: uuid("id").primaryKey(), // UUIDv7 — doubles as the CloudEvents `id`
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
-    type: text("type").notNull(), // CloudEvents `type`, e.g. 'scp.object.created'
-    source: text("source").notNull(), // CloudEvents `source`
-    subject: text("subject"), // CloudEvents `subject` — usually the object/relationship id
+    type: text("type").notNull(),
+    source: text("source").notNull(),
+    subject: text("subject"),
     data: jsonb("data").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     processedAt: timestamp("processed_at", { withTimezone: true })
@@ -553,7 +551,7 @@ export const outbox = pgTable(
 export const plans = pgTable(
   "plans",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     /** The graph subject (user/service-account object id) who requested the plan — mirrors `audit_events.actor_id`. */
     actorId: uuid("actor_id").notNull(),
@@ -562,7 +560,7 @@ export const plans = pgTable(
     manifest: jsonb("manifest").notNull(),
     /** The computed typed diff at plan time (PlanDiff — @scp/schemas): create/update/delete/noop entries with reasons. */
     diff: jsonb("diff").notNull(),
-    status: text("status").notNull().default("pending"), // 'pending' | 'applied' | 'stale'
+    status: text("status").notNull().default("pending"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     appliedAt: timestamp("applied_at", { withTimezone: true })
   },
@@ -585,10 +583,10 @@ export const plans = pgTable(
 export const changes = pgTable(
   "changes",
   {
-    objectId: uuid("object_id").primaryKey(), // references objects(id) — FK added in migration
+    objectId: uuid("object_id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     state: text("state").notNull().default("proposed"),
-    sourceKind: text("source_kind"), // github|argocd|terraform|manual|federation|rollback
+    sourceKind: text("source_kind"),
     // The raw delivery payload kept verbatim, plus CANONICAL keys lifted from it by
     // `coordination/webhook-processor.ts`'s `canonicalizeSourceRef`:
     //   {repo, ref, commit, run_url, workspace,
@@ -704,7 +702,7 @@ export const gateBindings = pgTable(
   {
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
-    scopeKind: text("scope_kind").notNull(), // 'lifecycle_edge' | 'wave_boundary'
+    scopeKind: text("scope_kind").notNull(),
     fromState: text("from_state"),
     toState: text("to_state"),
     topologyObjectId: uuid("topology_object_id"),
@@ -725,10 +723,10 @@ export const gateBindings = pgTable(
 export const decisions = pgTable(
   "decisions",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     kind: text("kind").notNull(), // gate|policy|freeze|rollback_trigger|plan_diff|promotion|transition|watchdog
-    subjectId: uuid("subject_id").notNull(), // the change/plan/etc decided about
+    subjectId: uuid("subject_id").notNull(),
     verdict: text("verdict").notNull(), // allow|block|warn|rollback|escalate|...
     inputContext: jsonb("input_context").notNull(),
     reasonTree: jsonb("reason_tree").notNull(),
@@ -796,9 +794,9 @@ export const sourceMappings = pgTable(
   {
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
-    sourceKind: text("source_kind").notNull(), // github|argocd|terraform|manual|...
-    repoPattern: text("repo_pattern"), // glob, matched against source_ref.repo
-    pathPattern: text("path_pattern"), // glob, matched against source_ref.path (optional)
+    sourceKind: text("source_kind").notNull(),
+    repoPattern: text("repo_pattern"),
+    pathPattern: text("path_pattern"),
     // Glob matched against the event's git REF (`refs/heads/dev`), migration 0057 / ADR-0030 §1.
     // The third routing glob and a PEER of the two above, not a rank above them: paths and refs are
     // orthogonal, and the same directory on two branches is two pipelines — which no path glob can
@@ -951,8 +949,8 @@ export const objectHealth = pgTable(
   "object_health",
   {
     orgId: uuid("org_id").notNull(),
-    objectId: uuid("object_id").notNull(), // references objects(id) — FK added in migration
-    status: text("status").notNull(), // healthy|degraded|down|unknown
+    objectId: uuid("object_id").notNull(),
+    status: text("status").notNull(),
     detail: text("detail"),
     observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
     /** Provenance of the push (`owner` today; a binding descriptor like `prometheus:<query>` later). */
@@ -972,13 +970,13 @@ export const objectHealth = pgTable(
 export const changePlans = pgTable(
   "change_plans",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     changeObjectId: uuid("change_object_id").notNull(),
     topologyObjectId: uuid("topology_object_id"),
     topologyVersion: bigint("topology_version", { mode: "number" }),
     topologyDocument: jsonb("topology_document"),
-    status: text("status").notNull().default("compiled"), // compiled|active|completed|aborted
+    status: text("status").notNull().default("compiled"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("change_plans_org_change").on(table.orgId, table.changeObjectId)]
@@ -987,14 +985,14 @@ export const changePlans = pgTable(
 export const changeWaves = pgTable(
   "change_waves",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     planId: uuid("plan_id").notNull(),
     waveIndex: bigint("wave_index", { mode: "number" }).notNull(),
     name: text("name"),
     /** Fan-in gate (DESIGN §9.3): true unless the topology explicitly marks a wave as not gated. */
     requiresFanIn: boolean("requires_fan_in").notNull().default(true),
-    status: text("status").notNull().default("pending"), // pending|running|succeeded|failed|skipped
+    status: text("status").notNull().default("pending"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true })
@@ -1005,7 +1003,7 @@ export const changeWaves = pgTable(
 export const changeWaveTargets = pgTable(
   "change_wave_targets",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     waveId: uuid("wave_id").notNull(),
     targetObjectId: uuid("target_object_id").notNull(),
@@ -1015,7 +1013,7 @@ export const changeWaveTargets = pgTable(
     // to 'configuration'. Plain text (no pg enum / CHECK); the closed value set is enforced in Zod.
     type: text("type").notNull().default("configuration"),
     executorPluginId: text("executor_plugin_id"),
-    executorRef: jsonb("executor_ref"), // ExternalRunRef once triggered
+    executorRef: jsonb("executor_ref"),
     /** Captured before trigger — what a rollback of this wave target would restore (DESIGN §9.4). */
     priorStateRef: jsonb("prior_state_ref"),
     // Last status() stateRef reconcile observed — the synced revision it previously computed and
@@ -1125,12 +1123,12 @@ export const controlBindings = pgTable(
 export const controlRuns = pgTable(
   "control_runs",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     controlObjectId: uuid("control_object_id").notNull(),
     changeObjectId: uuid("change_object_id").notNull(),
-    gateKind: text("gate_kind").notNull(), // 'lifecycle_edge' | 'wave_boundary'
-    gateRef: jsonb("gate_ref").notNull(), // {fromState,toState} or {waveIndex,topologyObjectId}
+    gateKind: text("gate_kind").notNull(),
+    gateRef: jsonb("gate_ref").notNull(),
     status: text("status").notNull(), // pass|fail|warning|skipped|timed_out|expired
     evidence: jsonb("evidence").notNull().default({}),
     detail: text("detail"),
@@ -1166,7 +1164,7 @@ export const controlRuns = pgTable(
 export const approvalRequests = pgTable(
   "approval_requests",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     changeObjectId: uuid("change_object_id").notNull(),
     policyObjectId: uuid("policy_object_id").notNull(),
@@ -1175,7 +1173,7 @@ export const approvalRequests = pgTable(
     requiredCount: bigint("required_count", { mode: "number" }).notNull(),
     fromRole: text("from_role").notNull(),
     scopeObjectId: uuid("scope_object_id").notNull(),
-    status: text("status").notNull().default("pending"), // pending|satisfied
+    status: text("status").notNull().default("pending"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     satisfiedAt: timestamp("satisfied_at", { withTimezone: true }),
     satisfiedDecisionId: uuid("satisfied_decision_id")
@@ -1204,7 +1202,7 @@ export const approvalRequests = pgTable(
 export const approvalVotes = pgTable(
   "approval_votes",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     approvalRequestId: uuid("approval_request_id").notNull(),
     voterObjectId: uuid("voter_object_id").notNull(),
@@ -1240,7 +1238,7 @@ export const approvalVotes = pgTable(
 export const freezes = pgTable(
   "freezes",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     scopeObjectId: uuid("scope_object_id").notNull(),
     name: text("name"),
@@ -1392,13 +1390,13 @@ export const instanceCosignKeys = pgTable(
 export const campaignPlans = pgTable(
   "campaign_plans",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     campaignObjectId: uuid("campaign_object_id").notNull(),
     topologyObjectId: uuid("topology_object_id"),
     topologyVersion: bigint("topology_version", { mode: "number" }),
     topologyDocument: jsonb("topology_document"),
-    status: text("status").notNull().default("active"), // active|completed|aborted
+    status: text("status").notNull().default("active"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("campaign_plans_org_campaign").on(table.orgId, table.campaignObjectId)]
@@ -1407,7 +1405,7 @@ export const campaignPlans = pgTable(
 export const campaignWaves = pgTable(
   "campaign_waves",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     planId: uuid("plan_id").notNull(),
     waveIndex: bigint("wave_index", { mode: "number" }).notNull(),
@@ -1428,7 +1426,7 @@ export const campaignWaves = pgTable(
 export const campaignWaveTargets = pgTable(
   "campaign_wave_targets",
   {
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     waveId: uuid("wave_id").notNull(),
     targetObjectId: uuid("target_object_id").notNull(),
@@ -1436,7 +1434,7 @@ export const campaignWaveTargets = pgTable(
      *  this milestone's spec: "Member changes are real Changes linked to the campaign via
      *  coordinates relationships." */
     memberChangeObjectId: uuid("member_change_object_id"),
-    status: text("status").notNull().default("pending"), // pending|change_proposed|succeeded|failed
+    status: text("status").notNull().default("pending"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
@@ -1484,7 +1482,7 @@ export const federationSelf = pgTable("federation_self", {
     .unique("federation_self_domain_id_key")
     .$type<TrustDomainId>(),
   name: text("name").notNull(),
-  role: text("role").notNull().default("unset"), // 'unset' | 'commander' | 'outpost' | 'retrans'
+  role: text("role").notNull().default("unset"),
   /** §7.2.6 (drizzle/0092) — a per-org monotonic counter bumped by the resync operation (and the
    *  promotion runbook). Recorded WITH the resync Decision so a forensic reading can attribute
    *  entries to before/after a lost-tail event. Never enters the signed journal-entry format. */
@@ -1585,7 +1583,7 @@ export const federationPeerKeys = pgTable(
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     peerDomainId: uuid("peer_domain_id").notNull().$type<TrustDomainId>(), // TRUST sense (ADR-0021 D4)
-    publicKey: text("public_key").notNull(), // base64 SPKI DER
+    publicKey: text("public_key").notNull(),
     // M17.3 (E5) — the peer's cosign MANIFEST-VERIFICATION public key (`cosign.pub` PEM), riding in
     // the SAME key-window row as its Ed25519 `publicKey`: distributed via the existing out-of-band
     // pairing exchange (zero new transport) and rotated by the SAME supersede mechanic (a changed
@@ -1616,7 +1614,7 @@ export const syncJournal = pgTable(
   "sync_journal",
   {
     seq: bigint("seq", { mode: "number" }).generatedAlwaysAsIdentity().notNull(),
-    id: uuid("id").primaryKey(), // UUIDv7
+    id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(), // TRUST sense (ADR-0021 D4)
     sequence: bigint("sequence", { mode: "number" }).notNull(), // per (org, originDomainId) monotonic — DESIGN §13
@@ -1629,7 +1627,7 @@ export const syncJournal = pgTable(
     conflict: text("conflict"), // reserved, v1-unused (DESIGN §13)
     prevHash: text("prev_hash").notNull(),
     rowHash: text("row_hash").notNull(),
-    signature: text("signature").notNull(), // base64 Ed25519 signature over rowHash, by originDomainId's key
+    signature: text("signature").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
@@ -1743,9 +1741,9 @@ export const bundleTransfers = pgTable(
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     peerDomainId: uuid("peer_domain_id").notNull().$type<TrustDomainId>(), // TRUST sense (ADR-0021 D4)
-    direction: text("direction").notNull(), // 'export' | 'import'
-    kind: text("kind").notNull().default("sync"), // 'sync' | 'promotion'
-    status: text("status").notNull().default("created"), // created|submitted|confirmed
+    direction: text("direction").notNull(),
+    kind: text("kind").notNull().default("sync"),
+    status: text("status").notNull().default("created"),
     sinceSequence: bigint("since_sequence", { mode: "number" }),
     throughSequence: bigint("through_sequence", { mode: "number" }),
     checksum: text("checksum"),
@@ -1761,7 +1759,7 @@ export const bundleTransfers = pgTable(
      *  direction/kind/status, which are identical across both channels for a `kind:'promotion'`
      *  row. See `bundle-transfers-repo.ts::recordBundleTransfer` (required-at-callsite) and
      *  0087's migration header. */
-    channel: text("channel"), // 'metadata' | 'bytes' | null
+    channel: text("channel"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true })
   },
@@ -1805,7 +1803,7 @@ export const federationInboxFiles = pgTable(
     /** sha256 (hex) of the file content; sentinel `-` when the file could not be read at all
      *  (e.g. a traversal-shaped name refused before any read). */
     sha256: text("sha256").notNull(),
-    outcome: text("outcome").notNull(), // 'imported' | 'forwarded' | 'refused' | 'skipped'
+    outcome: text("outcome").notNull(),
     detail: text("detail"),
     decisionId: uuid("decision_id"),
     processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow()
@@ -1928,10 +1926,10 @@ export const importedApprovalEvidence = pgTable(
   {
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
-    changeObjectId: uuid("change_object_id").notNull(), // the LOCAL imported change
+    changeObjectId: uuid("change_object_id").notNull(),
     originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(), // TRUST sense (ADR-0021 D4) — whose approval this was
-    attestation: jsonb("attestation").notNull(), // the SignedAttestation exactly as received
-    verified: boolean("verified").notNull(), // did validation pass against the origin's registered key?
+    attestation: jsonb("attestation").notNull(),
+    verified: boolean("verified").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("imported_approval_evidence_org_change").on(table.orgId, table.changeObjectId)]
@@ -1985,10 +1983,10 @@ export const secrets = pgTable(
   {
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
-    key: text("key").notNull(), // caller-chosen reference name, unique per org
-    ciphertext: text("ciphertext").notNull(), // base64(AES-256-GCM(plaintext) || authTag)
-    nonce: text("nonce").notNull(), // base64, 12-byte GCM IV, fresh per encryption
-    keyVersion: integer("key_version").notNull().default(1), // which master key encrypted this row
+    key: text("key").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    nonce: text("nonce").notNull(),
+    keyVersion: integer("key_version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
@@ -2011,10 +2009,10 @@ export const executorBindings = pgTable(
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     targetObjectId: uuid("target_object_id").notNull(),
-    pluginModule: text("plugin_module").notNull(), // 'github'|'argocd'|'terraform'|'managed-iac'|...
+    pluginModule: text("plugin_module").notNull(),
     pluginInstanceId: text("plugin_instance_id").notNull(),
     config: jsonb("config").notNull().default({}),
-    secretRefs: jsonb("secret_refs").notNull().default({}), // { configFieldName: secretKey }
+    secretRefs: jsonb("secret_refs").notNull().default({}),
     allowedHosts: jsonb("allowed_hosts").notNull().default([]),
     // The EXECUTOR-SPECIFIC target identifier this graph object maps to (e.g. an Argo CD Application
     // name), passed as `trigger().targetRef`. Nullable: when unset, reconcile falls back to the
@@ -2065,7 +2063,7 @@ export const notificationBindings = pgTable(
   {
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
-    pluginModule: text("plugin_module").notNull(), // 'smtp-notify'|'webhook-notify'
+    pluginModule: text("plugin_module").notNull(),
     pluginInstanceId: text("plugin_instance_id").notNull(),
     config: jsonb("config").notNull().default({}),
     secretRefs: jsonb("secret_refs").notNull().default({}),
@@ -2091,7 +2089,7 @@ export const changeSourceWebhookSecrets = pgTable(
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     sourceKind: text("source_kind").notNull(),
-    secretKey: text("secret_key").notNull(), // references secrets.key for this org
+    secretKey: text("secret_key").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
@@ -2124,7 +2122,7 @@ export const changeSourceWebhookSecrets = pgTable(
 export const scanRequirementFloors = pgTable(
   "scan_requirement_floors",
   {
-    tier: text("tier").notNull(), // 'platform' | 'trust_domain'
+    tier: text("tier").notNull(),
     // 'local' | 'federated'. NOTE (dated 2026-07-23, M17.5 follow-on): the CHECK admits both, but
     // NO federation writer producing `origin: 'federated'` rows exists — only the operator PUT
     // (routes/instance-scan-floors.ts) writes this table. Under the 2026-07-23 D5 decision
@@ -2172,8 +2170,7 @@ export const scanRequirementFloors = pgTable(
 export const scanExclusionAdmissions = pgTable(
   "scan_exclusion_admissions",
   {
-    tier: text("tier").notNull(), // 'platform' | 'trust_domain'
-    /** 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override' */
+    tier: text("tier").notNull(),
     class: text("class").notNull(),
     /** 'local' | 'federated'. As on `scanRequirementFloors`, the CHECK admits both but no federation
      *  writer produces `federated` rows today — outposts never evaluate scan policy (ADR-0020 §3). */
@@ -2462,7 +2459,6 @@ export interface IngestionStampManifest {
    * (`mergeIngestionStamp`), and the component-level `outcome` is computed ACROSS the merged set.
    */
   readonly repo: string;
-  /** Repo-relative path, as `component_dependencies.manifest_path` spells it. */
   readonly path: string;
   /** `ok` read and parsed; `unreadable` a read or parse that failed THIS TIME and may succeed on
    *  the next pass; `unsupported` a file SCP structurally cannot read (no parser registered for
@@ -2792,7 +2788,6 @@ export const instanceFreezes = pgTable(
     /** The explicit deployment-wide form — covers every target including one that declares no
      *  stage coordinate at all. Mutually exclusive with `matchEnvironment` (DB CHECK). */
     matchAllEnvironments: boolean("match_all_environments").notNull().default(false),
-    /** Matches every stage whose deployment-target declares this `properties.environment`. */
     matchEnvironment: text("match_environment"),
     /** Narrows `matchEnvironment` to one `properties.region`. Null = every region of it. */
     matchRegion: text("match_region"),
@@ -3034,7 +3029,6 @@ export const componentRollouts = pgTable(
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     componentObjectId: uuid("component_object_id").notNull(),
-    /** 'cluster' | 'instanceGroup' (`RolloutTargetClassSchema`). Plain text, Zod-enforced. */
     targetClass: text("target_class").notNull(),
     /** `RolloutStrategySchema` — discriminated on `strategy` (D15(c)). */
     rollout: jsonb("rollout").notNull(),
@@ -3056,11 +3050,9 @@ export const componentConvergence = pgTable(
     id: uuid("id").primaryKey(),
     orgId: uuid("org_id").notNull(),
     componentObjectId: uuid("component_object_id").notNull(),
-    /** The infrastructure product whose observed membership drives convergence. */
     targetObjectId: uuid("target_object_id").notNull(),
     /** Stored explicitly INCLUDING `false` — D8 requires the manifest to say which. */
     converge: boolean("converge").notNull(),
-    /** 'changedSubset' | 'fullGroup'. */
     scope: text("scope").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
@@ -3179,7 +3171,6 @@ export const pipelineEvidence = pgTable(
      *  can attribute is an evidence row nobody can revoke". */
     targetObjectId: uuid("target_object_id").notNull(),
     hookId: text("hook_id").notNull(),
-    /** 'testRun'|'alarmState'. Plain text, Zod-enforced — see `pipelineHooks.kind`. */
     kind: text("kind").notNull(),
     /** EXACTLY ONE binding is what the consuming hook requires: `postMerge` binds to the built
      *  COMMIT (it runs before any artifact exists), the other three to the artifact DIGEST. Both are
@@ -3283,10 +3274,7 @@ export const pipelineHookRuns = pgTable(
      *  change B, even at the same wave index. */
     changeObjectId: uuid("change_object_id").notNull(),
     hookId: text("hook_id").notNull(),
-    /** 'postMerge'|'postDeploy'|'continuous'|'bakeAlarms'. Plain text, Zod-owned — see
-     *  `pipelineHooks.kind`. */
     kind: text("kind").notNull(),
-    /** NULL for `postMerge`, which belongs to no wave. */
     waveIndex: integer("wave_index"),
     /** The binding this run's eventual evidence carries: `postMerge` -> commit, the other three ->
      *  digest. Both nullable here; `PipelineEvidenceSubjectSchema`'s exactly-one refine is enforced

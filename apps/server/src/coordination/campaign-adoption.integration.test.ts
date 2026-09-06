@@ -409,10 +409,6 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     expect(result.verdict).toBe("unknown");
   });
 
-  // ===========================================================================================
-  // B — `delivered`
-  // ===========================================================================================
-
   const DELIVERED: AdoptionEvidence = { kind: "delivered" };
   const deliveredRecipe: CampaignRecipe = {
     version: 1,
@@ -467,10 +463,6 @@ describe("campaign adoption evidence: observed, never asserted (M25.5)", () => {
     expect(result.summary).toContain("delivered");
     expect(result.summary).not.toContain("migrated");
   });
-
-  // ===========================================================================================
-  // C — `control`
-  // ===========================================================================================
 
   const controlRecipe = (controlObjectId: string): CampaignRecipe => ({
     version: 1,

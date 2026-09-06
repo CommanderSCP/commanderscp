@@ -132,7 +132,6 @@ export const INTERNAL_RELEASE_DECISION_KIND = "dependency_internal_release";
  *  `regional-executors.ts` reads; there is no `environments` table to look it up in. */
 export const PROD_ENVIRONMENT = "prod";
 
-/** One line whose head this run moved. */
 export interface RecordedInternalRelease {
   readonly lineId: string;
   readonly ecosystem: DependencyEcosystem;

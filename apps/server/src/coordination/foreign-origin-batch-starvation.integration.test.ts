@@ -213,7 +213,6 @@ describe("foreign-origin batch starvation: >BATCH_LIMIT replica changes must not
         .where(and(eq(changes.orgId, org.orgId), inArray(changes.objectId, foreignIds)))
     );
 
-    // Everything starts in `proposed`; nothing has ticked yet.
     for (const id of [...foreignIds, localId]) expect(await stateOf(id)).toBe("proposed");
 
     const before = await withTenantTx(server.deps.db, org.orgId, (tx) =>
